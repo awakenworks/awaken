@@ -422,14 +422,14 @@ async fn create_rejects_a_supported_but_not_executable_workspace_model() {
     let (application, _, _) = state(Outcome::Complete);
     application.bind_model_readiness(Arc::new(NoReadyDreamModels));
     let app = support::edge_stamped(dreams_router(application));
-    let (status, body) = request(
+    let body = request(
         &app,
         "POST",
         "/v1/dreams",
         Some(create_body("memory", &["session"])),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
     assert!(
         body["error"]["message"]
             .as_str()
@@ -440,24 +440,73 @@ async fn create_rejects_a_supported_but_not_executable_workspace_model() {
     let (unavailable, _, _) = state(Outcome::Complete);
     unavailable.bind_model_readiness(Arc::new(UnavailableDreamModels));
     let app = support::edge_stamped(dreams_router(unavailable));
-    let (status, _) = request(
+    let status = request(
         &app,
         "POST",
         "/v1/dreams",
         Some(create_body("memory", &["session"])),
     )
-    .await;
+    .await
+    .status();
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "D2/E2");
-    let (_, listed) = request(&app, "GET", "/v1/dreams", None).await;
+    let listed = request(&app, "GET", "/v1/dreams", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty(), "D2/E2");
 }
 
-async fn request(
-    app: &axum::Router,
-    method: &str,
-    uri: &str,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
+/// One HTTP exchange whose body cannot be read without naming the status it
+/// came with.
+///
+/// The tuple this replaces could be destructured as `let (_, body) = ...`,
+/// which is how a route that had started answering 404 went unnoticed here:
+/// the test read the empty body, then waited for work the failed request never
+/// scheduled, and parked forever. There is no accessor that yields the body
+/// alone, so that shape no longer compiles.
+#[must_use]
+struct Call {
+    status: StatusCode,
+    body: Value,
+}
+
+impl Call {
+    /// Take the body, stating the status it must have arrived with.
+    fn expect(self, status: StatusCode) -> Value {
+        assert_eq!(
+            self.status, status,
+            "unexpected status; body: {}",
+            self.body
+        );
+        self.body
+    }
+
+    /// Take the body, naming the status and the decision-table rule the
+    /// expectation belongs to.
+    fn expect_for(self, status: StatusCode, rule: &str) -> Value {
+        assert_eq!(self.status, status, "{rule}; body: {}", self.body);
+        self.body
+    }
+
+    /// Take the status when the body is not part of the assertion.
+    fn status(self) -> StatusCode {
+        self.status
+    }
+}
+
+/// Every wait in a test states a deadline.
+///
+/// A wait without one does not fail when the thing it waits for stops
+/// happening -- it parks the runtime and takes the suite with it. The runner
+/// now kills such a test, but the test should say what it was waiting for.
+const SIGNAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn signaled(what: &str, notify: &Notify) {
+    tokio::time::timeout(SIGNAL_DEADLINE, notify.notified())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+}
+
+async fn request(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> Call {
     let mut builder = Request::builder().method(method).uri(uri);
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
@@ -473,19 +522,26 @@ async fn request(
         .unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, value)
+    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    Call { status, body }
 }
 
 async fn wait_for_status(app: &axum::Router, id: &str, expected: &str) -> Value {
-    for _ in 0..100 {
-        let (_, value) = request(app, "GET", &format!("/v1/dreams/{id}"), None).await;
+    // Bounded by the clock, not by a yield count: a yield budget says nothing
+    // about how long the worker had, and reports no evidence when it runs out.
+    let deadline = tokio::time::Instant::now() + SIGNAL_DEADLINE;
+    let mut observed = Value::Null;
+    while tokio::time::Instant::now() < deadline {
+        let value = request(app, "GET", &format!("/v1/dreams/{id}"), None)
+            .await
+            .expect(StatusCode::OK);
         if value["status"] == expected {
             return value;
         }
+        observed = value;
         tokio::task::yield_now().await;
     }
-    panic!("Dream did not reach {expected}")
+    panic!("Dream did not reach {expected}; last observed: {observed}")
 }
 
 // Test design: official_create_retrieve_list_archive_and_failure_shapes
@@ -499,14 +555,14 @@ async fn wait_for_status(app: &axum::Router, id: &str, expected: &str) -> Value 
 async fn official_create_retrieve_list_archive_and_failure_shapes() {
     let (complete, _, _) = state(Outcome::Complete);
     let app = support::edge_stamped(dreams_router(complete));
-    let (status, created) = request(
+    let created = request(
         &app,
         "POST",
         "/v1/dreams?beta=true",
         Some(create_body("mem_1", &["sesn_1"])),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(created["type"], "dream");
     assert_eq!(created["status"], "pending");
     assert_eq!(created["output_behavior"], json!({"type":"create_new"}));
@@ -516,24 +572,30 @@ async fn official_create_retrieve_list_archive_and_failure_shapes() {
     assert_eq!(completed["session_id"], format!("sesn_{id}"));
     assert_eq!(completed["usage"]["input_tokens"], 12);
 
-    let (status, archived) = request(&app, "POST", &format!("/v1/dreams/{id}/archive"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let archived = request(&app, "POST", &format!("/v1/dreams/{id}/archive"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(archived["status"], "completed");
     assert!(archived["archived_at"].is_string());
-    let (_, default_list) = request(&app, "GET", "/v1/dreams", None).await;
+    let default_list = request(&app, "GET", "/v1/dreams", None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(default_list["data"].as_array().unwrap().len(), 0);
-    let (_, archived_list) = request(&app, "GET", "/v1/dreams?include_archived=true", None).await;
+    let archived_list = request(&app, "GET", "/v1/dreams?include_archived=true", None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(archived_list["data"].as_array().unwrap().len(), 1);
 
     let (failed_state, _, _) = state(Outcome::Fail);
     let failed_app = support::edge_stamped(dreams_router(failed_state));
-    let (_, created) = request(
+    let created = request(
         &failed_app,
         "POST",
         "/v1/dreams",
         Some(create_body("mem_1", &["sesn_1"])),
     )
-    .await;
+    .await
+    .expect(StatusCode::OK);
     let failed = wait_for_status(&failed_app, created["id"].as_str().unwrap(), "failed").await;
     assert_eq!(failed["error"]["type"], "internal_error");
     assert_eq!(failed["outputs"].as_array().unwrap().len(), 1);
@@ -549,8 +611,9 @@ async fn update_existing_output_behavior_round_trips_and_reuses_the_source_store
         "memory_store_id": "mem_1"
     });
 
-    let (status, created) = request(&app, "POST", "/v1/dreams", Some(body)).await;
-    assert_eq!(status, StatusCode::OK);
+    let created = request(&app, "POST", "/v1/dreams", Some(body))
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(
         created["output_behavior"],
         json!({"type":"update_existing", "memory_store_id":"mem_1"})
@@ -566,7 +629,7 @@ async fn update_existing_output_behavior_round_trips_and_reuses_the_source_store
     assert_eq!(
         request(&app, "POST", "/v1/dreams", Some(mismatched))
             .await
-            .0,
+            .status(),
         StatusCode::BAD_REQUEST
     );
 }
@@ -598,15 +661,19 @@ async fn validation_and_terminal_mutation_decision_table() {
         }),
     ];
     for body in invalid {
-        let (status, _) = request(&app, "POST", "/v1/dreams", Some(body)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let _ = request(&app, "POST", "/v1/dreams", Some(body))
+            .await
+            .expect(StatusCode::BAD_REQUEST);
     }
 
-    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+        .await
+        .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
     let _ = wait_for_status(&app, id, "completed").await;
-    let (status, _) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let _ = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None)
+        .await
+        .expect(StatusCode::BAD_REQUEST);
 }
 
 // Test design: cancellation_is_immediate_idempotent_and_retains_prepared_output
@@ -618,18 +685,25 @@ async fn validation_and_terminal_mutation_decision_table() {
 async fn cancellation_is_immediate_idempotent_and_retains_prepared_output() {
     let (state, started, release) = state(Outcome::Block);
     let app = support::edge_stamped(dreams_router(state));
-    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+        .await
+        .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
-    started.notified().await;
-    let (status, canceled) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    signaled("the worker to start", &started).await;
+    let canceled = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(canceled["status"], "canceled");
     assert_eq!(canceled["outputs"].as_array().unwrap().len(), 1);
-    let (_, repeated) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    let repeated = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(repeated["status"], "canceled");
     release.notify_waiters();
     tokio::task::yield_now().await;
-    let (_, retrieved) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+    let retrieved = request(&app, "GET", &format!("/v1/dreams/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(retrieved["status"], "canceled");
 }
 
@@ -756,15 +830,16 @@ async fn late_worker_completion_cannot_repeat_or_overwrite_cancellation_cleanup(
             .unwrap(),
         );
         let app = support::edge_stamped(dreams_router(state));
-        let (_, created) =
-            request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+        let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+            .await
+            .expect(StatusCode::OK);
         let id = created["id"].as_str().unwrap();
-        started.notified().await;
+        signaled("the worker to start", &started).await;
 
-        let (status, canceled) =
-            request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
-        assert_eq!(status, expected_status, "C2");
-        if status == StatusCode::OK {
+        let canceled = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None)
+            .await
+            .expect_for(expected_status, "C2");
+        if expected_status == StatusCode::OK {
             assert_eq!(canceled["status"], "canceled", "C2/E2");
         }
         assert_eq!(cleanups.load(Ordering::SeqCst), 1, "C2/E1");
@@ -869,11 +944,15 @@ async fn canceled_cleanup_retry_cannot_return_success_before_its_receipt() {
         .unwrap(),
     );
     let app = support::edge_stamped(dreams_router(state));
-    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+        .await
+        .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
-    started.notified().await;
+    signaled("the worker to start", &started).await;
 
-    let (first_status, _) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    let first_status = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None)
+        .await
+        .status();
     assert_eq!(first_status, StatusCode::SERVICE_UNAVAILABLE, "R1/E1");
     let pending = store
         .dream_processes()
@@ -884,11 +963,13 @@ async fn canceled_cleanup_retry_cannot_return_success_before_its_receipt() {
     assert!(pending.cleanup_pending, "R1/E1");
     assert_eq!(pending.transcript_file_ids, ["transcript"], "R1/E1");
 
-    let (retry_status, retried) =
-        request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
-    assert_eq!(retry_status, StatusCode::OK, "R2/E2");
+    let retried = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None)
+        .await
+        .expect_for(StatusCode::OK, "R2/E2");
     assert_eq!(retried["status"], "canceled", "R2/E2");
-    let (_, repeated) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    let repeated = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(repeated["status"], "canceled", "R3/E3");
     assert_eq!(cleanups.load(Ordering::SeqCst), 2, "R2/E2 + R3/E3");
 
@@ -963,17 +1044,23 @@ async fn running_output_projection_transitions_from_empty_to_prepared() {
         release_execute: release_execute.clone(),
     })));
     let app = support::edge_stamped(dreams_router(application));
-    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+        .await
+        .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
-    prepare_started.notified().await;
-    let (_, unprepared) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+    signaled("preparation to start", &prepare_started).await;
+    let unprepared = request(&app, "GET", &format!("/v1/dreams/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(unprepared["status"], "running", "O1/E1");
     assert_eq!(unprepared["outputs"], json!([]), "O1/E1");
     assert!(unprepared["session_id"].is_null(), "O1/E1");
 
     release_prepare.notify_one();
-    execute_started.notified().await;
-    let (_, prepared) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+    signaled("execution to start", &execute_started).await;
+    let prepared = request(&app, "GET", &format!("/v1/dreams/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(prepared["status"], "running", "O2/E2");
     assert_eq!(prepared["outputs"].as_array().unwrap().len(), 1, "O2/E2");
     assert!(prepared["session_id"].is_string(), "O2/E2");
@@ -1016,9 +1103,9 @@ async fn documented_pipeline_failures_round_trip_through_http() {
     ] {
         let application = Arc::new(in_memory_application(Arc::new(PreparationFailure(kind))));
         let app = support::edge_stamped(dreams_router(application));
-        let (status, created) =
-            request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
-        assert_eq!(status, StatusCode::OK, "{rule}");
+        let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+            .await
+            .expect_for(StatusCode::OK, rule);
         assert_eq!(created["status"], "pending", "{rule}");
         let failed = wait_for_status(&app, created["id"].as_str().unwrap(), "failed").await;
         assert_eq!(failed["error"]["type"], kind, "{rule}/E2");
@@ -1069,14 +1156,20 @@ async fn canceled_dream_keeps_projecting_trailing_session_usage() {
     let usage = Arc::new(std::sync::atomic::AtomicU64::new(10));
     application.bind_session_source(Arc::new(MutableUsage(usage.clone())));
     let app = support::edge_stamped(dreams_router(application));
-    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+        .await
+        .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
-    started.notified().await;
-    let (_, canceled) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    signaled("the worker to start", &started).await;
+    let canceled = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(canceled["status"], "canceled", "U1/E1");
     assert_eq!(canceled["usage"]["input_tokens"], 10, "U1/E1");
     usage.store(14, std::sync::atomic::Ordering::SeqCst);
-    let (_, trailing) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+    let trailing = request(&app, "GET", &format!("/v1/dreams/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(trailing["status"], "canceled", "U2/E2");
     assert_eq!(trailing["usage"]["input_tokens"], 14, "U2/E2");
     release.notify_one();
@@ -1165,13 +1258,13 @@ async fn compatible_dream_router_has_no_awaken_only_configuration_routes() {
     let (state, _, _) = state(Outcome::Complete);
     let app = support::edge_stamped(dreams_router(state));
     assert_ne!(
-        request(&app, "GET", "/v1/dreams", None).await.0,
+        request(&app, "GET", "/v1/dreams", None).await.status(),
         StatusCode::NOT_FOUND,
         "R1"
     );
     for path in ["/v1/dream_policies/mem_1", "/v1/dream_agent_configuration"] {
         assert_eq!(
-            request(&app, "GET", path, None).await.0,
+            request(&app, "GET", path, None).await.status(),
             StatusCode::NOT_FOUND,
             "removed extension {path}"
         );
@@ -1187,43 +1280,48 @@ async fn list_supports_official_repeated_status_filters_and_cursor_pages() {
     let app = support::edge_stamped(dreams_router(state));
     let mut ids = Vec::new();
     for session in ["s1", "s2"] {
-        let (_, created) = request(
+        let created = request(
             &app,
             "POST",
             "/v1/dreams",
             Some(create_body("mem", &[session])),
         )
-        .await;
+        .await
+        .expect(StatusCode::OK);
         ids.push(created["id"].as_str().unwrap().to_string());
     }
     for id in &ids {
         let _ = wait_for_status(&app, id, "completed").await;
     }
-    let (_, first) = request(&app, "GET", "/v1/dreams?limit=1", None).await;
+    let first = request(&app, "GET", "/v1/dreams?limit=1", None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(first["data"].as_array().unwrap().len(), 1);
     let cursor = first["next_page"].as_str().unwrap();
-    let (_, second) = request(
+    let second = request(
         &app,
         "GET",
         &format!("/v1/dreams?limit=1&page={cursor}"),
         None,
     )
-    .await;
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(second["data"].as_array().unwrap().len(), 1);
-    let (_, filtered) = request(
+    let filtered = request(
         &app,
         "GET",
         "/v1/dreams?statuses=failed&statuses=completed",
         None,
     )
-    .await;
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(filtered["data"].as_array().unwrap().len(), 2);
     for uri in [
         "/v1/dreams?limit=0",
         "/v1/dreams?created_at%5Bgt%5D=not-a-time",
     ] {
         assert_eq!(
-            request(&app, "GET", uri, None).await.0,
+            request(&app, "GET", uri, None).await.status(),
             StatusCode::BAD_REQUEST
         );
     }
@@ -1256,7 +1354,9 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
     let state = Arc::new(DreamApplication::with_store(worker, repository.clone()).unwrap());
     state.bind_session_source(Arc::new(FixedSessionFacts));
     let app = support::edge_stamped(dreams_router(state.clone()));
-    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+        .await
+        .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap().to_string();
     let completed = wait_for_status(&app, &id, "completed").await;
     let durable = serde_json::to_value(&repository.dream_processes().unwrap()[0])
@@ -1326,14 +1426,15 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
         .unwrap(),
     );
     let first_app = support::edge_stamped(dreams_router(first));
-    let (_, created) = request(
+    let created = request(
         &first_app,
         "POST",
         "/v1/dreams",
         Some(create_body("mem", &["s"])),
     )
-    .await;
-    entered.notified().await;
+    .await
+    .expect(StatusCode::OK);
+    signaled("preparation to be entered", &entered).await;
 
     let recovered = Arc::new(
         DreamApplication::with_store(
@@ -1394,13 +1495,14 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
     let first =
         Arc::new(DreamApplication::with_store(Arc::new(CleanupFails), repository.clone()).unwrap());
     let first_app = support::edge_stamped(dreams_router(first));
-    let (_, created) = request(
+    let created = request(
         &first_app,
         "POST",
         "/v1/dreams",
         Some(create_body("mem", &["s"])),
     )
-    .await;
+    .await
+    .expect(StatusCode::OK);
     for _ in 0..100 {
         if repository
             .dream_processes()
@@ -1412,13 +1514,14 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
         }
         tokio::task::yield_now().await;
     }
-    let (_, pending) = request(
+    let pending = request(
         &first_app,
         "GET",
         &format!("/v1/dreams/{}", created["id"].as_str().unwrap()),
         None,
     )
-    .await;
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(pending["status"], "running");
 
     let recovered = Arc::new(
@@ -1504,17 +1607,20 @@ async fn transient_terminal_cleanup_retries_without_reexecuting_the_dream() {
         cleanups: cleanups.clone(),
     })));
     let app = support::edge_stamped(dreams_router(state));
-    let (_, created) = request(
+    let created = request(
         &app,
         "POST",
         "/v1/dreams",
         Some(create_body("mem", &["session"])),
     )
-    .await;
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
 
     for _ in 0..30 {
-        let (_, projected) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+        let projected = request(&app, "GET", &format!("/v1/dreams/{id}"), None)
+            .await
+            .expect(StatusCode::OK);
         if projected["status"] == "completed" {
             assert_eq!(executions.load(Ordering::SeqCst), 1, "R3");
             assert_eq!(cleanups.load(Ordering::SeqCst), 2, "R1/R2");
@@ -1623,7 +1729,9 @@ async fn input_deleted_after_create_fails_before_terminal_publication() {
         std::sync::atomic::AtomicUsize::new(0),
     ))));
     let app = support::edge_stamped(dreams_router(state));
-    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let created = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"])))
+        .await
+        .expect(StatusCode::OK);
     let failed = wait_for_status(&app, created["id"].as_str().unwrap(), "failed").await;
     assert_eq!(failed["error"]["type"], "input_session_unavailable");
     assert_eq!(failed["outputs"].as_array().unwrap().len(), 1);
