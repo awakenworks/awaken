@@ -725,7 +725,7 @@ impl Outbox for AnyDispatchStore {
         input: PendingInput,
         session_thread_id: &ThreadId,
         prior_session_activity_epoch: Option<u64>,
-        session_activity_epoch: u64,
+        session_activity_epoch: Option<u64>,
     ) -> Result<bool, DispatchError> {
         delegate!(
             self,

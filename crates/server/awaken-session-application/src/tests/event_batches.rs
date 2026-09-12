@@ -357,7 +357,9 @@ impl SessionRuntime for EventBatchRuntime {
         let staged = self.staged_tool_replies.lock().unwrap();
         if staged.get(&operation) == Some(command) {
             return Ok(SessionThreadToolReplyFence {
-                prior_session_activity_epoch: None,
+                activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                    prior_epoch: None,
+                },
                 already_applied: true,
             });
         }
@@ -378,7 +380,9 @@ impl SessionRuntime for EventBatchRuntime {
             ));
         }
         Ok(SessionThreadToolReplyFence {
-            prior_session_activity_epoch: Some(prior_session_activity_epoch),
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(prior_session_activity_epoch),
+            },
             already_applied: false,
         })
     }

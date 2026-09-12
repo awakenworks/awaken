@@ -212,7 +212,7 @@ impl Outbox for PostgresDispatchStore {
         input: PendingInput,
         session_thread_id: &ThreadId,
         prior_session_activity_epoch: Option<u64>,
-        session_activity_epoch: u64,
+        session_activity_epoch: Option<u64>,
     ) -> Result<bool, DispatchError> {
         let input = normalize_pending_millis(input);
         let p = NS;
@@ -299,7 +299,7 @@ impl Outbox for PostgresDispatchStore {
             ));
         }
 
-        request.session_activity_epoch = Some(session_activity_epoch);
+        request.session_activity_epoch = session_activity_epoch;
         sqlx::query(&format!(
             "UPDATE {p}_dispatch SET request = $1 WHERE run_id = $2"
         ))

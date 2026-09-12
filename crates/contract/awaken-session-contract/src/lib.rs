@@ -83,10 +83,10 @@ pub use coordination::{
     SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
     SessionAgentRosterEntry, SessionAgentRunBoundary, SessionAgentTarget,
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode, SessionThreadTarget,
-    SessionThreadToolReply, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
-    SessionThreadToolReplyFence, coordinated_thread_failed, coordinated_thread_id,
-    session_agent_boundary_action, session_agent_report_messages, session_agent_report_text,
-    session_agent_run_boundary, session_run_activity_operation_id,
+    SessionThreadToolReply, SessionThreadToolReplyActivity, SessionThreadToolReplyCommand,
+    SessionThreadToolReplyDelivery, SessionThreadToolReplyFence, coordinated_thread_failed,
+    coordinated_thread_id, session_agent_boundary_action, session_agent_report_messages,
+    session_agent_report_text, session_agent_run_boundary, session_run_activity_operation_id,
 };
 pub use executable_projection::{
     ExecutableAgentProjectionRefresh, ExecutableEnvironmentProjectionRefresh,

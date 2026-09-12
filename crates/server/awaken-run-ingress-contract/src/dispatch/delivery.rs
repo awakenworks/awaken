@@ -113,8 +113,10 @@ pub trait Outbox: Send + Sync {
     /// caller's expected prior activity coordinate, reject a competing resume
     /// for the same awaiting correlation, then update `session_activity_epoch`
     /// and insert the Outbox payload in one backend transaction. A `None` prior
-    /// coordinate is reserved for the foreground-to-durable handoff whose newly
-    /// enqueued row already carries `session_activity_epoch`. The queue row may still be
+    /// coordinate may adopt an epochless exact Session-affine row. When the new
+    /// epoch is also `None`, only an ordinary primary Run with no Session affinity
+    /// or epoch is accepted: its extension keeps ownership and canonical identity,
+    /// while the same transaction stages the exact input without creating activity. The queue row may still be
     /// Leased after the Worker committed its Awaiting ticket but before it
     /// settles; accepting that phase closes the commit/settle discovery race.
     /// An exact replay returns `false`; it never rewrites the row or creates
@@ -124,7 +126,7 @@ pub trait Outbox: Send + Sync {
         _input: PendingInput,
         _session_thread_id: &ThreadId,
         _prior_session_activity_epoch: Option<u64>,
-        _session_activity_epoch: u64,
+        _session_activity_epoch: Option<u64>,
     ) -> Result<bool, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support Session resume staging".to_string(),

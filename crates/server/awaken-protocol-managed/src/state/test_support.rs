@@ -952,7 +952,9 @@ impl SessionRuntime for RehydrateFake {
             return Err(RunError::bad_request("reply ticket fence is stale"));
         }
         Ok(awaken_session_contract::SessionThreadToolReplyFence {
-            prior_session_activity_epoch: Some(1),
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(1),
+            },
             already_applied: false,
         })
     }

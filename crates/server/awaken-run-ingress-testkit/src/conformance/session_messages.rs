@@ -42,6 +42,84 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     let initial_epoch = 11;
     let resumed_epoch = 12;
 
+    // AR1E: an Outcome-owned ordinary primary Run keeps its admission identity.
+    // Causes: no affinity, no epoch, exact primary ticket. Effects: one staged reply,
+    // replay no-op, unchanged canonical request; orphan child and invented epoch reject.
+    let extension = dispatch(ns, "extension-reply-run", "extension-primary");
+    let extension_parent = extension.thread_id().clone();
+    store
+        .enqueue(extension.clone())
+        .await
+        .expect("enqueue extension");
+    let extension_input = PendingInput {
+        message_id: format!("{ns}-extension-reply"),
+        run_id: extension.run_id().clone(),
+        thread_id: extension_parent.clone(),
+        correlation_id: format!("{ns}-extension-correlation"),
+        available_at_ms: None,
+        context_messages: Vec::new(),
+        result: ResumeResult::Input("tool data".into()),
+    };
+    assert!(
+        store
+            .stage_session_resume(extension_input.clone(), &parent, None, None)
+            .await
+            .is_err(),
+        "foreign primary rejected"
+    );
+    assert!(
+        store
+            .stage_session_resume(extension_input.clone(), &extension_parent, None, Some(1))
+            .await
+            .is_err(),
+        "extension cannot acquire a Session epoch"
+    );
+    assert!(
+        store
+            .stage_session_resume(extension_input.clone(), &extension_parent, None, None)
+            .await
+            .expect("stage extension")
+    );
+    assert!(
+        !store
+            .stage_session_resume(extension_input.clone(), &extension_parent, None, None)
+            .await
+            .expect("replay extension")
+    );
+    let mut conflicting = extension_input.clone();
+    conflicting.message_id.push_str("-other");
+    conflicting.result = ResumeResult::Input("changed".into());
+    assert!(
+        store
+            .stage_session_resume(conflicting, &extension_parent, None, None)
+            .await
+            .is_err(),
+        "one correlation has one result"
+    );
+    store
+        .enqueue(extension.clone())
+        .await
+        .expect("original canonical dispatch still replays");
+    assert_eq!(store.relay().await.expect("relay extension"), 1);
+    let claim = store
+        .claim_run(
+            extension.run_id(),
+            "extension-owner",
+            LEASE_MS,
+            199_997,
+            &Default::default(),
+        )
+        .await
+        .expect("claim extension")
+        .expect("extension runnable");
+    assert_eq!(
+        claim.pending.len(),
+        1,
+        "extension reply delivered exactly once"
+    );
+    assert_eq!(claim.request.session_thread_id, None);
+    assert_eq!(claim.request.session_activity_epoch, None);
+
     // AR1U owns the epochless adoption partition used by foreground protocol
     // Runs: the exact Session affinity and row identity remain mandatory, while
     // the existing transaction installs the first continuation epoch and input.
@@ -62,14 +140,14 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     };
     assert!(
         store
-            .stage_session_resume(unbound_input.clone(), &parent, None, initial_epoch,)
+            .stage_session_resume(unbound_input.clone(), &parent, None, Some(initial_epoch),)
             .await
             .expect("AR1U atomically adopt the epochless row"),
         "AR1U/E2+E9"
     );
     assert!(
         !store
-            .stage_session_resume(unbound_input.clone(), &parent, None, initial_epoch,)
+            .stage_session_resume(unbound_input.clone(), &parent, None, Some(initial_epoch),)
             .await
             .expect("AR1U exact adoption replay is idempotent"),
         "AR1U/E3"
@@ -161,7 +239,7 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
                 input.clone(),
                 &parent,
                 Some(initial_epoch + 100),
-                resumed_epoch,
+                Some(resumed_epoch),
             )
             .await
             .expect_err("AR0 stale prior activity rejects before staging")
@@ -171,7 +249,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     );
     assert!(
         store
-            .stage_session_resume(input.clone(), &parent, Some(initial_epoch), resumed_epoch)
+            .stage_session_resume(
+                input.clone(),
+                &parent,
+                Some(initial_epoch),
+                Some(resumed_epoch)
+            )
             .await
             .expect("AR1 stage committed resume on reconstructed Pending row"),
         "AR1/E2+E9+E10"
@@ -222,7 +305,7 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
                 input.clone(),
                 &thread_id(ns, "wrong-parent"),
                 Some(initial_epoch),
-                resumed_epoch,
+                Some(resumed_epoch),
             )
             .await
             .expect_err("AR2 wrong parent rejects")
@@ -232,7 +315,7 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     );
     assert!(
         store
-            .stage_session_resume(input.clone(), &parent, Some(initial_epoch), 0)
+            .stage_session_resume(input.clone(), &parent, Some(initial_epoch), Some(0))
             .await
             .expect_err("AR3 zero epoch rejects")
             .to_string()
@@ -259,7 +342,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     );
     assert!(
         store
-            .stage_session_resume(input.clone(), &parent, Some(initial_epoch), resumed_epoch)
+            .stage_session_resume(
+                input.clone(),
+                &parent,
+                Some(initial_epoch),
+                Some(resumed_epoch)
+            )
             .await
             .expect_err("AR6 reused Inbox id rejects atomically")
             .to_string()
@@ -281,7 +369,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     );
     assert!(
         !store
-            .stage_session_resume(input.clone(), &parent, Some(initial_epoch), resumed_epoch)
+            .stage_session_resume(
+                input.clone(),
+                &parent,
+                Some(initial_epoch),
+                Some(resumed_epoch)
+            )
             .await
             .expect("AR4 exact Awaiting replay"),
         "AR4/E3"
@@ -292,7 +385,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     competing.result = ResumeResult::Input("denied".to_string());
     assert!(
         store
-            .stage_session_resume(competing, &parent, Some(initial_epoch), resumed_epoch + 1,)
+            .stage_session_resume(
+                competing,
+                &parent,
+                Some(initial_epoch),
+                Some(resumed_epoch + 1),
+            )
             .await
             .expect_err("AR6 competing reply rejects")
             .to_string()
@@ -340,7 +438,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     assert_eq!(resumed.pending, vec![input.clone()], "AR7/E5");
     assert!(
         !store
-            .stage_session_resume(input.clone(), &parent, Some(initial_epoch), resumed_epoch)
+            .stage_session_resume(
+                input.clone(),
+                &parent,
+                Some(initial_epoch),
+                Some(resumed_epoch)
+            )
             .await
             .expect("AR5 exact replay remains valid while Running"),
         "AR5/E3"
@@ -431,7 +534,7 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
                 race_input.clone(),
                 &parent,
                 Some(initial_epoch),
-                resumed_epoch + 1,
+                Some(resumed_epoch + 1),
             )
             .await
             .expect("AR4L stage while finishing lease is current"),
