@@ -246,14 +246,39 @@ pub fn outcome_evaluation(round: &OutcomeIteration) -> crate::types::OutcomeEval
 pub struct ProjectedEvent {
     pub id: Option<String>,
     pub kind: OutboundKind,
+    /// The committed tool call this event came from, when it came from one.
+    ///
+    /// `id` starts out holding the same value and is then rewritten into the
+    /// public event id, so a later stage that needs the call identity cannot
+    /// read `id` without depending on running before that rewrite. Carrying the
+    /// call id under its own name removes that positional coupling: moving the
+    /// rewrite earlier can no longer make a lookup silently stop matching — and
+    /// a silent miss here would report a refused call as permitted.
+    pub source_tool_call_id: Option<String>,
 }
 
 impl ProjectedEvent {
     fn minted(kind: OutboundKind) -> Self {
-        Self { id: None, kind }
+        Self {
+            id: None,
+            kind,
+            source_tool_call_id: None,
+        }
     }
     fn with_id(id: String, kind: OutboundKind) -> Self {
-        Self { id: Some(id), kind }
+        Self {
+            id: Some(id),
+            kind,
+            source_tool_call_id: None,
+        }
+    }
+    /// A projection of one committed tool call, retaining that call's identity.
+    fn for_tool_call(call_id: String, kind: OutboundKind) -> Self {
+        Self {
+            id: Some(call_id.clone()),
+            kind,
+            source_tool_call_id: Some(call_id),
+        }
     }
 }
 
@@ -272,6 +297,21 @@ fn mcp_server_name(name: &str) -> String {
 /// `OutboundKind`. `RunStarted` is dropped (Managed has no per-step start event);
 /// terminal events become `session.status_idle`. Stateful within one Run: it
 /// remembers `mcp__` tool-use ids so their results project as MCP results too.
+/// The permission a committed transcript can establish on its own.
+///
+/// A call still awaiting a decision is evidence: the committed ticket says a
+/// person was asked. A call with a result is not — a refused call and an
+/// executed call whose tool errored look identical here, so this returns `None`
+/// and the recorded gate decision fills it in. Inferring `allow` from "a result
+/// exists" is what reported refused calls as permitted, and an unrecognized
+/// decision label would have fallen straight back into that inference.
+fn awaited_permission(disposition: &ToolDisposition) -> Option<EvaluatedPermission> {
+    match disposition {
+        ToolDisposition::PendingBuiltin => Some(EvaluatedPermission::Ask),
+        ToolDisposition::PendingClient | ToolDisposition::Executed => None,
+    }
+}
+
 #[derive(Default)]
 pub struct ManagedEncoder {
     mcp_ids: std::collections::HashSet<String>,
@@ -302,11 +342,8 @@ impl Transcoder for ManagedEncoder {
                 disposition,
             } if awaken_agent_contract::McpToolId::claims_namespace(name) => {
                 self.mcp_ids.insert(id.clone());
-                let evaluated_permission = match disposition {
-                    ToolDisposition::PendingBuiltin => Some(EvaluatedPermission::Ask),
-                    _ => Some(EvaluatedPermission::Allow),
-                };
-                vec![ProjectedEvent::with_id(
+                let evaluated_permission = awaited_permission(disposition);
+                vec![ProjectedEvent::for_tool_call(
                     id.clone(),
                     OutboundKind::AgentMcpToolUse {
                         name: name.clone(),
@@ -329,20 +366,16 @@ impl Transcoder for ManagedEncoder {
                         input: input.clone(),
                         session_thread_id: None,
                     },
-                    ToolDisposition::PendingBuiltin => OutboundKind::AgentToolUse {
-                        name: name.clone(),
-                        input: input.clone(),
-                        evaluated_permission: Some(EvaluatedPermission::Ask),
-                        session_thread_id: None,
-                    },
-                    ToolDisposition::Executed => OutboundKind::AgentToolUse {
-                        name: name.clone(),
-                        input: input.clone(),
-                        evaluated_permission: Some(EvaluatedPermission::Allow),
-                        session_thread_id: None,
-                    },
+                    ToolDisposition::PendingBuiltin | ToolDisposition::Executed => {
+                        OutboundKind::AgentToolUse {
+                            name: name.clone(),
+                            input: input.clone(),
+                            evaluated_permission: awaited_permission(disposition),
+                            session_thread_id: None,
+                        }
+                    }
                 };
-                vec![ProjectedEvent::with_id(id.clone(), kind)]
+                vec![ProjectedEvent::for_tool_call(id.clone(), kind)]
             }
             Fact::ToolResult {
                 id,
@@ -1410,22 +1443,41 @@ mod tests {
                 &advisor_consultation_blocks(&messages),
                 &[&unrelated],
             );
+            // H2 states the property directly: an unrelated pending record must
+            // not lend its `ask` to these calls. It no longer asserts `allow`,
+            // because a committed transcript cannot establish that a call was
+            // permitted — only the recorded gate decision can, and inferring it
+            // from the presence of a result is what reported refused calls as
+            // permitted. "Nothing established here" is now `None`.
             assert_eq!(
                 projected
                     .iter()
                     .filter(|event| matches!(
                         event.kind,
                         OutboundKind::AgentToolUse {
-                            evaluated_permission: Some(EvaluatedPermission::Allow),
+                            evaluated_permission: None,
                             ..
                         } | OutboundKind::AgentMcpToolUse {
-                            evaluated_permission: Some(EvaluatedPermission::Allow),
+                            evaluated_permission: None,
                             ..
                         }
                     ))
                     .count(),
                 2,
                 "H2 no permission transfer {name}"
+            );
+            assert!(
+                !projected.iter().any(|event| matches!(
+                    event.kind,
+                    OutboundKind::AgentToolUse {
+                        evaluated_permission: Some(EvaluatedPermission::Ask),
+                        ..
+                    } | OutboundKind::AgentMcpToolUse {
+                        evaluated_permission: Some(EvaluatedPermission::Ask),
+                        ..
+                    }
+                )),
+                "H2 an unrelated pending record never transfers its ask {name}"
             );
         }
     }

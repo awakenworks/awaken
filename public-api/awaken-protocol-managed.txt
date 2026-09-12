@@ -7,6 +7,7 @@ pub fn awaken_protocol_managed::project::ManagedEncoder::fact(&mut self, &awaken
 pub struct awaken_protocol_managed::project::ProjectedEvent
 pub awaken_protocol_managed::project::ProjectedEvent::id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::project::ProjectedEvent::kind: awaken_protocol_managed::types::OutboundKind
+pub awaken_protocol_managed::project::ProjectedEvent::source_tool_call_id: core::option::Option<alloc::string::String>
 pub fn awaken_protocol_managed::project::agent_client_tools(&[awaken_agent_contract::toolset::ClientToolDescriptor]) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>, alloc::string::String>
 pub fn awaken_protocol_managed::project::agent_multiagent(&awaken_session_contract::session::AgentCapabilities) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
 pub fn awaken_protocol_managed::project::agent_multiagent_ids(&[alloc::string::String]) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>

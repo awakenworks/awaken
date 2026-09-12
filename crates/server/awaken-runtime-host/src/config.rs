@@ -141,22 +141,23 @@ pub(crate) fn effective_ruleset(
     }
 }
 
-/// The Agent toolset split into what the rule scan can decide up front and what
-/// must wait for a call.
+/// The closed Agent toolset, desugared.
 ///
-/// A rule states a decision, so only the fixed requirements become rules.
-/// `auto` is a deferral: its tools are named instead, and the policy consults
-/// the evaluator for them after every authored rule has had its say.
+/// Its membership is fixed and versioned, so the default is a shorthand for
+/// "this policy, for every member" and is expanded here. The expansion splits:
+/// a rule states a decision, so only the fixed requirements become rules, while
+/// `auto` is a deferral and its members are named instead for the policy to
+/// consult the evaluator about — after every authored rule has had its say.
 struct AgentToolsetProjection {
     rules: Vec<PermissionRule>,
-    auto_tools: Vec<String>,
+    deferred_members: Vec<String>,
 }
 
 fn agent_toolset_permission_rules(
     toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
 ) -> AgentToolsetProjection {
     use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
-    let mut auto_tools = Vec::new();
+    let mut deferred_members = Vec::new();
     let fixed_behavior = |policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
         if !policy.enabled {
             return Some(ToolPermissionBehavior::Deny);
@@ -192,7 +193,7 @@ fn agent_toolset_permission_rules(
                     }
                     match fixed_behavior(policy) {
                         Some(behavior) => rules.push(rule(name.to_string(), behavior)),
-                        None => auto_tools.push(name.to_string()),
+                        None => deferred_members.push(name.to_string()),
                     }
                 }
                 for entry in toolset
@@ -202,7 +203,7 @@ fn agent_toolset_permission_rules(
                 {
                     match fixed_behavior(entry.policy) {
                         Some(behavior) => rules.push(rule(entry.name.clone(), behavior)),
-                        None => auto_tools.push(entry.name.clone()),
+                        None => deferred_members.push(entry.name.clone()),
                     }
                 }
             }
@@ -211,7 +212,10 @@ fn agent_toolset_permission_rules(
             ToolsetSource::Mcp { .. } => {}
         }
     }
-    AgentToolsetProjection { rules, auto_tools }
+    AgentToolsetProjection {
+        rules,
+        deferred_members,
+    }
 }
 
 pub(crate) fn effective_policy_with_toolsets(
@@ -229,7 +233,7 @@ pub(crate) fn effective_policy_with_toolsets(
     resolved.rules = rules;
     RuleBasedToolPermissionPolicy::new(resolved)
         .with_mcp_toolsets(toolsets)
-        .with_auto_tools(projection.auto_tools)
+        .with_deferred_members(projection.deferred_members)
         // The tools an `auto` call may run unattended: this host owns the tool
         // catalogue, so it states the observing set once instead of the policy
         // crate keeping a second copy of anyone's tool names.

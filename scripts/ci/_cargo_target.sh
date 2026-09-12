@@ -11,6 +11,18 @@ awaken_configure_cargo_target() {
   fi
 }
 
+# Kani's driver reads its goto artifacts from `<target>/kani/debug`, so it
+# assumes Cargo's build directory sits inside the target directory. A developer
+# or CI that separates them (`build.build-dir`, common when intermediates live
+# on another disk) otherwise makes a valid compilation end in a bare ENOENT.
+#
+# This lives beside the target-directory authority rather than in whichever
+# caller happened to need it first, so the batch runner and a person at a
+# terminal share one expression instead of two copies that can drift.
+awaken_configure_kani_driver_target() {
+  export CARGO_BUILD_BUILD_DIR="${CARGO_TARGET_DIR%/}/kani"
+}
+
 awaken_cargo_target_self_test() {
   local first_root="/tmp/awaken-worktree-a"
   local second_root="/tmp/awaken-worktree-b"

@@ -794,3 +794,103 @@ fn the_default_evaluator_allows_only_observing_tools_and_never_denies() {
         "an unconfigured evaluator names no safe tool"
     );
 }
+
+#[tokio::test]
+async fn a_disabled_tool_is_denied_before_the_evaluator_is_ever_consulted() {
+    // The one gap that pointed at fail-open. "Disabled" and "auto" are judged in
+    // two places — the host decides which members become rules, and this policy
+    // decides which calls reach the evaluator — so nothing but a test keeps the
+    // two agreeing. If either drifts, a tool the author switched OFF becomes a
+    // tool the platform may switch back on.
+    //
+    // Cause/effect graph: C1 the resolved policy is disabled; C2 its permission
+    // is `auto`; C3 the evaluator would allow. E1 Deny, and the evaluator is
+    // never asked — proved by an evaluator that panics if consulted.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | X1 | T | T | T | E1 Deny, evaluator untouched |
+    // | X2 | T | F(always_allow) | * | E1 Deny — disabled outranks allow too |
+    #[derive(Debug)]
+    struct NeverAsk;
+    impl AutoPermissionEvaluator for NeverAsk {
+        fn evaluate(&self, call: &ToolCall) -> AutoDecision {
+            panic!(
+                "the evaluator must not be consulted for the disabled tool {}",
+                call.tool_id
+            );
+        }
+    }
+
+    for (rule, permission) in [
+        ("X1", ToolPermissionRequirement::Auto),
+        ("X2", ToolPermissionRequirement::AlwaysAllow),
+    ] {
+        let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+            .with_mcp_toolsets(&[awaken_runtime_contract::agent_bindings::ToolsetPolicy {
+                source: awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp {
+                    server_name: "context".into(),
+                },
+                default: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+                    enabled: false,
+                    permission,
+                },
+                overrides: Vec::new(),
+            }])
+            .with_auto_evaluator(std::sync::Arc::new(NeverAsk));
+        assert!(
+            matches!(
+                policy.evaluate(&auto_call()).await,
+                ToolPermissionVerdict::Deny { .. }
+            ),
+            "{rule}: a disabled tool is denied without consulting the evaluator"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_closed_toolset_deferral_and_an_open_toolset_auto_behave_identically() {
+    // The two deferral paths (named closed members vs per-call open resolution)
+    // must produce the same decision for the same evaluator verdict, or the
+    // authored meaning of `auto` would depend on which toolset a tool came from.
+    //
+    // | Rule | path | evaluator | Effect |
+    // |---|---|---|---|
+    // | P1 | closed (named member) | allow | allow |
+    // | P2 | open (resolved per call) | allow | allow |
+    // | P3 | closed (named member) | indeterminate | ask |
+    // | P4 | open (resolved per call) | indeterminate | ask |
+    for (decision, expect_allow) in [
+        (AutoDecision::Allow, true),
+        (AutoDecision::Indeterminate, false),
+    ] {
+        let closed = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+            .with_deferred_members(["bash".to_string()])
+            .with_auto_evaluator(std::sync::Arc::new(FixedAuto(decision)));
+        let closed_call = ToolCall {
+            tool_id: "bash".into(),
+            call_id: "c".into(),
+            arguments: json!({}),
+        };
+        let open = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+            .with_mcp_toolsets(&[mcp_toolset(ToolPermissionRequirement::Auto)])
+            .with_auto_evaluator(std::sync::Arc::new(FixedAuto(decision)));
+
+        for (label, verdict) in [
+            ("closed", closed.evaluate(&closed_call).await),
+            ("open", open.evaluate(&auto_call()).await),
+        ] {
+            if expect_allow {
+                assert!(
+                    matches!(verdict, ToolPermissionVerdict::Allow),
+                    "{label} path under {decision:?}"
+                );
+            } else {
+                assert!(
+                    matches!(verdict, ToolPermissionVerdict::RequireConfirmation { .. }),
+                    "{label} path under {decision:?}"
+                );
+            }
+        }
+    }
+}

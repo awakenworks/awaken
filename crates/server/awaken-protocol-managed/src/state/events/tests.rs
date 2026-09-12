@@ -3111,6 +3111,8 @@ async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() 
             content: vec![ContentBlock::text("result")],
             is_error: Some(false),
         },
+        // A result is not a call, so it carries no call identity of its own.
+        source_tool_call_id: None,
     };
     let mut first_result = vec![result()];
     state
@@ -11510,19 +11512,33 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         .list_events(&completed_session.id, None, None, false)
         .unwrap()
         .data;
+    // O5/E5 asserts the occurrence, not a permission the transcript cannot
+    // establish: once the disposition resolves, the call projects exactly once
+    // and is no longer awaiting a decision. Whether it was permitted comes from
+    // the recorded gate decision, which this fixture does not commit.
     assert_eq!(
         completed_events
             .iter()
             .filter(|event| matches!(
                 event.kind,
                 OutboundKind::AgentToolUse {
-                    evaluated_permission: Some(EvaluatedPermission::Allow),
+                    evaluated_permission: None,
                     ..
                 }
             ))
             .count(),
         1,
-        "O5/E5 resolved call projects allow once"
+        "O5/E5 resolved call projects once, no longer awaiting"
+    );
+    assert!(
+        !completed_events.iter().any(|event| matches!(
+            event.kind,
+            OutboundKind::AgentToolUse {
+                evaluated_permission: Some(EvaluatedPermission::Ask),
+                ..
+            }
+        )),
+        "O5/E5 a resolved call is not reported as awaiting a decision"
     );
     assert_eq!(
         completed_events

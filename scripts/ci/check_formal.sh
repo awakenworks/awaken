@@ -331,11 +331,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
         return "$result"
       fi
     fi
-    # C1 Cargo has an independent build-dir (user/CI configuration); E1 Kani's
-    # driver still reads target/kani/debug artifacts. Keep compiler and driver
-    # in that one authored tree; otherwise valid compilation ends in ENOENT.
-    if CARGO_BUILD_BUILD_DIR="${CARGO_TARGET_DIR%/}/kani" \
-      run_with_deadline "$kani_batch_timeout_seconds" \
+    # The driver's build-directory requirement is owned by
+    # `awaken_configure_kani_driver_target`; scripts/ci/kani.sh applies the same
+    # one for a person invoking a harness directly.
+    awaken_configure_kani_driver_target
+    if run_with_deadline "$kani_batch_timeout_seconds" \
         cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"; then
       return 0
     else
