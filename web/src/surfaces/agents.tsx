@@ -73,6 +73,9 @@ export default function AgentsSurface() {
         <Button variant="ghost" onClick={() => nav(`/w/${wsId}/assistant`)}>
           <Sparkles /> {app.t("Ask Assistant", "询问助手")}
         </Button>
+        <Button variant="ghost" onClick={() => nav(`/w/${wsId}/quickstart`)}>
+          {app.t("Quickstart", "快速开始")}
+        </Button>
         <Button variant="primary" onClick={() => nav(`/w/${wsId}/agents/new`)}>
           <Plus /> {app.t("New agent", "新建 Agent")}
         </Button>

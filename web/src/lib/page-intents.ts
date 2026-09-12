@@ -18,6 +18,14 @@ export const TOP_LEVEL_PAGE_INTENTS: Record<string, PageIntent> = {
     outcome: "Start with the first readiness item that needs attention.",
     outcomeZh: "从第一个“需要处理”的就绪项开始。",
   },
+  quickstart: {
+    title: "Start a new Agent",
+    titleZh: "开始一个新 Agent",
+    description: "Describe the Agent you want, or pick a starting point. You land in the editor with a draft; nothing runs or is published until you review it.",
+    descriptionZh: "描述你想要的 Agent，或选择一个起点。你会进入编辑器并得到一份草稿；未经你审阅不会运行或发布。",
+    outcome: "Pick the starting point closest to the work, then finish naming, model, environment, and the first task.",
+    outcomeZh: "选择与目标工作最接近的起点，然后完成命名、模型、运行环境与首次任务。",
+  },
   agents: {
     title: "Create, adopt, or connect an Agent",
     titleZh: "创建、采用或接入 Agent",

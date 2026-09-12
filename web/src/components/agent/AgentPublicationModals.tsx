@@ -3,12 +3,17 @@ import { InlineNotice, Button, Card } from "@awaken/ui";
 import type { AgentConfig, AgentToolsetMemberCap, InputBinding, PluginCap, RuntimeCap } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Modal } from "../ui";
+import type { OutcomeDraft } from "../../lib/session-outcome";
 import ConfigDiff from "./ConfigDiff";
 import PublicationSnapshotSummary from "./PublicationSnapshotSummary";
 
 export interface QuickRunIntent {
   environmentId: string;
   task: string;
+  /** The optional Outcome the operator opted into. Creation sends it as a
+   * second initial event, so it is reviewed here alongside the first task
+   * rather than arriving unseen in the new Session. */
+  outcome?: OutcomeDraft;
 }
 
 export default function AgentPublicationModals({
@@ -86,6 +91,21 @@ export default function AgentPublicationModals({
             <div><strong>{app.t("Environment", "Environment")}</strong> · <code>{quickRunIntent.environmentId}</code></div>
             <div style={{ marginTop: 8 }}><strong>{app.t("First task", "首次任务")}</strong></div>
             <p style={{ whiteSpace: "pre-wrap" }}>{quickRunIntent.task}</p>
+            {quickRunIntent.outcome && (
+              <>
+                <div style={{ marginTop: 8 }}>
+                  <strong>{app.t("Outcome", "结果标准")}</strong>{" "}
+                  <span className="mut">
+                    {app.t(
+                      `at most ${quickRunIntent.outcome.maxIterations} revisions`,
+                      `最多 ${quickRunIntent.outcome.maxIterations} 轮修订`,
+                    )}
+                  </span>
+                </div>
+                <p style={{ whiteSpace: "pre-wrap" }}>{quickRunIntent.outcome.description}</p>
+                <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{quickRunIntent.outcome.rubric}</p>
+              </>
+            )}
           </Card>
           <div style={{ marginTop: 14 }}>
             <strong>{app.t("Agent configuration changes", "Agent 配置差异")}</strong>

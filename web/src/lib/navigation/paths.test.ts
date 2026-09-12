@@ -39,6 +39,7 @@ describe("console information architecture", () => {
       "author",
       "author",
       "author",
+      "author",
       "run",
       "run",
       "run",
@@ -167,7 +168,7 @@ describe("console information architecture", () => {
     expect(hosted.find((item) => item.key === "models")?.label).toBe("Models");
     expect(hosted.find((item) => item.key === "models")?.group).toBe("author");
     expect(local.map((item) => item.path)).toEqual(NAV.map((item) => item.path));
-    expect(hosted.map((item) => item.key)).toEqual(["overview", "agents", "models", "settings"]);
+    expect(hosted.map((item) => item.key)).toEqual(["overview", "quickstart", "agents", "models", "settings"]);
     expect(local.some((item) => item.key === "credentials")).toBe(false);
     expect(hosted.some((item) => item.key === "credentials")).toBe(false);
 
@@ -177,7 +178,7 @@ describe("console information architecture", () => {
 
     const { surfaces: _surfaces, ...oldResponse } = capabilities(false, false, false);
     expect(visibleNavigation(oldResponse as ConfigCapabilitiesView).map((item) => item.key))
-      .toEqual(["overview", "agents", "models", "settings"]);
+      .toEqual(["overview", "quickstart", "agents", "models", "settings"]);
   });
 
   /**

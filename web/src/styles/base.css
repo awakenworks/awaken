@@ -908,6 +908,73 @@ a {
 }
 .template-card span { color: var(--fg2); font-size: 11.5px; line-height: 1.45; }
 .quickstart-step { padding: 14px; }
+.quickstart-progress {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+.quickstart-progress-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-top-width: 2px;
+  border-radius: var(--r-md);
+  color: var(--fg2);
+  background: var(--surface);
+  font-size: 11.5px;
+  line-height: 1.3;
+  min-width: 0;
+}
+.quickstart-progress-step[data-state="done"] { border-top-color: var(--ok); color: var(--fg); }
+.quickstart-progress-step[data-state="current"] {
+  border-top-color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--fg);
+}
+.quickstart-progress-index {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  font-size: 10px;
+  font-weight: 700;
+}
+.quickstart-progress-step[data-state="done"] .quickstart-progress-index { background: var(--ok-tint); color: var(--ok); }
+.quickstart-progress-step[data-state="current"] .quickstart-progress-index { background: var(--accent); color: var(--accent-on); }
+.quickstart-progress-label { min-width: 0; overflow-wrap: anywhere; }
+.quickstart-landing { display: flex; flex-direction: column; gap: 14px; }
+.quickstart-landing-intro { max-width: 62ch; }
+.quickstart-landing-form { display: flex; flex-direction: column; gap: 8px; }
+.quickstart-landing-form .row { justify-content: flex-end; }
+.quickstart-outcome-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.quickstart-code {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
 .quickstart-summary {
   position: sticky;
   top: 72px;
@@ -1466,6 +1533,7 @@ a {
   .quickstart-layout { grid-template-columns: 1fr; }
   .quickstart-summary { position: static; }
   .template-grid { grid-template-columns: 1fr; }
+  .quickstart-progress { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .editor-rail {
     flex-wrap: wrap;
   }
