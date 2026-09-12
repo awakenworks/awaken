@@ -12,52 +12,6 @@ importers:
         specifier: 15.0.4
         version: 15.0.4
 
-  e2e:
-    dependencies:
-      '@a2a-js/sdk':
-        specifier: ^0.3.13
-        version: 0.3.14(@bufbuild/protobuf@2.14.0)(express@5.2.1)
-      '@ag-ui/client':
-        specifier: ^0.0.57
-        version: 0.0.57
-      '@ai-sdk/react':
-        specifier: ^4.0.54
-        version: 4.0.100(react@19.2.7)(zod@4.4.3)
-      '@anthropic-ai/sdk':
-        specifier: 0.125.0
-        version: 0.125.0(zod@4.4.3)
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.29.0
-        version: 1.30.0(zod@4.4.3)
-      ai:
-        specifier: ^7.0.11
-        version: 7.0.36(zod@4.4.3)
-      ajv:
-        specifier: ^8.20.0
-        version: 8.20.0
-      standardwebhooks:
-        specifier: ^1.0.0
-        version: 1.0.0
-    devDependencies:
-      '@agentclientprotocol/claude-agent-acp':
-        specifier: 0.69.0
-        version: 0.69.0(@anthropic-ai/sdk@0.125.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))
-      '@anthropic-ai/claude-agent-sdk':
-        specifier: 0.3.232
-        version: 0.3.232(@anthropic-ai/sdk@0.125.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(zod@4.4.3)
-      '@types/node':
-        specifier: 22.18.11
-        version: 22.18.11
-      cross-env:
-        specifier: 7.0.3
-        version: 7.0.3
-      tsx:
-        specifier: 4.20.6
-        version: 4.20.6
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-
   packages/managed-sdk-oracle:
     dependencies:
       '@anthropic-ai/sdk-beta-resources-legacy':

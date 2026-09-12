@@ -388,6 +388,12 @@ def k8s_container_gate_errors(gate: str) -> list[str]:
     return errors
 
 
+def e2e_lock_owner_errors(pnpm_lock: str) -> list[str]:
+    if re.search(r"^  e2e:$", pnpm_lock, re.MULTILINE):
+        return ["E2E dependencies have a duplicate pnpm importer beside package-lock.json"]
+    return []
+
+
 def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     """Require one exact-SHA workflow to execute the canonical full gate."""
 
@@ -471,6 +477,8 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
         errors.append("release workflow must reuse the canonical quality workflow exactly once")
     if "check-all.sh" in release or "check-rust.sh --full" in release:
         errors.append("release workflow duplicates the canonical quality workflow")
+    if release.count("npm ci --prefix e2e") != 1 or "pnpm -C e2e install" in release:
+        errors.append("release workflow must use the canonical E2E npm lock exactly once")
 
     gate_owners = sorted(
         relative
@@ -831,6 +839,7 @@ def validate(root: Path) -> list[str]:
             }
         )
     )
+    errors.extend(e2e_lock_owner_errors((root / "pnpm-lock.yaml").read_text(encoding="utf-8")))
     return errors
 
 
@@ -1274,7 +1283,26 @@ def self_test() -> None:
         for path in (ROOT / ".github" / "workflows").glob("*.yml")
     }
     assert not workflow_gate_errors(workflows), "W1"
+    # W12 lock-owner table: C4 root pnpm importers exclude E2E => the reviewed
+    # npm lock is its sole dependency source. A duplicate importer is rejected
+    # even if release happens to install via npm today.
+    pnpm_lock = (ROOT / "pnpm-lock.yaml").read_text(encoding="utf-8")
+    assert not e2e_lock_owner_errors(pnpm_lock), "W12a single E2E lock owner"
+    assert e2e_lock_owner_errors(pnpm_lock.replace("importers:\n", "importers:\n  e2e:\n", 1)), "W12b duplicate importer"
     quality = workflows[QUALITY_WORKFLOW]
+    # W12 dependency-owner table: C1 quality already installs the exact npm
+    # lock; C2 release uses that same lock once; C3 no pnpm E2E install remains.
+    # W12a C1+C2+C3 => one dependency tree. W12b !C2 or !C3 => reject a
+    # missing or parallel release tree before native Session tests can run.
+    release = workflows[RELEASE_WORKFLOW]
+    for broken in (
+        release.replace("npm ci --prefix e2e", "pnpm -C e2e install --frozen-lockfile", 1),
+        release.replace("npm ci --prefix e2e", "true", 1),
+        release.replace("npm ci --prefix e2e", "npm ci --prefix e2e\n          npm ci --prefix e2e", 1),
+    ):
+        changed = dict(workflows)
+        changed[RELEASE_WORKFLOW] = broken
+        assert any("canonical E2E npm lock" in error for error in workflow_gate_errors(changed)), "W12b"
     # W11 cause/effect table: a portability job is configured; selector is
     # Linux/foreign/absent, invocation count is one/two, job/step is unconditional
     # or skipped. Only Linux + one unconditional call retains real scoped

@@ -103,6 +103,11 @@ jobs:
             > target/test-timings/source.env
       - name: Install repository test dependencies
         run: |
+          # E2E lock decision table: C1 package.json and package-lock.json agree
+          # on the exact official SDK version -> npm ci installs that reviewed
+          # tree. C2 either declaration or resolved lock entry drifts -> npm ci
+          # fails before any E2E or cluster effect. Never repair C2 with npm
+          # install in CI; update the existing lock in the source change.
           pnpm install --frozen-lockfile
           npm ci --prefix e2e
           pnpm -C web exec playwright install chromium
