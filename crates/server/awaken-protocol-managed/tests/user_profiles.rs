@@ -1,6 +1,7 @@
 //! The user-profiles front door over HTTP: create/retrieve/update/list plus the
 //! enrollment_url action, including the metadata-merge (empty-string removes) and
 //! relationship-default semantics the SDK documents.
+mod support;
 
 use std::sync::Arc;
 
@@ -25,7 +26,12 @@ fn app() -> Router {
     user_profiles_router(application, "org_test".into())
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> support::Call<serde_json::Value> {
     call_with_beta(app, method, uri, USER_PROFILES_BETA, body).await
 }
 
@@ -35,7 +41,7 @@ async fn call_with_beta(
     uri: &str,
     beta: &str,
     body: Option<Value>,
-) -> (StatusCode, Value) {
+) -> support::Call<serde_json::Value> {
     let mut b = Request::builder().method(method).uri(uri);
     b = b.header("anthropic-beta", beta);
     let body = match body {
@@ -53,7 +59,7 @@ async fn call_with_beta(
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, value)
+    support::Call::new(status, value)
 }
 
 #[tokio::test]
@@ -73,7 +79,7 @@ async fn beta_capability_selects_one_exact_user_profile_projection() {
     // relationship remain stable.
     let app = app();
     let current = ManagedCapability::UserProfilesCurrent.beta();
-    let (status, created) = call_with_beta(
+    let created = call_with_beta(
         &app,
         "POST",
         "/v1/user_profiles",
@@ -84,8 +90,8 @@ async fn beta_capability_selects_one_exact_user_profile_projection() {
             "external_user_onboarded_at": "2026-09-03T01:02:03Z"
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(created["access_type"], "passthrough");
     assert!(created.get("relationship").is_none());
     assert_eq!(
@@ -94,65 +100,62 @@ async fn beta_capability_selects_one_exact_user_profile_projection() {
     );
     let id = created["id"].as_str().unwrap();
 
-    let (status, legacy) = call(&app, "GET", &format!("/v1/user_profiles/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let legacy = call(&app, "GET", &format!("/v1/user_profiles/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert!(legacy.get("access_type").is_none());
     assert!(legacy.get("external_user_onboarded_at").is_none());
     assert_eq!(legacy["relationship"], "resold");
 
-    let (status, alpha) = call_with_beta(
+    let alpha = call_with_beta(
         &app,
         "POST",
         "/v1/user_profiles",
         current,
         Some(json!({ "access_type": "application", "name": "Alpha" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, by_name) = call_with_beta(
+    .await
+    .expect(StatusCode::OK);
+    let by_name = call_with_beta(
         &app,
         "GET",
         "/v1/user_profiles?order_by=name&order=asc",
         current,
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(by_name["data"][0]["id"], alpha["id"]);
 
-    let (status, _) = call_with_beta(
+    let _ = call_with_beta(
         &app,
         "POST",
         "/v1/user_profiles",
         current,
         Some(json!({ "external_user_onboarded_at": "not-a-timestamp" })),
     )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "invalid timestamp is pre-write"
-    );
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "invalid timestamp is pre-write");
 
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/user_profiles",
         Some(json!({ "access_type": "application" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 
     let combined = format!("{USER_PROFILES_BETA}, {current}");
-    let (status, _) = call_with_beta(
+    let _ = call_with_beta(
         &app,
         "GET",
         &format!("/v1/user_profiles/{id}"),
         &combined,
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 }
 
 // Test design: malformed_user_profile_query_uses_anthropic_error_envelope
@@ -162,9 +165,9 @@ async fn beta_capability_selects_one_exact_user_profile_projection() {
 // JSON error envelope with the rejected field in the diagnostic.
 #[tokio::test]
 async fn malformed_user_profile_query_uses_anthropic_error_envelope() {
-    let (status, body) = call(&app(), "GET", "/v1/user_profiles?order=newest", None).await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let body = call(&app(), "GET", "/v1/user_profiles?order=newest", None)
+        .await
+        .expect(StatusCode::BAD_REQUEST);
     assert_eq!(body["type"], "error");
     assert_eq!(body["error"]["type"], "invalid_request_error");
     assert!(
@@ -172,8 +175,9 @@ async fn malformed_user_profile_query_uses_anthropic_error_envelope() {
             .as_str()
             .is_some_and(|message| message.contains("order"))
     );
-    let (status, body) = call(&app(), "GET", "/v1/user_profiles?order_by=updated_at", None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let body = call(&app(), "GET", "/v1/user_profiles?order_by=updated_at", None)
+        .await
+        .expect(StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["type"], "invalid_request_error");
 }
 
@@ -192,14 +196,14 @@ async fn user_profile_crud_and_metadata_merge() {
     let app = app();
 
     // Create — relationship defaults to `external`, trust_grants is present+empty.
-    let (s, p) = call(
+    let p = call(
         &app,
         "POST",
         "/v1/user_profiles",
         Some(json!({ "external_id": "u-1", "metadata": { "a": "1", "keep": "x" } })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(p["type"], "user_profile");
     assert_eq!(p["relationship"], "external");
     assert_eq!(p["external_id"], "u-1");
@@ -208,13 +212,14 @@ async fn user_profile_crud_and_metadata_merge() {
     assert!(id.starts_with("uprof_"));
 
     // Retrieve.
-    let (s, got) = call(&app, "GET", &format!("/v1/user_profiles/{id}"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let got = call(&app, "GET", &format!("/v1/user_profiles/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(got["id"], id);
 
     // Update — replace name + relationship, merge metadata (delete `a` via "",
     // add `b`, keep `keep`).
-    let (s, up) = call(
+    let up = call(
         &app,
         "POST",
         &format!("/v1/user_profiles/{id}"),
@@ -225,8 +230,8 @@ async fn user_profile_crud_and_metadata_merge() {
             "trust_grants": { "calendar": { "status": "pending" } }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(up["name"], "Acme");
     assert_eq!(up["relationship"], "resold");
     assert_eq!(up["trust_grants"]["calendar"]["status"], "pending");
@@ -238,8 +243,9 @@ async fn user_profile_crud_and_metadata_merge() {
     );
 
     // List — one full page, our profile present.
-    let (s, page) = call(&app, "GET", "/v1/user_profiles", None).await;
-    assert_eq!(s, StatusCode::OK);
+    let page = call(&app, "GET", "/v1/user_profiles", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(page.get("has_more").is_none());
     assert!(page["next_page"].is_null());
     let ids: Vec<&str> = page["data"]
@@ -251,14 +257,14 @@ async fn user_profile_crud_and_metadata_merge() {
     assert_eq!(ids, vec![id.as_str()]);
 
     // Enrollment URL.
-    let (s, enr) = call(
+    let enr = call(
         &app,
         "POST",
         &format!("/v1/user_profiles/{id}/enrollment_url"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(enr["type"], "enrollment_url");
     assert!(enr["url"].as_str().unwrap().starts_with("/enroll/"));
     assert!(
@@ -275,8 +281,9 @@ async fn user_profile_crud_and_metadata_merge() {
             "/v1/user_profiles/uprof_missing/enrollment_url".to_string(),
         ),
     ] {
-        let (s, _) = call(&app, method, &path, None).await;
-        assert_eq!(s, StatusCode::NOT_FOUND, "{method} {path}");
+        let _ = call(&app, method, &path, None)
+            .await
+            .expect_for(StatusCode::NOT_FOUND, "expected status");
     }
 }
 
@@ -285,14 +292,14 @@ async fn over_long_fields_are_rejected() {
     // Decision rule L1: name/external_id length >255 -> 400 before application
     // mutation. The adjacent CRUD rule owns the <=255 success combinations.
     let app = app();
-    let (s, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/user_profiles",
         Some(json!({ "name": "x".repeat(256) })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -302,19 +309,20 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
     // E3 terminal next_page=null. R1 C3=absent -> E1; R2 C3=cursor -> E2+E3.
     let app = app();
     for i in 0..3 {
-        let (s, _) = call(
+        let _ = call(
             &app,
             "POST",
             "/v1/user_profiles",
             Some(json!({ "external_id": format!("u-{i}") })),
         )
-        .await;
-        assert_eq!(s, StatusCode::OK);
+        .await
+        .expect(StatusCode::OK);
     }
 
     // First page of 2 → more remain, next_page names the last row of the page.
-    let (status, p1) = call(&app, "GET", "/v1/user_profiles?limit=2", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let p1 = call(&app, "GET", "/v1/user_profiles?limit=2", None)
+        .await
+        .expect(StatusCode::OK);
     let ids1: Vec<&str> = p1["data"]
         .as_array()
         .unwrap()
@@ -327,14 +335,14 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
 
     // RunResume with `?page=<next_page>` → the remaining row, terminal (next_page null).
     let cursor = p1["next_page"].as_str().unwrap();
-    let (status, p2) = call(
+    let p2 = call(
         &app,
         "GET",
         &format!("/v1/user_profiles?page={cursor}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let ids2: Vec<&str> = p2["data"]
         .as_array()
         .unwrap()

@@ -37,7 +37,7 @@ async fn call(
     method: &str,
     uri: &str,
     scope: Option<&str>,
-) -> (StatusCode, Vec<u8>) {
+) -> support::Call<Vec<u8>> {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
@@ -55,7 +55,7 @@ async fn call(
         .await
         .unwrap()
         .to_vec();
-    (status, bytes)
+    support::Call::new(status, bytes)
 }
 const URI: &str = "/v1/awaken/files/output-capture?scope_id=session";
 
@@ -73,8 +73,12 @@ async fn current_capture_selects_exact_files_without_changing_history_or_downloa
     let router = mounted(files.clone());
     let publisher = resources.artifact_publisher::<()>();
     assert_eq!(
-        serde_json::from_slice::<Value>(&call(&router, "GET", URI, Some("workspace")).await.1)
-            .unwrap(),
+        serde_json::from_slice::<Value>(
+            &call(&router, "GET", URI, Some("workspace"))
+                .await
+                .expect(StatusCode::OK)
+        )
+        .unwrap(),
         json!({"scope_id":"session","capture":null}),
         "R1"
     );
@@ -110,8 +114,9 @@ async fn current_capture_selects_exact_files_without_changing_history_or_downloa
             })
             .await
             .unwrap();
-        let (status, body) = call(&router, "GET", URI, Some("workspace")).await;
-        assert_eq!(status, StatusCode::OK, "R2");
+        let body = call(&router, "GET", URI, Some("workspace"))
+            .await
+            .expect_for(StatusCode::OK, "R2");
         assert_eq!(
             serde_json::from_slice::<Value>(&body).unwrap(),
             json!({"scope_id":"session","capture":{"revision":(index+1).to_string(),"file_ids":[file.id]}}),
@@ -124,8 +129,9 @@ async fn current_capture_selects_exact_files_without_changing_history_or_downloa
                 &format!("/v1/files/{}/content", file.id),
                 Some("workspace")
             )
-            .await,
-            (StatusCode::OK, bytes.to_vec()),
+            .await
+            .expect(StatusCode::OK),
+            bytes.to_vec(),
             "R2 bytes"
         );
     }
@@ -139,20 +145,24 @@ async fn current_capture_selects_exact_files_without_changing_history_or_downloa
             Some("workspace"),
         )
         .await
-        .1,
+        .expect(StatusCode::OK),
     )
     .unwrap();
     assert_eq!(history["data"].as_array().unwrap().len(), 2, "R2 history");
-    let stable = call(&router, "GET", URI, Some("workspace")).await;
+    let stable = call(&router, "GET", URI, Some("workspace"))
+        .await
+        .expect(StatusCode::OK);
     for method in ["POST", "PUT", "DELETE"] {
         assert_eq!(
-            call(&router, method, URI, Some("workspace")).await.0,
+            call(&router, method, URI, Some("workspace")).await.status(),
             StatusCode::METHOD_NOT_ALLOWED,
             "R6"
         );
     }
     assert_eq!(
-        call(&router, "GET", URI, Some("workspace")).await,
+        call(&router, "GET", URI, Some("workspace"))
+            .await
+            .expect(StatusCode::OK),
         stable,
         "R6 unchanged"
     );
@@ -163,8 +173,9 @@ async fn current_capture_selects_exact_files_without_changing_history_or_downloa
             "workspace",
         ),
     ] {
-        let (status, body) = call(&router, "GET", uri, Some(scope)).await;
-        assert_eq!(status, StatusCode::OK, "R5");
+        let body = call(&router, "GET", uri, Some(scope))
+            .await
+            .expect_for(StatusCode::OK, "R5");
         assert!(
             serde_json::from_slice::<Value>(&body).unwrap()["capture"].is_null(),
             "R5"
@@ -178,12 +189,14 @@ async fn current_capture_selects_exact_files_without_changing_history_or_downloa
             Some("workspace")
         )
         .await
-        .0,
+        .status(),
         StatusCode::OK,
         "R3"
     );
     assert_eq!(
-        call(&router, "GET", URI, Some("workspace")).await,
+        call(&router, "GET", URI, Some("workspace"))
+            .await
+            .expect(StatusCode::OK),
         stable,
         "R3 selected tombstone retained"
     );
@@ -195,7 +208,7 @@ async fn current_capture_selects_exact_files_without_changing_history_or_downloa
             Some("workspace")
         )
         .await
-        .0,
+        .status(),
         StatusCode::NOT_FOUND,
         "R3"
     );
@@ -209,8 +222,12 @@ async fn current_capture_selects_exact_files_without_changing_history_or_downloa
         .await
         .unwrap();
     assert_eq!(
-        serde_json::from_slice::<Value>(&call(&router, "GET", URI, Some("workspace")).await.1)
-            .unwrap(),
+        serde_json::from_slice::<Value>(
+            &call(&router, "GET", URI, Some("workspace"))
+                .await
+                .expect(StatusCode::OK)
+        )
+        .unwrap(),
         json!({"scope_id":"session","capture":{"revision":"4","file_ids":[]}}),
         "R4"
     );
@@ -324,19 +341,15 @@ async fn capture_read_rejects_missing_scope_bad_queries_outages_and_corrupt_evid
             "unknown_query" => "/v1/awaken/files/output-capture?scope_id=session&extra=true",
             _ => URI,
         };
-        let (status, body) = call(&router, "GET", uri, scope).await;
         let expected = match cause {
             "exact" => 200,
             "missing_workspace" | "empty_workspace" => 404,
             "missing_query" | "empty_query" | "duplicate_query" | "unknown_query" => 400,
             _ => 503,
         };
-        assert_eq!(
-            status.as_u16(),
-            expected,
-            "{cause}: {}",
-            String::from_utf8_lossy(&body)
-        );
+        let body = call(&router, "GET", uri, scope)
+            .await
+            .expect_for(StatusCode::from_u16(expected).unwrap(), cause);
         assert_eq!(
             catalog.reads.load(Ordering::SeqCst),
             usize::from(expected == 200 || expected == 503),

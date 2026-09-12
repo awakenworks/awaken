@@ -42,7 +42,7 @@ async fn raw_call(
     method: &str,
     uri: &str,
     body: serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
+) -> support::Call<serde_json::Value> {
     let req = Request::builder()
         .method(method)
         .uri(uri)
@@ -61,7 +61,7 @@ async fn raw_call(
     } else {
         serde_json::from_slice(&bytes).unwrap()
     };
-    (status, json)
+    support::Call::new(status, json)
 }
 
 async fn json_call(
@@ -70,9 +70,9 @@ async fn json_call(
     uri: &str,
     body: serde_json::Value,
 ) -> serde_json::Value {
-    let (status, json) = Box::pin(raw_call(app, method, uri, body)).await;
-    assert_eq!(status, StatusCode::OK, "{method} {uri}: {json}");
-    json
+    Box::pin(raw_call(app, method, uri, body))
+        .await
+        .expect_for(StatusCode::OK, &format!("{method} {uri}"))
 }
 
 fn types(list: &serde_json::Value) -> Vec<String> {
@@ -1487,14 +1487,13 @@ async fn archiving_commits_a_terminal_event_and_fences_writes() {
     );
 
     // A write to the archived session is 409 read-only, in the error envelope.
-    let (status, body) = raw_call(
+    let body = raw_call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "again" }] }] }),
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    .await.expect(StatusCode::CONFLICT);
     assert_eq!(body["error"]["type"], "invalid_request_error");
 
     // Re-archive is idempotent: still terminated, and no second terminal event.

@@ -458,8 +458,9 @@ async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
             )))
             .with_session_repo(repo.clone());
         let app = router(std::sync::Arc::new(state));
-        let (status, _) = call(&app, "POST", "/v1/sessions", Some(request)).await;
-        assert_eq!(status, expected, "{rule}");
+        let _ = call(&app, "POST", "/v1/sessions", Some(request))
+            .await
+            .expect_for(expected, "expected status");
         if expected == StatusCode::BAD_REQUEST {
             assert!(prepared.lock().unwrap().is_empty(), "{rule}");
             assert_eq!(
@@ -1539,21 +1540,23 @@ async fn workspace_inference_geo_policy_is_rechecked_before_create_and_each_run(
         "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
     });
 
-    let (status, error) = call(&app, "POST", "/v1/sessions", Some(request.clone())).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "C1: {error}");
+    let _error = call(&app, "POST", "/v1/sessions", Some(request.clone()))
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "C1");
     assert!(runtime.prepared.lock().unwrap().is_empty(), "C1");
 
     policy
         .allow
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let (status, session) = call(&app, "POST", "/v1/sessions", Some(request)).await;
-    assert_eq!(status, StatusCode::OK, "C2: {session}");
+    let session = call(&app, "POST", "/v1/sessions", Some(request))
+        .await
+        .expect_for(StatusCode::OK, "C2");
     let session_id = session["id"].as_str().unwrap();
 
     policy
         .allow
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    let (status, error) = call(
+    let _error = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/events"),
@@ -1564,8 +1567,8 @@ async fn workspace_inference_geo_policy_is_rechecked_before_create_and_each_run(
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "C3: {error}");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "C3");
     assert_eq!(
         policy.checkpoints.lock().unwrap().as_slice(),
         [
@@ -2044,9 +2047,15 @@ impl awaken_session_contract::McpAttachmentRealizer for AcceptingFake {
     }
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let (status, _, value) = call_with_headers(app, method, uri, body, &[]).await;
-    (status, value)
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> support::Call<serde_json::Value> {
+    call_with_headers(app, method, uri, body, &[])
+        .await
+        .map(|(_headers, body)| body)
 }
 
 async fn settle_coordinated_user_run_activity(
@@ -2092,7 +2101,7 @@ async fn call_with_headers(
     uri: &str,
     mut body: Option<Value>,
     headers: &[(&str, &str)],
-) -> (StatusCode, axum::http::HeaderMap, Value) {
+) -> support::Call<(axum::http::HeaderMap, Value)> {
     // Resource tests are orthogonal to Environment selection but still exercise
     // the exact SDK request: every create sends an explicit Environment.
     if method == "POST" && uri == "/v1/sessions" {
@@ -2118,7 +2127,7 @@ async fn call_with_headers(
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, headers, value)
+    support::Call::new(status, (headers, value))
 }
 
 #[tokio::test]
@@ -2135,15 +2144,14 @@ async fn session_projects_exact_published_client_tool_contract() {
         .with_config_source(std::sync::Arc::new(AgentWithClientTool));
     let app = router(std::sync::Arc::new(state));
 
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "client-tool-agent"})),
     )
-    .await;
-
-    assert_eq!(status, StatusCode::OK, "{session}");
+    .await
+    .expect_for(StatusCode::OK, "expected status");
     let lookup = session["agent"]["tools"]
         .as_array()
         .and_then(|tools| tools.iter().find(|tool| tool["name"] == "lookup"))
@@ -2236,14 +2244,14 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         .with_vaults(vaults)
         .with_session_repo(repo.clone());
     let app = router(std::sync::Arc::new(state));
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "integrated"})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{session}");
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs");
     // The immutable transport and policy sets are one causal integration
     // authority. Session inheritance must preserve exactly one typed policy
@@ -2369,7 +2377,7 @@ async fn session_mcp_override_replaces_the_published_set() {
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
         .with_session_repo(repo.clone());
     let app = router(std::sync::Arc::new(state));
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -2386,8 +2394,8 @@ async fn session_mcp_override_replaces_the_published_set() {
             }
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(prepared.lock().unwrap().len(), 1);
     assert_eq!(session["agent"]["mcp_servers"].as_array().unwrap().len(), 1);
     assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs-alias");
@@ -2411,8 +2419,9 @@ async fn app_with_session() -> (Router, String) {
             .with_vaults(vaults)
             .with_resource_registry(resource_registry()),
     ));
-    let (s, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
-    assert_eq!(s, StatusCode::OK);
+    let session = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
+        .await
+        .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap().to_string();
     (app, id)
 }
@@ -2426,7 +2435,7 @@ async fn create_time_resources_are_backfilled_and_addressable() {
         ManagedState::new(AcceptingFake::default()).with_resource_registry(resource_registry()),
     ));
 
-    let (s, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -2438,8 +2447,8 @@ async fn create_time_resources_are_backfilled_and_addressable() {
             ]
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap().to_string();
 
     // The created session echoes its create-time mounts in SDK-decodable shape.
@@ -2460,18 +2469,19 @@ async fn create_time_resources_are_backfilled_and_addressable() {
 
     // Both are listable; only the official File/Repository variants are
     // individually addressable by a Session Resource id.
-    let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let listed = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(listed["data"].as_array().unwrap().len(), 2);
     let rid = res[0]["id"].as_str().unwrap();
-    let (s, got) = call(
+    let got = call(
         &app,
         "GET",
         &format!("/v1/sessions/{id}/resources/{rid}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(got["type"], "file");
 }
 
@@ -2489,7 +2499,7 @@ async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() 
     let app = router(std::sync::Arc::new(
         ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -2503,8 +2513,8 @@ async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() 
             ]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{session}");
+    .await
+    .expect_for(StatusCode::OK, "expected status");
     let paths = session["resources"]
         .as_array()
         .unwrap()
@@ -2557,14 +2567,14 @@ async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limi
             })
         })
         .collect::<Vec<_>>();
-    let (status, accepted) = call(
+    let _accepted = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "a", "resources": resources })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "M1/M3: {accepted}");
+    .await
+    .expect_for(StatusCode::OK, "M1/M3");
     assert_eq!(
         prepared.lock().unwrap().len(),
         1,
@@ -2579,21 +2589,21 @@ async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limi
             })
         })
         .collect::<Vec<_>>();
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "a", "resources": nine })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "M2");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "M2");
     assert_eq!(
         prepared.lock().unwrap().len(),
         1,
         "M2 no Runtime side effect"
     );
 
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -2606,8 +2616,8 @@ async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limi
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "M4");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "M4");
     assert_eq!(
         prepared.lock().unwrap().len(),
         1,
@@ -2621,9 +2631,9 @@ async fn published_agent_resources_are_visible_as_effective_session_inputs() {
         .with_config_source(std::sync::Arc::new(AgentWithResources));
     let app = router(std::sync::Arc::new(state));
 
-    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
-
-    assert_eq!(status, StatusCode::OK);
+    let session = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(session["resources"][0]["type"], "file");
     assert_eq!(session["resources"][0]["file_id"], "file-release");
     assert_eq!(session["resources"][0]["mount_path"], "/mnt/release.txt");
@@ -2655,11 +2665,12 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
     runtime.hold_next_user_run_activation();
     let state = std::sync::Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
-    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
-    assert_eq!(status, StatusCode::OK);
+    let session = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
+        .await
+        .expect(StatusCode::OK);
     let session_id = session["id"].as_str().unwrap().to_owned();
 
-    let (status, body) = call(
+    let _body = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/events"),
@@ -2670,8 +2681,8 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "A1/E1: {body}");
+    .await
+    .expect_for(StatusCode::OK, "A1/E1");
     let application = state.session_application();
     let first_scan = tokio::spawn({
         let application = application.clone();
@@ -2685,8 +2696,9 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
     .await
     .expect("A1 canonical activation was not reached");
 
-    let (status, running) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
-    assert_eq!(status, StatusCode::OK, "A1");
+    let running = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None)
+        .await
+        .expect_for(StatusCode::OK, "A1");
     assert_eq!(running["status"], "running", "A1/E2");
 
     runtime.release_user_run_activation();
@@ -2698,8 +2710,9 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
         .await
         .expect("A2 terminal recovery scan");
     settle_coordinated_user_run_activity(&application, &session_id, "A2/C4").await;
-    let (status, idle) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
-    assert_eq!(status, StatusCode::OK, "A2/E3: {idle}");
+    let idle = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None)
+        .await
+        .expect_for(StatusCode::OK, "A2/E3");
     assert_eq!(idle["status"], "idle", "A2/E3");
 }
 
@@ -2738,17 +2751,17 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
         std::sync::Arc::new(ManagedState::new(runtime.clone()).with_config_source(source.clone()));
     let app = router(state.clone());
 
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "lifecycle" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "L1");
+    .await
+    .expect_for(StatusCode::OK, "L1");
     let session_id = session["id"].as_str().unwrap();
 
-    let (status, body) = call(
+    let _body = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/events"),
@@ -2759,8 +2772,8 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "L2 admitted receipt: {body}");
+    .await
+    .expect_for(StatusCode::OK, "L2 admitted receipt");
     let application = state.session_application();
     let first_scan = tokio::spawn({
         let application = application.clone();
@@ -2795,16 +2808,16 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
         "L2/E2"
     );
 
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "lifecycle" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "L3");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "L3");
 
-    let (status, body) = call(
+    let _body = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/events"),
@@ -2815,8 +2828,8 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "L4: {body}");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "L4");
 }
 
 #[tokio::test]
@@ -2835,7 +2848,7 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
         .with_resource_registry(resource_registry());
     let app = router(std::sync::Arc::new(state));
 
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -2848,9 +2861,8 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
             }]
         })),
     )
-    .await;
-
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(session["resources"].as_array().unwrap().len(), 3);
     assert_eq!(session["resources"][0]["memory_store_id"], "session-memory");
     assert_eq!(session["resources"][0]["access"], "read_only");
@@ -2894,7 +2906,9 @@ async fn resource_config_publication_only_affects_later_sessions() {
     };
 
     assert_eq!(
-        call(&app, "POST", "/v1/sessions", Some(request())).await.0,
+        call(&app, "POST", "/v1/sessions", Some(request()))
+            .await
+            .status(),
         StatusCode::OK
     );
     catalog
@@ -2911,7 +2925,9 @@ async fn resource_config_publication_only_affects_later_sessions() {
         })
         .expect("publish MemoryStore config V2");
     assert_eq!(
-        call(&app, "POST", "/v1/sessions", Some(request())).await.0,
+        call(&app, "POST", "/v1/sessions", Some(request()))
+            .await
+            .status(),
         StatusCode::OK
     );
 
@@ -3333,7 +3349,7 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
             .with_session_repo(repository.clone()),
     );
     let app = router(state.clone());
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -3346,8 +3362,8 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "T1 create: {session}");
+    .await
+    .expect_for(StatusCode::OK, "T1 create");
     let session_id = session["id"].as_str().unwrap();
     let persisted = repository.get(session_id).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository {
@@ -3481,7 +3497,7 @@ async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
     let prepared = runtime.prepared.clone();
     let app = router(std::sync::Arc::new(ManagedState::new(runtime)));
 
-    let (status, error) = call(
+    let _error = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -3493,9 +3509,8 @@ async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
             ]
         })),
     )
-    .await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "expected status");
     assert!(prepared.lock().unwrap().is_empty());
 }
 
@@ -3526,7 +3541,7 @@ async fn invalid_repository_path_preflights_the_whole_create_before_resource_eff
         .with_credential_material_ingress(credentials.clone());
     let app = router(std::sync::Arc::new(state));
 
-    let (status, error) = call(
+    let error = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -3544,9 +3559,7 @@ async fn invalid_repository_path_preflights_the_whole_create_before_resource_eff
             ]
         })),
     )
-    .await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R1/E1: {error}");
+    .await.expect_for(StatusCode::BAD_REQUEST, "R1/E1");
     assert!(error.to_string().contains("/repo"), "R1/E1: {error}");
     assert_eq!(
         credentials.writes.load(std::sync::atomic::Ordering::SeqCst),
@@ -3573,20 +3586,21 @@ async fn invalid_repository_path_preflights_the_whole_create_before_resource_eff
 async fn file_resource_attaches_to_a_live_session() {
     let (app, id) = app_with_session().await;
 
-    let (s, resource) = call(
+    let resource = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/resources"),
         Some(json!({ "type": "file", "file_id": "file_1", "mount_path": "/workspace/data.csv" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(resource["type"], "file");
     assert!(resource["id"].is_string(), "the mount is assigned an id");
 
     // It now shows up in the session's resource listing.
-    let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let listed = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(listed["data"].as_array().unwrap().len(), 1);
 }
 
@@ -3924,12 +3938,13 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
             .with_resource_registry(resource_registry()),
     );
     let app = router(state.clone());
-    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
-    assert_eq!(status, StatusCode::OK);
+    let session = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"})))
+        .await
+        .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap();
 
     repo.resource_change_on_next(1);
-    let (status, error) = call(
+    let _error = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/resources"),
@@ -3939,8 +3954,8 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
             "mount_path": "/race.txt"
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "F1: {error}");
+    .await
+    .expect_for(StatusCode::CONFLICT, "F1");
     assert!(
         repo.get(id)
             .await
@@ -3958,7 +3973,7 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
     );
 
     state.reconcile_resource_activations().await;
-    let (status, file) = call(
+    let file = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/resources"),
@@ -3968,19 +3983,19 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
             "mount_path": "/delete-race.txt"
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "prepare F2: {file}");
+    .await
+    .expect_for(StatusCode::OK, "prepare F2");
     let resource_id = file["id"].as_str().unwrap();
 
     repo.metadata_change_on_next(1, "concurrent", "winner");
-    let (status, deleted) = call(
+    let _deleted = call(
         &app,
         "DELETE",
         &format!("/v1/sessions/{id}/resources/{resource_id}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "F2/E2: {deleted}");
+    .await
+    .expect_for(StatusCode::OK, "F2/E2");
     let durable = repo.get(id).await.unwrap();
     assert_eq!(
         durable.metadata.get("concurrent").map(String::as_str),
@@ -4008,12 +4023,13 @@ async fn github_repository_live_attach_is_rejected_without_runtime_effect() {
     let app = router(std::sync::Arc::new(
         ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
-    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
-    assert_eq!(status, StatusCode::OK);
+    let session = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"})))
+        .await
+        .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap();
     let before = applied.lock().unwrap().len();
 
-    let (s, resource) = call(
+    let _resource = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/resources"),
@@ -4022,12 +4038,13 @@ async fn github_repository_live_attach_is_rejected_without_runtime_effect() {
             "url": "https://github.com/owner/repo"
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "{resource}");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "expected status");
     assert_eq!(applied.lock().unwrap().len(), before);
 
-    let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let listed = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None)
+        .await
+        .expect(StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty());
 }
 
@@ -4038,27 +4055,28 @@ async fn github_repository_live_attach_is_rejected_without_runtime_effect() {
 async fn a_file_resource_can_be_detached_from_a_live_session() {
     let (app, id) = app_with_session().await;
 
-    let (s, resource) = call(
+    let resource = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/resources"),
         Some(json!({ "type": "file", "file_id": "file_1" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let rid = resource["id"].as_str().unwrap().to_string();
 
-    let (s, _) = call(
+    let _ = call(
         &app,
         "DELETE",
         &format!("/v1/sessions/{id}/resources/{rid}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
 
-    let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let listed = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None)
+        .await
+        .expect(StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty());
 }
 
@@ -4084,7 +4102,7 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
             .with_session_repo(sessions.clone())
             .with_resource_registry(catalog.clone()),
     ));
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4096,8 +4114,8 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let session_id = session["id"].as_str().unwrap();
     let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let repository_id = match &sessions
@@ -4114,14 +4132,14 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
         }
         _ => panic!("U1 Repository fixture"),
     };
-    let (status, body) = call(
+    let _body = call(
         &app,
         "DELETE",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "U1/E1: {body}");
+    .await
+    .expect_for(StatusCode::OK, "U1/E1");
     let durable = sessions.get(session_id).await.unwrap();
     assert!(durable.resources.active.inputs().is_empty(), "U1/E1");
     assert!(
@@ -4159,7 +4177,7 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
             .with_session_repo(sessions.clone())
             .with_resource_registry(catalog.clone()),
     ));
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4171,8 +4189,8 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let session_id = session["id"].as_str().unwrap();
     let repository_id = match &sessions
         .get(session_id)
@@ -4188,15 +4206,15 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
         }
         _ => panic!("U2 Repository fixture"),
     };
-    let (status, _, body) = call_with_headers(
+    let _body = call_with_headers(
         &app,
         "PUT",
         &format!("/v1/awaken/sessions/{session_id}/resources"),
         Some(json!({ "resources": [] })),
         &[("idempotency-key", "repository-omission")],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "U2/E1: {body}");
+    .await
+    .expect_for(StatusCode::OK, "U2/E1");
     let durable = sessions.get(session_id).await.unwrap();
     assert!(durable.resources.active.inputs().is_empty(), "U2/E1");
     assert!(
@@ -4242,8 +4260,9 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     let app = router(std::sync::Arc::new(
         ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
-    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
-    assert_eq!(status, StatusCode::OK);
+    let session = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
+        .await
+        .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap();
     let uri = format!("/v1/awaken/sessions/{id}/resources");
     let compatibility_uri = format!("/v1/sessions/{id}/resources");
@@ -4254,28 +4273,24 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
         ]
     });
     let before = applied.lock().unwrap().len();
-    let (status, initial_headers, listed) =
-        call_with_headers(&app, "GET", &compatibility_uri, None, &[]).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "initial Resource manifest: {listed}"
-    );
+    let (initial_headers, _listed) = call_with_headers(&app, "GET", &compatibility_uri, None, &[])
+        .await
+        .expect_for(StatusCode::OK, "initial Resource manifest");
     let initial_etag = initial_headers["etag"].to_str().unwrap().to_string();
     let initial_revision = initial_etag
         .trim_matches('"')
         .parse::<u64>()
         .expect("M1 current Resource ETag");
-    let (status, _, rejected) = call_with_headers(
+    let _rejected = call_with_headers(
         &app,
         "PUT",
         &compatibility_uri,
         Some(manifest.clone()),
         &[("idempotency-key", "wrong-protocol-owner")],
     )
-    .await;
-    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "M0: {rejected}");
-    let (status, first_headers, first) = call_with_headers(
+    .await
+    .expect_for(StatusCode::METHOD_NOT_ALLOWED, "M0");
+    let (first_headers, first) = call_with_headers(
         &app,
         "PUT",
         &uri,
@@ -4285,8 +4300,8 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
             ("if-match", initial_etag.as_str()),
         ],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "M1: {first}");
+    .await
+    .expect_for(StatusCode::OK, "M1");
     assert_eq!(first["phase"], "active", "M1/E2");
     assert_eq!(first["resources"].as_array().unwrap().len(), 2, "M1/E2");
     let first_etag = first_headers["etag"].to_str().unwrap().to_string();
@@ -4297,7 +4312,7 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     );
     assert_eq!(applied.lock().unwrap().len(), before + 1, "M1/E2");
 
-    let (status, replay_headers, replay) = call_with_headers(
+    let (replay_headers, _replay) = call_with_headers(
         &app,
         "PUT",
         &uri,
@@ -4307,22 +4322,22 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
             ("if-match", initial_etag.as_str()),
         ],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "M2: {replay}");
+    .await
+    .expect_for(StatusCode::OK, "M2");
     assert_eq!(replay_headers["etag"], first_etag, "M2/E3");
     assert_eq!(applied.lock().unwrap().len(), before + 1, "M2/E3");
 
-    let (status, _, mismatch) = call_with_headers(
+    let _mismatch = call_with_headers(
         &app,
         "PUT",
         &uri,
         Some(json!({ "resources": [] })),
         &[("idempotency-key", "manifest-1")],
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "M3/E4: {mismatch}");
+    .await
+    .expect_for(StatusCode::CONFLICT, "M3/E4");
 
-    let (status, _, stale) = call_with_headers(
+    let _stale = call_with_headers(
         &app,
         "PUT",
         &uri,
@@ -4332,10 +4347,10 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
             ("if-match", initial_etag.as_str()),
         ],
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "M5/E4: {stale}");
+    .await
+    .expect_for(StatusCode::CONFLICT, "M5/E4");
 
-    let (status, _, collision) = call_with_headers(
+    let _collision = call_with_headers(
         &app,
         "PUT",
         &uri,
@@ -4345,13 +4360,13 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
         ] })),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "M4/E5: {collision}");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "M4/E5");
     assert_eq!(applied.lock().unwrap().len(), before + 1, "M4/E5");
 
-    let (status, final_headers, listed) =
-        call_with_headers(&app, "GET", &compatibility_uri, None, &[]).await;
-    assert_eq!(status, StatusCode::OK);
+    let (final_headers, listed) = call_with_headers(&app, "GET", &compatibility_uri, None, &[])
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(final_headers["etag"], first_etag, "M1/E1");
     assert_eq!(listed["data"].as_array().unwrap().len(), 2, "M1/E1");
 }
@@ -4524,11 +4539,12 @@ async fn failed_manifest_realization_keeps_active_and_exposes_durable_desired() 
             .with_session_repo(repo.clone())
             .with_resource_registry(resource_registry()),
     ));
-    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
-    assert_eq!(status, StatusCode::OK);
+    let session = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
+        .await
+        .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap();
     let uri = format!("/v1/awaken/sessions/{id}/resources");
-    let (status, error) = call(
+    let _error = call(
         &app,
         "PUT",
         &uri,
@@ -4536,14 +4552,15 @@ async fn failed_manifest_realization_keeps_active_and_exposes_durable_desired() 
             { "type": "file", "file_id": "accepted", "mount_path": "/accepted" }
         ] })),
     )
-    .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "F2: {error}");
+    .await
+    .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "F2");
     let durable = repo.get(id).await.unwrap();
     assert!(durable.resources.active.inputs().is_empty(), "F2 active");
     assert!(durable.resources.pending.is_some(), "F2 desired");
 
-    let (status, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let listed = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None)
+        .await
+        .expect(StatusCode::OK);
     let resources = listed["data"].as_array().unwrap();
     assert_eq!(resources.len(), 1, "F2 desired is queryable");
     assert_eq!(resources[0]["mount_path"], "/accepted", "F2 desired");
@@ -4573,7 +4590,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
             .with_vaults(vaults)
             .with_resource_registry(resource_registry()),
     ));
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4588,12 +4605,12 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap();
     let before = repo.get(id).await.unwrap();
     let old = before.resources.desired().inputs()[0].clone();
-    let (status, response) = call(
+    let response = call(
         &app,
         "PUT",
         &format!("/v1/awaken/sessions/{id}/resources"),
@@ -4604,8 +4621,8 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
             "checkout": { "type": "branch", "name": "main" }
         }] })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "K1: {response}");
+    .await
+    .expect_for(StatusCode::OK, "K1");
     let after = repo.get(id).await.unwrap();
     let retained = &after.resources.desired().inputs()[0];
     assert_eq!(retained.binding_id, old.binding_id, "K1/E1");
@@ -4619,20 +4636,21 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
 async fn memory_store_cannot_attach_to_a_running_session() {
     let (app, id) = app_with_session().await;
 
-    let (s, err) = call(
+    let err = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/resources"),
         Some(json!({ "type": "memory_store", "memory_store_id": "memstore_1" })),
     )
-    .await;
+    .await
     // Managed Agents contract: memory stores are create-time only.
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    .expect(StatusCode::BAD_REQUEST);
     assert_eq!(err["error"]["type"], "invalid_request_error");
 
     // Nothing was mounted — the listing stays empty.
-    let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let listed = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None)
+        .await
+        .expect(StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty());
 }
 
@@ -4640,10 +4658,12 @@ async fn memory_store_cannot_attach_to_a_running_session() {
 async fn getting_or_deleting_an_unknown_session_resource_is_404() {
     let (app, id) = app_with_session().await;
     let uri = format!("/v1/sessions/{id}/resources/res_does_not_exist");
-    let (get_status, _) = call(&app, "GET", &uri, None).await;
-    assert_eq!(get_status, StatusCode::NOT_FOUND);
-    let (del_status, _) = call(&app, "DELETE", &uri, None).await;
-    assert_eq!(del_status, StatusCode::NOT_FOUND);
+    let _ = call(&app, "GET", &uri, None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let _ = call(&app, "DELETE", &uri, None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
 }
 #[tokio::test]
 async fn repository_authorization_fails_closed_without_vault_or_existing_binding() {
@@ -4662,7 +4682,7 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
         ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
 
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4675,11 +4695,11 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
     assert!(prepared.lock().unwrap().is_empty());
 
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4691,19 +4711,19 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let session_id = session["id"].as_str().unwrap();
     let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let applied_before = applied.lock().unwrap().len();
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
         Some(json!({"authorization_token": "must-not-enter"})), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
     assert_eq!(applied.lock().unwrap().len(), applied_before);
 }
 
@@ -4749,7 +4769,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
             .with_resource_registry(resource_registry()),
     ));
 
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4762,9 +4782,8 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
             }]
         })),
     )
-    .await;
-
-    assert_eq!(status, StatusCode::OK, "{session}");
+    .await
+    .expect_for(StatusCode::OK, "expected status");
     let session_id = session["id"].as_str().unwrap();
     assert_eq!(
         prepared.lock().unwrap().len(),
@@ -4821,18 +4840,14 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let applied_before = applied.lock().unwrap().len();
     sessions.unavailable_on_next(1);
-    let (crash_status, crash) = call(
+    let crash = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
         Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(
-        crash_status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "B3: {crash}"
-    );
+    .await
+    .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "B3");
     assert!(!crash.to_string().contains("rotated-secret"), "B3 no echo");
     assert_eq!(
         applied.lock().unwrap().len(),
@@ -4872,14 +4887,14 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
 
     let stranded_revision = stranded.revision;
     let stranded_resources = stranded.resources.clone();
-    let (different_status, different) = call(
+    let different = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
         Some(json!({"authorization_token": "different-secret"})), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(different_status, StatusCode::BAD_REQUEST, "B4: {different}");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "B4");
     assert!(
         !different.to_string().contains("different-secret"),
         "B4 no echo"
@@ -4899,14 +4914,14 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         "B4 Vault"
     );
 
-    let (rotate_status, rotated) = call(
+    let rotated = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
         Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(rotate_status, StatusCode::OK, "B5: {rotated}");
+    .await
+    .expect_for(StatusCode::OK, "B5");
     assert!(
         !rotated.to_string().contains("rotated-secret"),
         "B5 no echo"
@@ -5069,10 +5084,11 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
     );
     assert!(runtime.prepared.lock().unwrap().is_empty(), "Q1/E2");
 
-    let (status, body) = response.unwrap_or_else(|_| {
-        panic!("Q1/E1 profiled create waited on the stalled physical realization")
-    });
-    assert_eq!(status, StatusCode::ACCEPTED, "Q1/E1: {status} {body}");
+    let body = response
+        .unwrap_or_else(|_| {
+            panic!("Q1/E1 profiled create waited on the stalled physical realization")
+        })
+        .expect_for(StatusCode::ACCEPTED, "Q1/E1");
     assert_eq!(body["id"], "profiled-durable-accept", "Q1/E1");
 
     let durable_before_replay = sessions.get("profiled-durable-accept").await.unwrap();
@@ -5082,8 +5098,11 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
     )
     .await
     .unwrap_or_else(|_| panic!("Q2/E3 exact receipt replay waited on realization"));
-    assert_eq!(replay.0, StatusCode::ACCEPTED, "Q2/E3: {}", replay.1);
-    assert_eq!(replay.1, body, "Q2/E3 same operation identity/projection");
+    assert_eq!(
+        replay.expect(StatusCode::ACCEPTED),
+        body,
+        "Q2/E3 same operation identity/projection"
+    );
     assert_eq!(
         sessions.get("profiled-durable-accept").await.unwrap(),
         durable_before_replay,
@@ -5115,22 +5134,23 @@ async fn execution_evidence_http_reads_the_owned_frozen_root_without_mutation() 
         "mode": "work_unit",
         "agent_id": "coder"
     });
-    let (status, created) = call(&owned, "POST", "/v1/awaken/sessions", Some(request)).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "H1 create: {created}");
+    let _created = call(&owned, "POST", "/v1/awaken/sessions", Some(request))
+        .await
+        .expect_for(StatusCode::ACCEPTED, "H1 create");
     let before = sessions
         .get("profiled-execution-evidence")
         .await
         .expect("durable Session root");
     let baseline = before.frozen_baseline().expect("frozen baseline");
 
-    let (status, evidence) = call(
+    let evidence = call(
         &owned,
         "GET",
         "/v1/awaken/sessions/profiled-execution-evidence/execution-evidence",
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "H1/E1: {evidence}");
+    .await
+    .expect_for(StatusCode::OK, "H1/E1");
     assert_eq!(evidence["session_id"], before.session_id, "H1/E1");
     assert_eq!(evidence["session_revision"], before.revision.0, "H1/E1");
     assert_eq!(evidence["agent_id"], baseline.agent_id, "H1/E1");
@@ -5142,14 +5162,14 @@ async fn execution_evidence_http_reads_the_owned_frozen_root_without_mutation() 
     assert_eq!(evidence["runs"], json!([]), "H1/E1");
 
     let foreign = profiled_router(state, "workspace-b");
-    let (status, _) = call(
+    let _ = call(
         &foreign,
         "GET",
         "/v1/awaken/sessions/profiled-execution-evidence/execution-evidence",
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "H2/E2");
+    .await
+    .expect_for(StatusCode::NOT_FOUND, "H2/E2");
     assert_eq!(
         sessions
             .get("profiled-execution-evidence")
@@ -5188,14 +5208,14 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
             .with_resource_registry(resource_registry()),
     );
     let seed_app = profiled_router(seed_state, "default");
-    let (status, body) = call(
+    let _body = call(
         &seed_app,
         "POST",
         "/v1/awaken/sessions",
         Some(request.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "F1 seed: {body}");
+    .await
+    .expect_for(StatusCode::ACCEPTED, "F1 seed");
     let mut failed = seed_sessions
         .get("profiled-failed-replay")
         .await
@@ -5238,9 +5258,9 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
         call(&app, "POST", "/v1/awaken/sessions", Some(request)),
     )
     .await
-    .unwrap_or_else(|_| panic!("F1 replay entered stalled physical realization"));
-    assert_eq!(replay.0, StatusCode::ACCEPTED, "F1/E1: {}", replay.1);
-    assert_eq!(replay.1["id"], "profiled-failed-replay", "F1/E1");
+    .unwrap_or_else(|_| panic!("F1 replay entered stalled physical realization"))
+    .expect_for(StatusCode::ACCEPTED, "F1/E1");
+    assert_eq!(replay["id"], "profiled-failed-replay", "F1/E1");
     assert_eq!(
         sessions.get("profiled-failed-replay").await.unwrap(),
         failed,
@@ -5287,15 +5307,15 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
             "mount_path": "/workspace/repository"
         }]
     });
-    for replay in ["first", "replay"] {
-        let (status, body) = call(
+    for _replay in ["first", "replay"] {
+        let _body = call(
             &app,
             "POST",
             "/v1/awaken/sessions",
             Some(historical_create.clone()),
         )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED, "B1 {replay}: {body}");
+        .await
+        .expect_for(StatusCode::ACCEPTED, "B1");
     }
     let historical_binding = concat!(
         "profiled:profiled-historical-binding:repository:",
@@ -5314,7 +5334,7 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
         historical_binding,
         "B1 exact former generated identity"
     );
-    let (status, released) = call(
+    let _released = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-historical-binding/release",
@@ -5328,11 +5348,11 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
             }
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "B2: {released}");
+    .await
+    .expect_for(StatusCode::OK, "B2");
     assert_eq!(runtime.published.lock().unwrap().len(), 1, "B2");
 
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/awaken/sessions",
@@ -5347,8 +5367,8 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "B4");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "B4");
     assert!(
         matches!(
             sessions.get("profiled-empty-binding").await,
@@ -5395,8 +5415,9 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
     let seed_app = profiled_router(seed_state.clone(), "default");
     let mut current_wire = legacy_wire.clone();
     current_wire["repositories"][0]["mount_path"] = json!("/workspace/repository");
-    let (status, body) = call(&seed_app, "POST", "/v1/awaken/sessions", Some(current_wire)).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "H1 seed: {body}");
+    let _body = call(&seed_app, "POST", "/v1/awaken/sessions", Some(current_wire))
+        .await
+        .expect_for(StatusCode::ACCEPTED, "H1 seed");
     let mut historical =
         settle_profiled_session(&seed_state, "default", "profiled-legacy-path-replay").await;
     let (mut inputs, skills) = historical.resources.active.clone().into_parts();
@@ -5439,8 +5460,9 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
             .with_resource_registry(target_registry.clone()),
     );
     let app = profiled_router(state, "default");
-    let (status, replayed) = call(&app, "POST", "/v1/awaken/sessions", Some(legacy_wire)).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "H1/E1: {replayed}");
+    let _replayed = call(&app, "POST", "/v1/awaken/sessions", Some(legacy_wire))
+        .await
+        .expect_for(StatusCode::ACCEPTED, "H1/E1");
     assert_eq!(
         sessions
             .get("profiled-legacy-path-replay")
@@ -5504,14 +5526,14 @@ async fn profiled_release_projects_one_durable_repository_publication() {
             }]
         })
     };
-    let (status, created) = call(
+    let _created = call(
         &app,
         "POST",
         "/v1/awaken/sessions",
         Some(create_with_repository("profiled-publication")),
     )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "P2 create: {created}");
+    .await
+    .expect_for(StatusCode::ACCEPTED, "P2 create");
     persist_profiled_publication_source(&state, &sessions, "default", "profiled-publication").await;
 
     let request = json!({
@@ -5523,14 +5545,14 @@ async fn profiled_release_projects_one_durable_repository_publication() {
             }
         }
     });
-    let (status, first) = call(
+    let first = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-publication/release",
         Some(request.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "P2/E2: {first}");
+    .await
+    .expect_for(StatusCode::OK, "P2/E2");
     // P7 archive with publication records one real timestamp in the durable
     // root; exact HTTP replay below preserves it with the publication receipt.
     let archived = sessions
@@ -5568,48 +5590,48 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     );
     assert_eq!(runtime.published.lock().unwrap().len(), 1, "P2/E2");
 
-    let (status, replay) = call(
+    let replay = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-publication/release",
         Some(request.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "P3/E3: {replay}");
+    .await
+    .expect_for(StatusCode::OK, "P3/E3");
     assert_eq!(replay, first, "P3/E3 exact response");
     assert_eq!(runtime.published.lock().unwrap().len(), 1, "P3/E3");
 
     let mut conflict = request.clone();
     conflict["repository_publication"]["expectation"]["commit"] =
         json!("abcdef0123456789abcdef0123456789abcdef01");
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-publication/release",
         Some(conflict),
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "P6/E6");
+    .await
+    .expect_for(StatusCode::CONFLICT, "P6/E6");
 
     let foreign = profiled_router(state.clone(), "other-workspace");
-    let (status, _) = call(
+    let _ = call(
         &foreign,
         "POST",
         "/v1/awaken/sessions/profiled-publication/release",
         Some(request),
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "P4/E4");
+    .await
+    .expect_for(StatusCode::NOT_FOUND, "P4/E4");
 
-    let (status, created) = call(
+    let _created = call(
         &app,
         "POST",
         "/v1/awaken/sessions",
         Some(create_with_repository("profiled-publication-wrong-binding")),
     )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "P5 create: {created}");
-    let (status, _) = call(
+    .await
+    .expect_for(StatusCode::ACCEPTED, "P5 create");
+    let _ = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-publication-wrong-binding/release",
@@ -5623,10 +5645,10 @@ async fn profiled_release_projects_one_durable_repository_publication() {
             }
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "P5/E5");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "P5/E5");
 
-    let (status, created) = call(
+    let _created = call(
         &app,
         "POST",
         "/v1/awaken/sessions",
@@ -5636,17 +5658,17 @@ async fn profiled_release_projects_one_durable_repository_publication() {
             "agent_id": "coder"
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "P1 create: {created}");
+    .await
+    .expect_for(StatusCode::ACCEPTED, "P1 create");
     settle_profiled_session(&state, "default", "profiled-legacy-release").await;
-    let (status, released) = call(
+    let released = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-legacy-release/release",
         Some(json!({})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "P1/E1: {released}");
+    .await
+    .expect_for(StatusCode::OK, "P1/E1");
     assert!(released.get("repository_publication").is_none(), "P1/E1");
     assert_eq!(
         runtime.published.lock().unwrap().len(),
@@ -5709,7 +5731,7 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
     );
     let app = profiled_router(state.clone(), "default");
     for session_id in ["profiled-run-command", "profiled-run-other"] {
-        let (status, created) = call(
+        let _created = call(
             &app,
             "POST",
             "/v1/awaken/sessions",
@@ -5719,15 +5741,16 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
                 "agent_id": "coder"
             })),
         )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED, "seed {session_id}: {created}");
+        .await
+        .expect_for(StatusCode::ACCEPTED, "seed");
         settle_profiled_session(&state, "default", session_id).await;
     }
 
     let primary = profiled_run_body("work-unit-42", "work-unit-42", "configured");
     let run_uri = "/v1/awaken/sessions/profiled-run-command/runs";
-    let (status, first) = call(&app, "POST", run_uri, Some(primary.clone())).await;
-    assert_eq!(status, StatusCode::OK, "R1: {first}");
+    let first = call(&app, "POST", run_uri, Some(primary.clone()))
+        .await
+        .expect_for(StatusCode::OK, "R1");
     assert_eq!(
         first,
         json!({"session_id": "profiled-run-command", "run_id": "work-unit-42"}),
@@ -5791,36 +5814,41 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
         "R1"
     );
 
-    let (status, replay) = call(&app, "POST", run_uri, Some(primary.clone())).await;
-    assert_eq!(status, StatusCode::OK, "R2: {replay}");
+    let replay = call(&app, "POST", run_uri, Some(primary.clone()))
+        .await
+        .expect_for(StatusCode::OK, "R2");
     assert_eq!(replay, first, "R2/E2 stable receipt");
     assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 1, "R2/E2");
     assert_eq!(runtime.activated_runs.lock().unwrap().len(), 1, "R2/E2");
 
     let mut changed_requirements = primary.clone();
     changed_requirements["execution_requirements"]["tool_capability_narrowing"] = json!("deny_all");
-    let (status, _) = call(&app, "POST", run_uri, Some(changed_requirements)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 requirements");
+    let _ = call(&app, "POST", run_uri, Some(changed_requirements))
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "R3 requirements");
     let mut changed_agent = primary.clone();
     changed_agent["agent_id"] = json!("other-agent");
-    let (status, _) = call(&app, "POST", run_uri, Some(changed_agent)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 Agent");
+    let _ = call(&app, "POST", run_uri, Some(changed_agent))
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "R3 Agent");
     let mut changed_operation = primary.clone();
     changed_operation["operation_id"] = json!("another-operation");
-    let (status, _) = call(&app, "POST", run_uri, Some(changed_operation)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 operation");
+    let _ = call(&app, "POST", run_uri, Some(changed_operation))
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "R3 operation");
     let mut changed_message = primary.clone();
     changed_message["messages"][2]["content"][0]["text"] = json!("different task");
-    let (status, _) = call(&app, "POST", run_uri, Some(changed_message)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 Message");
-    let (status, _) = call(
+    let _ = call(&app, "POST", run_uri, Some(changed_message))
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "R3 Message");
+    let _ = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-run-other/runs",
         Some(primary),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 Session");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "R3 Session");
     assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 1, "R3/E3");
 
     let repair = profiled_run_body(
@@ -5828,8 +5856,9 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
         "work-unit-42-output-repair-1",
         "deny_all",
     );
-    let (status, repair_receipt) = call(&app, "POST", run_uri, Some(repair)).await;
-    assert_eq!(status, StatusCode::OK, "R4: {repair_receipt}");
+    let _repair_receipt = call(&app, "POST", run_uri, Some(repair))
+        .await
+        .expect_for(StatusCode::OK, "R4");
     let repair_command = runtime
         .reserved_runs
         .lock()
@@ -5884,7 +5913,7 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
     );
     let app = router(state.clone()).merge(profiled_router(state.clone(), "default"));
     let session_id = "profiled-run-projection";
-    let (status, created) = call(
+    let _created = call(
         &app,
         "POST",
         "/v1/awaken/sessions",
@@ -5894,8 +5923,8 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
             "agent_id": "coder"
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "R10 seed: {created}");
+    .await
+    .expect_for(StatusCode::ACCEPTED, "R10 seed");
     settle_profiled_session(&state, "default", session_id).await;
 
     let run_uri = format!("/v1/awaken/sessions/{session_id}/runs");
@@ -5913,13 +5942,16 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
     .await
     .expect("R10a canonical activation was not reached");
 
-    let (status, running) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
-    assert_eq!(status, StatusCode::OK, "R10a/E1: {running}");
+    let running = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None)
+        .await
+        .expect_for(StatusCode::OK, "R10a/E1");
     assert_eq!(running["status"], "running", "R10a/E1");
 
     runtime.release_user_run_activation();
-    let (status, receipt) = submission.await.expect("R10 Run submission task");
-    assert_eq!(status, StatusCode::OK, "R10b receipt: {receipt}");
+    let receipt = submission
+        .await
+        .expect("R10 Run submission task")
+        .expect_for(StatusCode::OK, "R10b receipt");
     assert_eq!(
         receipt,
         json!({"session_id": session_id, "run_id": "work-unit-45"}),
@@ -5928,8 +5960,9 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
     let application = state.session_application();
     settle_coordinated_user_run_activity(&application, session_id, "R10b/C3").await;
 
-    let (status, idle) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
-    assert_eq!(status, StatusCode::OK, "R10b/E2: {idle}");
+    let idle = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None)
+        .await
+        .expect_for(StatusCode::OK, "R10b/E2");
     assert_eq!(idle["status"], "idle", "R10b/E2");
 
     let response = app
@@ -5966,8 +5999,9 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
         "R10b/E3 committed order:\n{sse}"
     );
 
-    let (status, replay) = call(&app, "POST", &run_uri, Some(request)).await;
-    assert_eq!(status, StatusCode::OK, "R2c/E4: {replay}");
+    let replay = call(&app, "POST", &run_uri, Some(request))
+        .await
+        .expect_for(StatusCode::OK, "R2c/E4");
     assert_eq!(replay, receipt, "R2c/E4 stable completed receipt");
     assert!(
         application
@@ -5979,14 +6013,14 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
         "R2c/E4 completed replay starts no activity"
     );
 
-    let (status, events) = call(
+    let events = call(
         &app,
         "GET",
         &format!("/v1/sessions/{session_id}/events"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "R10c events: {events}");
+    .await
+    .expect_for(StatusCode::OK, "R10c events");
     let public_tool_ids = events["data"]
         .as_array()
         .expect("R10c Managed Event page")
@@ -6006,14 +6040,14 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
         .collect::<std::collections::BTreeSet<_>>();
     assert!(!public_tool_ids.is_empty(), "R10c/C5");
 
-    let (status, evidence) = call(
+    let evidence = call(
         &app,
         "GET",
         &format!("/v1/awaken/sessions/{session_id}/execution-evidence"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "R10c evidence: {evidence}");
+    .await
+    .expect_for(StatusCode::OK, "R10c evidence");
     let evidence_tool_ids = evidence["runs"]
         .as_array()
         .expect("R10c execution-evidence Runs")
@@ -6063,7 +6097,7 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
         "profiled-run-reservation-unavailable",
         "profiled-run-activation-unavailable",
     ] {
-        let (status, body) = call(
+        let _body = call(
             &app,
             "POST",
             "/v1/awaken/sessions",
@@ -6073,20 +6107,20 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
                 "agent_id": "coder"
             })),
         )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED, "seed {session_id}: {body}");
+        .await
+        .expect_for(StatusCode::ACCEPTED, "seed");
         settle_profiled_session(&state, "default", session_id).await;
     }
 
     let request = profiled_run_body("work-unit-43", "work-unit-43", "configured");
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-run-missing/runs",
         Some(request.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "R5 missing");
+    .await
+    .expect_for(StatusCode::NOT_FOUND, "R5 missing");
     assert!(
         matches!(
             sessions.get("profiled-run-missing").await,
@@ -6096,98 +6130,101 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
     );
 
     let foreign = profiled_router(state.clone(), "other-workspace");
-    let (status, _) = call(
+    let _ = call(
         &foreign,
         "POST",
         "/v1/awaken/sessions/profiled-run-errors/runs",
         Some(request.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "R5 foreign");
+    .await
+    .expect_for(StatusCode::NOT_FOUND, "R5 foreign");
 
     let managed_app = router(state.clone());
-    let (status, managed) = call(
+    let managed = call(
         &managed_app,
         "POST",
         "/v1/sessions",
         Some(with_session_environment(json!({"agent": "coder"}))),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "seed Managed target: {managed}");
+    .await
+    .expect_for(StatusCode::OK, "seed Managed target");
     let managed_id = managed["id"].as_str().expect("Managed Session id");
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         &format!("/v1/awaken/sessions/{managed_id}/runs"),
         Some(request.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "R5 Managed target");
+    .await
+    .expect_for(StatusCode::NOT_FOUND, "R5 Managed target");
 
     runtime
         .fail_next_reservation_unavailable
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-run-reservation-unavailable/runs",
         Some(request.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R6 reservation");
+    .await
+    .expect_for(StatusCode::SERVICE_UNAVAILABLE, "R6 reservation");
 
     let activation_request = profiled_run_body("work-unit-44", "work-unit-44", "configured");
     runtime
         .fail_next_activation_unavailable
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let activation_uri = "/v1/awaken/sessions/profiled-run-activation-unavailable/runs";
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         activation_uri,
         Some(activation_request.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R6 activation");
-    let (status, recovered) = call(&app, "POST", activation_uri, Some(activation_request)).await;
-    assert_eq!(status, StatusCode::OK, "R2 retry unavailable activation");
+    .await
+    .expect_for(StatusCode::SERVICE_UNAVAILABLE, "R6 activation");
+    let recovered = call(&app, "POST", activation_uri, Some(activation_request))
+        .await
+        .expect_for(StatusCode::OK, "R2 retry unavailable activation");
     assert_eq!(recovered["run_id"], "work-unit-44", "R2");
 
     let mut unknown = request.clone();
     unknown["fallback_to_events"] = json!(true);
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/awaken/sessions/profiled-run-errors/runs",
         Some(unknown),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R7 unknown field");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "R7 unknown field");
 
     let unscoped = awaken_protocol_awaken::profiled_session_run_router(
         awaken_protocol_managed::submit_profiled_session_run,
     )
     .with_state(state);
-    let (status, _) = call(
+    let _ = call(
         &unscoped,
         "POST",
         "/v1/awaken/sessions/profiled-run-errors/runs",
         Some(request.clone()),
     )
-    .await;
+    .await
     // The Workspace is now refused by the extractor, before the handler body,
     // with the same non-disclosing 404 every other tenant-fenced route uses —
     // not a 400 describing the deployment's missing tenancy wiring.
-    assert_eq!(status, StatusCode::NOT_FOUND, "R7 missing Workspace");
+    .expect_for(StatusCode::NOT_FOUND, "R7 missing Workspace");
 
     runtime
         .fail_next_activation_internal
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let error_uri = "/v1/awaken/sessions/profiled-run-errors/runs";
-    let (status, _) = call(&app, "POST", error_uri, Some(request.clone())).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "R7 internal");
-    let (status, recovered) = call(&app, "POST", error_uri, Some(request)).await;
-    assert_eq!(status, StatusCode::OK, "R2 internal response-loss retry");
+    let _status = call(&app, "POST", error_uri, Some(request.clone()))
+        .await
+        .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "R7 internal");
+    let recovered = call(&app, "POST", error_uri, Some(request))
+        .await
+        .expect_for(StatusCode::OK, "R2 internal response-loss retry");
     assert_eq!(recovered["run_id"], "work-unit-43", "R2");
     assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 2, "R2/R6");
     assert_eq!(runtime.activated_runs.lock().unwrap().len(), 2, "R2/R6");

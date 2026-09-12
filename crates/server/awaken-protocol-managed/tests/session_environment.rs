@@ -98,7 +98,12 @@ impl SessionRuntime for AcceptingFake {
     }
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> support::Call<serde_json::Value> {
     let mut b = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(v) => {
@@ -115,7 +120,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, value)
+    support::Call::new(status, value)
 }
 
 async fn app() -> (Router, String) {
@@ -152,19 +157,20 @@ async fn environment_is_pinned_at_creation() {
     let (app, environment_id) = app().await;
 
     // Explicit environment is echoed on the session.
-    let (s, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "a", "environment_id": environment_id })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(session["environment_id"], environment_id);
 
     // Omitting the SDK-required field fails before Session creation.
-    let (s, defaulted) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let defaulted = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
+        .await
+        .expect(StatusCode::BAD_REQUEST);
     assert_eq!(defaulted["error"]["type"], "invalid_request_error");
 }
 
@@ -172,14 +178,14 @@ async fn environment_is_pinned_at_creation() {
 async fn environment_is_immutable_across_update() {
     let (app, environment_id) = app().await;
 
-    let (status, session) = call(
+    let session = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "a", "environment_id": environment_id })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap().to_string();
 
     // Causes: C1 update omits the immutable Environment and supplies a title; C2
@@ -194,30 +200,31 @@ async fn environment_is_immutable_across_update() {
     // |----------------|-------|--------|-------------|-------|
     // | absent         | set   | 200    | env_a       | set   |
     // | env_b          | set   | 400    | env_a       | old   |
-    let (s, renamed) = call(
+    let renamed = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({ "title": "renamed" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK, "C1/E1");
+    .await
+    .expect_for(StatusCode::OK, "C1/E1");
     assert_eq!(renamed["environment_id"], environment_id, "C1/E1");
     assert_eq!(renamed["title"], "renamed", "C1/E1");
 
-    let (s, updated) = call(
+    let updated = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({ "title": "must-not-apply", "environment_id": "env_b" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
     assert_eq!(updated["error"]["type"], "invalid_request_error");
 
     // And a fresh GET still reports the create-time environment.
-    let (s, got) = call(&app, "GET", &format!("/v1/sessions/{id}"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let got = call(&app, "GET", &format!("/v1/sessions/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(got["environment_id"], environment_id);
     assert_eq!(got["title"], "renamed", "C2/E2");
 }

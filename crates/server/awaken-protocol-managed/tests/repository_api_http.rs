@@ -50,7 +50,7 @@ async fn call(
     workspace: Option<&str>,
     key: Option<&str>,
     body: Value,
-) -> (StatusCode, Value) {
+) -> support::Call<serde_json::Value> {
     let mut builder = Request::builder()
         .method(method)
         .uri(path)
@@ -75,7 +75,7 @@ async fn call(
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap())
+    support::Call::new(status, serde_json::from_slice(&bytes).unwrap())
 }
 
 const PATH: &str = "/v1/awaken/repositories";
@@ -86,16 +86,18 @@ fn body() -> Value {
 #[tokio::test]
 async fn committed_response_loss_replays_one_repository_and_workspace_isolation_holds() {
     let (router, _) = setup();
-    let first = call(&router, "POST", PATH, Some("test"), Some("request"), body()).await;
-    assert_eq!(first.0, StatusCode::CREATED, "{first:?}");
+    let first = call(&router, "POST", PATH, Some("test"), Some("request"), body())
+        .await
+        .expect_for(StatusCode::CREATED, "expected status");
     let retry = call(&router, "POST", PATH, Some("test"), Some("request"), body()).await;
     assert_eq!(
-        retry, first,
+        retry.expect(StatusCode::CREATED),
+        first,
         "discarded committed response can be recovered"
     );
-    assert!(first.1.get("creation_request_sha256").is_none());
-    assert_eq!(first.1["config"]["remote_url"], body()["remote_url"]);
-    let id = first.1["id"].as_str().unwrap();
+    assert!(first.get("creation_request_sha256").is_none());
+    assert_eq!(first["config"]["remote_url"], body()["remote_url"]);
+    let id = first["id"].as_str().unwrap();
     let retrieved = call(
         &router,
         "GET",
@@ -105,8 +107,8 @@ async fn committed_response_loss_replays_one_repository_and_workspace_isolation_
         Value::Null,
     )
     .await;
-    assert_eq!(retrieved.1, first.1);
-    let foreign = call(
+    assert_eq!(retrieved.expect(StatusCode::OK), first);
+    let _foreign = call(
         &router,
         "GET",
         &format!("{PATH}/{id}"),
@@ -114,8 +116,8 @@ async fn committed_response_loss_replays_one_repository_and_workspace_isolation_
         None,
         Value::Null,
     )
-    .await;
-    assert_eq!(foreign.0, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
     let second_workspace = call(
         &router,
         "POST",
@@ -124,11 +126,12 @@ async fn committed_response_loss_replays_one_repository_and_workspace_isolation_
         Some("request"),
         body(),
     )
-    .await;
-    assert_eq!(second_workspace.0, StatusCode::CREATED);
-    assert_ne!(second_workspace.1["id"], first.1["id"]);
-    let (status, list) = call(&router, "GET", PATH, Some("test"), None, Value::Null).await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::CREATED);
+    assert_ne!(second_workspace["id"], first["id"]);
+    let list = call(&router, "GET", PATH, Some("test"), None, Value::Null)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(list["data"].as_array().unwrap().len(), 1);
     let mut changed = body();
     changed["initial_branch"] = json!("release");
@@ -140,9 +143,9 @@ async fn committed_response_loss_replays_one_repository_and_workspace_isolation_
         Some("request"),
         changed,
     )
-    .await;
-    assert_eq!(conflict.0, StatusCode::CONFLICT);
-    assert_eq!(conflict.1["error"]["type"], "conflict_error");
+    .await
+    .expect(StatusCode::CONFLICT);
+    assert_eq!(conflict["error"]["type"], "conflict_error");
 }
 
 #[tokio::test]
@@ -152,13 +155,13 @@ async fn authoring_requires_trusted_workspace_key_and_secret_free_body() {
         assert_eq!(
             call(&router, "POST", PATH, workspace, Some("key"), body())
                 .await
-                .0,
+                .status(),
             StatusCode::NOT_FOUND
         );
         assert_eq!(
             call(&router, "GET", PATH, workspace, None, Value::Null)
                 .await
-                .0,
+                .status(),
             StatusCode::NOT_FOUND
         );
     }
@@ -166,7 +169,7 @@ async fn authoring_requires_trusted_workspace_key_and_secret_free_body() {
         assert_eq!(
             call(&router, "POST", PATH, Some("test"), key, body())
                 .await
-                .0,
+                .status(),
             StatusCode::BAD_REQUEST
         );
     }
@@ -181,12 +184,14 @@ async fn authoring_requires_trusted_workspace_key_and_secret_free_body() {
     ] {
         let mut request = body();
         request[field] = value;
-        let response = call(&router, "POST", PATH, Some("test"), Some("key"), request).await;
-        assert_eq!(response.0, StatusCode::BAD_REQUEST, "{field}: {response:?}");
-        assert!(!response.1.to_string().contains("do-not-echo-secret"));
+        let response = call(&router, "POST", PATH, Some("test"), Some("key"), request)
+            .await
+            .expect_for(StatusCode::BAD_REQUEST, "expected status");
+        assert!(!response.to_string().contains("do-not-echo-secret"));
     }
-    let (status, list) = call(&router, "GET", PATH, Some("test"), None, Value::Null).await;
-    assert_eq!(status, StatusCode::OK);
+    let list = call(&router, "GET", PATH, Some("test"), None, Value::Null)
+        .await
+        .expect(StatusCode::OK);
     assert!(list["data"].as_array().unwrap().is_empty());
 }
 
@@ -207,9 +212,9 @@ async fn private_admission_and_outage_are_distinct_and_failed_attempts_do_not_re
             Some("private"),
             request,
         )
-        .await;
-        assert_eq!(result.0, status);
-        assert!(!result.1.to_string().contains("private database location"));
+        .await
+        .expect(status);
+        assert!(!result.to_string().contains("private database location"));
     }
     let mut request = body();
     request["credential_binding"] = json!("github-source");
@@ -222,8 +227,8 @@ async fn private_admission_and_outage_are_distinct_and_failed_attempts_do_not_re
         request,
     )
     .await;
-    assert_eq!(result.0, StatusCode::CREATED);
-    assert_eq!(result.1["config"]["credential_binding"], "github-source");
+    let result = result.expect(StatusCode::CREATED);
+    assert_eq!(result["config"]["credential_binding"], "github-source");
 }
 
 #[tokio::test]
@@ -232,11 +237,12 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
     let (router, resources) = setup();
     let mut ids = Vec::new();
     for key in ["one", "two", "three"] {
-        let result = call(&router, "POST", PATH, Some("test"), Some(key), body()).await;
-        assert_eq!(result.0, StatusCode::CREATED);
-        ids.push(result.1["id"].as_str().unwrap().to_owned());
+        let result = call(&router, "POST", PATH, Some("test"), Some(key), body())
+            .await
+            .expect(StatusCode::CREATED);
+        ids.push(result["id"].as_str().unwrap().to_owned());
     }
-    let (status, page) = call(
+    let page = call(
         &router,
         "GET",
         &format!("{PATH}?limit=2"),
@@ -244,11 +250,11 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
         None,
         Value::Null,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(page["data"].as_array().unwrap().len(), 2);
     let next = page["next_page"].as_str().unwrap();
-    let (status, last) = call(
+    let last = call(
         &router,
         "GET",
         &format!("{PATH}?limit=2&page={next}"),
@@ -256,8 +262,8 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
         None,
         Value::Null,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(last["data"].as_array().unwrap().len(), 1);
     assert!(last["next_page"].is_null());
     resources
@@ -279,13 +285,13 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
             Value::Null
         )
         .await
-        .0,
+        .status(),
         StatusCode::NOT_FOUND
     );
     assert_eq!(
         call(&router, "POST", PATH, Some("test"), Some("one"), body())
             .await
-            .0,
+            .status(),
         StatusCode::CONFLICT
     );
 }

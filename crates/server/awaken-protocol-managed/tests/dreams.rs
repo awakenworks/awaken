@@ -455,44 +455,6 @@ async fn create_rejects_a_supported_but_not_executable_workspace_model() {
     assert!(listed["data"].as_array().unwrap().is_empty(), "D2/E2");
 }
 
-/// One HTTP exchange whose body cannot be read without naming the status it
-/// came with.
-///
-/// The tuple this replaces could be destructured as `let (_, body) = ...`,
-/// which is how a route that had started answering 404 went unnoticed here:
-/// the test read the empty body, then waited for work the failed request never
-/// scheduled, and parked forever. There is no accessor that yields the body
-/// alone, so that shape no longer compiles.
-#[must_use]
-struct Call {
-    status: StatusCode,
-    body: Value,
-}
-
-impl Call {
-    /// Take the body, stating the status it must have arrived with.
-    fn expect(self, status: StatusCode) -> Value {
-        assert_eq!(
-            self.status, status,
-            "unexpected status; body: {}",
-            self.body
-        );
-        self.body
-    }
-
-    /// Take the body, naming the status and the decision-table rule the
-    /// expectation belongs to.
-    fn expect_for(self, status: StatusCode, rule: &str) -> Value {
-        assert_eq!(self.status, status, "{rule}; body: {}", self.body);
-        self.body
-    }
-
-    /// Take the status when the body is not part of the assertion.
-    fn status(self) -> StatusCode {
-        self.status
-    }
-}
-
 /// Every wait in a test states a deadline.
 ///
 /// A wait without one does not fail when the thing it waits for stops
@@ -506,7 +468,12 @@ async fn signaled(what: &str, notify: &Notify) {
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
 }
 
-async fn request(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> Call {
+async fn request(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> support::Call {
     let mut builder = Request::builder().method(method).uri(uri);
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
@@ -523,7 +490,7 @@ async fn request(app: &axum::Router, method: &str, uri: &str, body: Option<Value
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    Call { status, body }
+    support::Call::new(status, body)
 }
 
 async fn wait_for_status(app: &axum::Router, id: &str, expected: &str) -> Value {

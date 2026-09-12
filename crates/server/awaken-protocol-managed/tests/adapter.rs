@@ -42,9 +42,9 @@ async fn json_call(
     uri: &str,
     body: serde_json::Value,
 ) -> serde_json::Value {
-    let (status, json) = Box::pin(json_response(app, method, uri, body)).await;
-    assert_eq!(status, StatusCode::OK, "{method} {uri}: {json}");
-    json
+    Box::pin(json_response(app, method, uri, body))
+        .await
+        .expect_for(StatusCode::OK, &format!("{method} {uri}"))
 }
 
 async fn json_response(
@@ -52,7 +52,7 @@ async fn json_response(
     method: &str,
     uri: &str,
     body: serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
+) -> support::Call<serde_json::Value> {
     let req = Request::builder()
         .method(method)
         .uri(uri)
@@ -67,7 +67,7 @@ async fn json_response(
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-    (status, json)
+    support::Call::new(status, json)
 }
 
 async fn post_events_with_idempotency(
@@ -75,7 +75,7 @@ async fn post_events_with_idempotency(
     uri: &str,
     key: &str,
     body: &serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
+) -> support::Call<serde_json::Value> {
     let request = Request::builder()
         .method("POST")
         .uri(uri)
@@ -87,7 +87,7 @@ async fn post_events_with_idempotency(
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-    (status, body)
+    support::Call::new(status, body)
 }
 
 fn types(list: &serde_json::Value) -> Vec<String> {
@@ -127,7 +127,7 @@ async fn post_session_with_idempotency(
     app: &Router,
     key: Option<&str>,
     title: &str,
-) -> (StatusCode, serde_json::Value) {
+) -> support::Call<serde_json::Value> {
     let mut request = Request::builder()
         .method("POST")
         .uri("/v1/sessions")
@@ -153,7 +153,7 @@ async fn post_session_with_idempotency(
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-    (status, body)
+    support::Call::new(status, body)
 }
 
 #[tokio::test]
@@ -175,8 +175,9 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
             .with_state(state.clone()),
         ),
     );
-    let (_, created) =
-        post_session_with_idempotency(&app, Some("admission-http"), "Admission").await;
+    let created = post_session_with_idempotency(&app, Some("admission-http"), "Admission")
+        .await
+        .expect_for(StatusCode::OK, "/E1");
     let id = created["id"].as_str().unwrap();
     let events = format!("/v1/sessions/{id}/events");
     let close = format!("/v1/awaken/sessions/{id}/event-admissions/close");
@@ -184,12 +185,14 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         {"type":"user.message","content":[{"type":"text","text":"hello"}]},
         {"type":"user.message","content":[{"type":"text","text":"hello"}]}
     ]});
-    let (status, receipt) = post_events_with_idempotency(&app, &close, "closed-key", &body).await;
-    assert_eq!(status, StatusCode::OK, "N1 {receipt}");
+    let receipt = post_events_with_idempotency(&app, &close, "closed-key", &body)
+        .await
+        .expect_for(StatusCode::OK, "N1");
     assert_eq!(receipt["status"], "closed", "N1");
     assert_eq!(receipt["session_id"], id, "N1 exact identity");
-    let (status, late) = post_events_with_idempotency(&app, &events, "closed-key", &body).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "N1 {late}");
+    let late = post_events_with_idempotency(&app, &events, "closed-key", &body)
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "N1");
     assert!(
         late["error"]["message"]
             .as_str()
@@ -197,12 +200,12 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
             .contains("permanently closed"),
         "N1"
     );
-    let (status, accepted) =
-        post_events_with_idempotency(&app, &events, "accepted-key", &body).await;
-    assert_eq!(status, StatusCode::OK, "N2 {accepted}");
-    let (status, resolved) =
-        post_events_with_idempotency(&app, &close, "accepted-key", &body).await;
-    assert_eq!(status, StatusCode::OK, "N2 {resolved}");
+    let accepted = post_events_with_idempotency(&app, &events, "accepted-key", &body)
+        .await
+        .expect_for(StatusCode::OK, "N2");
+    let resolved = post_events_with_idempotency(&app, &close, "accepted-key", &body)
+        .await
+        .expect_for(StatusCode::OK, "N2");
     assert_eq!(resolved["status"], "accepted", "N2");
     // N6 accepted is not executed: an observer needs the exact input event
     // identity before a later Idle can be attributed to this submission.
@@ -229,18 +232,22 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         serde_json::json!([]),
         "N1 no executable events"
     );
-    let (_, replay) = post_events_with_idempotency(&app, &events, "accepted-key", &body).await;
+    let replay = post_events_with_idempotency(&app, &events, "accepted-key", &body)
+        .await
+        .expect_for(StatusCode::OK, "I2 replay succeeds");
     assert_eq!(accepted, replay, "N2 original receipt unchanged");
     let changed = serde_json::json!({"events":[{"type":"user.message","content":[{"type":"text","text":"changed"}]}]});
     assert_eq!(
         post_events_with_idempotency(&app, &close, "closed-key", &changed)
             .await
-            .0,
+            .status(),
         StatusCode::CONFLICT,
         "N3"
     );
     assert_eq!(
-        json_response(&app, "POST", &close, body.clone()).await.0,
+        json_response(&app, "POST", &close, body.clone())
+            .await
+            .status(),
         StatusCode::BAD_REQUEST,
         "N4"
     );
@@ -252,7 +259,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     assert_eq!(
         post_events_with_idempotency(&foreign, &close, "foreign-key", &body)
             .await
-            .0,
+            .status(),
         StatusCode::NOT_FOUND,
         "N5"
     );
@@ -292,8 +299,9 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         ),
     );
     for (key, expected) in [("closed-key", receipt), ("accepted-key", resolved)] {
-        let (status, retained) = post_events_with_idempotency(&cold, &close, key, &body).await;
-        assert_eq!(status, StatusCode::OK, "D1 {retained}");
+        let retained = post_events_with_idempotency(&cold, &close, key, &body)
+            .await
+            .expect_for(StatusCode::OK, "D1");
         assert_eq!(
             retained, expected,
             "D1 immutable proof survives restart and deletion"
@@ -301,13 +309,14 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         assert_eq!(
             post_events_with_idempotency(&cold, &close, key, &changed)
                 .await
-                .0,
+                .status(),
             StatusCode::CONFLICT,
             "D3"
         );
     }
-    let (status, deleted) = post_events_with_idempotency(&cold, &close, "unseen", &body).await;
-    assert_eq!(status, StatusCode::OK, "D2 {deleted}");
+    let deleted = post_events_with_idempotency(&cold, &close, "unseen", &body)
+        .await
+        .expect_for(StatusCode::OK, "D2");
     assert_eq!(deleted["status"], "closed");
     assert_eq!(deleted["proof"], "session_deleted");
     assert!(deleted["deleted_revision"].as_u64().unwrap() > 0);
@@ -315,13 +324,12 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         deleted.get("batch_id").is_none(),
         "no imaginary Event batch"
     );
-    let (late_status, late_body) =
-        post_events_with_idempotency(&cold, &events, "unseen", &body).await;
-    assert_eq!(
-        late_status,
-        StatusCode::BAD_REQUEST,
-        "ordinary admission retains its existing missing-root error: {late_body}"
-    );
+    let late_body = post_events_with_idempotency(&cold, &events, "unseen", &body)
+        .await
+        .expect_for(
+            StatusCode::BAD_REQUEST,
+            "ordinary admission retains its existing missing-root error",
+        );
     assert_eq!(late_body["error"]["message"], "Session was not found");
     let foreign_cold = cold.layer(axum::Extension(awaken_tenancy::WorkspaceScope(
         "foreign-workspace".into(),
@@ -329,7 +337,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     assert_eq!(
         post_events_with_idempotency(&foreign_cold, &close, "accepted-key", &body)
             .await
-            .0,
+            .status(),
         StatusCode::NOT_FOUND,
         "D4"
     );
@@ -352,40 +360,37 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
 #[tokio::test]
 async fn session_create_idempotency_replays_one_canonical_session() {
     let app = router(Arc::new(ManagedState::new(EchoFake::default())));
-    let first = post_session_with_idempotency(&app, Some("design-project-a"), "Project A").await;
-    let replay = post_session_with_idempotency(&app, Some("design-project-a"), "Project A").await;
-    assert_eq!(first.0, StatusCode::OK, "I2 first create succeeds");
-    assert_eq!(replay.0, StatusCode::OK, "I2 replay succeeds");
-    assert_eq!(first.1["id"], replay.1["id"], "I2 identity is stable");
+    let first = post_session_with_idempotency(&app, Some("design-project-a"), "Project A")
+        .await
+        .expect_for(StatusCode::OK, "I2 first create succeeds");
+    let replay = post_session_with_idempotency(&app, Some("design-project-a"), "Project A")
+        .await
+        .expect_for(StatusCode::OK, "I2 replay succeeds");
+    assert_eq!(first["id"], replay["id"], "I2 identity is stable");
 
-    let mismatch = post_session_with_idempotency(&app, Some("design-project-a"), "Changed").await;
-    assert_eq!(
-        mismatch.0,
-        StatusCode::CONFLICT,
-        "I3 changed payload conflicts"
-    );
+    let _mismatch = post_session_with_idempotency(&app, Some("design-project-a"), "Changed")
+        .await
+        .expect_for(StatusCode::CONFLICT, "I3 changed payload conflicts");
 
-    let independent_a = post_session_with_idempotency(&app, None, "ordinary").await;
-    let independent_b = post_session_with_idempotency(&app, None, "ordinary").await;
+    let independent_a = post_session_with_idempotency(&app, None, "ordinary")
+        .await
+        .expect(StatusCode::OK);
+    let independent_b = post_session_with_idempotency(&app, None, "ordinary")
+        .await
+        .expect(StatusCode::OK);
     assert_ne!(
-        independent_a.1["id"], independent_b.1["id"],
+        independent_a["id"], independent_b["id"],
         "I1 preserves ordinary create"
     );
 
-    let invalid = post_session_with_idempotency(&app, Some(""), "invalid").await;
-    assert_eq!(
-        invalid.0,
-        StatusCode::BAD_REQUEST,
-        "I4 rejects an empty key"
-    );
+    let _invalid = post_session_with_idempotency(&app, Some(""), "invalid")
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "I4 rejects an empty key");
     let overlong = "x".repeat(256);
-    let invalid = post_session_with_idempotency(&app, Some(&overlong), "invalid").await;
-    assert_eq!(
-        invalid.0,
-        StatusCode::BAD_REQUEST,
-        "I4 rejects an overlong key"
-    );
-    async fn post_initial(app: &Router) -> (StatusCode, serde_json::Value) {
+    let _invalid = post_session_with_idempotency(&app, Some(&overlong), "invalid")
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "I4 rejects an overlong key");
+    async fn post_initial(app: &Router) -> support::Call<serde_json::Value> {
         let response = app
             .clone()
             .oneshot(
@@ -410,14 +415,16 @@ async fn session_create_idempotency_replays_one_canonical_session() {
             .unwrap();
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap())
+        support::Call::new(status, serde_json::from_slice(&bytes).unwrap())
     }
-    let initial = post_initial(&app).await;
-    let initial_replay = post_initial(&app).await;
-    assert_eq!(initial.0, StatusCode::OK, "I6 first create: {}", initial.1);
-    assert_eq!(initial_replay.0, StatusCode::OK, "I6 replay");
-    assert_eq!(initial.1["id"], initial_replay.1["id"], "I6 identity");
-    assert_eq!(initial.1["status"], "running", "I6 durable batch active");
+    let initial = post_initial(&app)
+        .await
+        .expect_for(StatusCode::OK, "I6 first create");
+    let initial_replay = post_initial(&app)
+        .await
+        .expect_for(StatusCode::OK, "I6 replay");
+    assert_eq!(initial["id"], initial_replay["id"], "I6 identity");
+    assert_eq!(initial["status"], "running", "I6 durable batch active");
 
     let sessions = json_call(&app, "GET", "/v1/sessions", serde_json::Value::Null).await;
     assert_eq!(
@@ -484,7 +491,7 @@ async fn prefer_header_cannot_select_a_second_standard_create_semantics() {
                 .unwrap();
             let status = response.status();
             let body = response.into_body().collect().await.unwrap().to_bytes();
-            (
+            support::Call::new(
                 status,
                 serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
             )
@@ -492,21 +499,30 @@ async fn prefer_header_cannot_select_a_second_standard_create_semantics() {
     };
 
     for (rule, created) in [
-        ("A1", post(false, "official-create-without-prefer").await),
-        ("A2", post(true, "official-create-with-prefer").await),
+        (
+            "A1",
+            post(false, "official-create-without-prefer")
+                .await
+                .expect(StatusCode::OK),
+        ),
+        (
+            "A2",
+            post(true, "official-create-with-prefer")
+                .await
+                .expect(StatusCode::OK),
+        ),
     ] {
-        assert_eq!(created.0, StatusCode::OK, "{rule}/E1");
-        assert_eq!(created.1["status"], "idle", "{rule}/E2 fully realized");
-        support::assert_current_sdk_session_shape(&created.1);
+        assert_eq!(created["status"], "idle", "{rule}/E2 fully realized");
+        support::assert_current_sdk_session_shape(&created);
 
         let retrieved = json_call(
             &app,
             "GET",
-            &format!("/v1/sessions/{}", created.1["id"].as_str().unwrap()),
+            &format!("/v1/sessions/{}", created["id"].as_str().unwrap()),
             serde_json::Value::Null,
         )
         .await;
-        assert_eq!(retrieved["id"], created.1["id"], "{rule}/E3");
+        assert_eq!(retrieved["id"], created["id"], "{rule}/E3");
         assert_eq!(retrieved["status"], "idle", "{rule}/E3");
         support::assert_current_sdk_session_shape(&retrieved);
     }
@@ -585,14 +601,10 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     );
     let original = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo.clone()));
     let app = router(original.clone());
-    let created = post_session_with_idempotency(&app, Some("failed-create"), "Failed create").await;
-    assert_eq!(
-        created.0,
-        StatusCode::OK,
-        "F1 fixture create: {}",
-        created.1
-    );
-    let id = created.1["id"].as_str().unwrap().to_string();
+    let created = post_session_with_idempotency(&app, Some("failed-create"), "Failed create")
+        .await
+        .expect_for(StatusCode::OK, "F1 fixture create");
+    let id = created["id"].as_str().unwrap().to_string();
     let mut failed = repo.get(&id).await.expect("durable Session");
     failed.execution = SessionExecutionState::ActivationFailed;
     failed.realization_progress.last_error = Some("repository realization timed out".into());
@@ -609,18 +621,20 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     let restarted =
         Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo.clone()));
     let app = router(restarted.clone());
-    let replay = post_session_with_idempotency(&app, Some("failed-create"), "Failed create").await;
-    assert_eq!(replay.0, StatusCode::CONFLICT, "F1/E1: {}", replay.1);
-    assert_eq!(replay.1["type"], "error", "F1/E1");
-    assert_eq!(replay.1["error"]["type"], "invalid_request_error", "F1/E1");
+    let replay = post_session_with_idempotency(&app, Some("failed-create"), "Failed create")
+        .await
+        .expect_for(StatusCode::CONFLICT, "F1/E1");
+    assert_eq!(replay["type"], "error", "F1/E1");
+    assert_eq!(replay["error"]["type"], "invalid_request_error", "F1/E1");
     assert_eq!(
-        replay.1["error"]["message"], "session_create_terminal_conflict",
+        replay["error"]["message"], "session_create_terminal_conflict",
         "F1/E1 stable machine-readable message"
     );
     assert!(restarted.list_sessions().is_empty(), "F1/E3 no rehydration");
 
-    let (status, body) = raw_call(&app, "GET", &format!("/v1/sessions/{id}"), Body::empty()).await;
-    assert_eq!(status, StatusCode::OK, "F1/E2: {body}");
+    let body = raw_call(&app, "GET", &format!("/v1/sessions/{id}"), Body::empty())
+        .await
+        .expect_for(StatusCode::OK, "F1/E2");
     assert_eq!(body["id"], id, "F1/E2 stable identity");
     assert_eq!(body["status"], "terminated", "F1/E2");
     support::assert_current_sdk_session_shape(&body);
@@ -1209,8 +1223,9 @@ async fn initial_events_idle_case() {
             session_request(serde_json::json!({"agent": "coder", "initial_events": []})),
         ),
     ] {
-        let (status, session) = json_response(&idle_app, "POST", "/v1/sessions", body).await;
-        assert_eq!(status, StatusCode::OK, "{rule}");
+        let session = json_response(&idle_app, "POST", "/v1/sessions", body)
+            .await
+            .expect_for(StatusCode::OK, "expected status");
         assert_eq!(session["status"], "idle", "{rule}");
     }
 }
@@ -1219,7 +1234,7 @@ async fn initial_events_message_case() {
     let runtime = EchoFake::default();
     let running_state = Arc::new(ManagedState::new(runtime.clone()));
     let running_app = router(running_state.clone());
-    let (status, session) = json_response(
+    let session = json_response(
         &running_app,
         "POST",
         "/v1/sessions",
@@ -1231,8 +1246,8 @@ async fn initial_events_message_case() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "C2 message admitted");
+    .await
+    .expect_for(StatusCode::OK, "C2 message admitted");
     assert_eq!(session["status"], "running", "C2 starts immediately");
     let id = session["id"].as_str().unwrap();
     runtime.drive(&running_state, id).await;
@@ -1261,7 +1276,7 @@ async fn initial_events_message_case() {
 
 async fn initial_events_outcome_case() {
     let outcome_app = router(Arc::new(ManagedState::new(OutcomeFake::default())));
-    let (status, session) = json_response(
+    let session = json_response(
         &outcome_app,
         "POST",
         "/v1/sessions",
@@ -1275,8 +1290,8 @@ async fn initial_events_outcome_case() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "C2 single outcome admitted");
+    .await
+    .expect_for(StatusCode::OK, "C2 single outcome admitted");
     assert_eq!(
         session["status"], "running",
         "C2 outcome starts immediately"
@@ -1326,9 +1341,10 @@ async fn initial_events_rejected_cases() {
             }]})),
         ),
     ];
-    for (rule, body) in invalid_cases {
-        let (status, _) = json_response(&rejected_app, "POST", "/v1/sessions", body).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+    for (_rule, body) in invalid_cases {
+        let _ = json_response(&rejected_app, "POST", "/v1/sessions", body)
+            .await
+            .expect_for(StatusCode::BAD_REQUEST, "expected status");
     }
     let sessions = json_call(
         &rejected_app,
@@ -2478,7 +2494,7 @@ async fn outcome_loop_projects_evaluations() {
     ] {
         let boundary_app = router(Arc::new(ManagedState::new(OutcomeFake::default())));
         let boundary_id = create(&boundary_app).await;
-        let (status, _) = json_response(
+        let _ = json_response(
             &boundary_app,
             "POST",
             &format!("/v1/sessions/{boundary_id}/events"),
@@ -2489,8 +2505,8 @@ async fn outcome_loop_projects_evaluations() {
                 "max_iterations": iterations
             }] }),
         )
-        .await;
-        assert_eq!(status, expected, "H8 max_iterations={iterations}");
+        .await
+        .expect_for(expected, "H8 max_iterations=");
         if expected == StatusCode::BAD_REQUEST {
             let events = json_call(
                 &boundary_app,
@@ -2688,7 +2704,7 @@ async fn hitl_await_confirm_resume() {
     // confirmation; a wrong id or wrong reply kind cannot resolve the ticket.
     // Effects: every invalid batch is rejected before persistence; the exact
     // confirmation alone resumes the same Run. Decision rules: H5-H7.
-    for (rule, events) in [
+    for (_rule, events) in [
         (
             "H5 system alone",
             serde_json::json!([{
@@ -2734,14 +2750,14 @@ async fn hitl_await_confirm_resume() {
             ]),
         ),
     ] {
-        let (status, _) = json_response(
+        let _ = json_response(
             &app,
             "POST",
             &format!("/v1/sessions/{id}/events"),
             serde_json::json!({"events": events}),
         )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "expected status");
     }
     let unchanged = json_call(
         &app,
@@ -2789,11 +2805,10 @@ async fn hitl_await_confirm_resume() {
             &confirmation_body,
         ),
     );
-    let (confirmation_status, confirmation) = confirmation_a;
-    assert_eq!(confirmation_status, StatusCode::OK, "H6/E1");
-    assert_eq!(confirmation_b.0, StatusCode::OK, "H6/E1 concurrent retry");
+    let confirmation = confirmation_a.expect_for(StatusCode::OK, "H6/E1");
     assert_eq!(
-        confirmation_b.1, confirmation,
+        confirmation_b.expect_for(StatusCode::OK, "H6/E1 concurrent retry"),
+        confirmation,
         "H6/E1 one canonical receipt"
     );
     assert_eq!(confirmation["data"][0]["type"], "user.tool_confirmation");
@@ -2867,16 +2882,16 @@ async fn hitl_await_confirm_resume() {
         .unwrap();
     assert_eq!(last_idle["stop_reason"]["type"], "end_turn");
 
-    let (replay_status, replay) = post_events_with_idempotency(
+    let replay = post_events_with_idempotency(
         &app,
         &format!("/v1/sessions/{id}/events"),
         "hitl-confirmation-1",
         &confirmation_body,
     )
-    .await;
-    assert_eq!(replay_status, StatusCode::OK, "H6/E2");
+    .await
+    .expect_for(StatusCode::OK, "H6/E2");
     assert_eq!(replay, confirmation, "H6/E2 exact receipt");
-    let (conflict_status, _) = post_events_with_idempotency(
+    let _ = post_events_with_idempotency(
         &app,
         &format!("/v1/sessions/{id}/events"),
         "hitl-confirmation-1",
@@ -2884,8 +2899,8 @@ async fn hitl_await_confirm_resume() {
             { "type": "user.tool_confirmation", "tool_use_id": public_tool_id, "result": "deny" }
         ] }),
     )
-    .await;
-    assert_eq!(conflict_status, StatusCode::CONFLICT, "H6/E3");
+    .await
+    .expect_for(StatusCode::CONFLICT, "H6/E3");
     let after_retry = json_call(
         &app,
         "GET",
@@ -3283,7 +3298,7 @@ async fn system_message_follows_the_batch_admission_decision_table() {
     );
 
     let thousand = vec![serde_json::json!({"type": "text", "text": "x"}); 1000];
-    let (status, _) = json_response(
+    let _ = json_response(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
@@ -3292,8 +3307,8 @@ async fn system_message_follows_the_batch_admission_decision_table() {
             {"type":"system.message", "content":thousand}
         ]}),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "H2 inclusive maximum");
+    .await
+    .expect_for(StatusCode::OK, "H2 inclusive maximum");
     runtime.drive(&state, &id).await;
     assert_eq!(
         subjects.lock().unwrap().len(),
@@ -3365,15 +3380,15 @@ async fn system_message_follows_the_batch_admission_decision_table() {
             ]),
         ),
     ];
-    for (rule, events) in invalid_cases {
-        let (status, _) = json_response(
+    for (_rule, events) in invalid_cases {
+        let _ = json_response(
             &app,
             "POST",
             &format!("/v1/sessions/{id}/events"),
             serde_json::json!({"events": events}),
         )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "expected status");
     }
     let after_invalid = json_call(
         &app,
@@ -3399,7 +3414,7 @@ async fn system_message_follows_the_batch_admission_decision_table() {
         supports_mid_conversation_system: false,
     })));
     let unsupported_id = create(&unsupported).await;
-    let (status, body) = json_response(
+    let body = json_response(
         &unsupported,
         "POST",
         &format!("/v1/sessions/{unsupported_id}/events"),
@@ -3408,8 +3423,8 @@ async fn system_message_follows_the_batch_admission_decision_table() {
             {"type":"system.message", "content":[{"type":"text", "text":"x"}]}
         ]}),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "H4 unsupported model");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "H4 unsupported model");
     assert!(
         body["error"]["message"]
             .as_str()
@@ -3451,7 +3466,7 @@ async fn managed_event_attribution_uses_request_header_not_body_field() {
     }));
     let app = router(state.clone());
     let id = create(&app).await;
-    let (status, _) = json_response(
+    let _ = json_response(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
@@ -3463,8 +3478,8 @@ async fn managed_event_attribution_uses_request_header_not_body_field() {
             "user_profile_id": "user_alice"
         }),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R1");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "R1");
     assert!(subjects.lock().unwrap().is_empty(), "R1");
 
     json_call(
@@ -3777,7 +3792,7 @@ async fn raw_call(
     method: &str,
     uri: &str,
     body: Body,
-) -> (StatusCode, serde_json::Value) {
+) -> support::Call<serde_json::Value> {
     let req = Request::builder()
         .method(method)
         .uri(uri)
@@ -3792,7 +3807,7 @@ async fn raw_call(
     } else {
         serde_json::from_slice(&bytes).unwrap()
     };
-    (status, json)
+    support::Call::new(status, json)
 }
 
 #[tokio::test]
@@ -3807,8 +3822,9 @@ async fn unknown_session_is_404_with_error_envelope() {
     // envelope`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
     let app = router(Arc::new(ManagedState::new(EchoFake::default())));
-    let (status, body) = raw_call(&app, "GET", "/v1/sessions/nope/events", Body::empty()).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let body = raw_call(&app, "GET", "/v1/sessions/nope/events", Body::empty())
+        .await
+        .expect(StatusCode::NOT_FOUND);
     // The Anthropic error envelope the SDK parses.
     assert_eq!(body["type"], "error");
     assert_eq!(body["error"]["type"], "not_found_error");
@@ -3833,8 +3849,9 @@ async fn malformed_body_is_400_with_error_envelope() {
     // causes.
     let app = router(Arc::new(ManagedState::new(EchoFake::default())));
     // Syntactically broken JSON on a managed route.
-    let (status, body) = raw_call(&app, "POST", "/v1/sessions", Body::from("{ not json ")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let body = raw_call(&app, "POST", "/v1/sessions", Body::from("{ not json "))
+        .await
+        .expect(StatusCode::BAD_REQUEST);
     assert_eq!(body["type"], "error");
     assert_eq!(body["error"]["type"], "invalid_request_error");
     assert!(

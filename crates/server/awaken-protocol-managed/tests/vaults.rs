@@ -4,6 +4,7 @@
 //! credential cannot be misused for provider inference. Also covers the wire constraints (unknown vault 404,
 //! duplicate key rejected, unknown auth type 400) and the vault→MCP URL-binding
 //! seam (`mcp_credential_source_for_url`).
+mod support;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -213,7 +214,12 @@ fn harness_with_probe(probe: Arc<FakeProbe>) -> Harness {
     }
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> support::Call<serde_json::Value> {
     call_in_workspace(app, Some("default"), method, uri, body).await
 }
 
@@ -223,7 +229,7 @@ async fn call_in_workspace(
     method: &str,
     uri: &str,
     body: Option<Value>,
-) -> (StatusCode, Value) {
+) -> support::Call<serde_json::Value> {
     call_in_workspace_with_headers(app, workspace_id, method, uri, body, &[]).await
 }
 
@@ -234,7 +240,7 @@ async fn call_in_workspace_with_headers(
     uri: &str,
     body: Option<Value>,
     headers: &[(&str, &str)],
-) -> (StatusCode, Value) {
+) -> support::Call<serde_json::Value> {
     let mut b = Request::builder().method(method).uri(uri);
     for (name, value) in headers {
         b = b.header(*name, *value);
@@ -260,7 +266,7 @@ async fn call_in_workspace_with_headers(
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, value)
+    support::Call::new(status, value)
 }
 
 #[tokio::test]
@@ -283,7 +289,8 @@ async fn credential_create_idempotency_key_replays_one_secret_free_child() {
         Some(body.clone()),
         &[("idempotency-key", "console-command-1")],
     )
-    .await;
+    .await
+    .expect(StatusCode::OK);
     let replay = call_in_workspace_with_headers(
         &h.app,
         Some("default"),
@@ -293,13 +300,12 @@ async fn credential_create_idempotency_key_replays_one_secret_free_child() {
         &[("idempotency-key", "console-command-1")],
     )
     .await;
-    assert_eq!(first.0, StatusCode::OK);
-    assert_eq!(replay, first);
-    assert!(first.1.get("token").is_none());
+    assert_eq!(replay.expect(StatusCode::OK), first);
+    assert!(first.get("token").is_none());
 
     let mut changed = body;
     changed["token"] = json!("different-write-only");
-    let conflict = call_in_workspace_with_headers(
+    let _conflict = call_in_workspace_with_headers(
         &h.app,
         Some("default"),
         "POST",
@@ -307,8 +313,8 @@ async fn credential_create_idempotency_key_replays_one_secret_free_child() {
         Some(changed),
         &[("idempotency-key", "console-command-1")],
     )
-    .await;
-    assert_eq!(conflict.0, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
     assert_eq!(
         h.credentials
             .list_vault_credentials("default", &vault_id)
@@ -323,15 +329,15 @@ async fn credential_create_idempotency_key_replays_one_secret_free_child() {
 async fn every_vault_and_credential_route_hides_another_workspaces_ids() {
     let h = harness();
     let create = json!({"display_name":"owned","metadata":{}});
-    let (status, vault) = call_in_workspace(
+    let vault = call_in_workspace(
         &h.app,
         Some("workspace-a"),
         "POST",
         "/v1/vaults",
         Some(create),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let vault_id = vault["id"].as_str().unwrap();
     let create_credential = json!({
         "type":"environment_variable",
@@ -341,15 +347,15 @@ async fn every_vault_and_credential_route_hides_another_workspaces_ids() {
         "metadata":{}
     });
     let credential_uri = format!("/v1/vaults/{vault_id}/credentials");
-    let (status, credential) = call_in_workspace(
+    let credential = call_in_workspace(
         &h.app,
         Some("workspace-a"),
         "POST",
         &credential_uri,
         Some(create_credential.clone()),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let credential_id = credential["id"].as_str().unwrap();
     let item_uri = format!("{credential_uri}/{credential_id}");
 
@@ -366,22 +372,22 @@ async fn every_vault_and_credential_route_hides_another_workspaces_ids() {
         ("DELETE", item_uri.clone(), None),
         ("POST", format!("{item_uri}/mcp_oauth_validate"), None),
     ] {
-        let (status, _) = call_in_workspace(&h.app, Some("workspace-b"), method, &uri, body).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+        let _ = call_in_workspace(&h.app, Some("workspace-b"), method, &uri, body)
+            .await
+            .expect_for(StatusCode::NOT_FOUND, "expected status");
     }
 
-    let (status, _) = call_in_workspace(
+    let _ = call_in_workspace(
         &h.app,
         Some("workspace-a"),
         "GET",
         &format!("/v1/vaults/{vault_id}"),
         None,
     )
-    .await;
-    assert_eq!(
-        status,
+    .await
+    .expect_for(
         StatusCode::OK,
-        "cross-workspace attempts mutated owner data"
+        "cross-workspace attempts mutated owner data",
     );
 }
 
@@ -542,14 +548,14 @@ async fn replacement_control_instance_reads_the_same_vault_authority() {
 
     let replacement = Arc::new(VaultState::new(h.secrets.clone(), h.credentials.clone()));
     let replacement_app = vault_router(replacement.clone());
-    let (status, retrieved) = call(
+    let retrieved = call(
         &replacement_app,
         "GET",
         &format!("/v1/vaults/{vault_id}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "R1");
+    .await
+    .expect_for(StatusCode::OK, "R1");
     assert_eq!(retrieved["id"], vault_id, "R1");
     assert_eq!(
         SessionCredentialSource::mcp_credential_source_for_url(
@@ -573,19 +579,19 @@ async fn vault_credential_lifecycle_and_resolution() {
     let h = harness();
 
     // Create a vault.
-    let (s, vault) = call(
+    let vault = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "Prod keys", "metadata": { "team": "core" } })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(vault["type"], "vault");
     let vault_id = vault["id"].as_str().unwrap().to_string();
 
     // Enter an environment_variable credential — the secret is write-only.
-    let (s, cred) = call(
+    let cred = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -596,8 +602,8 @@ async fn vault_credential_lifecycle_and_resolution() {
             "networking": { "type": "unrestricted" }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(cred["type"], "vault_credential");
     assert_eq!(cred["auth"]["type"], "environment_variable");
     assert_eq!(cred["auth"]["secret_name"], "ANTHROPIC_API_KEY");
@@ -611,25 +617,25 @@ async fn vault_credential_lifecycle_and_resolution() {
     );
 
     // Retrieve is secret-free too.
-    let (s, got) = call(
+    let got = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(got["id"], cred_id);
 
     // Validate: an env-var credential has no upstream to probe -> `unknown`.
-    let (s, validation) = call(
+    let validation = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(validation["type"], "vault_credential_validation");
     assert_eq!(validation["status"], "unknown");
 
@@ -716,7 +722,7 @@ async fn wire_constraints_fail_closed() {
     let h = harness();
 
     // Credential under an unknown vault -> 404.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         "/v1/vaults/vlt_missing/credentials",
@@ -727,18 +733,18 @@ async fn wire_constraints_fail_closed() {
             "networking": { "type": "unrestricted" }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 
     // Create a vault, then reject a duplicate key and an unknown auth type.
-    let (status, vault) = call(
+    let vault = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "v" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let vault_id = vault["id"].as_str().unwrap().to_string();
     let body = json!({
         "type": "environment_variable",
@@ -746,47 +752,43 @@ async fn wire_constraints_fail_closed() {
         "secret_value": "v", // awaken-allow: secret
         "networking": { "type": "unrestricted" }
     });
-    let (s1, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(body.clone()),
     )
-    .await;
-    assert_eq!(s1, StatusCode::OK);
-    let (s2, _) = call(
+    .await
+    .expect(StatusCode::OK);
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(body),
     )
-    .await;
-    assert_eq!(
-        s2,
-        StatusCode::BAD_REQUEST,
-        "duplicate key must be rejected"
-    );
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "duplicate key must be rejected");
 
     // An unknown auth type is a clean 400 (unknown-variant deserialize error).
-    let (s3, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(json!({ "type": "basic_auth", "token": "x" })), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(s3, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 
     // A known type with missing required fields 400s too (static_bearer needs
     // `token` + `mcp_server_url`, not the old guessed field name).
-    let (s4, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(json!({ "type": "static_bearer", "bearer_token": "x" })), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(s4, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 
     for invalid_url in [
         "not-a-url",
@@ -794,7 +796,7 @@ async fn wire_constraints_fail_closed() {
         "https://user:password@mcp.example.com/mcp",
         "https://mcp.example.com/mcp#fragment",
     ] {
-        let (status, _) = call(
+        let _ = call(
             &h.app,
             "POST",
             &format!("/v1/vaults/{vault_id}/credentials"),
@@ -804,31 +806,30 @@ async fn wire_constraints_fail_closed() {
                 "token": "x" // awaken-allow: secret
             })),
         )
-        .await;
-        assert_eq!(
-            status,
+        .await
+        .expect_for(
             StatusCode::BAD_REQUEST,
-            "invalid credential target must fail closed: {invalid_url}"
+            "invalid credential target must fail closed",
         );
     }
 }
 
 /// Create a vault named `display_name` and return its id.
 async fn create_vault(h: &Harness, display_name: &str) -> String {
-    let (s, vault) = call(
+    let vault = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": display_name })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     vault["id"].as_str().unwrap().to_string()
 }
 
 /// Enter an env-var credential named `secret_name` and return its id.
 async fn create_credential(h: &Harness, vault_id: &str, secret_name: &str) -> String {
-    let (s, cred) = call(
+    let cred = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -839,8 +840,8 @@ async fn create_credential(h: &Harness, vault_id: &str, secret_name: &str) -> St
             "networking": { "type": "unrestricted" }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     cred["id"].as_str().unwrap().to_string()
 }
 
@@ -853,23 +854,25 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
     let vault_id = create_vault(&h, "doomed").await;
     let cred_id = create_credential(&h, &vault_id, "K").await;
 
-    let (s, deleted) = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let deleted = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(deleted["type"], "vault_deleted");
     assert_eq!(deleted["id"], vault_id);
 
     // The durable root fence hides both aggregate surfaces immediately, before
     // rollout delivery permits the root tombstone to complete.
-    let (s, _) = call(&h.app, "GET", &format!("/v1/vaults/{vault_id}"), None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
-    let (s, _) = call(
+    let _ = call(&h.app, "GET", &format!("/v1/vaults/{vault_id}"), None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let _ = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
     assert!(
         h.state
             .credential_source_id(&vault_id, &cred_id)
@@ -877,8 +880,9 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
             .is_none()
     );
 
-    let (s, listed) = call(&h.app, "GET", "/v1/vaults?include_archived=true", None).await;
-    assert_eq!(s, StatusCode::OK);
+    let listed = call(&h.app, "GET", "/v1/vaults?include_archived=true", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(
         listed["data"]
             .as_array()
@@ -890,7 +894,7 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
 
     // The fence rejects every later child creation; no new child can race the
     // deletion supervisor after it observed the aggregate.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -901,13 +905,14 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
             "networking": { "type": "unrestricted" }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 
     // A retry observes the same durable operation and remains a successful,
     // idempotent DELETE while rollout acknowledgement is still pending.
-    let (s, retried) = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let retried = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(retried["type"], "vault_deleted");
     assert_eq!(retried["id"], vault_id);
 
@@ -967,12 +972,14 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
     );
 
     // Completion is absorbing and remains idempotent at the HTTP boundary.
-    let (s, _) = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let _ = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None)
+        .await
+        .expect(StatusCode::OK);
 
     // A never-existing Vault is still distinct from a replayed deletion.
-    let (s, _) = call(&h.app, "DELETE", "/v1/vaults/vlt_missing", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    let _ = call(&h.app, "DELETE", "/v1/vaults/vlt_missing", None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
 }
 
 // Test design: list_vaults_returns_one_full_page_sorted_by_id
@@ -984,8 +991,9 @@ async fn list_vaults_returns_one_full_page_sorted_by_id() {
     let a = create_vault(&h, "alpha").await;
     let b = create_vault(&h, "bravo").await;
 
-    let (s, page) = call(&h.app, "GET", "/v1/vaults", None).await;
-    assert_eq!(s, StatusCode::OK);
+    let page = call(&h.app, "GET", "/v1/vaults", None)
+        .await
+        .expect(StatusCode::OK);
     // The SDK `PageCursor` shape is exactly data + next_page.
     assert!(page.get("has_more").is_none());
     assert!(page["next_page"].is_null());
@@ -1009,14 +1017,14 @@ async fn list_credentials_is_scoped_to_the_vault_and_404s_unknown() {
     let c2 = create_credential(&h, &vault_a, "K2").await;
     create_credential(&h, &vault_b, "K3").await;
 
-    let (s, page) = call(
+    let page = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_a}/credentials"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(page.get("has_more").is_none());
     assert!(page["next_page"].is_null());
     let ids: Vec<&str> = page["data"]
@@ -1030,19 +1038,20 @@ async fn list_credentials_is_scoped_to_the_vault_and_404s_unknown() {
     assert_eq!(page["data"][0]["type"], "vault_credential");
 
     // Vault B sees only its own credential (path scope holds).
-    let (status, page_b) = call(
+    let page_b = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_b}/credentials"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(page_b["data"].as_array().unwrap().len(), 1);
 
     // An unknown vault is a 404, not an empty page.
-    let (s, _) = call(&h.app, "GET", "/v1/vaults/vlt_missing/credentials", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    let _ = call(&h.app, "GET", "/v1/vaults/vlt_missing/credentials", None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
 }
 
 // Test design: archive_vault_soft_deletes_and_hides_from_default_list
@@ -1055,8 +1064,9 @@ async fn archive_vault_soft_deletes_and_hides_from_default_list() {
     let gone = create_vault(&h, "gone").await;
 
     // Archive stamps archived_at and returns the vault.
-    let (s, archived) = call(&h.app, "POST", &format!("/v1/vaults/{gone}/archive"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let archived = call(&h.app, "POST", &format!("/v1/vaults/{gone}/archive"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(archived["type"], "vault");
     assert!(archived["archived_at"].is_string());
     let archived_revision = h
@@ -1066,8 +1076,9 @@ async fn archive_vault_soft_deletes_and_hides_from_default_list() {
         .unwrap()
         .unwrap()
         .revision;
-    let (s, replay) = call(&h.app, "POST", &format!("/v1/vaults/{gone}/archive"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let replay = call(&h.app, "POST", &format!("/v1/vaults/{gone}/archive"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(replay, archived);
     assert_eq!(
         h.credentials
@@ -1081,8 +1092,9 @@ async fn archive_vault_soft_deletes_and_hides_from_default_list() {
     );
 
     // Default list excludes the archived vault; include_archived returns both.
-    let (status, page) = call(&h.app, "GET", "/v1/vaults", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let page = call(&h.app, "GET", "/v1/vaults", None)
+        .await
+        .expect(StatusCode::OK);
     let ids: Vec<&str> = page["data"]
         .as_array()
         .unwrap()
@@ -1090,18 +1102,21 @@ async fn archive_vault_soft_deletes_and_hides_from_default_list() {
         .map(|v| v["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec![keep.as_str()]);
-    let (status, all) = call(&h.app, "GET", "/v1/vaults?include_archived=true", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let all = call(&h.app, "GET", "/v1/vaults?include_archived=true", None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(all["data"].as_array().unwrap().len(), 2);
 
     // Soft-delete: retrieve still works and reports archived_at.
-    let (s, got) = call(&h.app, "GET", &format!("/v1/vaults/{gone}"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let got = call(&h.app, "GET", &format!("/v1/vaults/{gone}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert!(got["archived_at"].is_string());
 
     // Archiving an unknown vault is a 404.
-    let (s, _) = call(&h.app, "POST", "/v1/vaults/vlt_missing/archive", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    let _ = call(&h.app, "POST", "/v1/vaults/vlt_missing/archive", None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
 }
 
 // Test design: archive_credential_soft_deletes_and_hides_from_list
@@ -1124,14 +1139,14 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
     };
     let gone_ref = gone_before.material_ref.unwrap();
 
-    let (s, archived) = call(
+    let archived = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{gone}/archive"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(archived["type"], "vault_credential");
     assert!(archived["archived_at"].is_string());
     // Cause/effect rule V1: archive keeps the wire audit projection but retires
@@ -1147,14 +1162,14 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
     assert!(gone_after.material_ref.is_none());
     assert!(h.secrets.get(&gone_ref).await.is_err());
 
-    let (status, page) = call(
+    let page = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_id}/credentials"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let ids: Vec<&str> = page["data"]
         .as_array()
         .unwrap()
@@ -1162,26 +1177,26 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
         .map(|c| c["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec![keep.as_str()]);
-    let (status, all) = call(
+    let all = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_id}/credentials?include_archived=true"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(all["data"].as_array().unwrap().len(), 2);
 
     // Wrong vault + unknown credential both 404.
     let other = create_vault(&h, "other").await;
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{other}/credentials/{gone}/archive"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 }
 
 // Test design: delete_credential_removes_one_and_scopes_by_vault
@@ -1196,37 +1211,37 @@ async fn delete_credential_removes_one_and_scopes_by_vault() {
     let c2 = create_credential(&h, &vault_a, "K2").await;
 
     // Deleting under the wrong vault 404s (path scope holds), does not remove.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "DELETE",
         &format!("/v1/vaults/{vault_b}/credentials/{c1}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
     assert!(h.state.credential_source_id(&vault_a, &c1).await.is_some());
 
     // Delete c1 under its own vault: the receipt, then it is gone from the list.
-    let (s, deleted) = call(
+    let deleted = call(
         &h.app,
         "DELETE",
         &format!("/v1/vaults/{vault_a}/credentials/{c1}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(deleted["type"], "vault_credential_deleted");
     assert_eq!(deleted["id"], c1);
     assert!(h.state.credential_source_id(&vault_a, &c1).await.is_none());
 
-    let (status, page) = call(
+    let page = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_a}/credentials"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let ids: Vec<&str> = page["data"]
         .as_array()
         .unwrap()
@@ -1236,14 +1251,14 @@ async fn delete_credential_removes_one_and_scopes_by_vault() {
     assert_eq!(ids, vec![c2.as_str()]);
 
     // Deleting an already-gone credential is a 404, not an idempotent 200.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "DELETE",
         &format!("/v1/vaults/{vault_a}/credentials/{c1}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 }
 
 // Test design: update_vault_replaces_name_and_patches_metadata
@@ -1252,25 +1267,25 @@ async fn delete_credential_removes_one_and_scopes_by_vault() {
 #[tokio::test]
 async fn update_vault_replaces_name_and_patches_metadata() {
     let h = harness();
-    let (status, vault) = call(
+    let vault = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "old", "metadata": { "a": "1", "keep": "x" } })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let vault_id = vault["id"].as_str().unwrap().to_string();
 
     // Rename + patch metadata: upsert `b`, delete `a` (null), preserve `keep`.
-    let (s, updated) = call(
+    let updated = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}"),
         Some(json!({ "display_name": "new", "metadata": { "a": null, "b": "2" } })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(updated["display_name"], "new");
     assert_eq!(updated["metadata"]["b"], "2");
     assert_eq!(updated["metadata"]["keep"], "x");
@@ -1284,14 +1299,14 @@ async fn update_vault_replaces_name_and_patches_metadata() {
         .revision;
 
     // An empty body is a no-op that echoes the (already-updated) vault.
-    let (s, echo) = call(
+    let echo = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}"),
         Some(json!({})),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(echo["display_name"], "new");
     assert_eq!(
         h.credentials
@@ -1305,22 +1320,22 @@ async fn update_vault_replaces_name_and_patches_metadata() {
     );
 
     // A bad name is a 400; an unknown vault is a 404.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}"),
         Some(json!({ "display_name": "x".repeat(256) })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
-    let (s, _) = call(
+    .await
+    .expect(StatusCode::BAD_REQUEST);
+    let _ = call(
         &h.app,
         "POST",
         "/v1/vaults/vlt_missing",
         Some(json!({ "display_name": "y" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 }
 
 // Test design: update_credential_patches_fields_reseals_secret_and_rejects_type_change
@@ -1343,7 +1358,7 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
     let old_ref = before.material_ref.clone().unwrap();
 
     // Patch networking + re-seal the secret + set display_name + patch metadata.
-    let (s, updated) = call(
+    let updated = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
@@ -1357,8 +1372,8 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
             "metadata": { "team": "core" }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(updated["auth"]["networking"]["type"], "limited");
     assert_eq!(
         updated["auth"]["networking"]["allowed_hosts"][0],
@@ -1399,14 +1414,14 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
         .await
         .unwrap()
         .len();
-    let (s, replay) = call(
+    let replay = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
         Some(json!({})),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(replay, updated);
     assert_eq!(
         h.credentials
@@ -1429,24 +1444,24 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
     );
 
     // Changing the credential's kind is rejected (kind is immutable).
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
         Some(json!({ "auth": { "type": "static_bearer", "token": "x" } })), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 
     // An unknown credential is a 404.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/crd_missing"),
         Some(json!({ "display_name": "z" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 }
 
 /// Test design — causal graph and decision table for the official Managed
@@ -1500,14 +1515,14 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
         if let Some(location) = injection_location {
             auth["injection_location"] = location;
         }
-        let (status, credential) = call(
+        let credential = call(
             &h.app,
             "POST",
             &format!("/v1/vaults/{vault_id}/credentials"),
             Some(auth),
         )
-        .await;
-        assert_eq!(status, StatusCode::OK, "create case {secret_name}");
+        .await
+        .expect_for(StatusCode::OK, "create case");
         assert_eq!(
             credential["auth"]["injection_location"], expected,
             "create case {secret_name}"
@@ -1529,7 +1544,7 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
         ("null member", json!({ "body": null, "header": true })),
         ("unknown member", json!({ "body": true, "other": true })),
     ] {
-        let (status, _) = call(
+        let _ = call(
             &h.app,
             "POST",
             &format!("/v1/vaults/{vault_id}/credentials"),
@@ -1541,10 +1556,10 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
                 "injection_location": location,
             })),
         )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}");
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "expected status");
     }
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -1556,8 +1571,8 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
             "injection_location": null,
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "null object");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "null object");
     assert_eq!(
         h.credentials
             .list_vault_credentials("default", &vault_id)
@@ -1584,7 +1599,7 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
         ),
     ];
     for (patch, expected) in update_cases {
-        let (status, credential) = call(
+        let credential = call(
             &h.app,
             "POST",
             &uri,
@@ -1595,8 +1610,8 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
                 }
             })),
         )
-        .await;
-        assert_eq!(status, StatusCode::OK);
+        .await
+        .expect(StatusCode::OK);
         assert_eq!(credential["auth"]["injection_location"], expected);
     }
 
@@ -1615,7 +1630,12 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
         ("null member", json!({ "body": null })),
         ("unknown member", json!({ "other": true })),
     ] {
-        let (status, _) = call(
+        let expected = if name == "empty update" {
+            StatusCode::OK
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        let _ = call(
             &h.app,
             "POST",
             &uri,
@@ -1626,15 +1646,10 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
                 }
             })),
         )
-        .await;
-        let expected = if name == "empty update" {
-            StatusCode::OK
-        } else {
-            StatusCode::BAD_REQUEST
-        };
-        assert_eq!(status, expected, "{name}");
+        .await
+        .expect_for(expected, name);
     }
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &uri,
@@ -1645,8 +1660,8 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
             }
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "null update object");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "null update object");
     assert_eq!(
         h.credentials
             .get_vault_credential("default", &credential_id)
@@ -1663,8 +1678,9 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
         h.secrets.clone(),
         h.credentials.clone(),
     )));
-    let (status, credential) = call(&recovered, "GET", &uri, None).await;
-    assert_eq!(status, StatusCode::OK);
+    let credential = call(&recovered, "GET", &uri, None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(
         credential["auth"]["injection_location"],
         json!({ "body": true, "header": true })
@@ -1675,7 +1691,7 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
 async fn update_credential_clears_display_name_with_explicit_null() {
     let h = harness();
     let vault_id = create_vault(&h, "v").await;
-    let (status, cred) = call(
+    let cred = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -1686,20 +1702,20 @@ async fn update_credential_clears_display_name_with_explicit_null() {
             "display_name": "to-clear"
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let cred_id = cred["id"].as_str().unwrap().to_string();
     assert_eq!(cred["display_name"], "to-clear");
 
     // display_name: null clears it (distinct from omitting the field).
-    let (s, updated) = call(
+    let updated = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
         Some(json!({ "display_name": null })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(
         updated.get("display_name").is_none(),
         "display_name is cleared"
@@ -1733,7 +1749,7 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     let before = h.credentials.get(&source_id).await.unwrap();
 
     // Rotate the refresh token + client secret and change the scheme + scope.
-    let (s, updated) = call(
+    let updated = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
@@ -1748,8 +1764,8 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
             }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(updated["auth"]["refresh"]["scope"], "new");
     assert_eq!(
         updated["auth"]["refresh"]["token_endpoint_auth"]["type"],
@@ -1805,14 +1821,14 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
     // Updating refresh on a credential that has none is a 400.
     let plain = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/plain", None).await;
     let plain_id = plain["id"].as_str().unwrap().to_string();
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{plain_id}"),
         Some(json!({ "auth": { "type": "mcp_oauth", "refresh": { "refresh_token": "x" } } })), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -1845,7 +1861,7 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
     let before = h.credentials.get(&source_id).await.unwrap();
 
     // Switch scheme to `post` WITHOUT a client_secret — a valid SDK payload.
-    let (s, updated) = call(
+    let updated = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
@@ -1856,11 +1872,10 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
             }
         })),
     )
-    .await;
-    assert_eq!(
-        s,
+    .await
+    .expect_for(
         StatusCode::OK,
-        "omitting client_secret on update must not 400"
+        "omitting client_secret on update must not 400",
     );
     assert_eq!(
         updated["auth"]["refresh"]["token_endpoint_auth"]["type"],
@@ -1906,23 +1921,23 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
     let url = "https://mcp.example.com/sse";
 
     // static_bearer: rotate the token (phase-2 primary re-seal for a bearer).
-    let (status, bearer) = call(
+    let bearer = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(json!({ "type": "static_bearer", "mcp_server_url": url, "token": "brr-old" })), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let bearer_id = bearer["id"].as_str().unwrap().to_string();
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{bearer_id}"),
         Some(json!({ "auth": { "type": "static_bearer", "token": "brr-new" } })), // awaken-allow: secret
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let bearer_source = h
         .state
         .credential_source_id(&vault_id, &bearer_id)
@@ -1957,7 +1972,7 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
     .await;
     let oauth_id = oauth["id"].as_str().unwrap().to_string();
 
-    let (s, u1) = call(
+    let u1 = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{oauth_id}"),
@@ -1970,13 +1985,13 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
             }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(u1["auth"]["expires_at"], "2030-01-01T00:00:00Z");
     assert_eq!(u1["auth"]["refresh"]["scope"], "s2");
     assert_eq!(u1["auth"]["refresh"]["token_endpoint_auth"]["type"], "none");
 
-    let (s, u2) = call(
+    let u2 = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{oauth_id}"),
@@ -1987,8 +2002,8 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
             }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(
         u2["auth"]["refresh"]["token_endpoint_auth"]["type"],
         "client_secret_basic"
@@ -2016,8 +2031,9 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
 #[tokio::test]
 async fn retrieve_vault_unknown_is_404() {
     let h = harness();
-    let (s, _) = call(&h.app, "GET", "/v1/vaults/vlt_missing", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    let _ = call(&h.app, "GET", "/v1/vaults/vlt_missing", None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -2028,62 +2044,62 @@ async fn retrieve_credential_wrong_vault_is_404() {
     let cred_id = create_credential(&h, &vault_a, "K").await;
 
     // The credential exists, but not under vault B — the path scope must hold.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_b}/credentials/{cred_id}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
-    let (s, _) = call(
+    .await
+    .expect(StatusCode::NOT_FOUND);
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_b}/credentials/{cred_id}/mcp_oauth_validate"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 
     // An outright unknown credential 404s under its own vault too.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_a}/credentials/crd_missing/mcp_oauth_validate"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn create_vault_rejects_bad_display_name() {
     let h = harness();
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "empty display_name");
-    let (s, _) = call(
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "empty display_name");
+    let _ = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "x".repeat(256) })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "over-long display_name");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "over-long display_name");
     // The 255-char boundary itself is accepted.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "x".repeat(255) })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
 }
 
 #[tokio::test]
@@ -2093,7 +2109,7 @@ async fn too_many_credentials_is_rejected() {
     for i in 0..20 {
         create_credential(&h, &vault_id, &format!("KEY_{i}")).await;
     }
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -2104,15 +2120,11 @@ async fn too_many_credentials_is_rejected() {
             "networking": { "type": "unrestricted" }
         })),
     )
-    .await;
-    assert_eq!(
-        s,
-        StatusCode::BAD_REQUEST,
-        "21st credential must be rejected"
-    );
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "21st credential must be rejected");
 
     // The cap spans all credential types, not just env-vars.
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -2122,11 +2134,10 @@ async fn too_many_credentials_is_rejected() {
             "token": "brr" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(
-        s,
+    .await
+    .expect_for(
         StatusCode::BAD_REQUEST,
-        "a static_bearer must count against the same 20-cap"
+        "a static_bearer must count against the same 20-cap",
     );
 }
 
@@ -2141,15 +2152,14 @@ async fn create_mcp_oauth(h: &Harness, vault_id: &str, url: &str, refresh: Optio
     if let Some(r) = refresh {
         body["refresh"] = r;
     }
-    let (s, cred) = call(
+    call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(body),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    cred
+    .await
+    .expect(StatusCode::OK)
 }
 
 #[tokio::test]
@@ -2157,7 +2167,7 @@ async fn static_bearer_credential_is_secret_free_and_round_trips() {
     let h = harness();
     let vault_id = create_vault(&h, "mcp").await;
 
-    let (s, cred) = call(
+    let cred = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -2168,8 +2178,8 @@ async fn static_bearer_credential_is_secret_free_and_round_trips() {
             "display_name": "linear bearer"
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(cred["type"], "vault_credential");
     assert_eq!(cred["auth"]["type"], "static_bearer");
     assert_eq!(
@@ -2184,14 +2194,14 @@ async fn static_bearer_credential_is_secret_free_and_round_trips() {
     let cred_id = cred["id"].as_str().unwrap().to_string();
 
     // Retrieve round-trips the same secret-free projection.
-    let (s, got) = call(
+    let got = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(got["auth"]["type"], "static_bearer");
     assert_eq!(got["auth"]["mcp_server_url"], "https://mcp.example.com/sse");
     assert_eq!(got["display_name"], "linear bearer");
@@ -2222,14 +2232,14 @@ async fn static_bearer_credential_is_secret_free_and_round_trips() {
     assert_eq!(secret.expose_secret(), "brr-bearer-secret");
 
     // No refresh token to report; no live probe yet, so status stays unknown.
-    let (s, validation) = call(
+    let validation = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(validation["has_refresh_token"], false);
     assert_eq!(validation["status"], "unknown");
 }
@@ -2238,7 +2248,7 @@ async fn static_bearer_credential_is_secret_free_and_round_trips() {
 async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     let h = harness();
     let vault_id = create_vault(&h, "envelope authority").await;
-    let (status, credential) = call(
+    let credential = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -2248,8 +2258,8 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
             "token": "recipient-bound-secret" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let source_id = h
         .state
         .credential_source_id(&vault_id, credential["id"].as_str().unwrap())
@@ -2464,7 +2474,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
 async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
     let h = harness();
     let vault_id = create_vault(&h, "external custody").await;
-    let (status, credential) = call(
+    let credential = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -2474,8 +2484,8 @@ async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
             "token": "custody-secret" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let source_id = h
         .state
         .credential_source_id(&vault_id, credential["id"].as_str().unwrap())
@@ -2524,7 +2534,7 @@ async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
 async fn external_custody_never_observes_an_unowned_plaintext_path() {
     let h = harness();
     let vault_id = create_vault(&h, "selective custody").await;
-    let (status, credential) = call(
+    let credential = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -2534,8 +2544,8 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
             "token": "selective-secret" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let source_id = h
         .state
         .credential_source_id(&vault_id, credential["id"].as_str().unwrap())
@@ -2626,14 +2636,14 @@ async fn mcp_oauth_credential_with_refresh_never_leaks_secrets() {
     let cred_id = cred["id"].as_str().unwrap().to_string();
 
     // Retrieve is equally secret-free.
-    let (s, got) = call(
+    let got = call(
         &h.app,
         "GET",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let raw = serde_json::to_string(&got).unwrap();
     assert!(!raw.contains("at-secret-token"));
     assert!(!raw.contains("rt-secret-token"));
@@ -2641,14 +2651,14 @@ async fn mcp_oauth_credential_with_refresh_never_leaks_secrets() {
 
     // Validate reports the stored refresh-token fact; status stays unknown (no
     // live probe in this slice) — and leaks nothing either.
-    let (s, validation) = call(
+    let validation = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(validation["has_refresh_token"], true);
     assert_eq!(validation["status"], "unknown");
     let raw = serde_json::to_string(&validation).unwrap();
@@ -2692,14 +2702,14 @@ async fn mcp_oauth_credential_without_refresh_reports_no_refresh_token() {
     );
     let cred_id = cred["id"].as_str().unwrap().to_string();
 
-    let (s, validation) = call(
+    let validation = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(validation["has_refresh_token"], false);
     assert_eq!(validation["status"], "unknown");
 }
@@ -2726,7 +2736,7 @@ async fn mcp_binding_normalizes_urls_and_supports_both_credential_kinds() {
 
     let oauth = create_mcp_oauth(&h, &oauth_vault, "HTTPS://MCP.EXAMPLE.COM:443/sse/", None).await;
     let oauth_id = oauth["id"].as_str().unwrap().to_string();
-    let (status, bearer) = call(
+    let bearer = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{bearer_vault}/credentials"),
@@ -2736,8 +2746,8 @@ async fn mcp_binding_normalizes_urls_and_supports_both_credential_kinds() {
             "token": "bearer-secret" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let bearer_id = bearer["id"].as_str().unwrap().to_string();
 
     let oauth_source = h
@@ -2847,7 +2857,7 @@ async fn same_target_credentials_are_authored_and_selected_deterministically() {
     let vault_id = create_vault(&h, "mcp").await;
     let first = create_mcp_oauth(&h, &vault_id, "https://MCP.example.com:443/mcp/", None).await;
 
-    let (second_status, second) = call(
+    let second = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -2857,8 +2867,8 @@ async fn same_target_credentials_are_authored_and_selected_deterministically() {
             "token": "replacement" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(second_status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let first_source = h
         .state
         .credential_source_id(&vault_id, first["id"].as_str().unwrap())
@@ -2878,14 +2888,14 @@ async fn same_target_credentials_are_authored_and_selected_deterministically() {
     );
 
     let first_id = first["id"].as_str().unwrap();
-    let (archived, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{first_id}/archive"),
         None,
     )
-    .await;
-    assert_eq!(archived, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let second_source = h
         .state
         .credential_source_id(&vault_id, second["id"].as_str().unwrap())
@@ -2914,14 +2924,14 @@ async fn validate_with_probe_reports_valid_and_the_probe_sees_the_materialized_t
     let cred = create_mcp_oauth(&h, &vault_id, url, None).await;
     let cred_id = cred["id"].as_str().unwrap().to_string();
 
-    let (s, validation) = call(
+    let validation = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(validation["status"], "valid");
     assert_eq!(validation["mcp_probe"], json!({ "handshake": "ok" }));
     // The probe was handed the server URL and the MATERIALIZED access token —
@@ -2946,14 +2956,14 @@ async fn validate_with_probe_reports_invalid_with_the_http_status() {
     let cred = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/sse", None).await;
     let cred_id = cred["id"].as_str().unwrap().to_string();
 
-    let (s, validation) = call(
+    let validation = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
         None,
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(validation["status"], "invalid");
     assert_eq!(validation["mcp_probe"], json!({ "http_status": 401 }));
 }
@@ -2966,7 +2976,7 @@ async fn validate_never_probes_env_var_or_static_bearer_credentials() {
     let h = harness_with_probe(probe.clone());
     let vault_id = create_vault(&h, "mixed").await;
     let env_id = create_credential(&h, &vault_id, "K").await;
-    let (s, bearer) = call(
+    let bearer = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -2976,19 +2986,19 @@ async fn validate_never_probes_env_var_or_static_bearer_credentials() {
             "token": "brr" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let bearer_id = bearer["id"].as_str().unwrap().to_string();
 
     for cred_id in [env_id, bearer_id] {
-        let (s, validation) = call(
+        let validation = call(
             &h.app,
             "POST",
             &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
             None,
         )
-        .await;
-        assert_eq!(s, StatusCode::OK);
+        .await
+        .expect(StatusCode::OK);
         assert_eq!(validation["status"], "unknown");
         assert_eq!(validation["mcp_probe"], Value::Null);
     }
@@ -3148,7 +3158,7 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
         .await
         .unwrap();
     assert!(h.state.mcp_access_for_source(&env_source).await.is_err());
-    let (s, bearer) = call(
+    let bearer = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -3158,8 +3168,8 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
             "token": "brr" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let bearer_id = bearer["id"].as_str().unwrap().to_string();
     let bearer_source = h
         .state

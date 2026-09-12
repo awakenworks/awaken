@@ -164,7 +164,7 @@ async fn http_json(
 }
 
 /// GET an SSE endpoint and collect the whole (terminating) body as a string.
-async fn http_sse(app: &Router, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, String) {
+async fn http_sse(app: &Router, uri: &str, headers: &[(&str, &str)]) -> support::Call<String> {
     let mut b = Request::builder().method("GET").uri(uri);
     for (k, v) in headers {
         b = b.header(*k, *v);
@@ -177,7 +177,7 @@ async fn http_sse(app: &Router, uri: &str, headers: &[(&str, &str)]) -> (StatusC
         .await
         .unwrap()
         .to_bytes();
-    (status, String::from_utf8(bytes.to_vec()).unwrap())
+    support::Call::new(status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
 async fn http_create(app: &Router) -> String {
@@ -371,8 +371,7 @@ async fn root_stream_immediately_projects_thread_live_observations_only() {
         .unwrap();
     assert_eq!(deleted.status(), StatusCode::OK, "R4/E4");
 
-    let (status, sse) = stream.await.unwrap();
-    assert_eq!(status, StatusCode::OK);
+    let sse = stream.await.unwrap().expect(StatusCode::OK);
     let data = sse
         .lines()
         .filter_map(|line| line.strip_prefix("data: "))
@@ -465,9 +464,9 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
         .unwrap()
         .to_string();
 
-    let (primary_status, primary_sse) =
-        http_sse(&app, &format!("/v1/sessions/{id}/events/stream"), &[]).await;
-    assert_eq!(primary_status, StatusCode::OK, "S1");
+    let primary_sse = http_sse(&app, &format!("/v1/sessions/{id}/events/stream"), &[])
+        .await
+        .expect_for(StatusCode::OK, "S1");
     let child_idle = primary_sse
         .find("event: session.thread_status_idle")
         .expect("S1 child idle remains observable on primary");
@@ -483,13 +482,13 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
         "S1 trailing aggregate telemetry survives child idle — sse:\n{primary_sse}"
     );
 
-    let (child_status, child_sse) = http_sse(
+    let child_sse = http_sse(
         &app,
         &format!("/v1/sessions/{id}/threads/{child_id}/stream"),
         &[],
     )
-    .await;
-    assert_eq!(child_status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(
         !child_sse.contains("event: session.status_")
             && !child_sse.contains("event: session.thread_created")
@@ -532,13 +531,13 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
             == 1,
         "S2/E2"
     );
-    let (archived_status, archived_child_sse) = http_sse(
+    let archived_child_sse = http_sse(
         &app,
         &format!("/v1/sessions/{id}/threads/{child_id}/stream"),
         &[],
     )
-    .await;
-    assert_eq!(archived_status, StatusCode::OK, "S2/E2");
+    .await
+    .expect_for(StatusCode::OK, "S2/E2");
     assert!(
         archived_child_sse
             .find("event: session.thread_status_idle")
@@ -646,13 +645,13 @@ async fn stream_thread_events_backfills_the_primary_thread() {
     let primary_id = http_primary_thread_id(&app, &id).await;
     assert!(primary_id.starts_with("sthr_"), "P1");
 
-    let (status, sse) = http_sse(
+    let sse = http_sse(
         &app,
         &format!("/v1/sessions/{id}/threads/{primary_id}/stream"),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(
         sse.contains("event: session.thread_status_running"),
         "P1/E1 sse:\n{sse}"
@@ -698,13 +697,13 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
     support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
         .await;
     let primary_id = http_primary_thread_id(&app, &id).await;
-    let (status, _) = http_sse(
+    let _ = http_sse(
         &app,
         &format!("/v1/sessions/{id}/threads/{primary_id}/stream?event_deltas[]=agent.message"),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
 }
 
 /// Managed child live-preview cause/effect table:
@@ -823,8 +822,7 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
             && terminal_types.contains(&"session.status_idle"),
         "L1,L3/E5 canonical projector closes child and aggregate: {terminal_types:?}"
     );
-    let (status, sse) = child_stream.await.unwrap();
-    assert_eq!(status, StatusCode::OK);
+    let sse = child_stream.await.unwrap().expect(StatusCode::OK);
     assert!(sse.contains("event: event_start"), "L1/E1 sse:\n{sse}");
     assert!(sse.contains("event: event_delta"), "L1/E1 sse:\n{sse}");
     assert!(sse.contains("live progress"), "L1/E1");
@@ -862,13 +860,13 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     assert_eq!(preview_id, committed_id, "L1/E5 reconciliation");
 
     let primary_id = http_primary_thread_id(&app, &id).await;
-    let (status, primary) = http_sse(
+    let primary = http_sse(
         &app,
         &format!("/v1/sessions/{id}/threads/{primary_id}/stream?event_deltas[]=agent.message"),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(!primary.contains("event: event_start"), "L2/E3");
     assert!(!primary.contains("event: event_delta"), "L2/E3");
     assert!(
@@ -893,13 +891,13 @@ async fn stream_thread_events_unknown_thread_is_404() {
     )));
     let id = http_create(&app).await;
     for thread_id in ["nope".to_string(), format!("{id}:primary")] {
-        let (status, _) = http_sse(
+        let _ = http_sse(
             &app,
             &format!("/v1/sessions/{id}/threads/{thread_id}/stream"),
             &[],
         )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{thread_id}");
+        .await
+        .expect_for(StatusCode::NOT_FOUND, "expected status");
     }
 }
 
@@ -932,13 +930,13 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
             .collect::<Vec<_>>()
             .join("&")
     };
-    let (status, _) = http_sse(
+    let _ = http_sse(
         &app,
         &format!("/v1/sessions/{id}/events/stream?{}", repeated(100)),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "E4 inclusive maximum");
+    .await
+    .expect_for(StatusCode::OK, "E4 inclusive maximum");
 
     for (rule, query) in [
         (
@@ -947,13 +945,13 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
         ),
         ("E4 over maximum", repeated(101)),
     ] {
-        let (status, body) = http_sse(
+        let body = http_sse(
             &app,
             &format!("/v1/sessions/{id}/events/stream?{query}"),
             &[],
         )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "expected status");
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["error"]["type"], "invalid_request_error", "{rule}");
     }
@@ -1002,13 +1000,13 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
 
     // Reconnect claiming to have already seen the LAST event: an incremental resume
     // would send nothing after it, but the full snapshot is replayed regardless.
-    let (status, sse) = http_sse(
+    let sse = http_sse(
         &app,
         &format!("/v1/sessions/{id}/events/stream"),
         &[("last-event-id", &last_id)],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(
         sse.contains("event: session.status_running")
             && sse.contains("event: agent.message")
@@ -1124,13 +1122,13 @@ async fn slow_http_consumers_and_reconnect_storm_recover_from_durable_replay() {
         "the terminal Run produces a durable replay prefix"
     );
     for reconnect in 0..24 {
-        let (status, body) = tokio::time::timeout(
+        let body = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             http_sse(&app, &uri, &[("last-event-id", "stale-client-cursor")]),
         )
         .await
-        .unwrap_or_else(|_| panic!("R3 reconnect {reconnect} timed out"));
-        assert_eq!(status, StatusCode::OK);
+        .unwrap_or_else(|_| panic!("R3 reconnect {reconnect} timed out"))
+        .expect(StatusCode::OK);
         assert_eq!(
             sse_committed_ids(&body),
             canonical,

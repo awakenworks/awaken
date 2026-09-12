@@ -113,14 +113,14 @@ UNBOUNDED_WAIT_BASELINE = 0
 # HTTP tests in the Managed protocol crate must name the status a body arrived
 # with. Discarding it is how a route that had begun answering 404 went
 # unnoticed: the test read the empty body and then waited for work the failed
-# request never scheduled. `dreams.rs` makes this a type error by returning a
-# response whose body is unreachable without an expectation; the helpers that
-# still return a bare tuple are counted here and the count may only fall.
+# request never scheduled, and parked forever. `support::Call` makes that a
+# type error -- it has no accessor that yields the body alone -- so every
+# helper returns one and the status-tuple shape is refused outright.
 MANAGED_HTTP_TESTS = "crates/server/awaken-protocol-managed/tests"
-TUPLE_HELPER_BASELINE = 25
+TUPLE_HELPER_BASELINE = 0
 HTTP_HELPER_RETURN = re.compile(r"->\s*\(StatusCode,\s*Value\)")
 RUST_FN = re.compile(r"\bfn\s+(\w+)")
-TUPLE_HELPER = re.compile(r"->\s*\(StatusCode,\s*Value\)")
+TUPLE_HELPER = re.compile(r"->\s*\((?:axum::http::)?StatusCode\s*,")
 TEST_ATTRIBUTE = re.compile(
     r"#\[(?:tokio::)?test[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+(\w+)"
 )
@@ -765,15 +765,9 @@ def discarded_status_errors(sources: dict[str, str]) -> list[str]:
     helpers = sum(len(TUPLE_HELPER.findall(text)) for text in sources.values())
     if helpers > TUPLE_HELPER_BASELINE:
         errors.append(
-            f"{helpers} test helpers return a bare (StatusCode, Value), "
-            f"baseline {TUPLE_HELPER_BASELINE}: {helpers - TUPLE_HELPER_BASELINE} "
-            "new one(s). Return a response type that requires an expectation."
-        )
-    if helpers < TUPLE_HELPER_BASELINE:
-        errors.append(
-            f"only {helpers} test helpers return a bare (StatusCode, Value), "
-            f"below the {TUPLE_HELPER_BASELINE} baseline; lower "
-            "TUPLE_HELPER_BASELINE to hold the ground"
+            f"{helpers} test helper(s) return a status tuple a caller can "
+            "destructure past. Return support::Call, whose body is only "
+            "reachable through expect(status)."
         )
     return errors
 

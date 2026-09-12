@@ -35,7 +35,7 @@ async fn memory_creation_replays_a_lost_response_and_rejects_changed_payloads() 
         workspace: &str,
         key: &str,
         body: Value,
-    ) -> (StatusCode, Value) {
+    ) -> support::Call<serde_json::Value> {
         let mut request = Request::builder()
             .method("POST")
             .uri("/v1/memory_stores")
@@ -51,18 +51,20 @@ async fn memory_creation_replays_a_lost_response_and_rejects_changed_payloads() 
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap())
+        support::Call::new(status, serde_json::from_slice(&bytes).unwrap())
     }
     let router = router();
     let body = json!({"name": "Lost response", "description": "Keep exactly one", "metadata": {"owner": "workshop"}});
     // The first POST reaches the real application. Discard its response as a
     // disconnected client would, then submit the exact request again.
-    let first = create(&router, "test", "request-1", body.clone()).await;
-    assert_eq!(first.0, StatusCode::OK);
+    let first = create(&router, "test", "request-1", body.clone())
+        .await
+        .expect(StatusCode::OK);
     let retry = create(&router, "test", "request-1", body.clone()).await;
-    assert_eq!(first, retry);
-    let (status, inventory) = call_scoped(&router, "test", "GET", "/v1/memory_stores", None).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first, retry.expect(StatusCode::OK));
+    let inventory = call_scoped(&router, "test", "GET", "/v1/memory_stores", None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(inventory["data"].as_array().unwrap().len(), 1);
     assert!(
         inventory.to_string().find("creation_request").is_none(),
@@ -70,20 +72,23 @@ async fn memory_creation_replays_a_lost_response_and_rejects_changed_payloads() 
     );
     let mut changed = body.clone();
     changed["description"] = json!("Different request");
-    let conflict = create(&router, "test", "request-1", changed).await;
-    assert_eq!(conflict.0, StatusCode::CONFLICT);
-    assert_eq!(conflict.1["error"]["type"], "conflict_error");
-    let other = create(&router, "other", "request-1", body.clone()).await;
-    assert_eq!(other.0, StatusCode::OK);
-    assert_ne!(first.1["id"], other.1["id"]);
+    let conflict = create(&router, "test", "request-1", changed)
+        .await
+        .expect(StatusCode::CONFLICT);
+    assert_eq!(conflict["error"]["type"], "conflict_error");
+    let other = create(&router, "other", "request-1", body.clone())
+        .await
+        .expect(StatusCode::OK);
+    assert_ne!(first["id"], other["id"]);
     for key in ["", " ", &"x".repeat(256)] {
         assert_eq!(
-            create(&router, "test", key, body.clone()).await.0,
+            create(&router, "test", key, body.clone()).await.status(),
             StatusCode::BAD_REQUEST
         );
     }
-    let (status, inventory) = call_scoped(&router, "test", "GET", "/v1/memory_stores", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let inventory = call_scoped(&router, "test", "GET", "/v1/memory_stores", None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(inventory["data"].as_array().unwrap().len(), 1);
 }
 
@@ -133,11 +138,12 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
             None
         )
         .await
-        .0,
+        .status(),
         StatusCode::NOT_FOUND,
     );
-    let (status, basic) = call(&router, "GET", &url, None).await;
-    assert_eq!(status, StatusCode::OK);
+    let basic = call(&router, "GET", &url, None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(basic["data"].as_array().unwrap().len(), 2);
     assert!(
         basic["data"]
@@ -146,8 +152,9 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
             .iter()
             .all(|v| v["content"].is_null())
     );
-    let (status, full) = call(&router, "GET", &format!("{url}?view=full"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let full = call(&router, "GET", &format!("{url}?view=full"), None)
+        .await
+        .expect(StatusCode::OK);
     for candidate in &candidates {
         let row = full["data"]
             .as_array()
@@ -165,11 +172,14 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
             }
         );
     }
-    let (status, page) = call(&router, "GET", &format!("{url}?limit=1"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let page = call(&router, "GET", &format!("{url}?limit=1"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(page["data"].as_array().unwrap().len(), 1);
     assert_eq!(
-        call_scoped(&router, "foreign", "GET", &url, None).await.0,
+        call_scoped(&router, "foreign", "GET", &url, None)
+            .await
+            .status(),
         StatusCode::NOT_FOUND
     );
     assert_eq!(
@@ -180,14 +190,14 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
             None
         )
         .await
-        .0,
+        .status(),
         StatusCode::NOT_FOUND
     );
     for suffix in ["?view=invalid", "?limit=0"] {
         assert_eq!(
             call(&router, "GET", &format!("{url}{suffix}"), None)
                 .await
-                .0,
+                .status(),
             StatusCode::BAD_REQUEST
         );
     }
@@ -201,11 +211,11 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
             None
         )
         .await
-        .0,
+        .status(),
         StatusCode::OK
     );
     assert_eq!(
-        call(&router, "GET", &url, None).await.0,
+        call(&router, "GET", &url, None).await.status(),
         StatusCode::NOT_FOUND
     );
 }
@@ -215,7 +225,7 @@ async fn call(
     method: &str,
     uri: &str,
     body: Option<Value>,
-) -> (StatusCode, Value) {
+) -> support::Call<serde_json::Value> {
     let builder = Request::builder().method(method).uri(uri);
     let mut req = match body {
         Some(v) => builder
@@ -236,7 +246,7 @@ async fn call(
         .await
         .unwrap();
     let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, value)
+    support::Call::new(status, value)
 }
 
 #[tokio::test]
@@ -261,8 +271,9 @@ async fn resource_routes_require_a_preselected_workspace() {
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
     }
 
-    let (status, listed) = call(&router, "GET", "/v1/memory_stores", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let listed = call(&router, "GET", "/v1/memory_stores", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty());
 }
 
@@ -272,7 +283,7 @@ async fn call_scoped(
     method: &str,
     uri: &str,
     body: Option<Value>,
-) -> (StatusCode, Value) {
+) -> support::Call<serde_json::Value> {
     let builder = Request::builder().method(method).uri(uri);
     let mut request = match body {
         Some(value) => builder
@@ -295,19 +306,19 @@ async fn call_scoped(
         .await
         .unwrap();
     let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, value)
+    support::Call::new(status, value)
 }
 
 /// Create a store over HTTP and return its minted id.
 async fn create_store(router: &Router, name: &str) -> String {
-    let (status, v) = call(
+    let v = call(
         router,
         "POST",
         "/v1/memory_stores",
         Some(json!({ "name": name })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "create store: {v}");
+    .await
+    .expect_for(StatusCode::OK, "create store");
     v["id"].as_str().expect("minted store id").to_string()
 }
 
@@ -320,14 +331,14 @@ async fn store_lifecycle_create_get_list_update_archive_delete() {
     let router = router();
 
     // Create with the SDK body (name/description/metadata) mints a durable id.
-    let (status, created) = call(
+    let created = call(
         &router,
         "POST",
         "/v1/memory_stores",
         Some(json!({ "name": "notes", "description": "my notes", "metadata": { "team": "core" } })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap().to_string();
     assert_eq!(created["type"], "memory_store");
     assert_eq!(created["name"], "notes");
@@ -336,15 +347,17 @@ async fn store_lifecycle_create_get_list_update_archive_delete() {
 
     // Retrieve carries only the governed definition; mutable data has one surface,
     // `/memories`, shared with execution.
-    let (status, got) = call(&router, "GET", &format!("/v1/memory_stores/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let got = call(&router, "GET", &format!("/v1/memory_stores/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(got["name"], "notes");
     assert!(got.get("size_bytes").is_none());
     assert!(got.get("content").is_none());
 
     // List surfaces the non-archived store.
-    let (status, list) = call(&router, "GET", "/v1/memory_stores", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let list = call(&router, "GET", "/v1/memory_stores", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(
         list["data"]
             .as_array()
@@ -355,14 +368,14 @@ async fn store_lifecycle_create_get_list_update_archive_delete() {
     );
 
     // Update: patch description (empty clears) + metadata (string upsert, null delete).
-    let (status, updated) = call(
+    let updated = call(
         &router,
         "POST",
         &format!("/v1/memory_stores/{id}"),
         Some(json!({ "description": "updated", "metadata": { "team": null, "owner": "alice" } })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(updated["description"], "updated");
     assert_eq!(updated["metadata"]["owner"], "alice");
     assert!(
@@ -371,17 +384,18 @@ async fn store_lifecycle_create_get_list_update_archive_delete() {
     );
 
     // Archive stamps archived_at and drops the store from the listing.
-    let (status, archived) = call(
+    let archived = call(
         &router,
         "POST",
         &format!("/v1/memory_stores/{id}/archive"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_ne!(archived["archived_at"], Value::Null);
-    let (status, list) = call(&router, "GET", "/v1/memory_stores", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let list = call(&router, "GET", "/v1/memory_stores", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(
         !list["data"]
             .as_array()
@@ -393,9 +407,9 @@ async fn store_lifecycle_create_get_list_update_archive_delete() {
 
     // Delete a fresh store is a soft archive → receipt.
     let id2 = create_store(&router, "trash").await;
-    let (status, receipt) =
-        call(&router, "DELETE", &format!("/v1/memory_stores/{id2}"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let receipt = call(&router, "DELETE", &format!("/v1/memory_stores/{id2}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(receipt["type"], "memory_store_deleted");
     assert_eq!(receipt["id"], id2.as_str());
 }
@@ -406,14 +420,14 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
     let missing = "memstore_does_not_exist";
 
     // GET on a store with no Resource Registry identity → 404.
-    let (status, v) = call(
+    let _v = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{missing}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
+    .await
+    .expect_for(StatusCode::NOT_FOUND, "expected status");
 
     // update / delete / archive on an unknown identity all 404.
     for (method, suffix, body) in [
@@ -421,18 +435,14 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
         ("DELETE", "", None),
         ("POST", "/archive", None),
     ] {
-        let (status, _) = call(
+        let _ = call(
             &router,
             method,
             &format!("/v1/memory_stores/{missing}{suffix}"),
             body,
         )
-        .await;
-        assert_eq!(
-            status,
-            StatusCode::NOT_FOUND,
-            "{method} {suffix} on unknown store"
-        );
+        .await
+        .expect_for(StatusCode::NOT_FOUND, "on unknown store");
     }
 }
 
@@ -443,52 +453,52 @@ async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
         resources.authorities().memory_repository(),
         resources.memory_stores(),
     );
-    let (status, created) = call_scoped(
+    let created = call_scoped(
         &router,
         "workspace-a",
         "POST",
         "/v1/memory_stores",
         Some(json!({"name": "private"})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
 
-    let (status, list) =
-        call_scoped(&router, "workspace-b", "GET", "/v1/memory_stores", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let list = call_scoped(&router, "workspace-b", "GET", "/v1/memory_stores", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(list["data"].as_array().unwrap().is_empty());
     for suffix in ["", "/memories", "/memory_versions"] {
-        let (status, _) = call_scoped(
+        let _ = call_scoped(
             &router,
             "workspace-b",
             "GET",
             &format!("/v1/memory_stores/{id}{suffix}"),
             None,
         )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "cross-workspace {suffix}");
+        .await
+        .expect_for(StatusCode::NOT_FOUND, "cross-workspace");
     }
 
-    let (status, _) = call_scoped(
+    let _ = call_scoped(
         &router,
         "workspace-a",
         "POST",
         &format!("/v1/memory_stores/{id}/archive"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     for suffix in ["/memories", "/memory_versions"] {
-        let (status, _) = call_scoped(
+        let _ = call_scoped(
             &router,
             "workspace-a",
             "GET",
             &format!("/v1/memory_stores/{id}{suffix}"),
             None,
         )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "archived {suffix}");
+        .await
+        .expect_for(StatusCode::NOT_FOUND, "archived");
     }
 }
 
@@ -502,14 +512,14 @@ async fn memory_crud_with_precondition_and_version_log() {
     let store = create_store(&router, "mem-host").await;
 
     // Create a memory (path-addressed head in the durable store).
-    let (status, mem) = call(
+    let mem = call(
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memories"),
         Some(json!({ "path": "/a.md", "content": "hello" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{mem}");
+    .await
+    .expect_for(StatusCode::OK, "expected status");
     let mid = mem["id"].as_str().unwrap().to_string();
     let sha = mem["content_sha256"].as_str().unwrap().to_string();
     let created_at = mem["created_at"].clone();
@@ -533,56 +543,56 @@ async fn memory_crud_with_precondition_and_version_log() {
     // omitted/basic -> mutation with null response; R6 update full -> mutation
     // with content; R7 version list/retrieve follow their list/retrieve defaults;
     // R8 any invalid view -> 400 without a write.
-    let (status, full) = call(
+    let full = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories?view=full"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(full["data"][0]["content"], "hello");
-    let (status, basic) = call(
+    let basic = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(
         basic["data"][0]["content"],
         Value::Null,
         "basic view elides content"
     );
-    let (status, explicit_basic) = call(
+    let explicit_basic = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories?view=basic"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(explicit_basic["data"][0]["content"], Value::Null, "R2");
 
     // Retrieve by id.
-    let (status, got) = call(
+    let got = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(got["content"], "hello");
-    let (status, got_basic) = call(
+    let got_basic = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories/{mid}?view=basic"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(got_basic["content"], Value::Null, "R4");
 
     // Causes: C1 an older SDK uses POST; C2 a canonical client uses PATCH; C3
@@ -592,7 +602,7 @@ async fn memory_crud_with_precondition_and_version_log() {
     // commits exactly one new version. Decision rules: C1+C3(stale) -> E1;
     // C2+C3(current) -> E2. Covering opposite verbs proves route aliases cannot
     // fork aggregate semantics.
-    let (status, conflict) = call(
+    let conflict = call(
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
@@ -601,15 +611,15 @@ async fn memory_crud_with_precondition_and_version_log() {
             "content_sha256": "0".repeat(64)
         } })),
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    .await
+    .expect_for(StatusCode::CONFLICT, "expected status");
     assert_eq!(
         conflict["error"]["type"],
         "memory_precondition_failed_error"
     );
 
     // The matching precondition (the live sha) succeeds and bumps the version id.
-    let (status, updated) = call(
+    let updated = call(
         &router,
         "PATCH",
         &format!("/v1/memory_stores/{store}/memories/{mid}?view=full"),
@@ -618,15 +628,15 @@ async fn memory_crud_with_precondition_and_version_log() {
             "content_sha256": sha
         } })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{updated}");
+    .await
+    .expect_for(StatusCode::OK, "expected status");
     assert_eq!(updated["content"], "world");
     let updated_version_id = updated["memory_version_id"].as_str().unwrap();
     assert_ne!(updated_version_id, created_version_id);
 
     // An idempotent update exercises the default basic projection without
     // appending a third version.
-    let (status, updated_basic) = call(
+    let updated_basic = call(
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
@@ -637,22 +647,22 @@ async fn memory_crud_with_precondition_and_version_log() {
                 "content_sha256": updated["content_sha256"] }
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(updated_basic["content"], Value::Null, "R5");
     assert_eq!(updated_basic["memory_version_id"], updated_version_id);
 
     // Metamorphic list/read rule: changing the head content changes updated
     // state only. Both views must be projected from one frozen head generation;
     // neither may rewrite created_at or pair the new hash with old content.
-    let (status, after_update) = call(
+    let after_update = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories?view=full"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let listed = after_update["data"]
         .as_array()
         .and_then(|items| items.iter().find(|item| item["id"] == mid))
@@ -663,14 +673,14 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(listed["memory_version_id"], updated_version_id);
 
     // The version log now carries a `created` then a `modified` row.
-    let (status, versions) = call(
+    let versions = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let ops: Vec<&str> = versions["data"]
         .as_array()
         .unwrap()
@@ -690,14 +700,14 @@ async fn memory_crud_with_precondition_and_version_log() {
             .all(|version| version["content"] == Value::Null),
         "R7 version list defaults to basic"
     );
-    let (status, full_versions) = call(
+    let full_versions = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions?view=full"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(full_versions["data"][0]["content"], "hello", "R7");
     assert_eq!(full_versions["data"][1]["content"], "world", "R7");
     // Actor cause/effect decision table: A1 authenticated API create/update ->
@@ -712,23 +722,23 @@ async fn memory_crud_with_precondition_and_version_log() {
         full_versions["data"][0]["created_by"]["api_key_id"], "api_test",
         "A1"
     );
-    let (status, actor_match) = call(
+    let actor_match = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions?api_key_id=api_test"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(actor_match["data"].as_array().unwrap().len(), 2, "A3");
-    let (status, actor_miss) = call(
+    let actor_miss = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions?api_key_id=other"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(actor_miss["data"].as_array().unwrap().is_empty(), "A3");
     let first_vid = versions["data"][0]["id"].as_str().unwrap().to_string();
     // Version-id cause/effect rules: V1 create atomically appends one real
@@ -743,24 +753,24 @@ async fn memory_crud_with_precondition_and_version_log() {
     );
 
     // Retrieve a single version.
-    let (status, ver) = call(
+    let ver = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions/{first_vid}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(ver["operation"], "created");
     assert_eq!(ver["content"], "hello");
-    let (status, basic_ver) = call(
+    let basic_ver = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions/{first_vid}?view=basic"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(basic_ver["content"], Value::Null, "R7");
 
     for route in [
@@ -770,7 +780,7 @@ async fn memory_crud_with_precondition_and_version_log() {
         format!("/v1/memory_stores/{store}/memory_versions/{first_vid}?view=invalid"),
     ] {
         assert_eq!(
-            call(&router, "GET", &route, None).await.0,
+            call(&router, "GET", &route, None).await.status(),
             StatusCode::BAD_REQUEST,
             "R8 {route}"
         );
@@ -783,7 +793,7 @@ async fn memory_crud_with_precondition_and_version_log() {
             Some(json!({ "path": "/must-not-exist.md", "content": "x" })),
         )
         .await
-        .0,
+        .status(),
         StatusCode::BAD_REQUEST,
         "R8 invalid create view"
     );
@@ -795,27 +805,27 @@ async fn memory_crud_with_precondition_and_version_log() {
             Some(json!({ "content": "must-not-persist" })),
         )
         .await
-        .0,
+        .status(),
         StatusCode::BAD_REQUEST,
         "R8 invalid update view"
     );
-    let (status, unchanged) = call(
+    let unchanged = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(unchanged["content"], "world", "R8 rejects before mutation");
-    let (status, unchanged_list) = call(
+    let unchanged_list = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories?view=full"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(
         unchanged_list["data"]
             .as_array()
@@ -826,14 +836,14 @@ async fn memory_crud_with_precondition_and_version_log() {
     );
 
     // Redact a version: stamp redacted_at + drop content.
-    let (status, redacted) = call(
+    let redacted = call(
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memory_versions/{first_vid}/redact"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_ne!(redacted["redacted_at"], Value::Null);
     assert_eq!(redacted["content"], Value::Null, "redaction drops content");
     assert_eq!(redacted["created_by"]["api_key_id"], "api_test", "A4");
@@ -843,7 +853,7 @@ async fn memory_crud_with_precondition_and_version_log() {
     // head/history untouched; the live version+SHA atomically removes the exact
     // id/head and appends one actor-attributed deleted version. The immutable id
     // comes from the route, closing delete/recreate and same-content ABA.
-    let (status, stale_delete) = call(
+    let stale_delete = call(
         &router,
         "DELETE",
         &format!(
@@ -852,33 +862,32 @@ async fn memory_crud_with_precondition_and_version_log() {
         ),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{stale_delete}");
+    .await.expect_for(StatusCode::CONFLICT, "expected status");
     assert_eq!(
         stale_delete["error"]["type"],
         "memory_precondition_failed_error"
     );
-    let (status, after_stale) = call(
+    let after_stale = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(after_stale["content"], "world");
-    let (status, versions_after_stale) = call(
+    let versions_after_stale = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(versions_after_stale["data"].as_array().unwrap().len(), 2);
 
     // Matching delete → receipt + exactly one `deleted` version row.
-    let (status, receipt) = call(
+    let receipt = call(
         &router,
         "DELETE",
         &format!(
@@ -888,28 +897,27 @@ async fn memory_crud_with_precondition_and_version_log() {
         ),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await.expect(StatusCode::OK);
     assert_eq!(receipt["type"], "memory_deleted");
     // The head is gone: retrieve by id is now 404. One request answers both
     // the status and the diagnostic; the second identical GET only existed
     // because the first discarded its status.
-    let (status, after) = call(
+    let _after = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "deleted memory: {after}");
-    let (status, versions_after_delete) = call(
+    .await
+    .expect_for(StatusCode::NOT_FOUND, "deleted memory");
+    let versions_after_delete = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let deleted = versions_after_delete["data"]
         .as_array()
         .unwrap()
@@ -925,64 +933,64 @@ async fn memory_error_arms_are_fail_closed() {
     let store = create_store(&router, "errs").await;
 
     // A create without a `path` is a 400.
-    let (status, _) = call(
+    let _ = call(
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memories"),
         Some(json!({ "content": "x" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 
     // A create against an UNKNOWN store is 404 (the mount-blob existence check).
-    let (status, _) = call(
+    let _ = call(
         &router,
         "POST",
         "/v1/memory_stores/memstore_missing/memories",
         Some(json!({ "path": "/a.md", "content": "x" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 
     // Retrieve / update / delete an unknown memory id in a real store → 404.
     for method in ["GET", "POST", "DELETE"] {
         let body = (method == "POST").then(|| json!({ "content": "x" }));
-        let (status, _) = call(
+        let _ = call(
             &router,
             method,
             &format!("/v1/memory_stores/{store}/memories/mem_missing"),
             body,
         )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{method} unknown memory");
+        .await
+        .expect_for(StatusCode::NOT_FOUND, "unknown memory");
     }
 
     // Version endpoints on an unknown store → 404; an unknown version id in a real
     // store → 404.
-    let (status, _) = call(
+    let _ = call(
         &router,
         "GET",
         "/v1/memory_stores/memstore_missing/memory_versions",
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = call(
+    .await
+    .expect(StatusCode::NOT_FOUND);
+    let _ = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions/memver_nope"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = call(
+    .await
+    .expect(StatusCode::NOT_FOUND);
+    let _ = call(
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memory_versions/memver_nope/redact"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -994,7 +1002,9 @@ async fn memory_store_router_does_not_reintroduce_a_parallel_store_configuration
     let router = router();
     let store = create_store(&router, "compatible-only").await;
     assert_ne!(
-        call(&router, "GET", "/v1/memory_stores", None).await.0,
+        call(&router, "GET", "/v1/memory_stores", None)
+            .await
+            .status(),
         StatusCode::NOT_FOUND,
         "R1"
     );
@@ -1007,7 +1017,7 @@ async fn memory_store_router_does_not_reintroduce_a_parallel_store_configuration
                 None,
             )
             .await
-            .0,
+            .status(),
             StatusCode::NOT_FOUND,
             "removed extension {suffix}"
         );
@@ -1069,9 +1079,8 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
             let mut ids = Vec::new();
             let mut cursor = String::new();
             loop {
-                let (status, page) = call(&router, "GET", &format!(
-                    "/v1/memory_stores?created_at%5Bgte%5D={wire}&created_at%5Blte%5D={wire}&include_archived={include_archived}&limit=1{cursor}"), None).await;
-                assert_eq!(status, StatusCode::OK, "{page}");
+                let page = call(&router, "GET", &format!(
+                    "/v1/memory_stores?created_at%5Bgte%5D={wire}&created_at%5Blte%5D={wire}&include_archived={include_archived}&limit=1{cursor}"), None).await.expect_for(StatusCode::OK, "expected status");
                 for row in page["data"].as_array().unwrap() {
                     assert_eq!(row["created_at"], wire);
                     ids.push(row["id"].as_str().unwrap().to_string());

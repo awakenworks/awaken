@@ -10,6 +10,63 @@ use awaken_session_contract::{
     SessionRepositoryError,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
+use axum::http::StatusCode;
+
+/// One HTTP exchange whose body cannot be read without naming the status it
+/// came with.
+///
+/// The `(StatusCode, T)` tuple this replaces could be destructured as
+/// `let (_, body) = ...`, and that is how a route which had begun answering
+/// 404 went unnoticed: the test read the empty body, then waited for work the
+/// failed request never scheduled, and parked its runtime forever. There is
+/// no accessor here that yields the body alone, so that shape no longer
+/// compiles.
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+#[must_use]
+pub struct Call<T = serde_json::Value> {
+    status: StatusCode,
+    body: T,
+}
+
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+impl<T: std::fmt::Debug> Call<T> {
+    pub fn new(status: StatusCode, body: T) -> Self {
+        Self { status, body }
+    }
+
+    /// Take the body, stating the status it must have arrived with.
+    pub fn expect(self, status: StatusCode) -> T {
+        assert_eq!(
+            self.status, status,
+            "unexpected status; body: {:?}",
+            self.body
+        );
+        self.body
+    }
+
+    /// Take the body, naming the status and the decision-table rule the
+    /// expectation belongs to. The body is already in the panic message, so
+    /// the rule is all this needs to add.
+    pub fn expect_for(self, status: StatusCode, rule: &str) -> T {
+        assert_eq!(self.status, status, "{rule}; body: {:?}", self.body);
+        self.body
+    }
+
+    /// Rewrite the body while the status rides along, so one helper can be
+    /// built out of another without either of them handing the body over
+    /// unqualified.
+    pub fn map<U>(self, project: impl FnOnce(T) -> U) -> Call<U> {
+        Call {
+            status: self.status,
+            body: project(self.body),
+        }
+    }
+
+    /// Take the status when the body is not part of the assertion.
+    pub fn status(self) -> StatusCode {
+        self.status
+    }
+}
 
 fn sdk_shape_names(shape: &serde_json::Value, key: &str, path: &str) -> BTreeSet<String> {
     shape[key]
