@@ -76,6 +76,27 @@ FORBIDDEN_BACKEND_CONFIG_DEPS = {
     "awaken-protocol-acp",
     "awaken-run-executor-acp",
 }
+
+# The runtime tier ships as an embeddable SDK: an application links
+# `awaken-runtime` plus the extensions it wants and runs agents without any
+# server, coordinator, or worker process. That only stays true while no runtime
+# crate links a serving assembly, so what it may depend on is enumerated here
+# rather than left to convention.
+#
+# The `shared` context is deliberately NOT a blanket allowance: it holds neutral
+# values (`awaken-tool-pattern`) next to server assemblies (`awaken-session-executor`),
+# so admitting it wholesale would let the host back into the SDK. Ports and
+# values are admitted by layer instead, and each neutral shared library is named
+# so adding another is a reviewed decision rather than a side effect.
+SDK_CONTEXT = "runtime"
+SDK_ALLOWED_DEPENDENCY_LAYERS = {"contract", "domain"}
+SDK_ALLOWED_SHARED_LIBRARIES = {
+    # Provider-neutral MCP codec and HTTP client. Both are plain client
+    # libraries with no serving role, and `awaken-ext-mcp` needs them to speak
+    # MCP from an embedded runtime.
+    "awaken-mcp-wire",
+    "awaken-outbound-http",
+}
 ACTIVE_BUILTIN_TOOL_IDS = {
     "bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search",
     "agent_run", "list_agents", "send_message",
@@ -1578,6 +1599,80 @@ def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> 
     return []
 
 
+def _sdk_tier_dependency_errors(
+    crate: str, dependencies: dict[str, tuple[str, str]]
+) -> list[str]:
+    """Reject a runtime-tier dependency on a serving assembly.
+
+    Cause/effect graph: C1=the dependency is itself in the runtime tier;
+    C2=its layer is a port or a neutral value (`contract`/`domain`), whatever
+    its context; C3=it is a reviewed neutral shared library. E1=accept C1|C2|C3;
+    E2=reject anything else, because linking it would drag a serving process
+    into the embeddable SDK.
+    """
+    errors: list[str] = []
+    for dependency, (context, layer) in sorted(dependencies.items()):
+        if context == SDK_CONTEXT:
+            continue
+        if layer in SDK_ALLOWED_DEPENDENCY_LAYERS:
+            continue
+        if dependency in SDK_ALLOWED_SHARED_LIBRARIES:
+            continue
+        errors.append(
+            f"{crate}: depends on {dependency!r} ({context}/{layer}); the runtime "
+            "tier must stay embeddable without a server, so depend on a port, a "
+            "neutral value, or a reviewed shared library instead"
+        )
+    return errors
+
+
+def check_sdk_tier_is_standalone() -> list[str]:
+    """Keep `awaken-runtime` and its extensions linkable without a server."""
+    specs = {spec.name: spec for spec in architecture_fitness_specs()}
+    coordinates = {name: (spec.context, spec.layer) for name, spec in specs.items()}
+    errors: list[str] = []
+    for name, spec in sorted(specs.items()):
+        if spec.context != SDK_CONTEXT:
+            continue
+        errors.extend(
+            _sdk_tier_dependency_errors(
+                name,
+                {
+                    dependency: coordinates[dependency]
+                    for dependency in spec.normal_deps
+                    if dependency in coordinates
+                },
+            )
+        )
+    return errors
+
+
+def selftest_sdk_tier_is_standalone() -> None:
+    # Decision table. S1=another runtime crate => accept. S2=a port or neutral
+    # value in any context => accept. S3=a reviewed shared library => accept.
+    # S4=a serving assembly, even in the same `shared` context as S2 => reject;
+    # this is the case a context-only rule would have admitted.
+    assert not _sdk_tier_dependency_errors(
+        "awaken-runtime", {"awaken-ext-goal": ("runtime", "infrastructure")}
+    ), "S1/E1"
+    assert not _sdk_tier_dependency_errors(
+        "awaken-runtime-contract",
+        {
+            "awaken-credential-contract": ("control", "contract"),
+            "awaken-tool-pattern": ("shared", "domain"),
+        },
+    ), "S2/E1"
+    assert not _sdk_tier_dependency_errors(
+        "awaken-ext-mcp", {"awaken-mcp-wire": ("shared", "infrastructure")}
+    ), "S3/E1"
+    assert _sdk_tier_dependency_errors(
+        "awaken-ext-permission", {"awaken-session-executor": ("shared", "infrastructure")}
+    ), "S4/E2 a serving assembly is not admitted by its context"
+    assert _sdk_tier_dependency_errors(
+        "awaken-runtime", {"awaken-coordinator": ("coordinator", "application")}
+    ), "S4/E2"
+
+
 def main() -> int:
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
@@ -1601,6 +1696,7 @@ def main() -> int:
     selftest_no_ambient_tenant_default()
     selftest_backend_configuration_is_opaque()
     selftest_composite_identity_is_stated()
+    selftest_sdk_tier_is_standalone()
     errors = (
         check_no_direct_transport_dependency()
         +
@@ -1609,6 +1705,7 @@ def main() -> int:
         + check_builtin_tool_ownership()
         + check_background_task_is_state_only()
         + check_backend_configuration_is_opaque()
+        + check_sdk_tier_is_standalone()
         + check_tests_are_not_arch_owners()
         + check_cloud_placement_boundary()
         + check_generation_witnesses_are_complete()
