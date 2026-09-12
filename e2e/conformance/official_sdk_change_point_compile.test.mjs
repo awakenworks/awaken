@@ -48,6 +48,17 @@ test('candidate compile fixtures are projection-complete and contain no escape h
   assert.match(ga, /skill\.latest_version_id;/u, 'T2/E2');
   assert.match(ga, /parseUnverified/u, 'T2/E3');
   assert.match(beta, /typeof resolveSkillVersion/u, '0.121 helper is strongly typed');
+  const v125 = officialSdkChangePointFixture({
+    filesProjection: 'ga', skillsProjection: 'ga', parseUnverified: true,
+    resolveSkillVersion: false, managedTypesV125: true,
+  });
+  for (const changePoint of [
+    /type: 'auto'/u, /evaluated_permission: \{ type: 'ask', reason_code/u,
+    /external_user_details: externalUser/u, /authorizationIsOptional/u,
+  ]) {
+    assert.match(v125, changePoint, '0.125 change point is strongly typed');
+    assert.doesNotMatch(ga, changePoint, '0.125 change point is emitted only when owned');
+  }
   assert.match(ga, /noRetiredResolveHelper/u, '0.122 helper removal is strongly typed');
   for (const fixture of [beta, ga]) {
     assert.match(fixture, /betaAgentToolset20260401/u, 'Managed helper subpath compiles');

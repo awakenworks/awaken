@@ -116,6 +116,45 @@ function managedTypesFixture(enabled) {
   void createProfile; void updateProfile; void listProfiles; void declarationOwners;`;
 }
 
+function managedTypesV125Fixture(enabled) {
+  if (!enabled) return '';
+  // 0.125 change points: the `auto` permission policy on Agent tool configs,
+  // the per-call `evaluation` on tool-use events, external user details on
+  // User Profiles, and an optional GitHub authorization token.
+  return `
+  const autoPolicy: import('@anthropic-ai/sdk/resources/beta/agents/agents').BetaManagedAgentsAutoPolicy =
+    { type: 'auto' };
+  const autoToolset: import('@anthropic-ai/sdk/resources/beta/agents/agents').BetaManagedAgentsAgentToolset20260401Params = {
+    type: 'agent_toolset_20260401',
+    default_config: { enabled: true, permission_policy: autoPolicy },
+  };
+  const evaluation: import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsAgentToolEvaluation = {
+    type: 'auto',
+    evaluated_permission: { type: 'ask', reason_code: 'compile_only' },
+  };
+  const evaluatedToolUse: import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsAgentToolUseEvent = {
+    id: 'event_compile', input: {}, name: 'read', processed_at: '2026-09-13T00:00:00Z',
+    type: 'agent.tool_use', evaluated_permission: 'ask', evaluation,
+  };
+  const evaluatedMcpToolUse: import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsAgentMCPToolUseEvent = {
+    id: 'event_compile_mcp', input: {}, name: 'add', mcp_server_name: 'calc',
+    processed_at: '2026-09-13T00:00:00Z', type: 'agent.mcp_tool_use', evaluation,
+  };
+  const externalUser: import('@anthropic-ai/sdk/resources/beta/user-profiles').BetaUserProfileExternalUserDetailsParams = {
+    account_status: 'active', country: 'DE', entity_type: 'business', reference_id: 'ref_compile',
+  };
+  const createDetailedProfile:
+    import('@anthropic-ai/sdk/resources/beta/user-profiles').UserProfileCreateParams = {
+      external_user_details: externalUser,
+    };
+  const publicRepository: import('@anthropic-ai/sdk/resources/beta/sessions/sessions').BetaManagedAgentsGitHubRepositoryResourceParams = {
+    type: 'github_repository', url: 'https://github.com/awaken/public',
+  };
+  const authorizationIsOptional:
+    undefined extends import('@anthropic-ai/sdk/resources/beta/sessions/sessions').BetaManagedAgentsGitHubRepositoryResourceParams['authorization_token'] ? true : never = true;
+  void autoToolset; void evaluatedToolUse; void evaluatedMcpToolUse; void createDetailedProfile;
+  void publicRepository; void authorizationIsOptional;`;
+}
 function workspaceRoutingFixture(enabled) {
   if (!enabled) return '';
   return `
@@ -157,6 +196,7 @@ export function officialSdkChangePointFixture({
   parseUnverified,
   resolveSkillVersion,
   managedTypesV123 = false,
+  managedTypesV125 = false,
   workspaceRouting = false,
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
@@ -185,6 +225,7 @@ async function exerciseChangePoints() {
 ${filesFixture(filesProjection)}
 ${skillsFixture(skillsProjection)}
 ${managedTypesFixture(managedTypesV123)}
+${managedTypesV125Fixture(managedTypesV125)}
 ${workspaceRoutingFixture(workspaceRouting)}
   client.beta.webhooks.unwrap('{}', { headers: {
     'webhook-id': 'event_compile',

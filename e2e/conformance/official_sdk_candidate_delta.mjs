@@ -171,7 +171,7 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   if (delta.declarations.added.length > 0 || delta.declarations.removed.length > 0) {
     throw new Error('candidate adds or removes scoped declaration files; review the SDK scope');
   }
-  const supportedDeclaration = /^(?:beta\/.+\.d\.ts|ga\/.+\.d\.ts|managed\/(?:lib\/sessions\/accumulate|tools\/agent-toolset\/(?:fs-util|node(?:\.browser)?|skills))\.d\.ts)$/u;
+  const supportedDeclaration = /^(?:beta\/.+\.d\.ts|ga\/.+\.d\.ts|managed\/(?:lib\/(?:sessions\/accumulate|environments\/worker)|tools\/agent-toolset\/(?:fs-util|node(?:\.browser)?|skills))\.d\.ts)$/u;
   const unsupportedDeclaration = delta.declarations.changed.find(
     ({ path }) => !supportedDeclaration.test(path),
   );
@@ -199,9 +199,18 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
     /^lib\/credentials\/(?:credential-chain|identity-token|types|user-oauth)\.mjs$/u,
     /^lib\/middleware\.mjs$/u,
     /^lib\/sessions\/accumulate\.mjs$/u,
-    /^resources\/(?:beta\/.+|files|models|skills\/(?:skills|versions))\.mjs$/u,
+    // 0.125: the Environment worker helper runs a work item on the sessions
+    // token its secret carries; owned by `candidate.environment-worker-secret-token`.
+    /^lib\/environments\/worker\.mjs$/u,
+    /^resources\/(?:beta\/.+|files|models|skills(?:\/(?:index|skills|versions))?)\.mjs$/u,
     /^tools\/agent-toolset\/(?:fs-util|memories|node|skills)\.mjs$/u,
     /^version\.mjs$/u,
+    // 0.125 dropped the generator banner from every generated module. These
+    // core/internal modules are owned by `candidate.generated-module-loadability`,
+    // which imports each one from the exact package root; any behavioral
+    // change inside them still needs its own owner because the qualification
+    // pins the complete content fingerprint.
+    /^(?:index|core\/(?:api-promise|error|pagination|resource)|internal\/(?:detect-platform|headers|request-options|shims|utils|utils\/(?:base64|env|log|query|uuid|values)))\.mjs$/u,
   ];
   const unsupportedRuntime = [...delta.runtime.added, ...delta.runtime.changed].find(
     ({ path }) => !runtimeOwners.some((owner) => owner.test(path)),
