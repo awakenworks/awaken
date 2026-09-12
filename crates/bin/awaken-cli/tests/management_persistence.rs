@@ -60,6 +60,9 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     // secret-free configuration and materializes the sealed secret; E3 C3 keeps
     // public rows readable but fails secret materialization closed. Decision
     // rules: P1=C1=>E1, P2=C1+C2=>E2, P3=C1+C3=>E3.
+    // P4: after C2, a query claiming a foreign Workspace returns 404;
+    // P2 reads use the persisted installation Workspace stamped by the real
+    // no-login edge (ADR-0061), not a second caller-authored scope.
     let dir = tempfile::tempdir().unwrap();
     let catalog = SqliteCatalogRepo::open(dir.path().join("catalog.db").to_str().unwrap()).unwrap();
     catalog
@@ -100,6 +103,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
 
     // ---- lifetime A: author everything over HTTP --------------------------
     let cred_id;
+    let platform_workspace;
     {
         let app = build_durable_all_in_one_router(dir.path(), &KEY).await;
 
@@ -130,8 +134,10 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         );
         let audit_store = SqliteConfigStore::open(dir.path().join("config.db").to_str().unwrap())
             .expect("open durable audit store");
-        let platform_workspace = std::fs::read_to_string(dir.path().join("platform-workspace-id"))
-            .expect("platform workspace persisted");
+        platform_workspace = std::fs::read_to_string(dir.path().join("platform-workspace-id"))
+            .expect("platform workspace persisted")
+            .trim()
+            .to_owned();
         let audit_entry = audit_store
             .get_management_audit_scoped(
                 &ScopeId::from(platform_workspace.trim()),
@@ -166,7 +172,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             "POST",
             "/v1/config/credentials",
             Some(json!({
-                "workspace_id": "ws", "kind": "vault", "provider_id": "anthropic",
+                "workspace_id": platform_workspace, "kind": "vault", "provider_id": "anthropic",
                 "env_key": "ANTHROPIC_API_KEY",
                 "secret": "sk-restart-secret" // awaken-allow: secret
             })),
@@ -180,7 +186,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             "PUT",
             "/v1/config/credential-pools/pool1",
             Some(json!({
-                "id": "pool1", "workspace_id": "ws",
+                "id": "pool1", "workspace_id": platform_workspace,
                 "members": [{ "credential_source_id": cred_id, "ordinal": 0,
                               "enabled": true, "selection_weight": 0 }]
             })),
@@ -253,8 +259,20 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         "endpoint persisted: {catalog}"
     );
 
-    let (s, creds) = call(&app, "GET", "/v1/config/credentials?workspace_id=ws", None).await;
-    assert_eq!(s, StatusCode::OK);
+    let (s, _) = call(&app, "GET", "/v1/config/credentials?workspace_id=ws", None).await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "P4: foreign Workspace is concealed"
+    );
+    let (s, creds) = call(
+        &app,
+        "GET",
+        &format!("/v1/config/credentials?workspace_id={platform_workspace}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "P2: persisted installation Workspace");
     let creds = creds.as_array().unwrap();
     assert!(creds.iter().any(|c| c["id"] == json!(cred_id)));
     assert!(
@@ -300,7 +318,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         "POST",
         "/v1/config/inference/resolve",
         Some(json!({
-            "workspace_id": "ws", "target": { "model_id": "claude-opus-4-8" },
+            "workspace_id": platform_workspace, "target": { "model_id": "claude-opus-4-8" },
             "binding": { "type": "exact", "credential_source_id": cred_id }
         })),
     )
@@ -313,7 +331,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         &app,
         "POST",
         "/v1/config/inference-profiles/prof1/resolve",
-        Some(json!({ "workspace_id": "ws" })),
+        Some(json!({ "workspace_id": platform_workspace })),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{resolved}");
@@ -347,7 +365,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         "POST",
         "/v1/config/inference/resolve",
         Some(json!({
-            "workspace_id": "ws", "target": { "model_id": "claude-opus-4-8" },
+            "workspace_id": platform_workspace, "target": { "model_id": "claude-opus-4-8" },
             "binding": { "type": "exact", "credential_source_id": cred_id }
         })),
     )
