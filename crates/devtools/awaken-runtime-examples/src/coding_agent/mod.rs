@@ -27,7 +27,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_builtin_tools::{HandToolContext, Toolset, all_hand_tools_in, builtin_tools};
 use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
+    PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
 use awaken_runtime::{PermissionGate, Runtime};
@@ -83,7 +83,6 @@ pub fn coding_policy() -> RuleBasedToolPermissionPolicy {
     };
     RuleBasedToolPermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::RequireConfirmation,
-        mode: Mode::Default,
         rules: vec![allow("read"), allow("glob"), allow("grep")],
     })
 }

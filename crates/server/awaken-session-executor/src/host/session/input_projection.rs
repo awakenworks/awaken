@@ -2,20 +2,16 @@
 
 use super::*;
 
-pub(super) fn pre_authorized_tool_ids(
-    mcp_ids: &[String],
-    admin_ids: &[String],
-    has_authored_permission: bool,
-) -> Vec<String> {
-    if has_authored_permission {
-        admin_ids.to_vec()
-    } else {
-        mcp_ids
-            .iter()
-            .cloned()
-            .chain(admin_ids.iter().cloned())
-            .collect()
-    }
+/// The tool ids that bypass the authored policy and are allowed outright.
+///
+/// Only the read-only management tools (ADR-0052) qualify: the reserved-scope
+/// assistant names them and they grant perception, not authority. MCP tool ids
+/// are deliberately absent. An MCP tool's authorization comes from its
+/// `mcp_toolset` policy, whose default is ask — the same default the Managed
+/// Agents wire publishes — so an undeclared MCP server can never be allowed by
+/// the mere absence of an authored policy.
+pub(super) fn pre_authorized_tool_ids(admin_ids: &[String]) -> Vec<String> {
+    admin_ids.to_vec()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,18 +135,22 @@ mod tests {
     }
 
     #[test]
-    fn authored_permission_is_the_only_mcp_confirmation_authority() {
-        let mcp = vec!["mcp__calc__add".to_string()];
+    fn only_read_only_management_tools_are_pre_authorized() {
+        // Cause/effect graph: C1 read-only management ids are present; C2 an MCP
+        // tool id is present. E1 management ids bypass the authored policy; E2 an
+        // MCP id never does, whatever else is configured, so its authorization
+        // stays with its `mcp_toolset` policy (default ask, Managed-wire parity).
+        //
+        // | Rule | C1 | C2 | Effect |
+        // | R1 | T | T | E1 only |
+        // | R2 | F | T | empty — the MCP id is not lent authority |
         let admin = vec!["awaken_admin_get".to_string()];
-
         assert_eq!(
-            pre_authorized_tool_ids(&mcp, &admin, false),
-            vec!["mcp__calc__add", "awaken_admin_get"]
+            pre_authorized_tool_ids(&admin),
+            vec!["awaken_admin_get"],
+            "R1"
         );
-        assert_eq!(
-            pre_authorized_tool_ids(&mcp, &admin, true),
-            vec!["awaken_admin_get"]
-        );
+        assert!(pre_authorized_tool_ids(&[]).is_empty(), "R2");
     }
 
     #[test]

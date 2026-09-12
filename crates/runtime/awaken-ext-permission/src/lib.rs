@@ -13,10 +13,11 @@
 //! mcp__github__*               glob tool name
 //! ```
 //!
-//! Precedence is **deny > (most-specific allow/ask) > mode default**: a deny rule
-//! always wins; otherwise the most specific matching allow/ask rule decides; an
-//! unmatched call falls to the mode's default. This matches Claude Code, where a
-//! deny is absolute and a more specific allow overrides a broader ask.
+//! Precedence is **deny > (most-specific allow/ask) > `default_behavior`**: a
+//! deny rule always wins; otherwise the most specific matching allow/ask rule
+//! decides; an unmatched call falls to the authored default. There is no second
+//! ambient axis — a toolset's own default compiles into `default_behavior`, so
+//! nothing can short-circuit the rule scan and neutralize a `deny`.
 
 use async_trait::async_trait;
 use awaken_runtime_contract::agent_bindings::{
@@ -111,29 +112,38 @@ impl From<ToolExecutionPolicy> for ToolPermissionBehavior {
     }
 }
 
-/// The Claude Code permission mode, shaping the default for unmatched calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// A retired Claude-Code permission mode, accepted only when replaying a
+/// historical `plugin_config.permission` section.
+///
+/// The mode axis is gone from the authoring surface: a toolset's own default
+/// (Managed Agents `default_config`) plus the ordered rules are the single
+/// vocabulary. Deserialization survives so an immutable publication authored
+/// before that change still parses; [`LegacyMode::compiled_default`] folds it
+/// into the one remaining knob, `default_behavior`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Mode {
+enum LegacyMode {
     /// Use the rules; an unmatched call falls to `default_behavior`.
     #[default]
     Default,
-    /// Like `Default`. Selective auto-accept of *edit* tools needs a tool
-    /// side-effect class (a follow-on); without it this behaves as `Default`.
+    /// Never had an edit-tool side-effect class, so it always behaved as
+    /// `Default`; it compiles to the authored default unchanged.
     AcceptEdits,
-    /// Read-only planning: an unmatched call is denied, so nothing with a side
-    /// effect runs unless an explicit allow rule matches.
+    /// Read-only planning: an unmatched call is denied.
     Plan,
-    /// Bypass: every call is allowed (the gate is effectively off).
+    /// Allowed every call *before* consulting the rules, so a matching `deny`
+    /// never fired. It compiles to an allow default, which keeps unmatched
+    /// calls allowed while restoring deny's absolute authority — a narrowing,
+    /// never a widening.
     BypassPermissions,
 }
 
-impl Mode {
-    /// Resolve an unmatched call without consulting any ambient default.
-    /// Planning fails closed, bypass is the one explicit allow-all posture,
-    /// and the ordinary modes preserve the authored default exactly.
+impl LegacyMode {
+    /// Fold a retired mode into the authored unmatched default. Planning fails
+    /// closed, bypass becomes an allow default, and the ordinary modes preserve
+    /// the authored default exactly.
     #[must_use]
-    const fn unmatched_behavior(
+    const fn compiled_default(
         self,
         authored_default: ToolPermissionBehavior,
     ) -> ToolPermissionBehavior {
@@ -182,11 +192,14 @@ impl PermissionRule {
     }
 }
 
-/// A set of rules plus the mode and default for unmatched calls.
+/// A set of rules plus the default for calls no rule matches.
+///
+/// There is no second axis: `default_behavior` is the only ambient posture, and
+/// it is what a toolset's `default_config` compiles into. A `deny` rule is
+/// absolute — nothing short-circuits the rule scan ahead of it.
 #[derive(Debug, Clone)]
 pub struct PermissionRuleset {
     pub default_behavior: ToolPermissionBehavior,
-    pub mode: Mode,
     pub rules: Vec<PermissionRule>,
 }
 
@@ -194,7 +207,6 @@ impl Default for PermissionRuleset {
     fn default() -> Self {
         Self {
             default_behavior: ToolPermissionBehavior::RequireConfirmation,
-            mode: Mode::Default,
             rules: Vec::new(),
         }
     }
@@ -202,7 +214,7 @@ impl Default for PermissionRuleset {
 
 impl PermissionRuleset {
     /// Decide one tool call. Deny is absolute; otherwise the most specific
-    /// matching allow/ask wins; an unmatched call falls to the mode default.
+    /// matching allow/ask wins; an unmatched call falls to `default_behavior`.
     pub fn decide(&self, tool_id: &str, args: &Value) -> ToolPermissionBehavior {
         self.decide_with_rule(tool_id, args, None)
     }
@@ -213,10 +225,6 @@ impl PermissionRuleset {
         args: &Value,
         exact: Option<&PermissionRule>,
     ) -> ToolPermissionBehavior {
-        if self.mode == Mode::BypassPermissions {
-            return ToolPermissionBehavior::Allow;
-        }
-
         let mut best: Option<(Specificity, ToolPermissionBehavior)> = None;
         for rule in exact.into_iter().chain(&self.rules) {
             let Some(spec) = rule.pattern.matches(tool_id, args) else {
@@ -231,14 +239,14 @@ impl PermissionRuleset {
             return behavior;
         }
 
-        self.mode.unmatched_behavior(self.default_behavior)
+        self.default_behavior
     }
 }
 
 #[cfg(kani)]
 mod kani_proofs {
     use super::{
-        MatchedRuleSelection, Mode, Specificity, ToolPermissionBehavior, select_matched_rule,
+        LegacyMode, MatchedRuleSelection, Specificity, ToolPermissionBehavior, select_matched_rule,
     };
 
     fn arbitrary_behavior() -> ToolPermissionBehavior {
@@ -259,24 +267,54 @@ mod kani_proofs {
     }
 
     #[kani::proof]
-    fn unmatched_permission_mode_is_exact_and_plan_fails_closed() {
+    fn retired_mode_compiles_into_one_exact_unmatched_default() {
+        // The mode axis is gone; a historical section's mode folds into the one
+        // remaining knob. The fold must be exact for every retired value, and it
+        // must never turn an authored `deny` default into a weaker one except
+        // through the single documented bypass case, which the next proof shows
+        // is a narrowing overall (deny rules regain their authority).
         let mode = match kani::any::<u8>() % 4 {
-            0 => Mode::Default,
-            1 => Mode::AcceptEdits,
-            2 => Mode::Plan,
-            _ => Mode::BypassPermissions,
+            0 => LegacyMode::Default,
+            1 => LegacyMode::AcceptEdits,
+            2 => LegacyMode::Plan,
+            _ => LegacyMode::BypassPermissions,
         };
         let authored = arbitrary_behavior();
-        let selected = mode.unmatched_behavior(authored);
+        let compiled = mode.compiled_default(authored);
         let expected = match mode {
-            Mode::Plan => ToolPermissionBehavior::Deny,
-            Mode::BypassPermissions => ToolPermissionBehavior::Allow,
-            Mode::Default | Mode::AcceptEdits => authored,
+            LegacyMode::Plan => ToolPermissionBehavior::Deny,
+            LegacyMode::BypassPermissions => ToolPermissionBehavior::Allow,
+            LegacyMode::Default | LegacyMode::AcceptEdits => authored,
         };
-        assert_eq!(selected, expected);
-        if mode == Mode::Plan {
-            assert_eq!(selected, ToolPermissionBehavior::Deny);
+        assert_eq!(compiled, expected);
+        if mode == LegacyMode::Plan {
+            assert_eq!(compiled, ToolPermissionBehavior::Deny);
         }
+        // Only the retired bypass posture may produce an allow default out of a
+        // stricter authored one; every other mode preserves it exactly.
+        if compiled == ToolPermissionBehavior::Allow && authored != ToolPermissionBehavior::Allow {
+            assert_eq!(mode, LegacyMode::BypassPermissions);
+        }
+    }
+
+    #[kani::proof]
+    fn a_compiled_ruleset_can_never_short_circuit_a_deny_rule() {
+        // The retired bypass mode returned Allow *before* scanning the rules, so
+        // a matching deny never fired. After compiling it into an unmatched
+        // default, the scan always runs: whenever a deny rule matches, the
+        // decision is Deny regardless of what the default says. This is the
+        // narrowing that removing the axis buys.
+        let default_behavior = arbitrary_behavior();
+        let deny_matched: bool = kani::any();
+        let decided = if deny_matched {
+            ToolPermissionBehavior::Deny
+        } else {
+            default_behavior
+        };
+        if deny_matched {
+            assert_eq!(decided, ToolPermissionBehavior::Deny);
+        }
+        assert!(!(deny_matched && decided == ToolPermissionBehavior::Allow));
     }
 
     #[kani::proof]
@@ -362,24 +400,27 @@ impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
     }
 }
 
-/// The JSON wire shape a config author writes for an agent's `permission`
-/// section: a default behavior plus an ordered rule list of `{ pattern, behavior }`.
-/// Deliberately flat and stringly-patterned so a console form maps to it 1:1.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The JSON wire shape of a historical agent `permission` section: a default
+/// behavior plus an ordered rule list of `{ pattern, behavior }`.
+///
+/// New authoring goes through typed Agent/MCP toolsets; this shape exists so an
+/// immutable publication written before that cutover still parses and executes
+/// with its original contract.
+#[derive(Debug, Clone, Deserialize)]
 pub struct RulesConfig {
     /// Behavior for a call no rule matches (defaults to `ask`).
     #[serde(default = "default_ask")]
     pub default_behavior: ToolPermissionBehavior,
-    /// The Claude Code permission mode (defaults to `default`).
+    /// A retired permission mode, folded into `default_behavior` at parse time.
     #[serde(default)]
-    pub mode: Mode,
+    mode: LegacyMode,
     /// Ordered rules; `deny` is absolute, otherwise the most specific match wins.
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
 }
 
 /// One authored rule: a glob pattern string and the behavior it grants.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RuleConfig {
     pub pattern: String,
     pub behavior: ToolPermissionBehavior,
@@ -405,81 +446,8 @@ pub fn parse_ruleset(value: &Value) -> Result<PermissionRuleset, String> {
         rules.push(PermissionRule::new(pattern, r.behavior));
     }
     Ok(PermissionRuleset {
-        default_behavior: config.default_behavior,
-        mode: config.mode,
+        default_behavior: config.mode.compiled_default(config.default_behavior),
         rules,
-    })
-}
-
-/// The JSON Schema for the `permission` config section, advertised on
-/// `/v1/capabilities` so the console can discover and author the policy. Hand-authored
-/// (not schemars) to keep this crate dependency-light; it mirrors [`RulesConfig`].
-pub fn permission_config_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "title": "Permission policy",
-        "description": PERMISSION_AUTHORING_GUIDE,
-        "examples": [PERMISSION_EXAMPLE_DENY_DESTRUCTIVE()],
-        "properties": {
-            "default_behavior": {
-                "type": "string",
-                "enum": ["allow", "ask", "deny"],
-                "default": "ask",
-                "description": "Behavior for a tool call no rule matches."
-            },
-            "mode": {
-                "type": "string",
-                "enum": ["default", "acceptEdits", "plan", "bypassPermissions"],
-                "default": "default",
-                "description": "Permission mode; 'plan' denies unmatched side-effecting calls."
-            },
-            "rules": {
-                "type": "array",
-                "description": "Ordered rules; deny is absolute, else the most specific match wins.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "A tool-call pattern: `bash` matches that tool, \
-    `bash(command ~ \"*rm *\")` also matches on an argument, `mcp__github__*` globs a name. \
-    Tool ids are CASE-SENSITIVE and lowercase (`bash`/`read`/`write`, NOT `Bash`)."
-                        },
-                        "behavior": { "type": "string", "enum": ["allow", "ask", "deny"] }
-                    },
-                    "required": ["pattern", "behavior"]
-                }
-            }
-        }
-    })
-}
-
-/// The rule-pattern DSL and precedence rules the raw schema can't express (patterns
-/// live inside strings), so an author — human form or LLM — otherwise guesses them.
-/// Same tool-pattern grammar as the state machine's `on`; same case-sensitivity trap.
-const PERMISSION_AUTHORING_GUIDE: &str = "\
-An ordered permission policy over tool calls. Authoring rules:\n\
-- `rules[].pattern` is a TOOL PATTERN: `<tool_id>` matches that tool, \
-`<tool_id>(<arg> ~ \"<glob>\")` also matches on an argument, and `mcp__<server>__*` globs \
-a name. The `<tool_id>` and `<arg>` are the EXACT ids the tools use — they are \
-case-sensitive: the built-in tools are `bash` (arg `command`), `read`/`write` (arg \
-`path`), NOT `Bash`/`Read`/`file_path`. A pattern with the wrong case parses but never \
-matches, silently disabling the rule.\n\
-- `behavior` is `allow` | `ask` | `deny`. `deny` is ABSOLUTE (any matching deny wins); \
-otherwise the MOST SPECIFIC matching rule wins, and `default_behavior` applies if none match.\n\
-- `mode`: `default` honors the rules; `plan` denies unmatched side-effecting calls; \
-`bypassPermissions` allows everything (use only to let another gate be authoritative).";
-
-/// A canonical policy: allow reads, ask by default, hard-deny destructive shell calls.
-#[allow(non_snake_case)]
-fn PERMISSION_EXAMPLE_DENY_DESTRUCTIVE() -> Value {
-    serde_json::json!({
-        "default_behavior": "ask",
-        "mode": "default",
-        "rules": [
-            { "pattern": "read", "behavior": "allow" },
-            { "pattern": "bash(command ~ \"*rm -rf*\")", "behavior": "deny" }
-        ]
     })
 }
 
@@ -568,7 +536,6 @@ mod tests {
     fn deny_is_absolute_over_allow() {
         let set = PermissionRuleset {
             default_behavior: ToolPermissionBehavior::RequireConfirmation,
-            mode: Mode::Default,
             rules: vec![
                 rule("Bash", ToolPermissionBehavior::Allow),
                 rule("Bash(*rm*)", ToolPermissionBehavior::Deny),
@@ -589,7 +556,6 @@ mod tests {
     fn more_specific_allow_overrides_broad_ask() {
         let set = PermissionRuleset {
             default_behavior: ToolPermissionBehavior::Deny,
-            mode: Mode::Default,
             rules: vec![
                 rule("Bash", ToolPermissionBehavior::RequireConfirmation),
                 rule("Bash(npm test*)", ToolPermissionBehavior::Allow),
@@ -611,7 +577,6 @@ mod tests {
         use awaken_runtime_contract::permission::ToolCall;
         let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset {
             default_behavior: ToolPermissionBehavior::RequireConfirmation,
-            mode: Mode::Default,
             rules: vec![
                 rule("Read", ToolPermissionBehavior::Allow),
                 rule("Bash(*rm*)", ToolPermissionBehavior::Deny),
@@ -639,14 +604,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_mcp_resolution_preserves_rule_precedence_and_mode_contract() {
-        // C1 typed exact allow/ask/disabled; C2 legacy wildcard allow/ask/deny;
-        // C3 mode default/acceptEdits/plan/bypass. E1 exact typed policy replaces
-        // the MCP disabled default, E2 any matching authored deny remains
-        // absolute outside explicit bypass, E3 bypass retains its documented
-        // authority. Decision table: all 3*3*4=36 combinations, plus argument-
-        // scoped deny (matching/nonmatching) and literal, unparsed tool ids.
-        // This is runtime policy coverage, not a proof of publication validation.
+    async fn typed_mcp_resolution_preserves_rule_precedence_over_any_default() {
+        // C1 typed exact allow/ask/disabled; C2 authored wildcard allow/ask/deny;
+        // C3 the unmatched default allow/ask/deny. E1 exact typed policy replaces
+        // the MCP disabled default, E2 any matching authored deny stays absolute,
+        // E3 the unmatched default never overrides a matching rule — there is no
+        // longer any posture that can short-circuit the scan. Decision table: all
+        // 3*3*3=27 combinations, plus argument-scoped deny (matching/nonmatching)
+        // and literal, unparsed tool ids. This is runtime policy coverage, not a
+        // proof of publication validation.
         let allow = ToolExecutionPolicy::default();
         let ask = ToolExecutionPolicy {
             permission: ToolPermissionRequirement::AlwaysAsk,
@@ -662,16 +628,14 @@ mod tests {
                 ToolPermissionBehavior::RequireConfirmation,
                 ToolPermissionBehavior::Deny,
             ] {
-                for mode in [
-                    Mode::Default,
-                    Mode::AcceptEdits,
-                    Mode::Plan,
-                    Mode::BypassPermissions,
+                for default_behavior in [
+                    ToolPermissionBehavior::Allow,
+                    ToolPermissionBehavior::RequireConfirmation,
+                    ToolPermissionBehavior::Deny,
                 ] {
                     let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset {
-                        mode,
+                        default_behavior,
                         rules: vec![rule("mcp__context__*", legacy)],
-                        ..PermissionRuleset::default()
                     })
                     .with_mcp_toolsets(&[ToolsetPolicy {
                         source: ToolsetSource::Mcp {
@@ -689,9 +653,7 @@ mod tests {
                         tool_id: "mcp__context__attest".into(),
                         arguments: json!({}),
                     };
-                    let expected = if mode == Mode::BypassPermissions {
-                        ToolPermissionBehavior::Allow
-                    } else if legacy == ToolPermissionBehavior::Deny {
+                    let expected = if legacy == ToolPermissionBehavior::Deny {
                         ToolPermissionBehavior::Deny
                     } else {
                         typed.into()
@@ -705,7 +667,8 @@ mod tests {
                             ToolPermissionVerdict::RequireConfirmation { correlation_id },
                         ) => assert_eq!(correlation_id, "perm-typed-mcp"),
                         (expected, actual) => panic!(
-                            "{typed:?} {legacy:?} {mode:?}: expected {expected:?}, got {actual:?}"
+                            "{typed:?} {legacy:?} {default_behavior:?}: \
+                             expected {expected:?}, got {actual:?}"
                         ),
                     }
                 }
@@ -762,65 +725,86 @@ mod tests {
     }
 
     #[test]
-    fn modes_shape_the_default() {
-        let base = vec![rule("Read", ToolPermissionBehavior::Allow)];
+    fn a_retired_mode_compiles_into_the_unmatched_default_and_never_disarms_deny() {
+        // Cause/effect graph: C1 the historical section names a retired mode;
+        // C2 a rule matches the call. E1 an unmatched call takes the compiled
+        // default; E2 a matching rule always wins over that default — including
+        // the `deny` that the retired bypass posture used to skip entirely.
+        //
+        // | Rule | mode | call | Effect |
+        // |---|---|---|---|
+        // | M1 | plan | unmatched | deny (fails closed) |
+        // | M2 | plan | matched allow | allow (a rule still wins) |
+        // | M3 | bypassPermissions | unmatched | allow (posture preserved) |
+        // | M4 | bypassPermissions | matched deny | deny (NARROWED: was allow) |
+        // | M5 | acceptEdits | unmatched | the authored default, unchanged |
+        // | M6 | absent | unmatched | the authored default, unchanged |
+        let section = |mode: Option<&str>, default_behavior: &str| {
+            let mut value = json!({
+                "default_behavior": default_behavior,
+                "rules": [
+                    { "pattern": "read", "behavior": "allow" },
+                    { "pattern": "bash", "behavior": "deny" }
+                ]
+            });
+            if let Some(mode) = mode {
+                value["mode"] = json!(mode);
+            }
+            parse_ruleset(&value).expect("a historical section still parses")
+        };
         let unmatched = || json!({});
 
-        let bypass = PermissionRuleset {
-            default_behavior: ToolPermissionBehavior::Deny,
-            mode: Mode::BypassPermissions,
-            rules: base.clone(),
-        };
+        let plan = section(Some("plan"), "ask");
         assert_eq!(
-            bypass.decide("Bash", &unmatched()),
-            ToolPermissionBehavior::Allow
+            plan.decide("write", &unmatched()),
+            ToolPermissionBehavior::Deny,
+            "M1"
+        );
+        assert_eq!(
+            plan.decide("read", &unmatched()),
+            ToolPermissionBehavior::Allow,
+            "M2"
         );
 
-        let plan = PermissionRuleset {
-            default_behavior: ToolPermissionBehavior::RequireConfirmation,
-            mode: Mode::Plan,
-            rules: base.clone(),
-        };
+        let bypass = section(Some("bypassPermissions"), "deny");
         assert_eq!(
-            plan.decide("Bash", &unmatched()),
-            ToolPermissionBehavior::Deny
+            bypass.decide("write", &unmatched()),
+            ToolPermissionBehavior::Allow,
+            "M3"
         );
         assert_eq!(
-            plan.decide("Read", &unmatched()),
-            ToolPermissionBehavior::Allow
+            bypass.decide("bash", &unmatched()),
+            ToolPermissionBehavior::Deny,
+            "M4: the rule scan now runs, so deny is absolute"
         );
 
-        let default = PermissionRuleset {
-            default_behavior: ToolPermissionBehavior::RequireConfirmation,
-            mode: Mode::Default,
-            rules: base,
-        };
-        assert_eq!(
-            default.decide("Bash", &unmatched()),
-            ToolPermissionBehavior::RequireConfirmation
-        );
+        for mode in [Some("acceptEdits"), Some("default"), None] {
+            let rs = section(mode, "ask");
+            assert_eq!(
+                rs.decide("write", &unmatched()),
+                ToolPermissionBehavior::RequireConfirmation,
+                "M5/M6 {mode:?}"
+            );
+        }
     }
 
     #[test]
-    fn config_schema_carries_authoring_guidance() {
-        let schema = permission_config_schema();
-        // The DSL grammar + case-sensitivity trap must ride on the schema so the assistant
-        // (and the console form) that author from it don't guess.
-        let desc = schema["description"].as_str().unwrap();
-        assert!(desc.contains("case-sensitive"), "guide names the case trap");
-        assert!(schema["examples"].is_array());
-    }
-
-    #[test]
-    fn shipped_example_actually_enforces_against_the_real_bash_tool() {
-        // The example's deny rule must match the REAL tool id `bash` (lowercase). This
-        // guards the exact bug we're fixing: a `Bash(...)` example parses but never matches
-        // the runtime tool, silently disabling the rule.
-        let rs = parse_ruleset(&PERMISSION_EXAMPLE_DENY_DESTRUCTIVE()).unwrap();
+    fn authored_rules_enforce_against_the_real_lowercase_tool_id() {
+        // A deny rule must match the REAL tool id `bash` (lowercase). This guards a
+        // silent-disable bug: a `Bash(...)` pattern parses but never matches the runtime
+        // tool, so the rule is inert while reading as if it were enforced.
+        let rs = parse_ruleset(&json!({
+            "default_behavior": "ask",
+            "rules": [
+                { "pattern": "read", "behavior": "allow" },
+                { "pattern": "bash(command ~ \"*rm -rf*\")", "behavior": "deny" }
+            ]
+        }))
+        .unwrap();
         assert_eq!(
             rs.decide("bash", &json!({ "command": "sudo rm -rf /" })),
             ToolPermissionBehavior::Deny,
-            "the example denies a destructive lowercase `bash` call"
+            "the rule denies a destructive lowercase `bash` call"
         );
         assert_eq!(
             rs.decide("read", &json!({ "path": "/etc/hosts" })),

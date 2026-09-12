@@ -6,8 +6,8 @@
 //! `actions::` mutation helpers are intentionally out of scope for this crate.
 
 use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
-    ToolPermissionBehavior, parse_ruleset, permission_config_schema,
+    PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
+    ToolPermissionBehavior, parse_ruleset,
 };
 use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use serde_json::json;
@@ -19,7 +19,6 @@ fn rule(spec: &str, behavior: ToolPermissionBehavior) -> PermissionRule {
 fn ruleset(default: ToolPermissionBehavior, rules: Vec<PermissionRule>) -> PermissionRuleset {
     PermissionRuleset {
         default_behavior: default,
-        mode: Mode::Default,
         rules,
     }
 }
@@ -262,71 +261,48 @@ fn deny_wins_irrespective_of_rule_order() {
 }
 
 #[test]
-fn bypass_mode_allows_even_a_matching_deny_rule() {
-    // BypassPermissions turns the gate off entirely: it short-circuits *before*
-    // rules are scanned, so even an explicit deny yields allow. This documents
-    // that bypass is a whole-gate escape hatch, not a per-rule default.
-    let set = PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::Deny,
-        mode: Mode::BypassPermissions,
-        rules: vec![rule("Bash(rm *)", ToolPermissionBehavior::Deny)],
-    };
+fn a_retired_bypass_section_can_no_longer_disarm_a_deny_rule() {
+    // The retired `bypassPermissions` posture returned Allow *before* the rules
+    // were scanned, so an explicit deny never fired. Compiling it into an
+    // unmatched default keeps its permissive intent for unmatched calls while
+    // restoring deny's absolute authority. That direction is a narrowing, which
+    // is the safety win of removing the axis.
+    let set = parse_ruleset(&json!({
+        "mode": "bypassPermissions",
+        "default_behavior": "deny",
+        "rules": [ { "pattern": "bash(command ~ \"rm *\")", "behavior": "deny" } ]
+    }))
+    .unwrap();
     assert_eq!(
-        set.decide("Bash", &json!({"command": "rm -rf /"})),
-        ToolPermissionBehavior::Allow
+        set.decide("bash", &json!({"command": "rm -rf /"})),
+        ToolPermissionBehavior::Deny,
+        "the matching deny now decides"
+    );
+    assert_eq!(
+        set.decide("write", &json!({})),
+        ToolPermissionBehavior::Allow,
+        "an unmatched call keeps the retired posture's allow"
     );
 }
 
 #[test]
-fn accept_edits_mode_falls_to_default_like_default_mode() {
-    // AcceptEdits has no edit-tool side-effect class in this crate, so an
-    // unmatched call must fall to `default_behavior` (NOT be denied like Plan).
-    let set = PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::RequireConfirmation,
-        mode: Mode::AcceptEdits,
-        rules: vec![rule("Read", ToolPermissionBehavior::Allow)],
-    };
+fn a_retired_accept_edits_section_keeps_the_authored_default() {
+    // AcceptEdits never had an edit-tool side-effect class, so it always behaved
+    // as `default`. Compiling it must not invent one: an unmatched call takes the
+    // authored default (NOT a plan-style deny).
+    let set = parse_ruleset(&json!({
+        "mode": "acceptEdits",
+        "default_behavior": "ask",
+        "rules": [ { "pattern": "read", "behavior": "allow" } ]
+    }))
+    .unwrap();
     assert_eq!(
-        set.decide("Edit", &json!({"file_path": "src/x.rs"})),
-        ToolPermissionBehavior::RequireConfirmation,
-        "unmatched under AcceptEdits falls to default, not deny"
+        set.decide("edit", &json!({"file_path": "src/x.rs"})),
+        ToolPermissionBehavior::RequireConfirmation
     );
     assert_eq!(
-        set.decide("Read", &json!({})),
+        set.decide("read", &json!({})),
         ToolPermissionBehavior::Allow
-    );
-}
-
-#[test]
-fn plan_mode_honors_matched_rules_over_its_deny_default() {
-    // Plan denies only *unmatched* calls; a matched allow/ask/deny rule still
-    // decides. A matched ask must NOT be swallowed into the plan deny-default.
-    let set = PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::Allow, // ignored under Plan for unmatched
-        mode: Mode::Plan,
-        rules: vec![
-            rule("Read", ToolPermissionBehavior::Allow),
-            rule("Bash(git *)", ToolPermissionBehavior::RequireConfirmation),
-            rule("Bash(rm *)", ToolPermissionBehavior::Deny),
-        ],
-    };
-    assert_eq!(
-        set.decide("Read", &json!({})),
-        ToolPermissionBehavior::Allow
-    );
-    assert_eq!(
-        set.decide("Bash", &json!({"command": "git status"})),
-        ToolPermissionBehavior::RequireConfirmation,
-        "a matched ask is honored, not turned into plan's deny"
-    );
-    assert_eq!(
-        set.decide("Bash", &json!({"command": "rm -rf /"})),
-        ToolPermissionBehavior::Deny
-    );
-    // Unmatched under Plan is denied even though default_behavior is Allow.
-    assert_eq!(
-        set.decide("WebFetch", &json!({})),
-        ToolPermissionBehavior::Deny
     );
 }
 
@@ -473,37 +449,29 @@ fn equal_specificity_first_rule_wins_allow_vs_ask() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn camel_case_mode_tag_parses_to_the_bypass_mode() {
-    // The canonical camelCase tag deserializes and the resulting ruleset behaves
-    // as bypass (every unmatched call allowed).
-    let set = parse_ruleset(&json!({ "mode": "bypassPermissions" })).unwrap();
-    assert_eq!(set.mode, Mode::BypassPermissions);
-    assert_eq!(
-        set.decide("Bash", &json!({"command": "rm -rf /"})),
-        ToolPermissionBehavior::Allow,
-        "bypass mode allows even a dangerous unmatched call"
-    );
-}
-
-#[test]
-fn every_mode_camel_case_tag_parses() {
-    for (tag, mode) in [
-        ("default", Mode::Default),
-        ("acceptEdits", Mode::AcceptEdits),
-        ("plan", Mode::Plan),
-        ("bypassPermissions", Mode::BypassPermissions),
+fn every_retired_mode_camel_case_tag_still_parses_and_compiles() {
+    // A historical section must keep parsing after the axis was removed, and each
+    // retired tag must compile into exactly one unmatched default.
+    for (tag, expected) in [
+        ("default", ToolPermissionBehavior::RequireConfirmation),
+        ("acceptEdits", ToolPermissionBehavior::RequireConfirmation),
+        ("plan", ToolPermissionBehavior::Deny),
+        ("bypassPermissions", ToolPermissionBehavior::Allow),
     ] {
-        let set = parse_ruleset(&json!({ "mode": tag })).unwrap();
-        assert_eq!(set.mode, mode, "tag `{tag}` maps to its mode");
+        let set = parse_ruleset(&json!({ "mode": tag, "default_behavior": "ask" })).unwrap();
+        assert_eq!(
+            set.decide("bash", &json!({"command": "rm -rf /"})),
+            expected,
+            "tag `{tag}` compiles into its documented unmatched default"
+        );
     }
 }
 
 #[test]
 fn an_unknown_mode_tag_is_rejected_not_silently_defaulted() {
     // A typo (`bypasspermissions`, wrong case) must be a hard parse error, never a
-    // silent fall to `Mode::Default`. If this ever regresses to Default, an author
-    // who meant to bypass would instead get the (safer) default — but a `plan`
-    // typo would silently DROP a read-only lock, a genuine fail-open.
+    // silent fall to the default posture. A `plan` typo that silently fell through
+    // would DROP a read-only lock on a replayed historical section: a fail-open.
     let err = parse_ruleset(&json!({ "mode": "bypasspermissions" })).unwrap_err();
     assert!(
         err.contains("invalid permission config"),
@@ -528,50 +496,6 @@ fn an_unknown_default_behavior_tag_is_rejected_not_silently_defaulted() {
     assert!(
         err.contains("invalid permission config"),
         "unknown rule behavior is rejected: {err}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Config schema drift guard: the hand-authored `permission_config_schema` enum
-// arrays must stay in lock-step with the serde renames of `ToolPermissionBehavior`
-// and `Mode`. If a variant is added/renamed and the schema is not updated, a
-// console form would offer a value the parser rejects (or hide a valid one).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn schema_behavior_enum_matches_the_serialized_behavior_variants() {
-    let schema = permission_config_schema();
-    let wire = |b: ToolPermissionBehavior| serde_json::to_value(b).unwrap();
-    let expected = vec![
-        wire(ToolPermissionBehavior::Allow),
-        wire(ToolPermissionBehavior::RequireConfirmation),
-        wire(ToolPermissionBehavior::Deny),
-    ];
-    assert_eq!(
-        schema["properties"]["default_behavior"]["enum"],
-        json!(expected),
-        "default_behavior enum drifted from the ToolPermissionBehavior variants"
-    );
-    // The rule-behavior enum uses the same closed set.
-    assert_eq!(
-        schema["properties"]["rules"]["items"]["properties"]["behavior"]["enum"],
-        json!(expected)
-    );
-}
-
-#[test]
-fn schema_mode_enum_matches_the_serialized_mode_variants() {
-    let schema = permission_config_schema();
-    let wire = |m: Mode| serde_json::to_value(m).unwrap();
-    let expected = json!([
-        wire(Mode::Default),
-        wire(Mode::AcceptEdits),
-        wire(Mode::Plan),
-        wire(Mode::BypassPermissions),
-    ]);
-    assert_eq!(
-        schema["properties"]["mode"]["enum"], expected,
-        "mode enum drifted from the Mode variants (camelCase serde renames)"
     );
 }
 

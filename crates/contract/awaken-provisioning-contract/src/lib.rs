@@ -30,7 +30,6 @@
 //! provider's own type behind [`Sandbox`].
 
 mod admission;
-mod approval;
 mod execution_authority;
 mod execution_policy;
 mod lease;
@@ -45,7 +44,6 @@ pub mod test_support;
 pub use awaken_sandbox_control::SandboxControlServiceKind;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
-pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as approval_decide};
 pub use execution_authority::{CurrentExecutionAuthority, with_current_sandbox_effect};
 pub use execution_policy::{
     SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyId,
