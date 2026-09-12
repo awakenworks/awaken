@@ -145,15 +145,43 @@ Worker deregistration releases any residual active Session Work for that exact
 incarnation; crash recovery remains lease-expiry based. A later admitted event
 wakes the same stable Work item.
 
-Claim-authenticated frozen Session resume explicitly reassigns the realization
+Claim-authenticated frozen Session resume normally reassigns the realization
 lease through the existing Session root CAS, including when owner and process
 incarnation are unchanged. Normal Work retirement can already have closed that
 process-local predecessor while its durable lease is still live. Returning the
 same epoch would make the next approval continuation reuse a closed authority;
 the successor epoch also excludes delayed predecessor renewal/retirement from
-the new Resource preparation. Ordinary application replay without explicit
-reassignment continues to reuse the exact live owner/incarnation. This changes
-neither the Work identity nor the claim/physical-quiescence requirements.
+the new Resource preparation.
+
+An unfinished retry of the same Run may instead supply its exact, still-live
+process-local realization lease. The Host selects this continuation under the
+existing slot lock only for the same Run and Worker incarnation; a cold,
+expired, closed, or different-Run slot cannot supply it. Coordinator validates
+the authenticated Worker and current Work/Dispatch authority, renews through
+the existing exact-fence CAS, then resumes without requesting reassignment.
+Both Coordinator and transport client reject a returned generation different
+from the assertion, including a replacement between renewal and projection
+loading. A rejected continuation never silently falls back to reassignment.
+The incoming claim is published with the admitted frozen projection under the
+same slot lock, not before the Control request. Otherwise a failed request for
+a new Run could relabel the predecessor's live lease and make the next retry
+assert a false same-Run continuation. Resource preparation can expose renewable
+lease authority earlier, but cannot publish that Run-to-projection association.
+This preserves the creation effect identity during a live retry without
+reopening retired local authority. It does not recover historical creation
+effects after lease expiry or Worker death; those still require their own exact
+physical evidence. Ordinary application replay without explicit reassignment
+continues to reuse the exact live owner/incarnation. Neither path changes Work
+identity or the claim/physical-quiescence requirements.
+
+The bounded `SessionRealizationContinuation` composition reuses
+`SessionRealizationAuthority` transitions and adds only Run/request observers.
+Its decision rules cover failed new-Run requests, atomic fresh publication,
+same-Run continuation, and close/replacement during response delivery. The
+existing formal mutation gate checks early claim publication, missing closed
+authority rejection, and missing generation comparison, plus a reachable valid
+continuation. This is finite protocol evidence, not Rust refinement or proof of
+authenticated transport, database CAS, physical stopping, or crash recovery.
 
 ### D4: Worker Control realizes only committed truth
 

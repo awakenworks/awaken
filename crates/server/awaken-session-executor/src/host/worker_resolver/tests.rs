@@ -768,6 +768,8 @@ async fn durable_deferred_sandbox_publication_decision_table() {
 
 struct RecordingSessionControl {
     resume_calls: Arc<AtomicUsize>,
+    continuations:
+        Arc<std::sync::Mutex<Vec<Option<awaken_session_contract::SessionRealizationLease>>>>,
     phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
     projection: Arc<std::sync::Mutex<Option<awaken_session_contract::FrozenSessionProjection>>>,
     mcp_stage: Option<awaken_session_contract::StageMcpAttachment>,
@@ -958,21 +960,28 @@ impl awaken_dispatch_contract::ClaimedSessionControl for RecordingSessionControl
         _session_work_authority: Option<
             &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
         >,
+        continuation: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_contract::SessionRealizationDirective>,
         awaken_dispatch_contract::ClaimedSessionControlError,
     > {
         self.resume_calls.fetch_add(1, Ordering::SeqCst);
+        self.continuations
+            .lock()
+            .unwrap()
+            .push(continuation.cloned());
         Ok(self.projection.lock().unwrap().clone().map(|projection| {
             awaken_session_contract::SessionRealizationDirective {
                 projection,
                 authority: crate::session_slot::test_lease_receipt(
-                    awaken_session_contract::SessionRealizationLease {
-                        owner: claim.owner.clone(),
-                        runtime_incarnation: claim.owner.clone(),
-                        epoch: claim.epoch,
-                        expires_at_unix_ms: u64::MAX,
-                    },
+                    continuation.cloned().unwrap_or_else(|| {
+                        awaken_session_contract::SessionRealizationLease {
+                            owner: claim.owner.clone(),
+                            runtime_incarnation: claim.owner.clone(),
+                            epoch: claim.epoch,
+                            expires_at_unix_ms: u64::MAX,
+                        }
+                    }),
                 ),
                 action: awaken_session_contract::SessionRealizationAction::Complete,
             }
@@ -1129,14 +1138,16 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("in-memory dispatch"),
     );
     let resume_calls = Arc::new(AtomicUsize::new(0));
+    let continuations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let projection = Arc::new(std::sync::Mutex::new(Some(ordinary_frozen_projection())));
     let host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub")
             .with_dispatch_store(dispatch.clone())
             .with_session_control(Arc::new(RecordingSessionControl {
                 resume_calls: resume_calls.clone(),
+                continuations: continuations.clone(),
                 phases: Arc::new(std::sync::Mutex::new(Vec::new())),
-                projection,
+                projection: projection.clone(),
                 mcp_stage: None,
                 fail_begin: Arc::new(AtomicBool::new(false)),
             })),
@@ -1174,6 +1185,50 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .await
         .expect("O1 claim")
         .expect("O1 claimed Run");
+    // CR1 new Run + predecessor live lease + two failed Control responses =>
+    // neither request may relabel that lease as its continuation. CR2 successful
+    // frozen publication binds claim and lease together; CR3 same-Run retry
+    // then sends precisely that installed lease. This sequence catches the
+    // early-claim-publication bug that the static 20-case selector cannot.
+    let predecessor = awaken_dispatch::RunClaim {
+        run_id: awaken_agent_contract::agent::run::Id("previous-run".into()),
+        owner: claimed.lease.owner.clone(),
+        epoch: 0,
+    };
+    host.session_slots.update("ordinary-remote", |slot| {
+        slot.dispatch_claim = Some(predecessor.clone());
+        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+            crate::session_slot::test_observed_lease(
+                awaken_session_contract::SessionRealizationLease {
+                    owner: claimed.lease.owner.clone(),
+                    runtime_incarnation: claimed.lease.owner.clone(),
+                    epoch: 0,
+                    expires_at_unix_ms: u64::MAX,
+                },
+            ),
+        );
+    });
+    let frozen = projection.lock().unwrap().take();
+    for _ in 0..2 {
+        assert!(
+            HostWorkerResolver {
+                host: Arc::downgrade(&host)
+            }
+            .worker_for_claimed(&claimed)
+            .await
+            .is_err(),
+            "CR1 unavailable projection"
+        );
+        assert_eq!(
+            host.session_slots
+                .read("ordinary-remote", |slot| slot.dispatch_claim.clone())
+                .flatten(),
+            Some(predecessor.clone()),
+            "CR1 failed request cannot publish its claim"
+        );
+    }
+    assert_eq!(*continuations.lock().unwrap(), vec![None, None], "CR1");
+    *projection.lock().unwrap() = frozen;
     HostWorkerResolver {
         host: Arc::downgrade(&host),
     }
@@ -1181,7 +1236,30 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     .await
     .expect("O1 canonical realization");
 
-    assert_eq!(resume_calls.load(Ordering::SeqCst), 1, "O1/E1");
+    assert_eq!(resume_calls.load(Ordering::SeqCst), 3, "O1/E1+CR1");
+    let installed = host
+        .session_slots
+        .read("ordinary-remote", |slot| {
+            assert_eq!(
+                slot.dispatch_claim,
+                Some(awaken_dispatch::RunClaim::from(&claimed.lease)),
+                "CR2"
+            );
+            slot.realization_authority.lease().cloned()
+        })
+        .flatten()
+        .expect("CR2 installed lease");
+    HostWorkerResolver {
+        host: Arc::downgrade(&host),
+    }
+    .worker_for_claimed(&claimed)
+    .await
+    .expect("CR3 same-Run retry");
+    assert_eq!(
+        *continuations.lock().unwrap(),
+        vec![None, None, None, Some(installed)],
+        "CR1-CR3"
+    );
     assert!(
         host.session_environment("ordinary-remote").await.is_some(),
         "O1/E3"
@@ -1234,7 +1312,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     .worker_for_claimed(&claimed)
     .await
     .expect("O5 ordinary Run bypasses Session realization");
-    assert_eq!(resume_calls.load(Ordering::SeqCst), 1, "O5");
+    assert_eq!(resume_calls.load(Ordering::SeqCst), 4, "O5");
 }
 
 #[tokio::test]
@@ -1281,6 +1359,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
                 .with_dispatch_store(dispatch.clone())
                 .with_session_control(Arc::new(RecordingSessionControl {
                     resume_calls: resume_calls.clone(),
+                    continuations: Arc::new(std::sync::Mutex::new(Vec::new())),
                     phases: phases.clone(),
                     projection: Arc::new(std::sync::Mutex::new(Some(projection))),
                     mcp_stage: None,

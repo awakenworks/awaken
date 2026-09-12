@@ -1514,6 +1514,9 @@ impl crate::SharedHost {
                 // This suffix is infallible and holds both Worker authority and
                 // the slot lock: revoke/replacement cannot interleave a partial
                 // publication between the check above and these writes.
+                if let Some(claim) = claim {
+                    slot.dispatch_claim = Some(claim.clone());
+                }
                 slot.retain_validated_session_publication(publication.as_ref());
                 slot.install_projected_environment_owner(owner, &projection.environment);
                 slot.frozen_projection_receipt = Some(receipt);

@@ -4,6 +4,36 @@ from pathlib import Path
 from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
+def check_session_continuation_model_mutants(tlc_jar: Path) -> None:
+    # RC1-RC4 compose the SAME authority transitions with request/publication
+    # observations. Early claim publication poisons a failed new-Run retry;
+    # removing either response guard admits closed or replaced generations.
+    source = (ROOT / "formal/tla/SessionRealizationContinuation.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRealizationContinuation.cfg").read_text()
+    anchors = [
+        ('  /\\ UNCHANGED <<installedRun, originRun, badContinuation, continued>>\n'
+         '  /\\ UNCHANGED vars\n\nFailResume',
+         "  /\\ installedRun' = run\n"
+         '  /\\ UNCHANGED <<originRun, badContinuation, continued>>\n'
+         '  /\\ UNCHANGED vars\n\nFailResume'),
+        ('  /\\ projection = "Live" /\\ lease[1] = asserted[1]',
+         '  /\\ lease[1] = asserted[1]'),
+        ('  /\\ projection = "Live" /\\ lease[1] = asserted[1]',
+         '  /\\ projection = "Live"'),
+    ]
+    mutations = []
+    for guard, broken in anchors:
+        if source.count(guard) != 1:
+            raise SystemExit("Session continuation mutation anchor drifted")
+        mutations.append((source.replace(guard, broken), config, "NoInvalidContinuation"))
+    mutations.append((source, config + "\nINVARIANT NoContinuationReached\n",
+                      "NoContinuationReached"))
+    check_tlc_model_mutations(tlc_jar, "SessionRealizationContinuation", source, config,
+                             mutations, dependencies=("SessionRealizationAuthority",),
+                             timeout_seconds=180)
+    print("Session continuation: 3/3 mutants killed; live continuation witnessed")
+
+
 def check_remote_attempt_model_mutants(tlc_jar: Path) -> None:
     # RA1/2 duplicate an Execute/Resume send; RA3/4 first-send after the
     # corresponding Prepared crash; RA5 rearm unknown state without immediate

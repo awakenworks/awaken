@@ -1220,6 +1220,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             &claim,
             "signed-thread",
             Some(&work_receipt),
+            None,
         )
         .await
         .expect_err("T17");
@@ -1235,6 +1236,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             &claim,
             "signed-thread",
             Some(&work_receipt),
+            None,
         )
         .await
         .expect("T1 exact signed claim resumes")
@@ -1260,6 +1262,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 &claim,
                 "another-session",
                 Some(&work_receipt),
+                None,
             )
             .await
             .is_err(),
@@ -1274,6 +1277,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 &wrong_owner,
                 "signed-thread",
                 Some(&work_receipt),
+                None,
             )
             .await
             .is_err(),
@@ -2075,6 +2079,112 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T15"
     );
     assert_eq!(session_control.renewals.lock().unwrap().len(), 3, "T15/T16");
+    // Continuation cause/effect table at the signed HTTP boundary:
+    // RC1 exact live claim/Work/Worker + retained lease => exact renewal then
+    // non-reassigning begin, preserving the generation. RC2 foreign owner or
+    // incarnation / expiry beyond registry => zero Control calls. RC3 authority
+    // rejects renewal => no begin and no fallback to assignment. RC4 a different
+    // generation returned between renewal and begin => reject before Worker
+    // projection installation. Existing T14 and retirement tests keep the
+    // no-continuation successor behavior; none of these cases resend a Run.
+    let continued = client
+        .resume_session(
+            &registered.snapshot.identity,
+            &claim,
+            "signed-thread",
+            Some(&work_receipt),
+            Some(&realization_lease),
+        )
+        .await
+        .expect("RC1")
+        .expect("RC1 directive");
+    assert_eq!(
+        continued.authority.lease.epoch, realization_lease.epoch,
+        "RC1"
+    );
+    assert!(
+        !session_control
+            .begins
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .target
+            .reassign_existing_lease,
+        "RC1"
+    );
+    let begins_before_rejection = session_control.begins.lock().unwrap().len();
+    let renewals_before_rejection = session_control.renewals.lock().unwrap().len();
+    for dimension in ["owner", "incarnation", "expiry"] {
+        let mut invalid = realization_lease.clone();
+        match dimension {
+            "owner" => invalid.owner = "foreign".into(),
+            "incarnation" => invalid.runtime_incarnation = "foreign".into(),
+            _ => invalid.expires_at_unix_ms = u64::MAX,
+        }
+        assert!(
+            client
+                .resume_session(
+                    &registered.snapshot.identity,
+                    &claim,
+                    "signed-thread",
+                    Some(&work_receipt),
+                    Some(&invalid),
+                )
+                .await
+                .is_err(),
+            "RC2 {dimension}"
+        );
+    }
+    assert_eq!(
+        session_control.begins.lock().unwrap().len(),
+        begins_before_rejection,
+        "RC2"
+    );
+    assert_eq!(
+        session_control.renewals.lock().unwrap().len(),
+        renewals_before_rejection,
+        "RC2"
+    );
+    *session_control.renewal_failure.lock().unwrap() =
+        Some(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+    assert!(
+        client
+            .resume_session(
+                &registered.snapshot.identity,
+                &claim,
+                "signed-thread",
+                Some(&work_receipt),
+                Some(&realization_lease),
+            )
+            .await
+            .is_err(),
+        "RC3"
+    );
+    *session_control.renewal_failure.lock().unwrap() = None;
+    assert_eq!(
+        session_control.begins.lock().unwrap().len(),
+        begins_before_rejection,
+        "RC3 no fallback"
+    );
+    // The recording port renews the asserted epoch but returns epoch 1 from
+    // begin. This deliberately inconsistent provider exercises the final
+    // generation check, not the real aggregate's CAS implementation.
+    let mut changed = realization_lease.clone();
+    changed.epoch += 1;
+    assert!(
+        client
+            .resume_session(
+                &registered.snapshot.identity,
+                &claim,
+                "signed-thread",
+                Some(&work_receipt),
+                Some(&changed),
+            )
+            .await
+            .is_err(),
+        "RC4"
+    );
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
     assert!(
         client
@@ -2255,6 +2365,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             &child_claim,
             "signed-thread",
             Some(&work_receipt),
+            None,
         )
         .await
         .expect("T22 child resumes parent Session")
@@ -2506,6 +2617,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 &claim,
                 "signed-thread",
                 Some(&work_receipt),
+                None,
             )
             .await
             .is_err(),

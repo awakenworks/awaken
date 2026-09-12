@@ -17,6 +17,19 @@ const fn local_claimed_projection_is_ready(
     has_frozen_baseline && session_dispatch
 }
 
+fn claimed_realization_continuation(
+    slot: &crate::session_slot::SessionRuntimeSlot,
+    claim: &awaken_dispatch::RunClaim,
+) -> Option<awaken_session_contract::SessionRealizationLease> {
+    slot.dispatch_claim
+        .as_ref()
+        .filter(|previous| previous.run_id == claim.run_id && previous.owner == claim.owner)
+        .and_then(|_| slot.realization_authority.remaining())
+        .and_then(|_| slot.realization_authority.lease())
+        .filter(|lease| lease.runtime_incarnation == claim.owner)
+        .cloned()
+}
+
 fn map_claimed_session_control_error(
     run_id: &str,
     error: awaken_dispatch_contract::ClaimedSessionControlError,
@@ -58,10 +71,17 @@ pub(super) async fn install_claimed_session_projection(
     dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
 ) -> Result<(), awaken_dispatch::Error> {
     let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
-    let (_realization, ()) = host
+    let (_realization, continuation) = host
         .session_slots
         .acquire_realization_with(&thread_id.0, |slot| {
-            slot.dispatch_claim = Some(claim.clone());
+            // Only an unfinished retry of this same Run in the same process
+            // can retain its still-live creation authority. A new Run, closed
+            // Work, expired observation or cold Worker must request assignment.
+            // Do not publish the incoming claim before Control succeeds: a
+            // failed new Run must not relabel its predecessor's live lease as
+            // its own on the next retry. Frozen projection publication installs
+            // the claim with the admitted lease under the same slot lock.
+            claimed_realization_continuation(slot, &claim)
         })
         .await;
     if claimed.request.session_thread_id.is_none() {
@@ -118,6 +138,7 @@ pub(super) async fn install_claimed_session_projection(
             &claim,
             &thread_id.0,
             claimed.session_work_authority.as_ref(),
+            continuation.as_ref(),
         )
         .await
         .map_err(|error| map_claimed_session_control_error(&claimed.lease.run_id.0, error))?
@@ -173,6 +194,77 @@ pub(super) async fn install_claimed_session_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unfinished_claim_retry_retains_only_its_live_realization() {
+        // C1 previous claim present/same Run/same owner; C2 local proof
+        // uninstalled/live/closed/expired; C3 proof belongs to this incarnation.
+        // R1 exact C1 + live C2 + exact C3 => retain creation identity across a
+        // dispatch retry epoch. R2 every missing/changed/closed/expired input =>
+        // no continuation, so ordinary fenced assignment remains authoritative.
+        // In particular Work retirement must never reopen its Closed lease.
+        use crate::session_slot::{SessionRealizationAuthority as A, SessionRuntimeSlot};
+        let claim = awaken_dispatch::RunClaim {
+            run_id: awaken_agent_contract::agent::run::Id("run".into()),
+            owner: "worker:incarnation".into(),
+            epoch: 2,
+        };
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: claim.owner.clone(),
+            epoch: 7,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let previous = awaken_dispatch::RunClaim {
+            epoch: 1,
+            ..claim.clone()
+        };
+        let mut foreign_run = previous.clone();
+        foreign_run.run_id.0 = "other-run".into();
+        let mut foreign_owner = previous.clone();
+        foreign_owner.owner = "other-worker".into();
+        let mut foreign_lease = lease.clone();
+        foreign_lease.runtime_incarnation = "other-worker".into();
+        for (previous, exact_claim) in [
+            (None, false),
+            (Some(previous.clone()), true),
+            (Some(foreign_run), false),
+            (Some(foreign_owner), false),
+        ] {
+            for (authority, live_exact_proof) in [
+                (A::Uninstalled, false),
+                (
+                    A::Live(crate::session_slot::test_observed_lease(lease.clone())),
+                    true,
+                ),
+                (A::Closed(Some(lease.clone())), false),
+                (
+                    A::Live(crate::session_slot::test_expired_observed_lease(
+                        lease.clone(),
+                    )),
+                    false,
+                ),
+                (
+                    A::Live(crate::session_slot::test_observed_lease(
+                        foreign_lease.clone(),
+                    )),
+                    false,
+                ),
+            ] {
+                let expected = exact_claim && live_exact_proof;
+                let slot = SessionRuntimeSlot {
+                    dispatch_claim: previous.clone(),
+                    realization_authority: authority,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    claimed_realization_continuation(&slot, &claim),
+                    expected.then(|| lease.clone()),
+                    "R1/R2"
+                );
+            }
+        }
+    }
 
     #[test]
     fn co_located_claim_requires_the_complete_frozen_projection() {

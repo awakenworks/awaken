@@ -994,15 +994,33 @@ mod tests {
             "DH1/C2 revocation clears R1 and hides Retiring A"
         );
 
-        let claim = awaken_dispatch::RunClaim {
-            run_id: RunId("run-claimed-ready-durable".into()),
-            owner: "worker-a".into(),
-            epoch: 2,
-        };
+        // CR4 projection publication now carries the actual Dispatch claim.
+        // Use its authoritative queue row, not a fabricated tuple that would
+        // bypass the deferred binding fence when the slot had no claim.
+        use awaken_dispatch::{Clock as _, DispatchQueue as _};
+        let dispatch = host.dispatch_store().unwrap();
+        dispatch
+            .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
+                thread,
+                "run-claimed-ready-durable",
+            )))
+            .await
+            .unwrap();
+        let claimed = dispatch
+            .claim(
+                "worker-a",
+                300_000,
+                awaken_dispatch::SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
-            epoch: claim.epoch,
+            epoch: 2,
             expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
                 + 60_000,
         };
@@ -1134,13 +1152,9 @@ mod tests {
         let mut retired = vec![original.clone()];
         for round in 0..=successor_cancellations.len() {
             let projection = control.current_projection();
-            let claim = awaken_dispatch::RunClaim {
-                epoch: 2 + round as u64,
-                ..claim.clone()
-            };
             let lease = awaken_session_contract::SessionRealizationLease {
-                epoch: claim.epoch,
-                runtime_incarnation: format!("worker-a/boot-{}", claim.epoch),
+                epoch: 2 + round as u64,
+                runtime_incarnation: format!("worker-a/boot-{}", 2 + round),
                 ..lease.clone()
             };
             let directive = awaken_session_contract::SessionRealizationDirective {
@@ -1533,11 +1547,28 @@ mod tests {
         let original_handle = original.handle();
         let original_hand = original.tool_executor();
 
-        let claim = awaken_dispatch::RunClaim {
-            run_id: RunId("run-claimed-ready-v1".into()),
-            owner: "worker-a".into(),
-            epoch: 1,
-        };
+        // CR4 the legacy recovery fixture must also exercise real binding CAS,
+        // not an unregistered claim previously hidden by the empty local slot.
+        use awaken_dispatch::{Clock as _, DispatchQueue as _};
+        let dispatch = host.dispatch_store().unwrap();
+        dispatch
+            .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
+                thread,
+                "run-claimed-ready-v1",
+            )))
+            .await
+            .unwrap();
+        let claimed = dispatch
+            .claim(
+                "worker-a",
+                300_000,
+                awaken_dispatch::SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-1".into(),
