@@ -282,6 +282,15 @@ const fn classify_dispatch_admission(
 }
 
 impl RunDispatch {
+    /// Whether this durable request carries Session-owned execution state and
+    /// therefore requires the subordinate Work fence on registered transport.
+    #[must_use]
+    pub fn requires_session_work_authority(&self) -> bool {
+        self.session_thread_id.is_some()
+            || self.session_resources.is_some()
+            || self.session_runtime.is_some()
+    }
+
     /// Classify the immutable routing/activity coordinates before persistence.
     /// The caller still owns port-specific authorization; this method only makes
     /// the previously implicit shape distinction total and shared.

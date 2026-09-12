@@ -114,7 +114,11 @@ pub(super) async fn install_claimed_session_projection(
     let request_started = awaken_local_process::authority_proof_started()
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
     let directive = control
-        .resume_frozen(&claim, &thread_id.0)
+        .resume_frozen(
+            &claim,
+            &thread_id.0,
+            claimed.session_work_authority.as_ref(),
+        )
         .await
         .map_err(|error| map_claimed_session_control_error(&claimed.lease.run_id.0, error))?
         .ok_or_else(|| {
@@ -122,6 +126,13 @@ pub(super) async fn install_claimed_session_projection(
                 "WorkQueue dispatched a Session whose creation was not finalized",
             )
         })?;
+    if let Some(receipt) = claimed.session_work_authority.as_ref()
+        && !receipt.binds_realization(&thread_id.0, &directive)
+    {
+        return Err(HostWorkerResolver::execution_error(
+            "Session realization directive identity does not match claimed Work authority",
+        ));
+    }
     ownership.verify_current().await.map_err(|error| {
         HostWorkerResolver::execution_error(format!(
             "run {} lost ownership during frozen Session resume: {error}",

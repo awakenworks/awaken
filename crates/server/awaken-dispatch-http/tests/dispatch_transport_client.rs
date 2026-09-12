@@ -311,7 +311,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     assert_eq!(claimed.lease.owner, "worker-1");
     let original_claim = RunClaim::from(&claimed.lease);
     let snapshot = queue
-        .load_recovery_snapshot(&original_claim)
+        .load_recovery_snapshot(&original_claim, None)
         .await
         .expect("load claim-fenced recovery snapshot over http");
     assert_eq!(snapshot.thread_id.0, "t1");
@@ -465,7 +465,10 @@ async fn db_less_worker_drives_runs_over_real_http() {
         "R3"
     );
     assert!(
-        queue.load_recovery_snapshot(&original_claim).await.is_err(),
+        queue
+            .load_recovery_snapshot(&original_claim, None)
+            .await
+            .is_err(),
         "a stale claim cannot read recovery truth after a re-claim"
     );
     assert_eq!(

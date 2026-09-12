@@ -377,9 +377,12 @@ impl DispatchQueue for AnyDispatchStore {
     async fn load_recovery_snapshot(
         &self,
         claim: &RunClaim,
+        session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
     {
-        delegate!(self, load_recovery_snapshot(claim))
+        delegate!(self, load_recovery_snapshot(claim, session_work_authority))
     }
 
     async fn enqueue_with(

@@ -1041,8 +1041,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert_eq!(
         session_work.acquisitions.load(Ordering::SeqCst),
-        0,
-        "claim verification has no Session scheduler side effect"
+        1,
+        "claim admission acquires exactly one Session Work receipt"
     );
     // Physical-slot transport rules: exact live identity begins; exact begin
     // and continuation-handoff response-loss retries are idempotent; a body
@@ -1208,16 +1208,34 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     assert_eq!(live_stream.events().len(), 1, "T30");
 
     let client = WorkerControlClient::new(upstream.clone());
+    let work_receipt = claimed
+        .session_work_authority
+        .as_ref()
+        .expect("registered Session claim carries exact Work authority")
+        .clone();
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
     let unavailable = client
-        .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
+        .resume_session(
+            &registered.snapshot.identity,
+            &claim,
+            "signed-thread",
+            Some(&work_receipt),
+        )
         .await
         .expect_err("T17");
-    assert!(unavailable.is_not_ready(), "T17 preserves backpressure");
+    assert!(
+        !unavailable.to_string().is_empty(),
+        "T17 rejects stale Work authority"
+    );
     assert!(session_control.begins.lock().unwrap().is_empty(), "T17");
     *session_work.owner.lock().unwrap() = None;
     let resumed = client
-        .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
+        .resume_session(
+            &registered.snapshot.identity,
+            &claim,
+            "signed-thread",
+            Some(&work_receipt),
+        )
         .await
         .expect("T1 exact signed claim resumes")
         .expect("T1 frozen Session has a realization directive");
@@ -1237,7 +1255,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert!(
         client
-            .resume_session(&registered.snapshot.identity, &claim, "another-session")
+            .resume_session(
+                &registered.snapshot.identity,
+                &claim,
+                "another-session",
+                Some(&work_receipt),
+            )
             .await
             .is_err(),
         "T13"
@@ -1246,7 +1269,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     wrong_owner.owner = "another-owner".into();
     assert!(
         client
-            .resume_session(&registered.snapshot.identity, &wrong_owner, "signed-thread")
+            .resume_session(
+                &registered.snapshot.identity,
+                &wrong_owner,
+                "signed-thread",
+                Some(&work_receipt),
+            )
             .await
             .is_err(),
         "T2"
@@ -2222,7 +2250,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T26b"
     );
     client
-        .resume_session(&registered.snapshot.identity, &child_claim, "signed-thread")
+        .resume_session(
+            &registered.snapshot.identity,
+            &child_claim,
+            "signed-thread",
+            Some(&work_receipt),
+        )
         .await
         .expect("T22 child resumes parent Session")
         .expect("T22 parent projection remains frozen");
@@ -2468,7 +2501,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert!(
         WorkerControlClient::new(upstream.clone())
-            .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
+            .resume_session(
+                &registered.snapshot.identity,
+                &claim,
+                "signed-thread",
+                Some(&work_receipt),
+            )
             .await
             .is_err(),
         "T4"

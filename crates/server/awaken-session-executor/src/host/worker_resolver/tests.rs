@@ -955,6 +955,9 @@ impl awaken_dispatch_contract::ClaimedSessionControl for RecordingSessionControl
         &self,
         claim: &awaken_dispatch::RunClaim,
         _session_id: &str,
+        _session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
     ) -> Result<
         Option<awaken_session_contract::SessionRealizationDirective>,
         awaken_dispatch_contract::ClaimedSessionControlError,
@@ -1362,6 +1365,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
             expires_ms: 100,
             epoch: 1,
         },
+        session_work_authority: None,
         credential_bindings: Vec::new(),
         cancellation_requested: false,
         pending: Vec::new(),
@@ -1415,6 +1419,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
             expires_ms: 100,
             epoch: 1,
         },
+        session_work_authority: None,
         credential_bindings: Vec::new(),
         cancellation_requested: false,
         pending: Vec::new(),
@@ -2665,6 +2670,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
             expires_ms: 100,
             epoch: 2,
         },
+        session_work_authority: None,
         credential_bindings: Vec::new(),
         cancellation_requested: true,
         pending: Vec::new(),

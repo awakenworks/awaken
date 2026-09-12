@@ -710,7 +710,7 @@ async fn recovery_snapshot_retries_only_ambiguous_transport_outcomes() {
         spawn_scripted_idempotent_server(StatusCode::SERVICE_UNAVAILABLE).await;
     let retrying = HttpDispatchQueue::new(retry_base, WorkerIdentity::new("worker-A", "boot-A", 1));
     let snapshot = retrying
-        .load_recovery_snapshot(&claim)
+        .load_recovery_snapshot(&claim, None)
         .await
         .expect("T2 retries the ambiguous recovery response");
     assert_eq!(snapshot.claimed_run_id, claim.run_id);
@@ -720,7 +720,12 @@ async fn recovery_snapshot_retries_only_ambiguous_transport_outcomes() {
         spawn_scripted_idempotent_server(StatusCode::BAD_REQUEST).await;
     let rejecting =
         HttpDispatchQueue::new(reject_base, WorkerIdentity::new("worker-A", "boot-A", 1));
-    assert!(rejecting.load_recovery_snapshot(&claim).await.is_err());
+    assert!(
+        rejecting
+            .load_recovery_snapshot(&claim, None)
+            .await
+            .is_err()
+    );
     assert_eq!(reject_state.calls.load(Ordering::SeqCst), 1);
 }
 
