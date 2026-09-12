@@ -25,9 +25,16 @@ pub awaken_protocol_ai_sdk::request::ProcessError::InputCardinality
 pub struct awaken_protocol_ai_sdk::request::Decision
 pub awaken_protocol_ai_sdk::request::Decision::kind: awaken_protocol_ai_sdk::request::DecisionKind
 pub awaken_protocol_ai_sdk::request::Decision::tool_call_id: alloc::string::String
+pub struct awaken_protocol_ai_sdk::request::Decisions(_)
+impl awaken_protocol_ai_sdk::request::Decisions
+pub fn awaken_protocol_ai_sdk::request::Decisions::addressed_tool_calls(&self) -> alloc::vec::Vec<&str>
+pub fn awaken_protocol_ai_sdk::request::Decisions::for_tool_call(&self, &str) -> core::option::Option<&awaken_protocol_ai_sdk::request::Decision>
+pub fn awaken_protocol_ai_sdk::request::Decisions::is_empty(&self) -> bool
+pub fn awaken_protocol_ai_sdk::request::Decisions::len(&self) -> usize
+pub fn awaken_protocol_ai_sdk::request::Decisions::new(alloc::vec::Vec<awaken_protocol_ai_sdk::request::Decision>) -> Self
 pub struct awaken_protocol_ai_sdk::request::ProcessedRequest
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::agent_id: core::option::Option<alloc::string::String>
-pub awaken_protocol_ai_sdk::request::ProcessedRequest::decisions: alloc::vec::Vec<awaken_protocol_ai_sdk::request::Decision>
+pub awaken_protocol_ai_sdk::request::ProcessedRequest::decisions: awaken_protocol_ai_sdk::request::Decisions
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::operation_id: alloc::string::String
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::thread_id: alloc::string::String

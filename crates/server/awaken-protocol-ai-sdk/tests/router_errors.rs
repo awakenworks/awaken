@@ -403,3 +403,156 @@ async fn a_dead_turn_task_surfaces_an_error_frame_not_a_hang() {
         "a dead turn task must surface an error frame: {text}"
     );
 }
+
+/// A runtime awaiting on built-in tool `c2` that records every resume it is
+/// given, so a test can prove a mis-correlated decision never reaches it.
+struct AwaitingC2Runtime {
+    resumes: Mutex<Vec<(String, RunResume)>>,
+}
+
+impl AwaitingC2Runtime {
+    fn new() -> Self {
+        Self {
+            resumes: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RunApplication for AwaitingC2Runtime {
+    async fn run(
+        &self,
+        _operation_id: &str,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!("this test drives only the resume path")
+    }
+
+    async fn resume(
+        &self,
+        _operation_id: &str,
+        _thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.resumes
+            .lock()
+            .unwrap()
+            .push((tool_use_id.to_string(), resume));
+        Ok(StepOutcome::ended(
+            vec![Message::text(Id("a2".into()), Role::Assistant, "done")],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        ))
+    }
+
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(Some(Pending {
+            tool_use_id: "c2".into(),
+            name: "bash".into(),
+            input: Value::Null,
+            client_executed: false,
+        }))
+    }
+
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
+    }
+
+    fn model(&self) -> String {
+        "awaiting-c2".into()
+    }
+}
+
+async fn decide(app: axum::Router, parts: Value) -> String {
+    let body = json!({
+        "threadId": "t1",
+        "messages": [{ "id": "a1", "role": "assistant", "parts": parts }]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/chat")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    String::from_utf8(
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap()
+}
+
+fn approval(call_id: &str, approved: bool) -> Value {
+    json!({
+        "type": "tool-bash",
+        "toolCallId": call_id,
+        "state": "approval-responded",
+        "approval": { "id": call_id, "approved": approved }
+    })
+}
+
+/// Resume correlation is identity, never position.
+///
+/// | awaiting | decisions posted        | resume called | stream terminal |
+/// |----------|-------------------------|---------------|-----------------|
+/// | c2       | c1 approved             | no            | error           |
+/// | c2       | c1 approved, c2 denied  | yes, as Deny  | finish          |
+///
+/// Row 1 is the live hazard: a stale replay, a UI re-send, or the losing side
+/// of a parallel-tool race posts only `c1`, and a positional fallback would
+/// apply `c1`'s human **approval** to the different tool call `c2`. Row 2 shows
+/// the identity match still wins when it is not first in the request, so the
+/// fix is exact correlation and not "reject whenever more than one arrives".
+#[tokio::test]
+async fn an_approval_for_another_tool_call_cannot_resume_the_awaiting_one() {
+    let runtime = Arc::new(AwaitingC2Runtime::new());
+    let app = awaken_protocol_ai_sdk::router::router(runtime.clone());
+    let text = decide(app, json!([approval("c1", true)])).await;
+
+    assert!(
+        text.contains("\"type\":\"error\""),
+        "a decision for another tool call must fail closed: {text}"
+    );
+    assert!(
+        !text.contains("\"type\":\"finish\"") || text.contains("\"finishReason\":\"error\""),
+        "the stream must not report a clean finish: {text}"
+    );
+    assert!(
+        runtime.resumes.lock().unwrap().is_empty(),
+        "a mismatched decision must never reach runtime.resume: {:?}",
+        runtime.resumes.lock().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn the_matching_decision_wins_even_when_it_is_not_first() {
+    let runtime = Arc::new(AwaitingC2Runtime::new());
+    let app = awaken_protocol_ai_sdk::router::router(runtime.clone());
+    let text = decide(app, json!([approval("c1", true), approval("c2", false)])).await;
+
+    assert!(
+        !text.contains("\"type\":\"error\""),
+        "an exact decision for the awaiting tool must resume: {text}"
+    );
+    let resumes = runtime.resumes.lock().unwrap();
+    assert_eq!(resumes.len(), 1, "exactly one resume: {resumes:?}");
+    assert_eq!(resumes[0].0, "c2", "resumed the awaiting call");
+    assert!(
+        matches!(
+            resumes[0].1,
+            RunResume::Permission(
+                awaken_agent_contract::agent::awaiting::PermissionDecision::Deny { .. }
+            )
+        ),
+        "c2's own denial must be applied, not c1's approval: {:?}",
+        resumes[0].1
+    );
+}

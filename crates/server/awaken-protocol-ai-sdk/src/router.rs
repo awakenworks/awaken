@@ -306,12 +306,15 @@ fn forward_live_event(
 }
 
 /// Translate the request's decisions into a resume against the awaiting tool and
-/// run it. Fails closed when there is no awaiting tool or no matching decision.
+/// run it. Fails closed when there is no awaiting tool, or when the request
+/// carries no decision authored for exactly that tool call: a decision for some
+/// other call — a stale replay, a UI re-send, or the losing side of a
+/// parallel-tool race — is never substituted for the one the runtime awaits.
 async fn resume_step(
     rt: &Runtime,
     operation_id: &str,
     thread: &str,
-    decisions: &[crate::request::Decision],
+    decisions: &crate::request::Decisions,
 ) -> Result<StepOutcome, Response> {
     let Some(pending) = rt.pending(thread).await.map_err(sse_error)? else {
         return Err(sse_error(RunApplicationError::bad_request(
@@ -319,13 +322,13 @@ async fn resume_step(
         )));
     };
     let decision = decisions
-        .iter()
-        .find(|d| d.tool_call_id == pending.tool_use_id)
-        .or_else(|| decisions.first())
+        .for_tool_call(&pending.tool_use_id)
         .ok_or_else(|| {
-            sse_error(RunApplicationError::bad_request(
-                "no tool decision for the awaiting tool",
-            ))
+            sse_error(RunApplicationError::bad_request(format!(
+                "no tool decision matches the awaiting tool {} (the request addressed {:?})",
+                pending.tool_use_id,
+                decisions.addressed_tool_calls()
+            )))
         })?;
     let resume = to_resume(&decision.kind, &pending);
     rt.resume(operation_id, thread, &pending.tool_use_id, resume)

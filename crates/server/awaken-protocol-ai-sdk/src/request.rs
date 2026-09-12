@@ -31,12 +31,57 @@ pub struct Decision {
     pub kind: DecisionKind,
 }
 
+/// The request's tool-call decisions, addressable only by call id.
+///
+/// Answering the awaiting tool is an identity question, never a positional one:
+/// an approval the user authored for call `c1` must never resume call `c2`
+/// merely because `c1` arrived first. A stale replay, a UI re-send, or a
+/// parallel-tool race all routinely deliver decisions for calls other than the
+/// one the runtime awaits, so a positional fallback mis-applies a live human
+/// approval rather than merely being imprecise.
+///
+/// The collection therefore exposes no positional accessor at all — no `first`,
+/// no indexing, no iteration over decisions — so `find(by id).or_else(positional)`
+/// cannot be written against it. The only way to a decision is
+/// [`Decisions::for_tool_call`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Decisions(Vec<Decision>);
+
+impl Decisions {
+    /// Wrap the decisions extracted from one assistant message.
+    pub fn new(decisions: Vec<Decision>) -> Self {
+        Self(decisions)
+    }
+
+    /// The decision the client authored for `tool_call_id`, if it sent one.
+    /// Absence is the caller's cue to fail closed, never to substitute another.
+    pub fn for_tool_call(&self, tool_call_id: &str) -> Option<&Decision> {
+        self.0.iter().find(|d| d.tool_call_id == tool_call_id)
+    }
+
+    /// The call ids the request addressed. Diagnostics only: it reports what the
+    /// client said and can never be used to choose a decision.
+    pub fn addressed_tool_calls(&self) -> Vec<&str> {
+        self.0.iter().map(|d| d.tool_call_id.as_str()).collect()
+    }
+
+    /// True when the request carried no tool decision at all.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// How many decisions the request carried.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 /// A decoded request ready for the runtime.
 pub struct ProcessedRequest {
     pub operation_id: String,
     pub thread_id: String,
     pub messages: Vec<Message>,
-    pub decisions: Vec<Decision>,
+    pub decisions: Decisions,
     pub agent_id: Option<String>,
 }
 
@@ -83,7 +128,7 @@ pub fn process_request(
                 .unwrap_or_else(|| fresh_process_id("ai-sdk-operation"));
             let message = convert_input_message(current, &operation_id)
                 .expect("current input was classified from the same role/content converter");
-            (operation_id, vec![message], Vec::new())
+            (operation_id, vec![message], Decisions::default())
         }
         None => {
             let extracted = extract_decisions(payload.messages.last());
@@ -95,7 +140,7 @@ pub fn process_request(
                     .operation_id
                     .unwrap_or_else(|| fresh_process_id("ai-sdk-operation")),
                 Vec::new(),
-                extracted.decisions,
+                Decisions::new(extracted.decisions),
             )
         }
     };
@@ -642,8 +687,14 @@ mod tests {
         assert!(p.is_resume_only());
         assert_eq!(p.operation_id, "a1");
         assert_eq!(p.decisions.len(), 1);
-        assert_eq!(p.decisions[0].tool_call_id, "c1");
-        assert_eq!(p.decisions[0].kind, DecisionKind::Output(json!("42")));
+        assert_eq!(p.decisions.addressed_tool_calls(), vec!["c1"]);
+        assert_eq!(
+            p.decisions
+                .for_tool_call("c1")
+                .expect("decision for c1")
+                .kind,
+            DecisionKind::Output(json!("42"))
+        );
     }
 
     #[test]
@@ -694,7 +745,14 @@ mod tests {
         };
         let processed = process(req, &[]);
         assert!(processed.is_resume_only());
-        assert_eq!(processed.decisions[0].kind, DecisionKind::Approved);
+        assert_eq!(
+            processed
+                .decisions
+                .for_tool_call("c1")
+                .expect("decision for c1")
+                .kind,
+            DecisionKind::Approved
+        );
     }
 
     fn decision_part(state: &str, extra: Value) -> Value {
@@ -717,7 +775,11 @@ mod tests {
             1,
             "exactly one decision for state {state}"
         );
-        p.decisions.into_iter().next().unwrap().kind
+        p.decisions
+            .for_tool_call("c1")
+            .expect("decision for c1")
+            .kind
+            .clone()
     }
 
     #[test]
