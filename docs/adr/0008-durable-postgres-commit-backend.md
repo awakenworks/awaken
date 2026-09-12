@@ -62,6 +62,32 @@ blocking an async runtime inside them.
 - Tests run against a real Postgres; with no database reachable they skip, so the
   suite still passes without one.
 
+## Lifecycle predecessor access (2026-09-13)
+
+The existing lifecycle feed must classify `Running` after `Awaiting` using the
+preceding committed state of that same Run. Its SQL query looks backward by
+`run_id` and exclusive `sequence`. The original event primary key covered only
+sequence, so repeated full-history observations searched unrelated Runs for
+each event. A retained container test database reproduced this access cost.
+
+Portable commit migration v11 adds the one `(run_id, sequence)` index in
+`awaken-store-schema`, shared by SQLite and PostgreSQL. It changes physical
+lookup only: the classifier, feed cursor, historical event bytes, and atomic
+commit boundary remain the original authorities. No new feed, cached lifecycle
+truth, or schema bootstrap path is introduced. The migration runs through the
+existing checksum-guarded startup transaction; populated v10 upgrade, all
+historical prefixes, and repeated/concurrent startup use the existing migration
+suite. The v11 case comments own data-preservation and query-plan rules.
+
+In the retained PostgreSQL experiment, the same 256-event lifecycle query took
+7.904 ms without the index and 2.119 ms with a transaction-local index, then the
+experiment rolled back. This is a query observation, not the completed-turn
+latency gate: the full container campaign must still meet its original bound.
+The migration adds no state transition requiring another abstract model;
+backend migration tests and actual query plans cover the new physical access
+path. Existing formal commit and migration invariants retain their prior proof
+boundaries and do not establish a performance guarantee.
+
 ## References
 
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G13, G31, G32 (the commit contract).

@@ -103,7 +103,7 @@ fn bundle_applies_on_real_sqlite() {
         .expect("runner")
         .run_bundle(&conn, &bundle)
         .expect("apply bundle on sqlite");
-    assert_eq!(applied.len(), 10, "all ten migrations applied");
+    assert_eq!(applied.len(), 11, "all eleven migrations applied");
 
     for table in TABLES {
         let count: i64 = conn
@@ -242,6 +242,11 @@ fn sqlite_v10_canonicalizes_only_historical_audit_kind_values() {
     let connection = Connection::open_in_memory().unwrap();
     let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
     let full = commit_bundle().unwrap();
+    let full = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..10].to_vec(),
+    )
+    .unwrap();
     let v9 = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
         full.migrations()[..9].to_vec(),
@@ -307,6 +312,11 @@ fn sqlite_v10_rolls_back_both_updates_and_its_ledger_row() {
     let connection = Connection::open_in_memory().unwrap();
     let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
     let full = commit_bundle().unwrap();
+    let full = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..10].to_vec(),
+    )
+    .unwrap();
     let v9 = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
         full.migrations()[..9].to_vec(),
@@ -559,6 +569,10 @@ async fn postgres_v10_canonicalizes_historical_kinds_and_rolls_back_as_one_unit(
     let runner =
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)?;
     let full = commit_bundle()?;
+    let full = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..10].to_vec(),
+    )?;
     let v9 = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
         full.migrations()[..9].to_vec(),
@@ -659,7 +673,7 @@ async fn bundle_applies_on_real_postgres() {
             .run_bundle(&bundle)
             .await
             .expect("apply bundle on postgres");
-    assert_eq!(applied.len(), 10, "all ten migrations applied");
+    assert_eq!(applied.len(), 11, "all eleven migrations applied");
 
     // Column types rendered to Postgres forms (information_schema.columns).
     let legacy_phase_type: String = sqlx::query(
@@ -731,4 +745,160 @@ async fn bundle_applies_on_real_postgres() {
     );
 
     pool.close().await;
+}
+
+#[test]
+fn sqlite_v11_indexes_run_predecessors_without_rewriting_history() {
+    // Cause/effect graph: C1 a populated v10 store interleaves repeated Run ids;
+    // C2 predecessor reads use Run equality + an exclusive sequence bound;
+    // C3 v11 upgrades the store; C4 startup repeats. R1=C1+C2 before/after C3
+    // -> identical exact predecessor, including no-match and boundary cases;
+    // R2=C3 -> the planner uses the ordered Run index, all stored bytes survive;
+    // R3=C4 -> no migration and one index. Fresh/all-prefix/concurrent-start
+    // cases are owned by the existing bundle migration tables above. No elapsed
+    // time assertion: host load is not a deterministic query-plan oracle.
+    let connection = Connection::open_in_memory().unwrap();
+    let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+    let full = commit_bundle().unwrap();
+    let previous = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..10].to_vec(),
+    )
+    .unwrap();
+    runner.run_bundle(&connection, &previous).unwrap();
+    for sequence in 1..=1000 {
+        connection.execute(
+            "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![sequence, format!("run-{}", sequence % 100), "\"RunStateChanged\"", format!("{{\"sequence\":{sequence}}}")],
+        ).unwrap();
+    }
+    let read = || {
+        connection
+            .prepare("SELECT sequence, run_id, kind, payload FROM runtime_event ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let before = read();
+    let delta = runner.run_bundle(&connection, &full).unwrap();
+    assert_eq!(
+        delta.iter().map(|row| row.version).collect::<Vec<_>>(),
+        [11],
+        "R2"
+    );
+    assert_eq!(read(), before, "R2 retains every stored byte");
+    let columns = connection
+        .prepare("PRAGMA index_info(runtime_event_run_sequence)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(2))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        columns,
+        ["run_id", "sequence"],
+        "R2 ordered equality/range index"
+    );
+    let query = "SELECT sequence FROM runtime_event WHERE run_id=?1 AND sequence<?2 AND kind='\"RunStateChanged\"' ORDER BY sequence DESC LIMIT 1";
+    for (run, bound, expected) in [
+        ("run-7", 508, Some(507)),
+        ("run-7", 507, Some(407)),
+        ("run-7", 7, None),
+        ("missing", 1001, None),
+    ] {
+        use rusqlite::OptionalExtension;
+        let actual: Option<i64> = connection
+            .query_row(query, rusqlite::params![run, bound], |row| row.get(0))
+            .optional()
+            .unwrap();
+        assert_eq!(actual, expected, "R1 run={run} bound={bound}");
+    }
+    let plan = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+        .unwrap()
+        .query_map(rusqlite::params!["run-7", 508], |row| {
+            row.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join("\n");
+    assert!(plan.contains("runtime_event_run_sequence"), "R2 {plan}");
+    assert!(
+        runner.run_bundle(&connection, &full).unwrap().is_empty(),
+        "R3"
+    );
+}
+
+#[tokio::test]
+async fn postgres_v11_indexes_run_predecessors_without_rewriting_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The PostgreSQL row of SQLite's C1-C4/R1-R3 table above. A real migrated
+    // database and its actual query planner cover dialect expansion and restart;
+    // the existing peer lifecycle tests cover Running/Awaiting/Resumed meaning.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return Ok(());
+    };
+    let (admin, pool, schema) = isolated_postgres_pool(&url, "event_predecessor_v11").await?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)?;
+    let full = commit_bundle()?;
+    let previous = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..10].to_vec(),
+    )?;
+    runner.run_bundle(&previous).await?;
+    sqlx::query("INSERT INTO runtime_event (sequence, run_id, kind, payload) SELECT n, 'run-' || (n % 100), '\"RunStateChanged\"'::jsonb, jsonb_build_object('sequence', n) FROM generate_series(1, 1000) AS n")
+        .execute(&pool).await?;
+    let read =
+        "SELECT sequence, run_id, kind::text, payload::text FROM runtime_event ORDER BY sequence";
+    let before: Vec<(i64, String, String, String)> = sqlx::query_as(read).fetch_all(&pool).await?;
+    let delta = runner.run_bundle(&full).await?;
+    assert_eq!(
+        delta.iter().map(|row| row.version).collect::<Vec<_>>(),
+        [11],
+        "R2"
+    );
+    let after: Vec<(i64, String, String, String)> = sqlx::query_as(read).fetch_all(&pool).await?;
+    assert_eq!(after, before, "R2 retains every stored value");
+    let definition: String = sqlx::query_scalar("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname='runtime_event_run_sequence'")
+        .fetch_one(&pool).await?;
+    assert!(definition.contains("(run_id, sequence)"), "R2 {definition}");
+    let query = "SELECT sequence FROM runtime_event WHERE run_id=$1 AND sequence<$2 AND kind::text='\"RunStateChanged\"' ORDER BY sequence DESC LIMIT 1";
+    for (run, bound, expected) in [
+        ("run-7", 508_i64, Some(507_i64)),
+        ("run-7", 507, Some(407)),
+        ("run-7", 7, None),
+        ("missing", 1001, None),
+    ] {
+        let actual: Option<i64> = sqlx::query_scalar(query)
+            .bind(run)
+            .bind(bound)
+            .fetch_optional(&pool)
+            .await?;
+        assert_eq!(actual, expected, "R1 run={run} bound={bound}");
+    }
+    sqlx::query("ANALYZE runtime_event").execute(&pool).await?;
+    let plan: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {query}"))
+        .bind("run-7")
+        .bind(508_i64)
+        .fetch_all(&pool)
+        .await?;
+    assert!(
+        plan.join("\n").contains("runtime_event_run_sequence"),
+        "R2 {plan:?}"
+    );
+    assert!(runner.run_bundle(&full).await?.is_empty(), "R3");
+    drop(runner);
+    drop_postgres_pool(admin, pool, &schema).await?;
+    Ok(())
 }
