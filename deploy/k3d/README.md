@@ -56,6 +56,23 @@ ServiceAccount therefore owns namespace-scoped `pods/portforward` for that
 resident channel. Attached exec remains a runtime capability for bounded file
 operations, not a parallel ACP transport.
 
+### Inspecting retained SQLite data
+
+Do not run host-user `sqlite3 -readonly` directly against the product PVC.
+In WAL mode even a read-only connection can create WAL/SHM files or update SHM;
+files created by host UID 1000 can prevent the UID 10001 service from reopening
+its otherwise writable database. This has been reproduced on the product k3d
+storage binding. `fsGroupChangePolicy: OnRootMismatch` is not a repair mechanism
+for mismatched child files.
+
+Reuse `SqliteManagedSessionRepository::verify_existing` for structural probes:
+its existing `SqliteProbeSnapshot` confines SQLite side effects to a temporary
+copy and checks the complete source read set, including uncheckpointed WAL.
+For content inspection, use a consistent backup under the service identity and
+query the copy. Do not use `immutable=1` on a live database to suppress side
+effects: that can ignore WAL state. Never delete WAL/SHM to clear a permission
+failure; inspect exact ownership first and preserve retained data.
+
 The same overlay selects the existing `k8s_continuation_volume` policy. A
 retained Session therefore owns one UID-bound `local-path` PVC mounted at its
 active filesystem. Pod loss may replace only the Pod incarnation; rebuild must
@@ -174,6 +191,26 @@ and its publication fact are the only deterministic edge fixture. The Control
 Pod uses the existing scenario adapter to inject that fact into the production
 Control assembly; Coordinator and both Workers run the shipped production
 artifacts, and no scenario router replaces a business authority.
+
+The final stage first runs the real Kubernetes identity/reopen/stop-evidence
+test, then holds only the predecessor's finish ACK after one terminal Provider
+response has committed. It hard-kills that exact CRI container, checks its
+retained terminal identity, and starts a differently named/UID successor.
+Acceptance requires the same public receipt to finish, the old Dispatch row to
+settle, the predecessor Pod to be removed, the successor to remain live, and
+exactly one Provider request across the crash. This proves the evidence-backed
+terminal-recovery case, not safe replay of opaque in-flight model/tool effects
+or arbitrary historical Runs lacking termination evidence.
+
+On 2026-09-13 (Asia/Singapore), commit `d09552fcf` passed all eleven stages in
+`awaken-adr71-d095-browser-0913`, including the non-skipped real Kubernetes test.
+The pressure stage completed 48/48 requests with zero errors and approximately
+2.62 seconds P95; these are fixture observations, not production or DeepSeek
+latency guarantees. The script exited successfully and removed its dedicated
+cluster and staged binaries. This run selected the harness's existing
+`AWAKEN_K3D_BUILD_NETWORK=host` and the Sandbox builder's
+`AWAKEN_SANDBOX_BUILD_NETWORK=host` after the default build network failed;
+neither capacity admission nor fault assertions were bypassed.
 Replicated stateless roles and Workers use a 15-second `not-ready`/`unreachable`
 `NoExecute` tolerance in this overlay. A dead node is therefore removed from
 Service routing and its workloads become replaceable within the test's bounded
