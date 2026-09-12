@@ -671,6 +671,37 @@ pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::args: alloc::vec::
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::command: alloc::string::String
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::fingerprint: alloc::string::String
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::kind: awaken_agent_contract::mcp_target::SandboxStdioMcpTargetKind
+pub mod awaken_agent_contract::mcp_tool_id
+pub enum awaken_agent_contract::mcp_tool_id::McpToolIdComponent
+pub awaken_agent_contract::mcp_tool_id::McpToolIdComponent::Server
+pub awaken_agent_contract::mcp_tool_id::McpToolIdComponent::Tool
+pub enum awaken_agent_contract::mcp_tool_id::McpToolIdError
+pub awaken_agent_contract::mcp_tool_id::McpToolIdError::EmptyComponent
+pub awaken_agent_contract::mcp_tool_id::McpToolIdError::EmptyComponent::component: awaken_agent_contract::mcp_tool_id::McpToolIdComponent
+impl core::error::Error for awaken_agent_contract::mcp_tool_id::McpToolIdError
+impl core::fmt::Display for awaken_agent_contract::mcp_tool_id::McpToolIdError
+pub fn awaken_agent_contract::mcp_tool_id::McpToolIdError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_agent_contract::mcp_tool_id::McpToolId
+impl awaken_agent_contract::mcp_tool_id::McpToolId
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::as_str(&self) -> &str
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::claims_namespace(&str) -> bool
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::dotted(&str, &str) -> alloc::string::String
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::encoded_server(&self) -> &str
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::encoded_tool(&self) -> &str
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::from_dotted(&str) -> core::option::Option<Self>
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::is_served_by(&self, &str) -> bool
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::namespace(&str) -> core::result::Result<alloc::string::String, awaken_agent_contract::mcp_tool_id::McpToolIdError>
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::new(&str, &str) -> core::result::Result<Self, awaken_agent_contract::mcp_tool_id::McpToolIdError>
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::parse(&str) -> core::option::Option<Self>
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::server_name(&self) -> alloc::string::String
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::tool_name(&self) -> alloc::string::String
+impl core::convert::From<awaken_agent_contract::mcp_tool_id::McpToolId> for alloc::string::String
+pub fn alloc::string::String::from(awaken_agent_contract::mcp_tool_id::McpToolId) -> Self
+impl core::fmt::Display for awaken_agent_contract::mcp_tool_id::McpToolId
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const awaken_agent_contract::mcp_tool_id::MCP_DOTTED_TOOL_PREFIX: &str
+pub const awaken_agent_contract::mcp_tool_id::MCP_TOOL_ID_PREFIX: &str
+pub const awaken_agent_contract::mcp_tool_id::MCP_TOOL_ID_SEPARATOR: &str
 pub mod awaken_agent_contract::model_spec
 pub enum awaken_agent_contract::model_spec::Modality
 pub awaken_agent_contract::model_spec::Modality::Audio
@@ -1130,6 +1161,15 @@ pub fn awaken_agent_contract::mcp_target::McpTarget::sandbox_stdio_target(&self)
 pub enum awaken_agent_contract::McpTargetError
 pub awaken_agent_contract::McpTargetError::Invalid
 pub awaken_agent_contract::McpTargetError::InvalidSandboxStdio
+pub enum awaken_agent_contract::McpToolIdComponent
+pub awaken_agent_contract::McpToolIdComponent::Server
+pub awaken_agent_contract::McpToolIdComponent::Tool
+pub enum awaken_agent_contract::McpToolIdError
+pub awaken_agent_contract::McpToolIdError::EmptyComponent
+pub awaken_agent_contract::McpToolIdError::EmptyComponent::component: awaken_agent_contract::mcp_tool_id::McpToolIdComponent
+impl core::error::Error for awaken_agent_contract::mcp_tool_id::McpToolIdError
+impl core::fmt::Display for awaken_agent_contract::mcp_tool_id::McpToolIdError
+pub fn awaken_agent_contract::mcp_tool_id::McpToolIdError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum awaken_agent_contract::Observed<T>
 pub awaken_agent_contract::Observed::Absent
 pub awaken_agent_contract::Observed::Present(T)
@@ -1243,6 +1283,24 @@ pub awaken_agent_contract::McpTargetIdentity::query: core::option::Option<alloc:
 pub awaken_agent_contract::McpTargetIdentity::scheme: alloc::string::String
 impl awaken_agent_contract::mcp_target::McpTargetIdentity
 pub fn awaken_agent_contract::mcp_target::McpTargetIdentity::canonical_url(&self) -> alloc::string::String
+pub struct awaken_agent_contract::McpToolId
+impl awaken_agent_contract::mcp_tool_id::McpToolId
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::as_str(&self) -> &str
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::claims_namespace(&str) -> bool
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::dotted(&str, &str) -> alloc::string::String
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::encoded_server(&self) -> &str
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::encoded_tool(&self) -> &str
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::from_dotted(&str) -> core::option::Option<Self>
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::is_served_by(&self, &str) -> bool
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::namespace(&str) -> core::result::Result<alloc::string::String, awaken_agent_contract::mcp_tool_id::McpToolIdError>
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::new(&str, &str) -> core::result::Result<Self, awaken_agent_contract::mcp_tool_id::McpToolIdError>
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::parse(&str) -> core::option::Option<Self>
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::server_name(&self) -> alloc::string::String
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::tool_name(&self) -> alloc::string::String
+impl core::convert::From<awaken_agent_contract::mcp_tool_id::McpToolId> for alloc::string::String
+pub fn alloc::string::String::from(awaken_agent_contract::mcp_tool_id::McpToolId) -> Self
+impl core::fmt::Display for awaken_agent_contract::mcp_tool_id::McpToolId
+pub fn awaken_agent_contract::mcp_tool_id::McpToolId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_agent_contract::Message
 pub awaken_agent_contract::Message::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::Message::id: awaken_agent_contract::agent::message::Id
@@ -1383,6 +1441,9 @@ pub awaken_agent_contract::TranscriptSnapshotRef::thread_id: awaken_agent_contra
 pub awaken_agent_contract::TranscriptSnapshotRef::version: u64
 pub awaken_agent_contract::TranscriptSnapshotRef::view: awaken_agent_contract::thread::read::transcript::TranscriptView
 pub const awaken_agent_contract::ANTHROPIC_SKILL_IDS: [&str; 4]
+pub const awaken_agent_contract::MCP_DOTTED_TOOL_PREFIX: &str
+pub const awaken_agent_contract::MCP_TOOL_ID_PREFIX: &str
+pub const awaken_agent_contract::MCP_TOOL_ID_SEPARATOR: &str
 pub trait awaken_agent_contract::CheckpointReader: awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView
 pub fn awaken_agent_contract::CheckpointReader::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
 pub trait awaken_agent_contract::CommitCoordinator: core::marker::Send + core::marker::Sync

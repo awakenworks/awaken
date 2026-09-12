@@ -11,6 +11,7 @@ import type {
   ManagedToolsetCap,
   McpToolsetCap,
 } from "./api/types";
+import { mcpToolNamespace } from "./mcp-tool-id";
 
 export type ToolPermission = AgentToolPermissionPolicy["type"];
 
@@ -103,8 +104,10 @@ export function renameMcpToolset(
 }
 
 function renameMcpToolId(toolId: string, previous: string, next: string): string {
-  const prefix = `mcp__${previous}__`;
-  return toolId.startsWith(prefix) ? `mcp__${next}__${toolId.slice(prefix.length)}` : toolId;
+  const prefix = mcpToolNamespace(previous);
+  const renamed = mcpToolNamespace(next);
+  if (prefix === null || renamed === null || !toolId.startsWith(prefix)) return toolId;
+  return `${renamed}${toolId.slice(prefix.length)}`;
 }
 
 export function renameMcpIntegrationReferences(
@@ -135,18 +138,21 @@ export function removeMcpIntegration(
   config: AgentConfig,
   serverName: string,
 ): Partial<AgentConfig> {
-  const prefix = `mcp__${serverName}__`;
+  // A name with no encodable identity owns no namespace, so it must drop
+  // nothing rather than match every id through an empty prefix.
+  const prefix = mcpToolNamespace(serverName);
+  const inNamespace = (toolId: string) => prefix !== null && toolId.startsWith(prefix);
   const recovery = Object.fromEntries(
-    Object.entries(config.recovery_policies ?? {}).filter(([toolId]) => !toolId.startsWith(prefix)),
+    Object.entries(config.recovery_policies ?? {}).filter(([toolId]) => !inNamespace(toolId)),
   );
   return {
     mcp_servers: config.mcp_servers.filter((server) => server.name !== serverName),
     tools: config.tools.filter((tool) => !isMcpToolset(tool) || tool.mcp_server_name !== serverName),
-    tool_overrides: (config.tool_overrides ?? []).filter((override) => !override.target.startsWith(prefix)),
+    tool_overrides: (config.tool_overrides ?? []).filter((override) => !inNamespace(override.target)),
     recovery_policies: recovery,
     tool_exposure: config.tool_exposure ? {
       ...config.tool_exposure,
-      rules: config.tool_exposure.rules?.filter((rule) => !rule.selector.value.startsWith(prefix)),
+      rules: config.tool_exposure.rules?.filter((rule) => !inNamespace(rule.selector.value)),
     } : undefined,
   };
 }

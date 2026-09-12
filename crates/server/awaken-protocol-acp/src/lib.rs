@@ -31,14 +31,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// borrow another tool's permission.
 #[cfg(feature = "real-acp")]
 fn exact_mcp_tool_arguments(name: &str, input: &serde_json::Value) -> serde_json::Value {
-    let Some(identity) = name.strip_prefix("mcp.") else {
+    // The title is decomposed by the one owning type, so "which server and tool
+    // does this envelope claim" has the same answer here as it does at the
+    // permission decision.
+    let Some(identity) = awaken_agent_contract::McpToolId::from_dotted(name) else {
         return input.clone();
     };
-    let Some((server, tool)) = identity.split_once('.') else {
-        return input.clone();
-    };
-    let exact = input.get("server").and_then(serde_json::Value::as_str) == Some(server)
-        && input.get("tool").and_then(serde_json::Value::as_str) == Some(tool);
+    let (server, tool) = (identity.server_name(), identity.tool_name());
+    let exact = input.get("server").and_then(serde_json::Value::as_str) == Some(server.as_str())
+        && input.get("tool").and_then(serde_json::Value::as_str) == Some(tool.as_str());
     if exact {
         input
             .get("arguments")

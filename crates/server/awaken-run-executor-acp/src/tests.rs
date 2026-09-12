@@ -58,6 +58,14 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
         // M4 Claude SDK canonical MCP target; M5 external identity stays exact.
         ("M4", "mcp__awaken_session__write", "write"),
         ("M5", "mcp__pilot__set_plan", "mcp__pilot__set_plan"),
+        // M6 a dotted title whose SERVER carries dots: the tool name is the
+        // final segment, so the title lands on the namespace of the configured
+        // `a.b` server. Splitting on the first dot produced `mcp__a__b.c`, an
+        // identity no configured server owned and therefore no policy matched.
+        ("M6", "mcp.a.b.c", "mcp__a-2eb__c"),
+        // M7 a punctuated server in dotted form reaches the same canonical
+        // identity the MCP producer emits for it.
+        ("M7", "mcp.github-mcp.search", "mcp__github-2dmcp__search"),
     ] {
         let resolver = NeutralPermissionResolver {
             policy: Arc::new(ExactPolicy {

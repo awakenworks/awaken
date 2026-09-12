@@ -13,6 +13,7 @@ layer = "interface"
 authority = "protocol-acp"
 
 [dependencies]
+awaken-agent-contract.workspace = true
 awaken-agent-channel.workspace = true
 awaken-acp-contract.workspace = true
 awaken-provisioning-contract.workspace = true

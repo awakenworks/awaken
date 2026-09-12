@@ -322,4 +322,40 @@ describe("Agent tool permission projection", () => {
     expect(effectiveAgentToolPermission(updated, "web_search").type).toBe("always_allow");
     expect(effectiveAgentToolPermission(tools, "web_search").type).toBe("always_ask");
   });
+
+  it("moves and drops the ids of a punctuated server, not a hand-spelled prefix", () => {
+    // The console rewrites authored references by namespace. Building that
+    // namespace as `mcp__${name}__` disagrees with the runtime encoder for any
+    // name carrying punctuation, so the rename silently moved nothing and the
+    // removal silently left the override behind.
+    const config = {
+      mcp_servers: [{ type: "http", name: "github-mcp", url: "https://mcp.test/gh" }],
+      tools: [],
+      tool_overrides: [{ target: "mcp__github-2dmcp__search", alias: "lookup" }],
+      recovery_policies: {
+        "mcp__github-2dmcp__search": { mode: "never_replay" },
+        read: { mode: "replay_safe" },
+      },
+      tool_exposure: { rules: [
+        { selector: { kind: "prefix", value: "mcp__github-2dmcp__" }, exposure: "on_demand" },
+      ] },
+    } as unknown as AgentConfig;
+    expect(renameMcpIntegrationReferences(config, "github-mcp", "gh.co")).toEqual(
+      expect.objectContaining({
+        tool_overrides: [expect.objectContaining({ target: "mcp__gh-2eco__search" })],
+        recovery_policies: expect.objectContaining({
+          "mcp__gh-2eco__search": { mode: "never_replay" },
+        }),
+        tool_exposure: expect.objectContaining({ rules: [
+          expect.objectContaining({ selector: { kind: "prefix", value: "mcp__gh-2eco__" } }),
+        ] }),
+      }),
+    );
+    expect(removeMcpIntegration(config, "github-mcp")).toEqual(expect.objectContaining({
+      mcp_servers: [],
+      tool_overrides: [],
+      recovery_policies: { read: { mode: "replay_safe" } },
+      tool_exposure: { rules: [] },
+    }));
+  });
 });

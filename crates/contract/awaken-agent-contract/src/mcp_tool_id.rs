@@ -18,8 +18,8 @@
 //! The historical encoding replaced every non-alphanumeric byte with `_`,
 //! collapsed runs and trimmed the edges, so `a-b`, `a.b`, `a_b` and `-a-b-` all
 //! became the single namespace `mcp__a_b__` — a policy authored for one silently
-//! governed the others. This encoding has [`decode_component`] as a total left
-//! inverse, so distinct server names always occupy distinct namespaces:
+//! governed the others. This encoding has a total left inverse (`decode_component`
+//! below), so distinct server names always occupy distinct namespaces:
 //!
 //! * an ASCII alphanumeric byte is itself;
 //! * `_` is itself, *unless* the next source character is also `_` (a literal
@@ -108,6 +108,14 @@ impl McpToolId {
 
     /// Recover the identity carried by an already-encoded id. `None` means the
     /// string is not a canonical MCP tool id and must not be treated as one.
+    ///
+    /// The *server* half is validated strictly: it is the policy namespace, so a
+    /// spelling no encoder could have produced must never be resolved to a
+    /// namespace it does not own. The *tool* half is taken as everything after
+    /// the first separator, because an encoded server can never contain `__` —
+    /// so the split is unambiguous — and because a tool name an operator wrote
+    /// by hand still deserves to be governed by its server's toolset rather than
+    /// escaping policy entirely.
     #[must_use]
     pub fn parse(id: &str) -> Option<Self> {
         let rest = id.strip_prefix("mcp__")?;
@@ -115,9 +123,6 @@ impl McpToolId {
         let (server, tool) = rest.split_at(separator);
         let tool = &tool[MCP_TOOL_ID_SEPARATOR.len()..];
         if server.is_empty() || tool.is_empty() || !is_encoded_component(server) {
-            return None;
-        }
-        if !is_encoded_component(tool) {
             return None;
         }
         Some(Self {
@@ -238,11 +243,11 @@ fn encode_component(raw: &str, component: McpToolIdComponent) -> Result<String, 
     Ok(out)
 }
 
-/// Recover the raw name from an encoded component. Total: any leftover `-` that
-/// is not followed by two hex digits decodes to itself, so a malformed component
-/// never panics — it simply fails [`is_encoded_component`] before reaching here.
-#[must_use]
-pub fn decode_component(encoded: &str) -> String {
+/// Recover the raw name from an encoded component — the left inverse of
+/// `encode_component`. Total: any leftover `-` that is not followed by two hex
+/// digits decodes to itself, so a malformed component never panics; it simply
+/// fails `is_encoded_component` before reaching here.
+fn decode_component(encoded: &str) -> String {
     let bytes = encoded.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -368,12 +373,26 @@ mod tests {
             "mcp____search",
             "mcp__srv__",
             "mcp__github-mcp__search",
-            "mcp__a__b.c",
         ] {
             assert!(
                 McpToolId::parse(candidate).is_none(),
                 "{candidate:?} must not parse as a canonical MCP tool id"
             );
+        }
+    }
+
+    #[test]
+    fn a_hand_written_tool_half_still_resolves_to_its_server_namespace() {
+        // The server half owns the policy namespace and is validated strictly;
+        // the tool half is whatever follows, so an operator's literal spelling
+        // is still governed by its server's toolset instead of escaping policy.
+        for (id, tool) in [
+            ("mcp__context__attest__other", "attest__other"),
+            ("mcp__a__b.c", "b.c"),
+        ] {
+            let parsed = McpToolId::parse(id).expect("server half is canonical");
+            assert_eq!(parsed.encoded_server(), id.split("__").nth(1).unwrap());
+            assert_eq!(parsed.encoded_tool(), tool);
         }
     }
 

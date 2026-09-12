@@ -338,7 +338,11 @@ fn permission_ask(raw: &serde_json::Value, context: &PermissionContext) -> Permi
         // MCP name at permission time. Explicit MCP requests own that identity;
         // generic requests (e.g. Codex execute) still use exact-id observation.
         // Retain even malformed MCP-looking requests for downstream rejection.
-        if !ask.tool.starts_with("mcp__") && !ask.tool.starts_with("mcp.") {
+        if !awaken_agent_contract::McpToolId::claims_namespace(&ask.tool)
+            && !ask
+                .tool
+                .starts_with(awaken_agent_contract::MCP_DOTTED_TOOL_PREFIX)
+        {
             ask.tool.clone_from(&observed.name);
         }
         // Streaming tool_call notifications may still contain {} or partial

@@ -42,7 +42,7 @@ pub(super) fn compile(
                     .into(),
             ));
         }
-        if !override_.target.starts_with("mcp__")
+        if !awaken_agent_contract::McpToolId::claims_namespace(&override_.target)
             && !descriptors
                 .iter()
                 .any(|descriptor| descriptor.id == override_.target)

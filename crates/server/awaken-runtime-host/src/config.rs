@@ -1076,54 +1076,62 @@ mod tests {
                     permission,
                 };
                 for exact in [None, Some(deny), Some(allow), Some(ask)] {
-                    let toolset = ToolsetPolicy {
-                        source: ToolsetSource::Mcp {
-                            server_name: "context".into(),
-                        },
-                        default,
-                        overrides: exact
-                            .map(|policy| ToolPolicyOverride::new("attest", policy))
-                            .into_iter()
-                            .collect(),
-                    };
-                    let authorization = effective_tool_authorization(
-                        &ResolvedConfiguration::default(),
-                        &[],
-                        &[toolset],
-                    );
-                    for server in ["context", "context_other"] {
-                        let selected = if server == "context" {
-                            exact.unwrap_or(default)
-                        } else {
-                            ask
+                    // C5 the configured server name is plain, or carries the
+                    // punctuation the id encoding must escape. Both spellings
+                    // are one identity, so the matrix holds unchanged for each.
+                    for configured in ["context", "context-mcp"] {
+                        let toolset = ToolsetPolicy {
+                            source: ToolsetSource::Mcp {
+                                server_name: configured.into(),
+                            },
+                            default,
+                            overrides: exact
+                                .map(|policy| ToolPolicyOverride::new("attest", policy))
+                                .into_iter()
+                                .collect(),
                         };
-                        let expected = if !selected.enabled {
-                            GateOutcomeKind::Block
-                        } else if selected.permission == ToolPermissionRequirement::AlwaysAsk {
-                            GateOutcomeKind::RequireConfirmation
-                        } else {
-                            GateOutcomeKind::Allow
-                        };
-                        let call = awaken_runtime_contract::llm::ToolCall {
-                            call_id: "mcp-matrix".into(),
-                            tool_id: format!("mcp__{server}__attest"),
-                            arguments: serde_json::json!({}),
-                        };
-                        let native = authorization
-                            .gate
-                            .gate(&call, &awaken_agent_contract::agent::state::Store::new())
-                            .await;
-                        let acp = authorization.policy.evaluate(&call).await;
-                        assert_eq!(
-                            native.kind(),
-                            expected,
-                            "Native: {default:?} {exact:?} {server}"
+                        let authorization = effective_tool_authorization(
+                            &ResolvedConfiguration::default(),
+                            &[],
+                            &[toolset],
                         );
-                        assert_eq!(
-                            acp.kind().gate_outcome_kind(),
-                            expected,
-                            "ACP: {default:?} {exact:?} {server}"
-                        );
+                        for server in [configured, "context_other"] {
+                            let selected = if server == configured {
+                                exact.unwrap_or(default)
+                            } else {
+                                ask
+                            };
+                            let expected = if !selected.enabled {
+                                GateOutcomeKind::Block
+                            } else if selected.permission == ToolPermissionRequirement::AlwaysAsk {
+                                GateOutcomeKind::RequireConfirmation
+                            } else {
+                                GateOutcomeKind::Allow
+                            };
+                            let call = awaken_runtime_contract::llm::ToolCall {
+                                call_id: "mcp-matrix".into(),
+                                tool_id: awaken_agent_contract::McpToolId::new(server, "attest")
+                                    .expect("canonical id")
+                                    .as_str()
+                                    .to_string(),
+                                arguments: serde_json::json!({}),
+                            };
+                            let native = authorization
+                                .gate
+                                .gate(&call, &awaken_agent_contract::agent::state::Store::new())
+                                .await;
+                            let acp = authorization.policy.evaluate(&call).await;
+                            assert_eq!(
+                                native.kind(),
+                                expected,
+                                "Native: {default:?} {exact:?} {server}"
+                            );
+                            assert_eq!(
+                                acp.kind().gate_outcome_kind(),
+                                expected,
+                                "ACP: {default:?} {exact:?} {server}"
+                            );
+                        }
                     }
                 }
             }

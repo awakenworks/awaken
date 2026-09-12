@@ -11,6 +11,7 @@ authority = "ext-mcp"
 description = "Model Context Protocol (MCP) client extension for Awaken"
 
 [dependencies]
+awaken-agent-contract.workspace = true
 awaken-credential.workspace = true
 awaken-mcp-wire.workspace = true
 awaken-runtime-contract.workspace = true

@@ -161,12 +161,19 @@ impl McpServer {
         &self.server_name
     }
 
-    /// The sanitized tool namespace (`mcp__{sanitized}__`) this server's tools are
-    /// projected under. Two distinct raw names can sanitize to the same namespace,
-    /// so the manager dedups on this — not just [`name`](Self::name) — to keep
-    /// tool-id routing unambiguous.
+    /// The encoded tool namespace (`mcp__{encoded}__`) this server's tools are
+    /// projected under. The encoding is injective, so distinct raw names always
+    /// yield distinct namespaces; the manager still dedups on this as a
+    /// structural backstop.
     pub fn namespace(&self) -> &str {
         &self.namespace
+    }
+
+    /// Force a namespace, so the manager's collision backstop can be exercised
+    /// even though the injective encoding makes a real collision unreachable.
+    #[cfg(test)]
+    pub(crate) fn set_namespace_for_test(&mut self, namespace: String) {
+        self.namespace = namespace;
     }
 
     /// Whether the underlying transport is still usable.
@@ -200,8 +207,8 @@ impl Plugin for McpPlugin {
         let mut contributions = Contributions::new(plugin_id(&self.server_name));
         let registry = self.registry.lock().unwrap();
         for def in &registry.tools {
-            // A tool whose name sanitizes empty is skipped rather than failing
-            // the whole resolution.
+            // A tool whose name has no encodable identity is skipped rather
+            // than failing the whole resolution.
             if let (Ok(descriptor), Ok(tool)) = (
                 mcp_tool_descriptor_for_transport(&self.server_name, def, self.transport.as_ref()),
                 McpRawTool::from_definition(&self.server_name, def, Arc::clone(&self.transport)),
@@ -379,8 +386,8 @@ mod tests {
         );
     }
 
-    /// A transport whose tool set mixes a valid tool with one whose name sanitizes
-    /// to an empty id component (all separators), to prove per-tool fault isolation.
+    /// A transport whose tool set mixes a valid tool with one whose name has no
+    /// encodable identity at all, to prove per-tool fault isolation.
     struct MixedTransport;
 
     #[async_trait]
@@ -388,8 +395,8 @@ mod tests {
         async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
             Ok(vec![
                 serde_json::from_value(serde_json::json!({ "name": "good" })).unwrap(),
-                // "---" sanitizes to an empty component ⇒ to_tool_id errors.
-                serde_json::from_value(serde_json::json!({ "name": "---" })).unwrap(),
+                // An empty name has no identity to encode ⇒ to_tool_id errors.
+                serde_json::from_value(serde_json::json!({ "name": "" })).unwrap(),
             ])
         }
         async fn call_tool(
