@@ -10,7 +10,6 @@ pub use awaken_runtime_examples::prelude::ExecutableAgentSnapshotId
 pub use awaken_runtime_examples::prelude::MemoryCommitCoordinator
 pub use awaken_runtime_examples::prelude::Message
 pub use awaken_runtime_examples::prelude::MessageId
-pub use awaken_runtime_examples::prelude::Mode
 pub use awaken_runtime_examples::prelude::ModelBinding
 pub use awaken_runtime_examples::prelude::PermissionGate
 pub use awaken_runtime_examples::prelude::PermissionRule

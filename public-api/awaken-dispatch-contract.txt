@@ -38,6 +38,7 @@ pub use awaken_dispatch_contract::WorkerHeartbeat
 pub use awaken_dispatch_contract::WorkerIdentity
 pub use awaken_dispatch_contract::WorkerManifest
 pub use awaken_dispatch_contract::WorkerObservationSource
+pub use awaken_dispatch_contract::WorkerProcessExit
 pub use awaken_dispatch_contract::WorkerRecoveryMode
 pub use awaken_dispatch_contract::WorkerRegistration
 pub use awaken_dispatch_contract::WorkerSnapshot
