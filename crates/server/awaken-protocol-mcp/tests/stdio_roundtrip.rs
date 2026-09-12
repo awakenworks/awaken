@@ -13,6 +13,7 @@ use awaken_runtime_contract::tool::ToolCall;
 
 async fn demo_server() -> StdioTransport {
     let executable = std::env::var("CARGO_BIN_EXE_awaken-mcp-stdio-demo")
+        .or_else(|_| std::env::var("NEXTEST_BIN_EXE_awaken-mcp-stdio-demo"))
         .expect("Cargo must provide the demo server path when this integration test runs");
     StdioTransport::connect(&executable, &[], DEFAULT_TIMEOUT)
         .await
