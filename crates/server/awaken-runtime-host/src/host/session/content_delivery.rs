@@ -361,11 +361,29 @@ impl SharedHost {
         agent: Option<&str>,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         has_published_delegates: bool,
+        claimed_attempt: bool,
     ) -> bool {
         // A Coordinator-only Host constructs the durable dispatch envelope but
         // never executes it. Creating an eager sandbox here would make the
         // Coordinator a second physical owner beside the registered Worker.
         if self.deployment.disable_local_pool {
+            return true;
+        }
+        // One deferred-environment decision owns both Coordinator and Worker
+        // behavior. A claim-fenced inference-only auxiliary keeps Execution
+        // purpose, but needs no undeclared physical substrate.
+        let inference_only_claim = claimed_attempt
+            && !has_published_delegates
+            && published_snapshot.is_some_and(crate::provisioning::environment_free_inference)
+            && self
+                .session_slots
+                .read(thread, |slot| {
+                    !slot.session_dispatch
+                        && slot.environment_snapshot.is_none()
+                        && slot.dispatch_resource_manifest().is_none()
+                })
+                .unwrap_or(true);
+        if inference_only_claim {
             return true;
         }
         let slot_allows = self

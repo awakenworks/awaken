@@ -159,6 +159,19 @@ impl SharedHost {
         let mut request = RunDispatch::new(activation)
             .with_traceparent(traceparent)
             .with_agent_publications(agent_publications);
+        // Thread ownership survives an environment-free auxiliary Run. A
+        // resource envelope is one carrier of Scope, not a prerequisite for it.
+        if let Some(scope) = self.registered_thread_workspace(&thread) {
+            if resources
+                .as_ref()
+                .is_some_and(|resources| resources.workspace_id != scope)
+            {
+                return Err(HostError::bad_request(
+                    "Dispatch resource Workspace conflicts with its Thread",
+                ));
+            }
+            request = request.with_execution_scope(awaken_tenancy::ExecutionScopeRef(scope.into()));
+        }
         if associate_prepared_session && is_session_dispatch {
             request = request.for_session(ThreadId(thread.clone()));
         }
@@ -367,6 +380,10 @@ impl SharedHost {
         } else {
             self.resolved_thread_extension_dispatch(activation)?
         };
+        tracing::debug!(run_id = %run_id.0, scope = ?request.execution_scope,
+            required_capabilities = ?request.placement.required_capabilities,
+            placement = ?request.placement, holder = ?request.inference_plaintext_holder,
+            "Submitting durable foreground dispatch");
         // Enqueue only — never drive here; the pool is the sole claimer. The common
         // path goes through `pool.submit` (which stamps the trace); a superseding
         // submit needs the supersede option, so it enqueues on the shared store and

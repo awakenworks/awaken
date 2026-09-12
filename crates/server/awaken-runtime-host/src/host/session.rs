@@ -615,6 +615,7 @@ impl SharedHost {
                 Some(selected_agent.as_str()),
                 installed.as_ref(),
                 has_published_multiagent,
+                claimed_attempt.is_some(),
             );
             // Reservation cannot create a physical Environment before its immutable
             // dispatch is durable. It must still reject a deterministic substrate

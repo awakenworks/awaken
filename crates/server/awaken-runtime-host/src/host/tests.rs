@@ -14567,6 +14567,58 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
 }
 
 #[tokio::test]
+async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandbox() {
+    // J4 causes: a claim-fenced Native toolless snapshot, explicit Workspace,
+    // and no declared Session/Environment/Resources. Effects: one execution
+    // context carries the exact publication and Scope, but no physical Sandbox.
+    // This is the Worker half of the Judge proof; using CoordinationEnvelope
+    // instead would improperly drop execution authority to avoid realization.
+    let published = awaken_ext_goal::grader::default_judge_agent(
+        "stub",
+        "claim-judge",
+        awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS,
+    );
+    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub"));
+    let thread = "claim-inference-only-judge";
+    host.register_thread_workspace(thread, "workspace-judge");
+    let identity = RuntimePublicationIdentity::from_publications(&published, &[], "stub");
+    let publications = Arc::new(
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([published.clone()])
+            .unwrap(),
+    );
+    let context = host
+        .ctx_for_claimed_snapshot(
+            thread,
+            Some("claim-judge"),
+            published,
+            ClaimedRuntimeInput {
+                identity: identity.clone(),
+                publications,
+                effective_model_ref: "stub".into(),
+            },
+        )
+        .await
+        .expect("claim-fenced inference context");
+    assert_eq!(
+        context.purpose,
+        super::session_ctx::RuntimeContextPurpose::Execution
+    );
+    assert_eq!(
+        context.runtime_publication_identity.as_ref(),
+        Some(&identity)
+    );
+    assert!(host.session_environment(thread).await.is_none());
+    assert_eq!(
+        context
+            .context()
+            .execution_scope
+            .as_ref()
+            .map(|scope| scope.0.as_str()),
+        Some("workspace-judge")
+    );
+}
+
+#[tokio::test]
 async fn claimed_snapshot_is_the_worker_session_authority() {
     let published = awaken_runtime_contract::ExecutableAgentSnapshot::builder("published-agent")
         .model(test_model_binding())
