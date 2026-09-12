@@ -49,6 +49,9 @@ struct Phone {
     result_reads: usize,
     events: Vec<String>,
     invited: bool,
+    joined: bool,
+    chat_messages: Vec<String>,
+    chat_attempts: Vec<Value>,
     assessment: Option<Value>,
 }
 
@@ -71,6 +74,7 @@ async fn phone_rpc(
             {"name":"StartCall","description":"Dial the fixture buyer; background result confirms connection. Never call twice.","execution":{"taskSupport":"required"},"inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
             {"name":"EndCall","description":"End the current mock call through a background task; completion confirms call.ended.","execution":{"taskSupport":"required"},"inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
             {"name":"InviteContact","description":"Invite this buyer to the official second chat channel. This does not prove they joined.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+            {"name":"SendChatMessage","description":"Reply to the verified second-channel conversation from channel.joined. Never guess a conversation id.","inputSchema":{"type":"object","properties":{"conversation_id":{"type":"string"},"text":{"type":"string"}},"required":["conversation_id","text"],"additionalProperties":false}},
             {"name":"SubmitAssessment","description":"Submit evidence-based sales qualification after inviting the buyer. Unknown budgets remain null. Score is intent, not calibrated purchase probability.","inputSchema":{"type":"object","properties":{"intent":{"type":"string","enum":["high","low","unknown"]},"score":{"type":"number","minimum":0,"maximum":1},"budget":{"type":["number","null"]},"summary":{"type":"string"}},"required":["intent","score","budget","summary"],"additionalProperties":false}}
         ]}),
         "tools/call" => match request["params"]["name"].as_str().unwrap_or("") {
@@ -94,8 +98,24 @@ async fn phone_rpc(
                     phone.invited,
                     "state-machine must block qualification before invitation"
                 );
-                phone.assessment = Some(request["params"]["arguments"].clone());
-                json!({"content":[{"type":"text","text":"Qualification recorded. Human sales follow-up is requested, not completed."}]})
+                if !phone.joined {
+                    json!({"isError":true,"content":[{"type":"text","text":"This scenario's final handoff requires channel.joined. Wait for the verified event; invitation alone is insufficient."}]})
+                } else {
+                    phone.assessment = Some(request["params"]["arguments"].clone());
+                    json!({"content":[{"type":"text","text":"Qualification recorded. Human sales follow-up is requested, not completed."}]})
+                }
+            }
+            "SendChatMessage" => {
+                let args = &request["params"]["arguments"];
+                phone.chat_attempts.push(args.clone());
+                if !phone.joined || args["conversation_id"] != "mock-chat-1" {
+                    json!({"isError":true,"content":[{"type":"text","text":"No verified target conversation."}]})
+                } else {
+                    phone
+                        .chat_messages
+                        .push(args["text"].as_str().unwrap().into());
+                    json!({"content":[{"type":"text","text":"Delivered to the verified mock chat."}]})
+                }
             }
             _ => panic!("unknown fixture tool"),
         },
@@ -128,6 +148,29 @@ async fn phone_rpc(
         _ => json!({}),
     };
     Json(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))
+}
+
+async fn join_chat(
+    State(state): State<Arc<Mutex<Phone>>>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    let mut phone = state.lock().unwrap();
+    if !phone.invited
+        || body["invitation_id"] != "mock-invitation-1"
+        || body["buyer_id"] != "buyer-1"
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"invitation identity mismatch"})),
+        );
+    }
+    phone.joined = true;
+    (
+        StatusCode::OK,
+        Json(
+            json!({"event":"channel.joined","buyer_id":"buyer-1","conversation_id":"mock-chat-1","channel":"mock-official-chat"}),
+        ),
+    )
 }
 
 async fn api(app: &Router, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
@@ -182,6 +225,7 @@ struct ObservedModel {
     tool_chunks: AtomicUsize,
     result_lookups: AtomicUsize,
     connected_inputs: AtomicUsize,
+    calls: Mutex<Vec<Value>>,
 }
 
 struct ObserveDeltas<'a> {
@@ -239,6 +283,7 @@ impl LlmExecutor for ObservedModel {
                 .count(),
             Ordering::SeqCst,
         );
+        self.calls.lock().unwrap().extend(response.output.tool_calls().iter().map(|call| json!({"tool":call.tool_id,"argument_type":if call.arguments.is_object(){"object"}else{"non_object"}})));
         Ok(response)
     }
 }
@@ -262,6 +307,7 @@ impl LlmExecutor for ScriptedSales {
             })
             .collect::<Vec<_>>()
             .join("");
+        let raw_last = serde_json::to_string(&request.messages.last().unwrap().content).unwrap();
         let tool = |id: &str, arguments| {
             AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: format!("tool-{}", request.messages.len()),
@@ -278,6 +324,11 @@ impl LlmExecutor for ScriptedSales {
             tool(
                 "mcp__phone__SubmitAssessment",
                 json!({"intent":"high","score":0.9,"budget":50000,"summary":"买家确认客服需求、五万元预算和本月采购；请求人工演示。"}),
+            )
+        } else if raw_last.contains("Qualification recorded") {
+            tool(
+                "mcp__phone__SendChatMessage",
+                json!({"conversation_id":"mock-chat-1","text":"林先生，已记录您的需求、五万元预算和本月采购计划，将交给人工销售安排演示，尚未完成预约。"}),
             )
         } else if last.contains("请结束电话") {
             tool(
@@ -333,6 +384,18 @@ impl LlmExecutor for ScriptedSales {
 }
 
 async fn send_and_wait(app: &Router, session: &str, text: &str) -> Vec<Value> {
+    send_and_wait_until(app, session, text, |events| {
+        events.iter().any(|e| e["type"] == "session.status_idle")
+    })
+    .await
+}
+
+async fn send_and_wait_until(
+    app: &Router,
+    session: &str,
+    text: &str,
+    settled: impl Fn(&[Value]) -> bool,
+) -> Vec<Value> {
     let (status, receipt) = api(
         app,
         "POST",
@@ -356,7 +419,7 @@ async fn send_and_wait(app: &Router, session: &str, text: &str) -> Vec<Value> {
                 (s.as_u16(), v)
             }
         },
-        |events| events.iter().any(|e| e["type"] == "session.status_idle"),
+        settled,
     )
     .await;
     list["data"].as_array().unwrap().clone()
@@ -368,14 +431,17 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     let url = format!("http://{}/", listener.local_addr().unwrap());
     let phone_app = Router::new()
         .route("/", post(phone_rpc))
+        .route("/join", post(join_chat))
         .with_state(phone.clone());
-    let server = tokio::spawn(async move { axum::serve(listener, phone_app).await.unwrap() });
+    let serving = phone_app.clone();
+    let server = tokio::spawn(async move { axum::serve(listener, serving).await.unwrap() });
     let model = Arc::new(ObservedModel {
         inner,
         text_chunks: AtomicUsize::new(0),
         tool_chunks: AtomicUsize::new(0),
         result_lookups: AtomicUsize::new(0),
         connected_inputs: AtomicUsize::new(0),
+        calls: Mutex::new(Vec::new()),
     });
     // This scenario uses only network MCP tools. Select the documented local
     // fixture substrate explicitly; it does not exercise namespace Hand tools.
@@ -391,7 +457,7 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
         |host| host,
     )
     .await;
-    let config = json!({"id":"zhike","name":"知客","system":"你是知客，模拟产品的销售顾问。产品资料：支持多渠道接待、任务跟进和人工交接；未提供价格和效果保证。保持简短自然，每次只问一个关键问题。开始联系时只通过 run_in_background 调用 mcp__phone__StartCall 一次，然后结束本轮等待通知。后台结果会直接注入，不调用 get_background_task。收到 call.connected 才开场。保留客户给出的团队规模、需求、预算和采购时间。只有客户要求时调用 InviteContact；邀请已发送不等于已经添加。需要提交评估时调用 SubmitAssessment，预算未披露用 null，评分只是意向不是成交概率。切换到第二平台后沿用本任务上下文，不重复询问已确认信息。",
+    let config = json!({"id":"zhike","name":"知客","system":include_str!("fixtures/zhike-system.txt"),
     "max_steps":8,"model":{"mode":"pinned","provider_identity_ref":"default","model_ref":model_name,"backend_ref":"genai"},
     "mcp_servers":[{"name":"phone","type":"url","url":url}],
     "tools":[{"type":"mcp_toolset","mcp_server_name":"phone","default_config":{"enabled":true,"permission_policy":{"type":"always_allow"}}}],
@@ -401,9 +467,10 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     ]},
     "plugins":["background_task","state_machine"],"plugin_config":{
             "background_task":{"tools":["mcp__phone__StartCall","mcp__phone__EndCall"],"notifications":{"default":{"format":"tagged"}}},
-        "state_machine":{"machines":[{"name":"contact-before-qualification","scope":"thread","key":"","initial":"discovery","terminal":["qualified"],"transitions":[
+        "state_machine":{"continuation":{"max_continuations":3,"message":"Complete the pending response delivery through SendChatMessage using the verified conversation id: {summary}"},"machines":[{"name":"contact-before-qualification","scope":"thread","key":"","initial":"discovery","terminal":["discovery","invited","delivered"],"transitions":[
             {"on":"mcp__phone__InviteContact","from":["discovery","invited"],"to":"invited","when":"success"},
-            {"on":"mcp__phone__SubmitAssessment","from":["invited","qualified"],"to":"qualified","when":"success","on_violation":{"action":"deny","reason":"Invite the buyer before final qualification."}}
+            {"on":"mcp__phone__SubmitAssessment","from":["invited","qualified"],"to":"qualified","when":"success","on_violation":{"action":"deny","reason":"Invite the buyer before final qualification."}},
+            {"on":"mcp__phone__SendChatMessage","from":"qualified","to":"delivered","when":"success","on_violation":{"action":"deny","reason":"Complete qualification before sending the final human-handoff reply."}}
         ]},{"name":"one-call-command","scope":"thread","key":"{tool}","initial":"ready","terminal":["submitted"],"transitions":[
             {"on":"run_in_background","from":"ready","to":"submitted","when":"success","on_violation":{"action":"deny","reason":"This call command was already submitted. Wait for its event; do not submit it again."}}
         ]}]}
@@ -485,7 +552,35 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
             "repeated hangup is denied by the state-machine extension"
         );
     }
-    let events=send_and_wait(&app,session,"<customer-input channel=\"mock-official-chat\">我是刚才电话里的林先生，我已经通过测试平台确认关联，想约人工演示。请按之前的需求和预算提交评估。</customer-input>").await;
+    // Source-side identity proof is an actual mock-provider operation, never
+    // the customer's assertion that an account was added. A wrong buyer must
+    // fail without changing the provider's joined state.
+    assert_eq!(
+        api(
+            &phone_app,
+            "POST",
+            "/join",
+            json!({"invitation_id":"mock-invitation-1","buyer_id":"other-buyer"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert!(!phone.lock().unwrap().joined);
+    let (joined_status, joined_event) = api(
+        &phone_app,
+        "POST",
+        "/join",
+        json!({"invitation_id":"mock-invitation-1","buyer_id":"buyer-1"}),
+    )
+    .await;
+    assert_eq!(joined_status, StatusCode::OK);
+    // A concurrent background attention Run may publish idle after this input
+    // receipt. That is not the user's delivery result: require the actual
+    // second-platform effect as well as the ordinary terminal projection.
+    let events=send_and_wait_until(&app,session,&format!("<channel-event>{joined_event}</channel-event>\n<customer-input channel=\"mock-official-chat\">我是刚才电话里的林先生，想约人工演示。请按之前的需求和预算提交评估。</customer-input>"), |events| {
+        !phone.lock().unwrap().chat_messages.is_empty() && events.iter().any(|e| e["type"] == "session.status_idle")
+    }).await;
     let state = phone.lock().unwrap();
     assert_eq!(state.starts, 1, "one physical dial");
     assert_eq!(state.ends, 1, "one explicit hangup");
@@ -505,6 +600,23 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     assert_eq!(assessment["intent"], "high");
     assert_eq!(assessment["budget"], 50000);
     assert!(assessment["score"].as_f64().unwrap() > 0.75);
+    assert!(
+        !state.chat_messages.is_empty(),
+        "a reply crossed the second platform's actual MCP tool; attempts={:?}, calls={:?}, idle={:?}",
+        state.chat_attempts,
+        model.calls.lock().unwrap(),
+        events
+            .iter()
+            .rev()
+            .find(|e| e["type"] == "session.status_idle")
+    );
+    assert!(
+        state
+            .chat_messages
+            .iter()
+            .all(|message| !message.contains("已成交")),
+        "handoff is not sale completion"
+    );
     assert!(
         model.connected_inputs.load(Ordering::SeqCst) > 0,
         "connected result reached inference"
@@ -534,7 +646,7 @@ async fn zhike_mock_mcp_background_result_and_multiturn_sales() {
     // result, streaming text/tool arguments, one call, multi-turn retained
     // budget and qualification. Z2 state-machine forbids pre-invitation submit.
     // This fixture proves text conversation/control, not audio, real carrier,
-    // verified cross-platform identity, or Flow Issue acceptance.
+    // real cross-platform identity, or Flow Issue acceptance.
     sales_scenario(Arc::new(ScriptedSales), "zhike-fixture", true).await;
 }
 
