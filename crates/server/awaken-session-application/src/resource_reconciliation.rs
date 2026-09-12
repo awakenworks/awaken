@@ -1373,17 +1373,21 @@ impl SessionApplication {
             quarantined: candidates.quarantined.clone(),
             ..Default::default()
         };
-        for candidate in &candidates.sessions {
+        // Different Sessions already reconcile concurrently across replicas.
+        // Reuse the same bounded, owned sweep as Event recovery while retaining
+        // every reference/Resource authority check and each root's effect order.
+        let completed = super::recovery_sweep::map_candidates(candidates, |candidate| async move {
+            let mut result = SessionReconciliation::default();
             let owner_scope = &candidate.workspace_id;
             let session = match self.session_repository().get(&candidate.session_id).await {
                 Ok(session) => session,
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => return result,
                 Err(error) => {
-                    report.failures.push(SessionReconciliationFailure {
+                    result.failures.push(SessionReconciliationFailure {
                         session_id: candidate.session_id.clone(),
                         message: error.to_string(),
                     });
-                    continue;
+                    return result;
                 }
             };
             let session_id = session.session_id.clone();
@@ -1391,24 +1395,24 @@ impl SessionApplication {
                 .synchronize_resource_references(owner_scope, &session)
                 .await
             {
-                report.failures.push(SessionReconciliationFailure {
+                result.failures.push(SessionReconciliationFailure {
                     session_id,
                     message: error.to_string(),
                 });
-                continue;
+                return result;
             }
             if (!session.is_terminal()
                 && self.requires_external_realization(&session)
                 && !session.resources.has_repository_retirements())
                 || !session.needs_resource_reconciliation()
             {
-                continue;
+                return result;
             }
             match self
                 .reconcile_persisted_resources(owner_scope, session)
                 .await
             {
-                Ok(session) => report.settled.push(session),
+                Ok(session) => result.settled.push(session),
                 Err(SessionPreparationError::NotFound) => {
                     // An eager terminal-cleanup actor may commit the delete
                     // tombstone after this scan captured its candidate. The
@@ -1418,11 +1422,17 @@ impl SessionApplication {
                     self.repair_resource_references(owner_scope, &session_id)
                         .await;
                 }
-                Err(error) => report.failures.push(SessionReconciliationFailure {
+                Err(error) => result.failures.push(SessionReconciliationFailure {
                     session_id,
                     message: error.to_string(),
                 }),
             }
+            result
+        })
+        .await;
+        for result in completed {
+            report.settled.extend(result.settled);
+            report.failures.extend(result.failures);
         }
         report
     }

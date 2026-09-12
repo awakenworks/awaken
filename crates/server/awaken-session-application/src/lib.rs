@@ -106,6 +106,7 @@ impl From<SessionRecoveryScan> for SessionRecoveryCandidates {
 }
 
 mod mutation;
+mod recovery_sweep;
 pub use mutation::SessionMutationError;
 mod session_services;
 pub use session_services::{
