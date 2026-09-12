@@ -61,7 +61,7 @@ impl PostgresManagedSessionRepository {
                 .run_bundle(pre_convergence)
                 .await
                 .map_err(|error| error.to_string())?;
-            Self::normalize_session_aggregates(&pool)
+            Self::normalize_session_aggregates(&pool, false)
                 .await
                 .map_err(|error| error.to_string())?;
         }
@@ -73,12 +73,9 @@ impl PostgresManagedSessionRepository {
             .run_bundle(&converged)
             .await
             .map_err(|error| error.to_string())?;
-        Self::normalize_session_aggregates(&pool)
+        Self::normalize_session_aggregates(&pool, true)
             .await
             .map_err(|error| error.to_string())?;
-        Self::rebuild_session_indexes(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
         Ok(Self {
             pool,
             handle: tokio::runtime::Handle::current(),
@@ -139,7 +136,14 @@ impl PostgresManagedSessionRepository {
         .map_err(|error| error.to_string())
     }
 
-    async fn normalize_session_aggregates(pool: &PgPool) -> Result<(), SessionRepositoryError> {
+    async fn normalize_session_aggregates(
+        pool: &PgPool,
+        sync_indexes: bool,
+    ) -> Result<(), SessionRepositoryError> {
+        // Root writers use ROW EXCLUSIVE before updating their projections.
+        // This lock serializes the one normalization/index-repair transaction
+        // with writers and other migrators. Pre-convergence lacks final indexes;
+        // only the final pass repairs them. Server connect_existing stays read-only.
         let mut tx = pool.begin().await.map_err(storage)?;
         sqlx::query("LOCK TABLE managed_session IN SHARE ROW EXCLUSIVE MODE")
             .execute(&mut *tx)
@@ -154,19 +158,22 @@ impl PostgresManagedSessionRepository {
         for row in rows {
             let stored_session_id: String = row.try_get("session_id").map_err(storage)?;
             let aggregate_json: Option<String> = row.try_get("aggregate_json").map_err(storage)?;
-            if let Some(canonical) = normalize_published_row(
+            let (session, canonical) = normalize_published_row(
                 &stored_session_id,
                 aggregate_json,
                 row.try_get("revision").map_err(storage)?,
             )
-            .map_err(corrupt)?
-            {
+            .map_err(corrupt)?;
+            if let Some(canonical) = canonical {
                 sqlx::query("UPDATE managed_session SET aggregate_json=$2 WHERE session_id=$1")
                     .bind(stored_session_id)
                     .bind(canonical)
                     .execute(&mut *tx)
                     .await
                     .map_err(storage)?;
+            }
+            if sync_indexes {
+                Self::sync_session_indexes(&mut tx, &session).await?;
             }
         }
         tx.commit().await.map_err(storage)
@@ -238,59 +245,6 @@ impl PostgresManagedSessionRepository {
             .map_err(storage)?;
         }
         Ok(())
-    }
-
-    async fn rebuild_session_indexes(pool: &PgPool) -> Result<(), SessionRepositoryError> {
-        let mut tx = pool.begin().await.map_err(storage)?;
-        // Session-root writers take ROW EXCLUSIVE on managed_session before
-        // synchronizing its indexes. This stronger lock serializes startup
-        // rebuilds with those transactions and with other new-process rebuilds,
-        // so the scan and replacement are one deterministic snapshot.
-        sqlx::query("LOCK TABLE managed_session IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        sqlx::query(
-            "LOCK TABLE managed_session_reconciliation_work, \
-                        managed_session_vault_reference, \
-                        managed_session_credential_source_reference IN EXCLUSIVE MODE",
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        sqlx::query("DELETE FROM managed_session_reconciliation_work")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        sqlx::query("DELETE FROM managed_session_vault_reference")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        sqlx::query("DELETE FROM managed_session_credential_source_reference")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        let rows = sqlx::query(
-            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?;
-        for row in rows {
-            let stored_session_id: String = row.try_get("session_id").map_err(storage)?;
-            let session = decode(EncodedSessionRow {
-                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-                revision: row.try_get("revision").map_err(storage)?,
-            })
-            .map_err(corrupt)?;
-            if session.session_id != stored_session_id {
-                return Err(corrupt(
-                    "managed Session aggregate id does not match its index",
-                ));
-            }
-            Self::sync_session_indexes(&mut tx, &session).await?;
-        }
-        tx.commit().await.map_err(storage)
     }
 
     async fn verify_session_state(pool: &PgPool) -> Result<(), SessionRepositoryError> {
