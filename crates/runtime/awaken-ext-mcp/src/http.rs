@@ -871,7 +871,13 @@ mod tests {
                 "jsonrpc": "2.0", "method": "notifications/tools/list_changed"
             }))
             .await;
-        assert_eq!(rx.recv().await.unwrap(), ListChangedKind::Tools);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+                .await
+                .expect("timed out waiting for rx.recv()")
+                .unwrap(),
+            ListChangedKind::Tools
+        );
     }
 
     // ---- auth mechanics against a local single-shot HTTP server ----

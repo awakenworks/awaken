@@ -107,8 +107,9 @@ INGRESS_CONFORMANCE = "crates/server/awaken-dispatch/tests/dispatch_conformance.
 NEXTEST_CONFIG = ".config/nextest.toml"
 # A test may wait, but it must say how long. The runner's deadline stops a
 # stuck test from taking the suite with it; it cannot tell you what the test
-# was waiting for. This count may only fall.
-UNBOUNDED_WAIT_BASELINE = 58
+# was waiting for, and it spends five minutes not telling you. The debt is
+# cleared, so the baseline is zero and this reads as a refusal.
+UNBOUNDED_WAIT_BASELINE = 0
 # HTTP tests in the Managed protocol crate must name the status a body arrived
 # with. Discarding it is how a route that had begun answering 404 went
 # unnoticed: the test read the empty body and then waited for work the failed
@@ -668,7 +669,9 @@ def test_body(text: str, start: int) -> str:
     return text[opening:]
 
 
-def unbounded_wait_errors(sources: dict[str, str]) -> list[str]:
+def unbounded_wait_errors(
+    sources: dict[str, str], baseline: int = -1
+) -> list[str]:
     """Ratchet the tests that wait on a signal without stating a deadline.
 
     Such a test does not fail when its producer stops running -- it parks and
@@ -677,24 +680,32 @@ def unbounded_wait_errors(sources: dict[str, str]) -> list[str]:
     it waited for. The existing ones are counted, and the count may only fall.
     """
 
+    if baseline < 0:
+        baseline = UNBOUNDED_WAIT_BASELINE
     offenders: list[str] = []
     for relative, text in sorted(sources.items()):
         for match in TEST_ATTRIBUTE.finditer(text):
+            # A paused-clock test cannot state a wall-clock deadline: its
+            # runtime auto-advances virtual time whenever every task is idle,
+            # so `tokio::time::timeout` there is not a bound but a trap that
+            # always fires. The runner's real deadline is what bounds these.
+            if "start_paused" in match.group(0):
+                continue
             body = test_body(text, match.end())
             if UNBOUNDED_WAIT.search(body) and not BOUNDED_WAIT.search(body):
                 offenders.append(f"{relative}::{match.group(1)}")
-    if len(offenders) > UNBOUNDED_WAIT_BASELINE:
+    if len(offenders) > baseline:
         listed = ", ".join(offenders[:5])
         return [
             f"{len(offenders)} tests wait without a deadline, baseline "
-            f"{UNBOUNDED_WAIT_BASELINE}: {len(offenders) - UNBOUNDED_WAIT_BASELINE} "
+            f"{baseline}: {len(offenders) - baseline} "
             f"new one(s). Wrap the wait in tokio::time::timeout so the failure "
             f"names what it waited for. First: {listed}"
         ]
-    if len(offenders) < UNBOUNDED_WAIT_BASELINE:
+    if len(offenders) < baseline:
         return [
             f"only {len(offenders)} tests wait without a deadline, below the "
-            f"{UNBOUNDED_WAIT_BASELINE} baseline; lower UNBOUNDED_WAIT_BASELINE "
+            f"{baseline} baseline; lower UNBOUNDED_WAIT_BASELINE "
             "to hold the ground"
         ]
     return []
@@ -903,14 +914,16 @@ def self_test() -> None:
     waiting = '#[tokio::test]\nasync fn waits() { gate.notified().await; }\n'
     bounded = ('#[tokio::test]\nasync fn waits() '
                '{ tokio::time::timeout(d, gate.notified()).await; }\n')
-    at_baseline = {f"crates/x/src/w{index}.rs": waiting
-                   for index in range(UNBOUNDED_WAIT_BASELINE)}
-    assert not unbounded_wait_errors(at_baseline), "W1 baseline"
-    assert unbounded_wait_errors({**at_baseline, "crates/x/src/new.rs": waiting}), "W2 one more"
+    at_baseline = {f"crates/x/src/w{index}.rs": waiting for index in range(3)}
+    assert not unbounded_wait_errors(at_baseline, 3), "W1 baseline"
+    assert unbounded_wait_errors({**at_baseline, "crates/x/src/new.rs": waiting}, 3), "W2 one more"
     assert unbounded_wait_errors(
-        {key: value for index, (key, value) in enumerate(at_baseline.items()) if index}
+        {key: value for index, (key, value) in enumerate(at_baseline.items()) if index}, 3
     ), "W3 one fewer without lowering the baseline"
-    assert not unbounded_wait_errors({**at_baseline, "crates/x/src/ok.rs": bounded}), "W4 bounded"
+    assert not unbounded_wait_errors({**at_baseline, "crates/x/src/ok.rs": bounded}, 3), "W4 bounded"
+    # The repository is at zero, so the same rule reads as a plain refusal.
+    assert not unbounded_wait_errors({}, 0), "W5 nothing waiting unbounded"
+    assert unbounded_wait_errors({"crates/x/src/w.rs": waiting}, 0), "W6 refuse the first one"
     # Hook cause/effect table: H1 canonical nested owner + checker-edit trigger
     # + static-before-Cargo -> accept. H2 duplicate direct/nested invocation ->
     # reject. H3 missing nested invocation/trigger -> reject. H4 Cargo checked

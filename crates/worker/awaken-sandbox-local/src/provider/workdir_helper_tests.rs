@@ -125,7 +125,11 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
     impl PausedSource {
         async fn resolve(&self) -> Option<Vec<u8>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let _permit = self.gate.acquire().await.unwrap();
+            let _permit =
+                tokio::time::timeout(std::time::Duration::from_secs(30), self.gate.acquire())
+                    .await
+                    .expect("timed out waiting for self.gate.acquire()")
+                    .unwrap();
             (!self.absent).then(|| b"synthetic-resource".to_vec())
         }
     }

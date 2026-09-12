@@ -1013,7 +1013,12 @@ mod tests {
             )
             .await
             .unwrap();
-            service.entered.notified().await;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                service.entered.notified(),
+            )
+            .await
+            .expect("timed out waiting for service.entered.notified()");
             if !drop_publication {
                 publication.close().await;
             }

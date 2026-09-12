@@ -1033,7 +1033,9 @@ async fn cancelled_cleanup_keeps_the_exact_owner_retiring_and_hidden_from_tools(
             retirement
         })
     };
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+        .await
+        .expect("timed out waiting for entered.notified()");
     task.abort();
     let _ = task.await;
     let mut owner = owner.lock().await;
@@ -2884,7 +2886,11 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
             },
             {
                 let release = release.clone();
-                async move { release.notified().await }
+                async move {
+                    tokio::time::timeout(std::time::Duration::from_secs(30), release.notified())
+                        .await
+                        .expect("timed out waiting for release.notified()")
+                }
             },
         )
         .await;

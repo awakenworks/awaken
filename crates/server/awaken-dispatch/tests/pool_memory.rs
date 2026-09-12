@@ -2318,7 +2318,9 @@ async fn pool_uses_the_injected_wake_signal() {
             Ok(())
         }
         async fn wait(&self) {
-            self.notify.notified().await;
+            tokio::time::timeout(std::time::Duration::from_secs(30), self.notify.notified())
+                .await
+                .expect("timed out waiting for self.notify.notified()");
         }
     }
 

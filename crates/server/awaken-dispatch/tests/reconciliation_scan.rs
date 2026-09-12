@@ -89,7 +89,9 @@ async fn concurrent_scan_yields_and_cancelled_page_keeps_cursor_progress() {
                 .await
             }
         });
-        entered.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+            .await
+            .expect("timed out waiting for entered.notified()");
         assert!(
             scan.reconcile(store.as_ref(), 1, |_| async {
                 panic!("E1 duplicate observer")

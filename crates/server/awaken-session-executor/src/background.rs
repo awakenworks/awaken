@@ -338,7 +338,11 @@ mod tests {
                 session_id: "s1".into(),
                 generation_id: "g1".into(),
             },
-            async move { task_release.notified().await },
+            async move {
+                tokio::time::timeout(std::time::Duration::from_secs(30), task_release.notified())
+                    .await
+                    .expect("timed out waiting for task_release.notified()")
+            },
         )
         .await;
         bg.spawn(

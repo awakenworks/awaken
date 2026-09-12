@@ -861,9 +861,9 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
         )
         .await
     });
-    entered
-        .acquire()
+    tokio::time::timeout(std::time::Duration::from_secs(30), entered.acquire())
         .await
+        .expect("timed out waiting for entered.acquire()")
         .expect("P1 Runtime entered")
         .forget();
     assert_eq!(

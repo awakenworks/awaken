@@ -279,7 +279,9 @@ async fn live_cancel_steers_an_in_flight_run() {
     let handle = tokio::spawn(async move { driver.start(activation(), context).await });
 
     // Wait until the first inference is in-flight, then cancel via live control.
-    started.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
+        .await
+        .expect("timed out waiting for started.notified()");
     runtime
         .deliver(LiveCommand::Cancel {
             run_id: RunId("run-1".to_string()),
@@ -510,7 +512,9 @@ async fn live_pause_awaits_an_in_flight_run_at_the_next_boundary() {
 
     // Once the first inference is in-flight (so the run is registered), pause it via
     // live control; it awaits at the boundary after the step completes.
-    started.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
+        .await
+        .expect("timed out waiting for started.notified()");
     runtime
         .deliver(LiveCommand::Pause {
             run_id: RunId("run-1".to_string()),
@@ -1129,7 +1133,9 @@ async fn wake_on_an_active_run_is_accepted() {
     let driver = DirectAttemptDriver::new(runtime.clone());
     let handle = tokio::spawn(async move { driver.start(activation(), context).await });
 
-    started.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
+        .await
+        .expect("timed out waiting for started.notified()");
     assert!(
         runtime
             .active_attempt_live_inbox(&ThreadId("thread-1".into()))
