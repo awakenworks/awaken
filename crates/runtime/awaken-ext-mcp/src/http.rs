@@ -456,17 +456,8 @@ impl HttpTransportBuilder {
 }
 
 fn http_client_for(url: &str) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder();
-    if reqwest::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_owned))
-        .is_some_and(|host| {
-            host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-        })
-    {
+    let mut builder = awaken_outbound_http::rustls_client_builder();
+    if awaken_outbound_http::target_is_loopback(url) {
         builder = builder.no_proxy();
     }
     builder.build().expect("build MCP HTTP client")

@@ -110,7 +110,7 @@ impl HttpDispatchQueue {
     pub fn new(base_url: impl Into<String>, worker_identity: WorkerIdentity) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
+            client: awaken_outbound_http::rustls_client_builder()
                 .no_proxy()
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .timeout(std::time::Duration::from_secs(30))

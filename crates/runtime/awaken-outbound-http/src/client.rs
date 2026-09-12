@@ -220,46 +220,15 @@ impl InternalHttpClient {
         connect_timeout: Duration,
         timeout: Duration,
     ) -> Result<Self, TransportError> {
-        Self::build(connect_timeout, timeout, None)
+        Self::build(connect_timeout, timeout)
     }
 
-    /// Build a client that additionally trusts a deployment-private CA bundle.
-    /// An empty or unparsable bundle fails closed rather than silently falling
-    /// back to the public roots.
-    pub fn with_private_ca(
-        connect_timeout: Duration,
-        timeout: Duration,
-        ca_pem: &[u8],
-    ) -> Result<Self, TransportError> {
-        Self::build(connect_timeout, timeout, Some(ca_pem))
-    }
-
-    fn build(
-        connect_timeout: Duration,
-        timeout: Duration,
-        ca_pem: Option<&[u8]>,
-    ) -> Result<Self, TransportError> {
-        let mut builder = rustls_client_builder()
+    fn build(connect_timeout: Duration, timeout: Duration) -> Result<Self, TransportError> {
+        rustls_client_builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(connect_timeout)
-            .timeout(timeout);
-        if let Some(ca_pem) = ca_pem {
-            // Rustls-backed `from_pem_bundle` merely stores the bytes; an empty
-            // iteration also succeeds when building the client. A configured
-            // private CA must actually add at least one validated certificate.
-            let certificates = reqwest::Certificate::from_pem_bundle(ca_pem)
-                .map_err(|_| TransportError("invalid private CA certificate encoding".into()))?;
-            if certificates.is_empty() {
-                return Err(TransportError(
-                    "private CA bundle contains no certificates".into(),
-                ));
-            }
-            for certificate in certificates {
-                builder = builder.add_root_certificate(certificate);
-            }
-        }
-        builder
+            .timeout(timeout)
             .build()
             .map(Self)
             .map_err(|error| TransportError(error.to_string()))
@@ -401,30 +370,6 @@ mod tests {
             assert!(!target_is_loopback(url), "R2 {url}");
         }
         assert!(!target_is_loopback("not a url"), "R3");
-    }
-
-    #[test]
-    fn a_private_ca_must_contribute_at_least_one_certificate() {
-        // R1 an empty or unparsable bundle fails closed; a client that silently
-        // fell back to the public roots would trust the wrong issuer.
-        assert!(
-            InternalHttpClient::with_private_ca(
-                DEFAULT_CONNECT_TIMEOUT,
-                Duration::from_secs(1),
-                b"",
-            )
-            .is_err(),
-            "R1 empty"
-        );
-        assert!(
-            InternalHttpClient::with_private_ca(
-                DEFAULT_CONNECT_TIMEOUT,
-                Duration::from_secs(1),
-                b"-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n",
-            )
-            .is_err(),
-            "R1 unparsable"
-        );
     }
 
     #[test]

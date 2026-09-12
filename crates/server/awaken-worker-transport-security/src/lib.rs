@@ -14,7 +14,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_outbound_http::install_rustls_crypto_provider;
 use awaken_run_ingress_contract::RunClaim;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerState};
 use axum::Json;
@@ -827,8 +826,7 @@ pub struct WorkerUpstream {
 
 impl WorkerUpstream {
     fn http_client_for_ca(ca: Option<&[u8]>) -> Result<reqwest::Client, String> {
-        install_rustls_crypto_provider();
-        let mut builder = reqwest::Client::builder()
+        let mut builder = awaken_outbound_http::rustls_client_builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -1454,13 +1452,15 @@ mod tests {
         signed_path: &str,
         request_path: &str,
     ) -> Parts {
-        install_rustls_crypto_provider();
         let request = authorizer
             .authorize(
                 method,
                 signed_path,
                 "worker-signed",
-                reqwest::Client::new().post("http://control.invalid"),
+                awaken_outbound_http::rustls_client_builder()
+                    .build()
+                    .unwrap()
+                    .post("http://control.invalid"),
             )
             .unwrap()
             .build()

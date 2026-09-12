@@ -174,10 +174,10 @@ impl HttpRepositoryBindingVerifier {
             .send()
             .await
             .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))?;
-        if response.status() == reqwest::StatusCode::NO_CONTENT {
+        if response.status() == http::StatusCode::NO_CONTENT {
             return Ok(RepositoryTransport::Direct);
         }
-        if response.status() != reqwest::StatusCode::OK {
+        if response.status() != http::StatusCode::OK {
             return Err(RepositoryBindingVerifierError::new(format!(
                 "Repository binding authority returned HTTP {}",
                 response.status()
