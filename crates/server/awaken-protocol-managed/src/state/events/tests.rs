@@ -4148,7 +4148,56 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
             "stable" => {
                 result.unwrap();
                 refresh_failure::assert_record_frame_eq(&after, &before);
-                assert!(diagnostics.is_empty(), "R1 no conflict diagnostics");
+                // R1 completion adds only phase timing, never a conflict or
+                // public payload. R3-R5 retain their failure/cancellation
+                // assertions; monotonic timing does not introduce awaits or
+                // become a projection/ordering authority.
+                assert_eq!(
+                    diagnostics.len(),
+                    2,
+                    "R1 build and publication observations"
+                );
+                let timing = &diagnostics[0];
+                let publication = &diagnostics[1];
+                assert_eq!(
+                    publication.get("message").map(String::as_str),
+                    Some("Managed committed projection publication completed")
+                );
+                assert_eq!(publication.get("session_id"), Some(&session.id));
+                assert_eq!(publication.len(), 4, "R1 publication timing has no payload");
+                publication
+                    .get("publication_ms")
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap();
+                assert_eq!(
+                    timing.get("message").map(String::as_str),
+                    Some("Managed committed projection candidate completed")
+                );
+                assert_eq!(timing.get("session_id"), Some(&session.id));
+                let phase_keys = [
+                    "outcomes_ms",
+                    "snapshots_ms",
+                    "lifecycle_ms",
+                    "usage_ms",
+                    "selection_ms",
+                    "validation_ms",
+                    "reduction_ms",
+                    "canonicalization_ms",
+                    "elapsed_ms",
+                ];
+                assert_eq!(
+                    timing.len(),
+                    phase_keys.len() + 3,
+                    "R1 diagnostics contain identity and timing only"
+                );
+                for key in phase_keys {
+                    timing
+                        .get(key)
+                        .expect("R1 timing field")
+                        .parse::<u64>()
+                        .expect("R1 monotonic elapsed milliseconds");
+                }
             }
             "burst" => {
                 result.expect("R2 normal commit bursts must converge");
@@ -9175,6 +9224,13 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
 
 #[tokio::test]
 async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
+    // Message-index regression causes: C1 one response has Thinking + text;
+    // C2 partial/final/repeated reads reuse its Run/Step/response coordinates;
+    // C3 root/child and warm/cold owners differ. Effects: E1 indexing once per
+    // distinct event type must retain Thinking ordinal 0 and visible ordinal 1;
+    // E2 exact ids, ordering and cross-replica cursor suffixes stay unchanged.
+    // Rules M1=C1=>E1, M2=C2+C3=>E2. The adjacent tool/advisor and two-closed-
+    // turn cases cover the disjoint tool and generic message id namespaces.
     // Causes: the fixtures below establish `root assistant identity` with the concrete inputs,
     // state, dependencies, and failure triggers used by this case.
     // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
@@ -9355,6 +9411,40 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     assert_eq!(wire(&peer), timed, "T1/T2 peer full payload");
     assert_eq!(assistant_signature(&peer), expected, "R4/E2-E3");
     assert_eq!(assistant_signature(&restarted), expected, "R4/E2-E3");
+
+    // M3 the id belongs to AgentMessage but the retained Event claims Thinking,
+    // while both types occur elsewhere. Effect: reject the candidate without
+    // changing the already visible frame. An index over all types must not
+    // weaken the original per-Event type check or silently reclassify history.
+    {
+        let mut sessions = peer.sessions.lock().unwrap();
+        let record = sessions.get_mut(&session.id).unwrap();
+        let message = record
+            .events
+            .iter_mut()
+            .find(|event| event.id == expected[3].1)
+            .unwrap();
+        message.kind = OutboundKind::AgentThinking {};
+    }
+    let before = peer
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    assert!(
+        peer.refresh_committed_events(&session.id).await.is_err(),
+        "M3 an Assistant id cannot authenticate a different event type"
+    );
+    let after = peer
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    refresh_failure::assert_record_frame_eq(&after, &before);
 }
 
 #[tokio::test]
