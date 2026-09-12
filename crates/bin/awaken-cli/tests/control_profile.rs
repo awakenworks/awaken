@@ -14,6 +14,7 @@ use std::process::Command;
 
 fn awaken() -> Command {
     let executable = std::env::var("CARGO_BIN_EXE_awaken")
+        .or_else(|_| std::env::var("NEXTEST_BIN_EXE_awaken"))
         .expect("Cargo must provide the awaken path when this integration test runs");
     Command::new(executable)
 }
