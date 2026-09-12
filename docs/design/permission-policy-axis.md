@@ -76,6 +76,41 @@ no second axis that can short-circuit the rule scan ahead of a deny. Closed
 Agent-tool membership continues to be projected by the host from its canonical
 roster. A leaf backend's own session modes and config options are relayed
 opaquely and never reach this evaluator.
+
+## The `auto` Policy
+
+`auto` is a *deferral*, not a decision: the author asks the platform to judge
+each call. It therefore never enters the rule vocabulary (a rule states a
+decision) and is resolved in one fixed position:
+
+1. a matching `deny` rule — absolute;
+2. otherwise the most specific matching authored rule;
+3. otherwise, if the call's authored policy is `auto`, the injected
+   `AutoPermissionEvaluator` — `Allow`, `Deny`, or `Indeterminate`, the last of
+   which is the same ask an `always_ask` policy produces;
+4. otherwise the ambient `default_behavior`.
+
+An evaluator only fills a silence; it can never overrule an instruction the
+author stated. Two host defaults are consequently withheld from members the
+author deferred: the perception baseline emits no `allow` for them, and the
+ask-by-default for controlled modifications does not rewrite them. Either one
+would let a host default answer before the evaluator and make `auto`
+decorative for that member.
+
+Membership decides where the deferral is recorded. The closed Agent toolset is
+expanded per member by the roster-aware host, so its `auto` members are named
+to the policy up front (`with_deferred_members`). An open MCP toolset is not
+expanded — its membership is whatever the server reports and may grow later —
+so its default stays a live per-call lookup (`with_mcp_toolsets`). Both paths
+reach the same evaluator with the same precedence.
+
+The evaluator is injected at the composition root. The runtime tier ships
+`ObservingToolEvaluator`, which allows a call only when its tool is named as
+observing and otherwise reaches no conclusion; it never denies, because a
+name-based classifier cannot support the claim "too risky for anyone to
+approve". A deployment that can assess risk injects an evaluator that does.
+The Managed wire reports the gate's recorded decision (`evaluated_permission`)
+for every governed call; it is never inferred from the presence of a result.
 Native `PermissionGate` and ACP consume the same `EffectiveToolAuthorization`;
 neither backend owns a second evaluator or approval state.
 

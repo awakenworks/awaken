@@ -6,8 +6,8 @@
 //! `actions::` mutation helpers are intentionally out of scope for this crate.
 
 use awaken_ext_permission::{
-    AutoDecision, AutoPermissionEvaluator, PermissionRule, PermissionRuleset,
-    ReversibilityEvaluator, RuleBasedToolPermissionPolicy, ToolCallPattern, ToolPermissionBehavior,
+    AutoDecision, AutoPermissionEvaluator, ObservingToolEvaluator, PermissionRule,
+    PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern, ToolPermissionBehavior,
     parse_ruleset,
 };
 use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement;
@@ -777,7 +777,7 @@ fn the_default_evaluator_allows_only_observing_tools_and_never_denies() {
     // The shipped classifier judges by tool identity alone, so it may conclude
     // "safe to observe" but never "too risky for anyone to approve": an
     // unknown tool goes to a person, not to a refusal.
-    let evaluator = ReversibilityEvaluator::new(["read".to_string(), "grep".to_string()]);
+    let evaluator = ObservingToolEvaluator::new(["read".to_string(), "grep".to_string()]);
     let call = |tool: &str| ToolCall {
         tool_id: tool.into(),
         call_id: "c".into(),
@@ -789,7 +789,7 @@ fn the_default_evaluator_allows_only_observing_tools_and_never_denies() {
         AutoDecision::Indeterminate
     );
     assert_eq!(
-        ReversibilityEvaluator::default().evaluate(&call("read")),
+        ObservingToolEvaluator::default().evaluate(&call("read")),
         AutoDecision::Indeterminate,
         "an unconfigured evaluator names no safe tool"
     );

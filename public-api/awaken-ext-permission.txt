@@ -3,10 +3,17 @@ pub enum awaken_ext_permission::AutoDecision
 pub awaken_ext_permission::AutoDecision::Allow
 pub awaken_ext_permission::AutoDecision::Deny
 pub awaken_ext_permission::AutoDecision::Indeterminate
+impl awaken_ext_permission::AutoDecision
+pub const fn awaken_ext_permission::AutoDecision::into_behavior(self) -> awaken_ext_permission::ToolPermissionBehavior
 pub enum awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::ToolPermissionBehavior::Allow
 pub awaken_ext_permission::ToolPermissionBehavior::Deny
 pub awaken_ext_permission::ToolPermissionBehavior::RequireConfirmation
+pub struct awaken_ext_permission::ObservingToolEvaluator
+impl awaken_ext_permission::ObservingToolEvaluator
+pub fn awaken_ext_permission::ObservingToolEvaluator::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
+impl awaken_ext_permission::AutoPermissionEvaluator for awaken_ext_permission::ObservingToolEvaluator
+pub fn awaken_ext_permission::ObservingToolEvaluator::evaluate(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_ext_permission::AutoDecision
 pub struct awaken_ext_permission::PermissionRule
 pub awaken_ext_permission::PermissionRule::behavior: awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::PermissionRule::pattern: awaken_ext_permission::ToolCallPattern
@@ -19,11 +26,6 @@ impl awaken_ext_permission::PermissionRuleset
 pub fn awaken_ext_permission::PermissionRuleset::decide(&self, &str, &serde_json::value::Value) -> awaken_ext_permission::ToolPermissionBehavior
 impl core::default::Default for awaken_ext_permission::PermissionRuleset
 pub fn awaken_ext_permission::PermissionRuleset::default() -> Self
-pub struct awaken_ext_permission::ReversibilityEvaluator
-impl awaken_ext_permission::ReversibilityEvaluator
-pub fn awaken_ext_permission::ReversibilityEvaluator::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
-impl awaken_ext_permission::AutoPermissionEvaluator for awaken_ext_permission::ReversibilityEvaluator
-pub fn awaken_ext_permission::ReversibilityEvaluator::evaluate(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_ext_permission::AutoDecision
 pub struct awaken_ext_permission::RuleBasedToolPermissionPolicy
 impl awaken_ext_permission::RuleBasedToolPermissionPolicy
 pub fn awaken_ext_permission::RuleBasedToolPermissionPolicy::new(awaken_ext_permission::PermissionRuleset) -> Self
@@ -44,6 +46,6 @@ pub fn awaken_ext_permission::ToolCallPattern::matches(&self, &str, &serde_json:
 pub fn awaken_ext_permission::ToolCallPattern::parse(&str) -> core::result::Result<Self, alloc::string::String>
 pub trait awaken_ext_permission::AutoPermissionEvaluator: core::marker::Send + core::marker::Sync + core::fmt::Debug
 pub fn awaken_ext_permission::AutoPermissionEvaluator::evaluate(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_ext_permission::AutoDecision
-impl awaken_ext_permission::AutoPermissionEvaluator for awaken_ext_permission::ReversibilityEvaluator
-pub fn awaken_ext_permission::ReversibilityEvaluator::evaluate(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_ext_permission::AutoDecision
+impl awaken_ext_permission::AutoPermissionEvaluator for awaken_ext_permission::ObservingToolEvaluator
+pub fn awaken_ext_permission::ObservingToolEvaluator::evaluate(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_ext_permission::AutoDecision
 pub fn awaken_ext_permission::parse_ruleset(&serde_json::value::Value) -> core::result::Result<awaken_ext_permission::PermissionRuleset, alloc::string::String>

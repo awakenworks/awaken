@@ -116,11 +116,7 @@ fn behavior_for(
     match policy.permission {
         ToolPermissionRequirement::AlwaysAllow => ToolPermissionBehavior::Allow,
         ToolPermissionRequirement::AlwaysAsk => ToolPermissionBehavior::RequireConfirmation,
-        ToolPermissionRequirement::Auto => match evaluator.evaluate(call) {
-            AutoDecision::Allow => ToolPermissionBehavior::Allow,
-            AutoDecision::Deny => ToolPermissionBehavior::Deny,
-            AutoDecision::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
-        },
+        ToolPermissionRequirement::Auto => evaluator.evaluate(call).into_behavior(),
     }
 }
 
@@ -135,10 +131,24 @@ pub enum AutoDecision {
     Indeterminate,
 }
 
+impl AutoDecision {
+    /// The behavior this verdict resolves to. Stated once: `Indeterminate` is
+    /// the ask an `always_ask` policy would have produced, so a call the
+    /// evaluator cannot judge reaches a person through the same ticket path.
+    #[must_use]
+    pub const fn into_behavior(self) -> ToolPermissionBehavior {
+        match self {
+            Self::Allow => ToolPermissionBehavior::Allow,
+            Self::Deny => ToolPermissionBehavior::Deny,
+            Self::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
+        }
+    }
+}
+
 /// Decides one call under the `auto` policy.
 ///
 /// Implementations are supplied at construction, which is what keeps this crate
-/// linkable on its own: an embedded runtime gets [`ReversibilityEvaluator`]
+/// linkable on its own: an embedded runtime gets [`ObservingToolEvaluator`]
 /// without depending on anything that knows about sessions or servers, while a
 /// richer deployment injects its own. It is synchronous on purpose — an
 /// evaluator that needs to await external judgement belongs behind the policy
@@ -149,7 +159,8 @@ pub trait AutoPermissionEvaluator: Send + Sync + std::fmt::Debug {
 }
 
 /// The evaluator an embedded runtime gets by default: a call is allowed when
-/// the tool it names only observes, and falls to a person otherwise.
+/// the tool it names only observes, and falls to a person otherwise. It is
+/// named for the one property it can actually judge from a tool id.
 ///
 /// It never denies. Denial under `auto` claims "this is too risky for anyone to
 /// approve", and a name-based classifier cannot support that claim; leaving the
@@ -160,11 +171,11 @@ pub trait AutoPermissionEvaluator: Send + Sync + std::fmt::Debug {
 /// host that owns the tool catalogue states it once and this crate keeps no
 /// second copy of anyone's tool names.
 #[derive(Debug, Default)]
-pub struct ReversibilityEvaluator {
+pub struct ObservingToolEvaluator {
     observing: std::collections::BTreeSet<String>,
 }
 
-impl ReversibilityEvaluator {
+impl ObservingToolEvaluator {
     /// Build from the tool ids whose calls only observe.
     #[must_use]
     pub fn new(observing: impl IntoIterator<Item = String>) -> Self {
@@ -174,7 +185,7 @@ impl ReversibilityEvaluator {
     }
 }
 
-impl AutoPermissionEvaluator for ReversibilityEvaluator {
+impl AutoPermissionEvaluator for ObservingToolEvaluator {
     fn evaluate(&self, call: &ToolCall) -> AutoDecision {
         if self.observing.contains(&call.tool_id) {
             AutoDecision::Allow
@@ -528,7 +539,7 @@ impl RuleBasedToolPermissionPolicy {
             // No observing tools are known until a caller names them, so an
             // unconfigured `auto` sends every call to a person rather than
             // guessing which ids are safe.
-            auto: std::sync::Arc::new(ReversibilityEvaluator::default()),
+            auto: std::sync::Arc::new(ObservingToolEvaluator::default()),
             deferred_members: std::collections::BTreeSet::new(),
         }
     }
@@ -625,11 +636,9 @@ impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
             .matched_behavior(&call.tool_id, &call.arguments, exact.as_ref());
         let behavior = match decided {
             Some(behavior) => behavior,
-            None if self.is_auto(&resolved, &call.tool_id) => match self.auto.evaluate(call) {
-                AutoDecision::Allow => ToolPermissionBehavior::Allow,
-                AutoDecision::Deny => ToolPermissionBehavior::Deny,
-                AutoDecision::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
-            },
+            None if self.is_auto(&resolved, &call.tool_id) => {
+                self.auto.evaluate(call).into_behavior()
+            }
             None => self.ruleset.default_behavior,
         };
         match behavior {
@@ -904,7 +913,7 @@ mod tests {
                     let expected = if legacy == ToolPermissionBehavior::Deny {
                         ToolPermissionBehavior::Deny
                     } else {
-                        behavior_for(typed, &call, &ReversibilityEvaluator::default())
+                        behavior_for(typed, &call, &ObservingToolEvaluator::default())
                     };
                     let actual = policy.evaluate(&call).await;
                     match (expected, actual) {
