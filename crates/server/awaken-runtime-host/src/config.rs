@@ -789,6 +789,41 @@ mod tests {
     }
 
     #[test]
+    fn the_baseline_never_allows_a_controlled_modification_or_an_mcp_tool() {
+        // Constraint/Invariant: the built-in baseline is a *perception* allowance.
+        // It may never grant a controlled modification, and it may never grant an
+        // MCP tool — an MCP tool's authority comes only from its `mcp_toolset`
+        // policy, whose default is ask (Managed Agents wire parity). Without this
+        // guard a new literal in `base_allow_rules` silently widens the default
+        // for every Session that authored no policy.
+        //
+        // Cause/effect graph: C1 the tool is a controlled-modification member;
+        // C2 the tool id is MCP-namespaced. E1 ask (never allow).
+        //
+        // | Rule | C1 | C2 | Effect |
+        // |---|---|---|---|
+        // | B1 | T | F | E1 ask |
+        // | B2 | F | T | E1 ask |
+        let base = effective_ruleset(None, &[]);
+        for member in awaken_session_contract::agent_toolset_members() {
+            if awaken_session_contract::is_controlled_modification_member(member) {
+                assert_eq!(
+                    base.decide(member, &serde_json::json!({})),
+                    ToolPermissionBehavior::RequireConfirmation,
+                    "B1 {member} must stay ask in the baseline"
+                );
+            }
+        }
+        for mcp_tool in ["mcp__calc__add", "mcp__github__create_issue"] {
+            assert_eq!(
+                base.decide(mcp_tool, &serde_json::json!({})),
+                ToolPermissionBehavior::RequireConfirmation,
+                "B2 {mcp_tool} must stay ask without a declared mcp_toolset"
+            );
+        }
+    }
+
+    #[test]
     fn effective_ruleset_layers_author_over_baseline() {
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
         // documented here remain the only decision source; no parallel path is admitted.
