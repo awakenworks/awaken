@@ -32,7 +32,7 @@ async fn run() -> Result<(), String> {
     }
     let config = config.ok_or_else(|| "--config PATH is required".to_owned())?;
     let deployment = awaken_worker::WorkerDaemonConfig::load(&config, server)?;
-    awaken_observability::init(&Default::default());
+    awaken_observability::init(&deployment.observability);
     let result = deployment
         .build()
         .await?
