@@ -502,6 +502,8 @@ pg_test cargo test -p awaken-memory-store --features postgres --test conformance
 pg_test cargo test -p awaken-skill-store --features postgres --test conformance || record_failure "$?"
 pg_test cargo test -p awaken-resource-store --all-features || record_failure "$?"
 pg_test cargo test -p awaken-resource-persistence || record_failure "$?"
+pg_test cargo test -p awaken-session-application --lib postgres_ -- --test-threads=1 \
+  || record_failure "$?"
 pg_test cargo test -p awaken-store-schema --test apply || record_failure "$?"
 pg_test cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity || record_failure "$?"
 pg_test cargo test -p awaken-sandbox-policy-store --features test-support || record_failure "$?"
