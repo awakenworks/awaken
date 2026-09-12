@@ -56,6 +56,23 @@ ServiceAccount therefore owns namespace-scoped `pods/portforward` for that
 resident channel. Attached exec remains a runtime capability for bounded file
 operations, not a parallel ACP transport.
 
+### Inspecting retained SQLite data
+
+Do not run host-user `sqlite3 -readonly` directly against the product PVC.
+In WAL mode even a read-only connection can create WAL/SHM files or update SHM;
+files created by host UID 1000 can prevent the UID 10001 service from reopening
+its otherwise writable database. This has been reproduced on the product k3d
+storage binding. `fsGroupChangePolicy: OnRootMismatch` is not a repair mechanism
+for mismatched child files.
+
+Reuse `SqliteManagedSessionRepository::verify_existing` for structural probes:
+its existing `SqliteProbeSnapshot` confines SQLite side effects to a temporary
+copy and checks the complete source read set, including uncheckpointed WAL.
+For content inspection, use a consistent backup under the service identity and
+query the copy. Do not use `immutable=1` on a live database to suppress side
+effects: that can ignore WAL state. Never delete WAL/SHM to clear a permission
+failure; inspect exact ownership first and preserve retained data.
+
 The same overlay selects the existing `k8s_continuation_volume` policy. A
 retained Session therefore owns one UID-bound `local-path` PVC mounted at its
 active filesystem. Pod loss may replace only the Pod incarnation; rebuild must
