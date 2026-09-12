@@ -145,6 +145,12 @@ pub fn repository_git_credential_delivery(
 #[cfg(kani)]
 #[kani::proof]
 fn credential_effect_delivery_policy_is_total_and_never_mixes_route_authority() {
+    // Causes: P=purpose permits this boundary, C=purpose permits this carrier,
+    // B=the exact plaintext boundary. Effects: A=the policy helpers admit,
+    // R=its route/authority pair. Constraint: every B has one route/authority.
+    // Decision rules: P+C => A and R follows B; !P or !C => refusal.
+    // Repository/Worker and verification/any-boundary are mandatory refusal
+    // instances. All 8 purposes x 3 boundaries x 3 carriers are selected.
     let purpose = match kani::any::<u8>() % 8 {
         0 => CredentialPurpose::ProviderAdapter,
         1 => CredentialPurpose::RepositoryTransport,
