@@ -609,8 +609,12 @@ impl SqliteManagedSessionRepository {
                     .map_err(corrupt)?;
             if let Some(canonical) = canonical {
                 tx.execute(
-                    "UPDATE managed_session SET aggregate_json=?2 WHERE session_id=?1",
-                    params![stored_session_id, canonical],
+                    "UPDATE managed_session SET aggregate_json=?2, revision=?3 WHERE session_id=?1",
+                    params![
+                        stored_session_id,
+                        canonical,
+                        i64::try_from(session.revision.0).map_err(corrupt)?
+                    ],
                 )
                 .map_err(storage)?;
             }

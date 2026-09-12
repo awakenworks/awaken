@@ -22,57 +22,39 @@ async fn sqlite_normalization_and_index_repair_share_one_crash_boundary() {
     // Rules N1=C1+C2+C3=>E1; N2=C1+C2+!C3=>E2; N3=retry(N2)=>E3.
     // SQLite triggers inject an actual transactional write failure, not a mock
     // decoder. This guards the prior two-transaction normalize/rebuild window.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir
-        .path()
-        .join("atomic-normalization.db")
-        .to_string_lossy()
-        .into_owned();
-    let repo = SqliteManagedSessionRepository::open(&path).unwrap();
-    let first = create_fixture(&repo, "ws", sample("a-normalize"), Vec::new()).await;
-    create_fixture(&repo, "ws", sample("z-fail-index"), Vec::new()).await;
-    drop(repo);
-    let conn = Connection::open(&path).unwrap();
-    let canonical = super::row_codec::encode(&first).unwrap();
-    let original = format!("  {canonical}\n");
-    conn.execute(
-        "UPDATE managed_session SET aggregate_json=?1 WHERE session_id='a-normalize'",
-        params![original],
-    )
-    .unwrap();
-    conn.execute("INSERT INTO managed_session_reconciliation_work(session_id,observed_revision) VALUES('a-normalize',999) ON CONFLICT(session_id) DO UPDATE SET observed_revision=999", []).unwrap();
-    conn.execute("INSERT INTO managed_session_credential_source_reference(session_id,credential_source_id) VALUES('z-fail-index','stale-source')", []).unwrap();
-    conn.execute_batch("CREATE TRIGGER fail_index_repair BEFORE DELETE ON managed_session_credential_source_reference WHEN OLD.session_id='z-fail-index' BEGIN SELECT RAISE(ABORT,'injected index repair failure'); END;").unwrap();
-    drop(conn);
-    let error = match SqliteManagedSessionRepository::open(&path) {
-        Ok(_) => panic!("N1 index repair must fail"),
-        Err(error) => error,
-    };
-    assert!(
-        error.contains("injected index repair failure"),
-        "N1: {error}"
-    );
-    let conn = Connection::open(&path).unwrap();
-    let bytes: String = conn
-        .query_row(
-            "SELECT aggregate_json FROM managed_session WHERE session_id='a-normalize'",
-            [],
-            |row| row.get(0),
+    // N4 crosses N1-N3 with v1 witness upgrade: the root revision bump must
+    // roll back with the index failure and occur exactly once on retry.
+    for upgrade in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("atomic-normalization.db")
+            .to_string_lossy()
+            .into_owned();
+        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let mut first = create_fixture(&repo, "ws", sample("a-normalize"), Vec::new()).await;
+        create_fixture(&repo, "ws", sample("z-fail-index"), Vec::new()).await;
+        drop(repo);
+        let conn = Connection::open(&path).unwrap();
+        let (original, canonical) = normalization_fixture(&mut first, upgrade);
+        conn.execute(
+            "UPDATE managed_session SET aggregate_json=?1 WHERE session_id='a-normalize'",
+            params![original],
         )
         .unwrap();
-    let observed: i64 = conn.query_row("SELECT observed_revision FROM managed_session_reconciliation_work WHERE session_id='a-normalize'", [], |row| row.get(0)).unwrap();
-    assert_eq!(
-        bytes, original,
-        "N1 root normalization rolls back with index repair"
-    );
-    assert_eq!(observed, 999, "N1 earlier index repair rolls back too");
-    conn.execute_batch("DROP TRIGGER fail_index_repair;")
-        .unwrap();
-    drop(conn);
-    for _ in 0..2 {
-        let repo = SqliteManagedSessionRepository::open(&path).expect("N2/N3 retry");
-        assert_eq!(repo.get("a-normalize").await.unwrap(), first);
-        let conn = repo.conn.lock().unwrap();
+        conn.execute("INSERT INTO managed_session_reconciliation_work(session_id,observed_revision) VALUES('a-normalize',999) ON CONFLICT(session_id) DO UPDATE SET observed_revision=999", []).unwrap();
+        conn.execute("INSERT INTO managed_session_credential_source_reference(session_id,credential_source_id) VALUES('z-fail-index','stale-source')", []).unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_index_repair BEFORE DELETE ON managed_session_credential_source_reference WHEN OLD.session_id='z-fail-index' BEGIN SELECT RAISE(ABORT,'injected index repair failure'); END;").unwrap();
+        drop(conn);
+        let error = match SqliteManagedSessionRepository::open(&path) {
+            Ok(_) => panic!("N1 index repair must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("injected index repair failure"),
+            "N1: {error}"
+        );
+        let conn = Connection::open(&path).unwrap();
         let bytes: String = conn
             .query_row(
                 "SELECT aggregate_json FROM managed_session WHERE session_id='a-normalize'",
@@ -80,10 +62,83 @@ async fn sqlite_normalization_and_index_repair_share_one_crash_boundary() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(bytes, canonical, "N2/N3 canonical root");
-        let stale: i64 = conn.query_row("SELECT COUNT(*) FROM managed_session_credential_source_reference WHERE credential_source_id='stale-source'", [], |row| row.get(0)).unwrap();
-        assert_eq!(stale, 0, "N2/N3 stale dependency repaired");
+        let observed: i64 = conn.query_row("SELECT observed_revision FROM managed_session_reconciliation_work WHERE session_id='a-normalize'", [], |row| row.get(0)).unwrap();
+        assert_eq!(
+            bytes, original,
+            "N1 root normalization rolls back with index repair"
+        );
+        assert_eq!(observed, 999, "N1 earlier index repair rolls back too");
+        conn.execute_batch("DROP TRIGGER fail_index_repair;")
+            .unwrap();
+        drop(conn);
+        for _ in 0..2 {
+            let repo = SqliteManagedSessionRepository::open(&path).expect("N2/N3 retry");
+            assert_eq!(repo.get("a-normalize").await.unwrap(), first);
+            if upgrade {
+                assert_pre_upgrade_writer_fenced(&repo, &first).await;
+            }
+            let conn = repo.conn.lock().unwrap();
+            let bytes: String = conn
+                .query_row(
+                    "SELECT aggregate_json FROM managed_session WHERE session_id='a-normalize'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(bytes, canonical, "N2/N3 canonical root");
+            let stale: i64 = conn.query_row("SELECT COUNT(*) FROM managed_session_credential_source_reference WHERE credential_source_id='stale-source'", [], |row| row.get(0)).unwrap();
+            assert_eq!(stale, 0, "N2/N3 stale dependency repaired");
+        }
     }
+}
+
+fn normalization_fixture(first: &mut PersistedSession, upgrade: bool) -> (String, String) {
+    let canonical = super::row_codec::encode(first).unwrap();
+    if !upgrade {
+        return (format!("  {canonical}\n"), canonical);
+    }
+    let mut legacy: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+    legacy["format"] = serde_json::json!("awaken.session.v1");
+    for attachment in legacy["aggregate"]["mcp"]["attachments"]
+        .as_array_mut()
+        .unwrap()
+    {
+        attachment["generation"] = attachment["generation"]["version"].clone();
+    }
+    first.revision.0 += 1;
+    (legacy.to_string(), super::row_codec::encode(first).unwrap())
+}
+
+async fn assert_pre_upgrade_writer_fenced(
+    repo: &impl ManagedSessionRepository,
+    current: &PersistedSession,
+) {
+    // N5: a cached pre-upgrade root with a fresh mutation key cannot restore
+    // the old representation. Reuse the real repository CAS, not raw SQL.
+    let mut stale = current.clone();
+    stale.revision.0 -= 1;
+    let expected_revision = stale.revision;
+    let payload = SessionMutationPayload::Replace(stale);
+    let result = repo
+        .commit_mutation(
+            "ws",
+            SessionMutation {
+                expected_revision,
+                idempotency: IdempotencyRecord {
+                    key: "old-writer-after-upgrade".into(),
+                    payload_hash: payload.stable_hash(),
+                },
+                payload,
+                lifecycle_facts: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, SessionMutationResult::Conflict { current_revision } if current_revision == current.revision),
+        "N5 stale writer refused"
+    );
+    assert_eq!(repo.get(&current.session_id).await.unwrap(), *current);
 }
 
 #[test]
@@ -847,86 +902,95 @@ async fn postgres_normalization_and_index_repair_share_one_crash_boundary() {
     let Some((url, admin)) = postgres_test_admin().await else {
         return;
     };
-    let suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let schema = format!("t_session_atomic_{suffix}");
-    admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
-        .await
-        .unwrap();
-    let pool = sqlx::postgres::PgPool::connect(&scoped_postgres_url(&url, &schema))
-        .await
-        .unwrap();
-    let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
-        .await
-        .unwrap();
-    let first = create_fixture(&repo, "ws", sample("a-normalize"), Vec::new()).await;
-    create_fixture(&repo, "ws", sample("z-fail-index"), Vec::new()).await;
-    drop(repo);
-    let canonical = super::row_codec::encode(&first).unwrap();
-    sqlx::query("UPDATE managed_session SET aggregate_json=$1 WHERE session_id='a-normalize'")
-        .bind(format!("  {canonical}\n"))
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO managed_session_reconciliation_work(session_id,observed_revision) VALUES('a-normalize',999) ON CONFLICT(session_id) DO UPDATE SET observed_revision=999").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO managed_session_credential_source_reference(session_id,credential_source_id) VALUES('z-fail-index','stale-source')").execute(&pool).await.unwrap();
-    pool.execute("CREATE FUNCTION fail_index_repair() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.session_id='z-fail-index' THEN RAISE EXCEPTION 'injected index repair failure'; END IF; RETURN OLD; END $$;").await.unwrap();
-    pool.execute("CREATE TRIGGER fail_index_repair BEFORE DELETE ON managed_session_credential_source_reference FOR EACH ROW EXECUTE FUNCTION fail_index_repair()").await.unwrap();
-    let before = postgres_session_snapshot(&pool).await;
-    let error = match PostgresManagedSessionRepository::with_pool(pool.clone()).await {
-        Ok(_) => panic!("N1 injected index repair must fail"),
-        Err(error) => error,
-    };
-    assert!(
-        error.contains("injected index repair failure"),
-        "N1: {error}"
-    );
-    assert_eq!(
-        postgres_session_snapshot(&pool).await,
-        before,
-        "N1 all effects roll back"
-    );
-    pool.execute("DROP TRIGGER fail_index_repair ON managed_session_credential_source_reference")
-        .await
-        .unwrap();
-    let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
-        .await
-        .unwrap();
-    assert_eq!(
-        repo.get("a-normalize").await.unwrap(),
-        first,
-        "N2 no business mutation"
-    );
-    drop(repo);
-    let repaired = postgres_session_snapshot(&pool).await;
-    assert!(
-        repaired
-            .roots
-            .iter()
-            .any(|(id, bytes, _)| id == "a-normalize" && bytes == &canonical)
-    );
-    assert!(
-        repaired.credential_sources.is_empty(),
-        "N2 stale dependency removed"
-    );
-    drop(
-        PostgresManagedSessionRepository::with_pool(pool.clone())
+    // N4 also requires the v1 revision fence to roll back with its root/index
+    // transaction. Reopening the committed upgrade must not advance it again.
+    for upgrade in [false, true] {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let schema = format!("t_session_atomic_{suffix}");
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
             .await
-            .unwrap(),
-    );
-    assert_eq!(
-        postgres_session_snapshot(&pool).await,
-        repaired,
-        "N3 stable reopen"
-    );
-    pool.close().await;
-    admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+            .unwrap();
+        let pool = sqlx::postgres::PgPool::connect(&scoped_postgres_url(&url, &schema))
+            .await
+            .unwrap();
+        let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
+            .await
+            .unwrap();
+        let mut first = create_fixture(&repo, "ws", sample("a-normalize"), Vec::new()).await;
+        create_fixture(&repo, "ws", sample("z-fail-index"), Vec::new()).await;
+        drop(repo);
+        let (original, canonical) = normalization_fixture(&mut first, upgrade);
+        sqlx::query("UPDATE managed_session SET aggregate_json=$1 WHERE session_id='a-normalize'")
+            .bind(original)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO managed_session_reconciliation_work(session_id,observed_revision) VALUES('a-normalize',999) ON CONFLICT(session_id) DO UPDATE SET observed_revision=999").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO managed_session_credential_source_reference(session_id,credential_source_id) VALUES('z-fail-index','stale-source')").execute(&pool).await.unwrap();
+        pool.execute("CREATE FUNCTION fail_index_repair() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.session_id='z-fail-index' THEN RAISE EXCEPTION 'injected index repair failure'; END IF; RETURN OLD; END $$;").await.unwrap();
+        pool.execute("CREATE TRIGGER fail_index_repair BEFORE DELETE ON managed_session_credential_source_reference FOR EACH ROW EXECUTE FUNCTION fail_index_repair()").await.unwrap();
+        let before = postgres_session_snapshot(&pool).await;
+        let error = match PostgresManagedSessionRepository::with_pool(pool.clone()).await {
+            Ok(_) => panic!("N1 injected index repair must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("injected index repair failure"),
+            "N1: {error}"
+        );
+        assert_eq!(
+            postgres_session_snapshot(&pool).await,
+            before,
+            "N1 all effects roll back"
+        );
+        pool.execute(
+            "DROP TRIGGER fail_index_repair ON managed_session_credential_source_reference",
+        )
         .await
         .unwrap();
+        let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get("a-normalize").await.unwrap(),
+            first,
+            "N2 no business mutation"
+        );
+        if upgrade {
+            assert_pre_upgrade_writer_fenced(&repo, &first).await;
+        }
+        drop(repo);
+        let repaired = postgres_session_snapshot(&pool).await;
+        assert!(
+            repaired
+                .roots
+                .iter()
+                .any(|(id, bytes, _)| id == "a-normalize" && bytes == &canonical)
+        );
+        assert!(
+            repaired.credential_sources.is_empty(),
+            "N2 stale dependency removed"
+        );
+        drop(
+            PostgresManagedSessionRepository::with_pool(pool.clone())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            postgres_session_snapshot(&pool).await,
+            repaired,
+            "N3 stable reopen"
+        );
+        pool.close().await;
+        admin
+            .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+            .await
+            .unwrap();
+    }
 }
 
 async fn postgres_test_admin() -> Option<(String, sqlx::postgres::PgPool)> {

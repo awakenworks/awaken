@@ -8,9 +8,8 @@ use awaken_session_contract::{PersistedSession, SessionRevision};
 
 /// v2 carries the complete `McpGeneration` witness: an object of
 /// `{attachment_id, version, content_digest}` where v1 stored a bare `u64`.
-/// The break is deliberate and unshimmed, so the stamp is bumped to make the
-/// refusal self-describing — a v1 row is rejected by name here rather than
-/// failing later inside serde with an opaque field-type message.
+/// Runtime reads reject old witnesses. Only the operational normalization
+/// transaction may upgrade a complete v1 root and advance its writer fence.
 const CURRENT_AGGREGATE_FORMAT: &str = "awaken.session.v2";
 
 #[derive(serde::Serialize)]
@@ -251,6 +250,65 @@ pub(super) struct EncodedSessionRow {
     pub revision: i64,
 }
 
+/// Representation upgrade only: never acknowledge a physical effect, release
+/// a lease, or rebuild a receipt. All witness content comes from this one
+/// durable root, not from today's configuration or a separate SQL projection.
+fn upgrade_v1_root(data: &str, revision: i64) -> Result<Option<String>, serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_str(data)?;
+    if value.get("format").and_then(serde_json::Value::as_str) != Some("awaken.session.v1") {
+        return Ok(None);
+    }
+    let mut envelope: OwnedAggregateEnvelope = serde_json::from_value(value)?;
+    let aggregate = envelope
+        .aggregate
+        .as_object_mut()
+        .ok_or_else(|| invalid("v1 Session root is not an object"))?;
+    if revision < 1
+        || aggregate
+            .get("revision")
+            .and_then(serde_json::Value::as_i64)
+            != Some(revision)
+    {
+        return Err(invalid("v1 Session revision does not match its index"));
+    }
+    let next_revision = revision
+        .checked_add(1)
+        .ok_or_else(|| invalid("v1 Session revision exhausted"))?;
+    let attachments = aggregate
+        .get_mut("mcp")
+        .and_then(|mcp| mcp.get_mut("attachments"))
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| invalid("v1 Session has no MCP attachment array"))?;
+    for attachment in attachments {
+        let version = attachment
+            .get("generation")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|version| *version > 0)
+            .ok_or_else(|| invalid("v1 MCP generation is not a positive counter"))?;
+        let identity = attachment
+            .get("attachment_id")
+            .cloned()
+            .ok_or_else(|| invalid("v1 MCP attachment has no identity"))?;
+        let identity: awaken_session_contract::McpAttachmentId = serde_json::from_value(identity)?;
+        if identity.0.is_empty() {
+            return Err(invalid("v1 MCP attachment identity is empty"));
+        }
+        let draft: awaken_session_contract::McpAttachmentDraft =
+            serde_json::from_value(attachment.clone())?;
+        attachment["generation"] = serde_json::to_value(
+            awaken_session_contract::McpGeneration::of_draft(identity, version, &draft),
+        )?;
+    }
+    aggregate.insert("revision".into(), serde_json::json!(next_revision));
+    // Decode/verify through the canonical current codec below. Anything else
+    // that still carries an incompatible witness fails; do not recursively
+    // rewrite historical receipts or infer their missing evidence.
+    serde_json::to_string(
+        &serde_json::json!({"format": CURRENT_AGGREGATE_FORMAT, "aggregate": envelope.aggregate}),
+    )
+    .map(Some)
+}
+
 pub(super) fn normalize_published_row(
     stored_session_id: &str,
     aggregate_json: Option<String>,
@@ -258,9 +316,14 @@ pub(super) fn normalize_published_row(
 ) -> Result<(PersistedSession, Option<String>), serde_json::Error> {
     let aggregate_json = aggregate_json
         .ok_or_else(|| invalid("published managed Session row has no canonical aggregate"))?;
+    let upgraded = upgrade_v1_root(&aggregate_json, revision)?;
     let session = decode(EncodedSessionRow {
-        aggregate_json: aggregate_json.clone(),
-        revision,
+        aggregate_json: upgraded.clone().unwrap_or_else(|| aggregate_json.clone()),
+        revision: if upgraded.is_some() {
+            revision.checked_add(1).expect("upgrade checked capacity")
+        } else {
+            revision
+        },
     })?;
     if session.session_id != stored_session_id {
         return Err(invalid(
@@ -298,13 +361,13 @@ mod tests {
     use awaken_session_contract::resource_plane::{
         BindingId, FileId, InputResourceId, ResourceAccess,
     };
-    use awaken_session_contract::{ActivationState, SessionResourceActivation};
+    use awaken_session_contract::{ActivationState, SessionResourceActivation, SessionRevision};
     use rusqlite::params;
 
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
 
     #[tokio::test]
-    async fn a_v1_row_is_refused_by_format_not_by_an_opaque_field_error() {
+    async fn runtime_refuses_v1_while_operational_upgrade_fences_its_writer() {
         // Causes: C1 format is v1, unknown, or current; C2 MCP generation is
         // the historical counter or the complete witness. Effects: E1 reject
         // unsupported formats by name BEFORE interpreting their payload; E2
@@ -313,8 +376,8 @@ mod tests {
         // R3=current+counter=>E3. A real MCP attachment is essential: an empty
         // attachment set cannot expose payload decoding before version checks.
         // C3 cold SQLite startup normalizes roots before recovery quarantine.
-        // R4=R1+C3 => startup refuses, preserving exact bytes and revision on
-        // repeated opens; quarantine must not silently promote the old witness.
+        // R4=known v1 counter+C3 => upgrade complete content and advance the
+        // root revision exactly once; R5=unknown/mislabeled => preserve bytes.
         // This reproduces the deployed v1/MCP-counter failure through the real
         // repository, not merely serde. No new protocol is introduced, so this
         // is storage/codec evidence, not a physical-stop or migration proof.
@@ -331,6 +394,28 @@ mod tests {
             None,
         )
         .unwrap();
+        let generation = session.mcp.attachments[0].generation.clone();
+        session
+            .mcp
+            .claim_realization(
+                &generation,
+                awaken_session_contract::McpRealizationClaim {
+                    realization_id: "old-realization".into(),
+                    runtime_incarnation: "old-worker".into(),
+                    lease_epoch: 7,
+                    lease_expires_at_unix_ms: 100,
+                    stage_idempotency_key: "original-stage".into(),
+                },
+            )
+            .unwrap();
+        session
+            .mcp
+            .activate(&generation, "old-realization")
+            .unwrap();
+        session
+            .mcp
+            .acknowledge_publication(&generation, "old-realization")
+            .unwrap();
         let directory = tempfile::tempdir().unwrap();
         let path = directory
             .path()
@@ -360,21 +445,41 @@ mod tests {
                 let connection = rusqlite::Connection::open(&path).unwrap();
                 connection
                     .execute(
-                        "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-                        params![bytes, session.session_id],
+                        "UPDATE managed_session SET aggregate_json = ?1, revision = ?3 WHERE session_id = ?2",
+                        params![bytes, session.session_id, i64::try_from(session.revision.0).unwrap()],
                     )
                     .unwrap();
                 drop(connection);
+                if format == "awaken.session.v1"
+                    && v1["aggregate"]["mcp"]["attachments"][0]["generation"].is_u64()
+                {
+                    let mut expected = session.clone();
+                    expected.revision.0 += 1;
+                    for _ in 0..2 {
+                        let repo =
+                            SqliteManagedSessionRepository::open(&path).expect("R4 upgrade/reopen");
+                        assert_eq!(
+                            repo.get(&session.session_id).await.unwrap(),
+                            expected,
+                            "R4 only representation and writer revision change"
+                        );
+                    }
+                    continue;
+                }
                 for _ in 0..2 {
                     let error = match SqliteManagedSessionRepository::open(&path) {
                         Ok(_) => panic!("R4 unsupported cold root must refuse startup"),
                         Err(error) => error,
                     };
                     assert!(
-                        error.contains(&format!(
-                            "unsupported managed Session aggregate format `{format}`"
-                        )),
-                        "R4 format precedes payload: {error}"
+                        if format == "awaken.session.v1" {
+                            error.contains("v1 MCP generation is not a positive counter")
+                        } else {
+                            error.contains(&format!(
+                                "unsupported managed Session aggregate format `{format}`"
+                            ))
+                        },
+                        "R5: {error}"
                     );
                     let connection = rusqlite::Connection::open(&path).unwrap();
                     let stored: (String, i64) = connection.query_row(
@@ -394,8 +499,8 @@ mod tests {
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
             .execute(
-                "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-                params![current, session.session_id],
+                "UPDATE managed_session SET aggregate_json = ?1, revision = ?3 WHERE session_id = ?2",
+                params![current, session.session_id, i64::try_from(session.revision.0).unwrap()],
             )
             .unwrap();
         drop(connection);
@@ -413,6 +518,83 @@ mod tests {
                 .to_string()
                 .contains("expected struct McpGeneration")
         );
+    }
+
+    #[test]
+    fn v1_upgrade_requires_complete_content_identity_and_revision_capacity() {
+        // U1 exact whole-root content + matching positive revision + capacity:
+        // derive the same witness, change only root revision/format. U2 each
+        // missing/malformed content axis, counter, identity, or revision:
+        // refuse. U3 unknown formats remain unsupported. This matrix does not
+        // assert that any old process stopped or that remote calls can replay.
+        let mut session = sample("upgrade-table");
+        session.revision = SessionRevision(1);
+        let current = super::encode(&session).unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_str(&current).unwrap();
+        legacy["format"] = serde_json::json!("awaken.session.v1");
+        legacy["aggregate"]["mcp"]["attachments"][0]["generation"] = serde_json::json!(1);
+        let (upgraded, _) =
+            super::normalize_published_row(&session.session_id, Some(legacy.to_string()), 1)
+                .unwrap();
+        let mut expected = session.clone();
+        expected.revision = SessionRevision(2);
+        assert_eq!(upgraded, expected, "U1 no lifecycle/effect mutation");
+        for (pointer, value, index_revision) in [
+            (
+                "/aggregate/mcp/attachments/0/generation",
+                serde_json::json!(0),
+                1,
+            ),
+            (
+                "/aggregate/mcp/attachments/0/generation",
+                serde_json::json!(-1),
+                1,
+            ),
+            (
+                "/aggregate/mcp/attachments/0/attachment_id",
+                serde_json::json!(""),
+                1,
+            ),
+            (
+                "/aggregate/mcp/attachments/0/target",
+                serde_json::Value::Null,
+                1,
+            ),
+            (
+                "/aggregate/mcp/attachments/0/origin",
+                serde_json::Value::Null,
+                1,
+            ),
+            ("/aggregate/revision", serde_json::json!(2), 1),
+            ("/aggregate/revision", serde_json::json!(0), 0),
+            ("/aggregate/revision", serde_json::json!(i64::MAX), i64::MAX),
+            ("/aggregate/session_id", serde_json::json!("foreign"), 1),
+            ("/format", serde_json::json!("awaken.session.v999"), 1),
+        ] {
+            let mut invalid = legacy.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                super::normalize_published_row(
+                    &session.session_id,
+                    Some(invalid.to_string()),
+                    index_revision
+                )
+                .is_err(),
+                "U2/U3 {pointer}"
+            );
+        }
+        for field in ["attachment_id", "target", "origin", "generation"] {
+            let mut invalid = legacy.clone();
+            invalid["aggregate"]["mcp"]["attachments"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(
+                super::normalize_published_row(&session.session_id, Some(invalid.to_string()), 1)
+                    .is_err(),
+                "U2 missing {field}"
+            );
+        }
     }
 
     fn completed_publication(
