@@ -4211,6 +4211,139 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
 }
 
 #[tokio::test]
+async fn cross_replica_pagination_never_rejects_a_cursor_using_an_older_prefix() {
+    // Cause/effect graph: C1 two replicas share one durable Session/Runtime;
+    // C2 B published an older complete prefix; C3 A issues a newer event cursor;
+    // C4 B's next candidate sees stable/burst/continuous source changes;
+    // C5 Session or primary Thread Events uses that cursor.
+    // Decision table (each endpoint): R1 old known cursor + continuous churn ->
+    // coherent prior page/200; R2 newer cursor + finite burst -> refresh/200 with
+    // exact suffix; R3 newer cursor + continuous churn -> 503, never false 400;
+    // R4 unknown cursor + stable complete refresh -> genuine 400. No read sends
+    // a command or changes durable history. Existing full-frame tests own the
+    // failure publication invariant; this test exercises both actual HTTP routes.
+    for thread in [false, true] {
+        let runtime = LifecycleRuntime::default();
+        let repository = Arc::new(ephemeral_session_repo());
+        let lagging =
+            Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
+        let leading = ManagedState::new(runtime.clone()).with_session_repo(repository);
+        let session = lagging
+            .create_session(
+                serde_json::from_value(serde_json::json!({
+                    "agent":"coder", "environment_id":"env_local"
+                }))
+                .unwrap(),
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
+            )
+            .await
+            .unwrap();
+        runtime.lifecycle.lock().unwrap().push(lifecycle(
+            1,
+            &session.id,
+            &RunId("pagination-run".into()),
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ));
+        lagging.refresh_committed_events(&session.id).await.unwrap();
+        let old = lagging
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&session.id)
+            .unwrap()
+            .clone();
+        runtime.replace_committed_messages(vec![
+            (
+                2,
+                Message::text(
+                    MessageId("pagination-first".into()),
+                    Role::Assistant,
+                    "first",
+                ),
+            ),
+            (
+                3,
+                Message::text(
+                    MessageId("pagination-second".into()),
+                    Role::Assistant,
+                    "second",
+                ),
+            ),
+        ]);
+        leading.refresh_committed_events(&session.id).await.unwrap();
+        let first = leading
+            .list_events(&session.id, None, Some(1000), false)
+            .unwrap();
+        let messages = first
+            .data
+            .iter()
+            .filter(|e| matches!(e.kind, OutboundKind::AgentMessage { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 2);
+        let newer_cursor = messages[0].id.clone();
+        let suffix_id = messages[1].id.clone();
+        let primary = leading.list_threads(&session.id).unwrap()[0].id.clone();
+        let endpoint = if thread {
+            format!("/v1/sessions/{}/threads/{primary}/events", session.id)
+        } else {
+            format!("/v1/sessions/{}/events", session.id)
+        };
+        let app = crate::router(lagging.clone()).layer(axum::Extension(
+            awaken_tenancy::WorkspaceScope(awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string()),
+        ));
+        for (rule, cursor, changes, expected) in [
+            ("R1", old.events[0].id.as_str(), usize::MAX, StatusCode::OK),
+            ("R2", newer_cursor.as_str(), 12, StatusCode::OK),
+            (
+                "R3",
+                newer_cursor.as_str(),
+                usize::MAX,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            ("R4", "never-issued", 0, StatusCode::BAD_REQUEST),
+        ] {
+            lagging
+                .sessions
+                .lock()
+                .unwrap()
+                .insert(session.id.clone(), old.clone());
+            runtime.reads.reset();
+            runtime
+                .projection_version_changes
+                .store(changes, Ordering::SeqCst);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(format!("{endpoint}?page={cursor}&limit=1000"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(status, expected, "{rule} thread={thread}: {body}");
+            if rule == "R2" {
+                assert!(
+                    body["data"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|e| e["id"] == suffix_id)
+                );
+                assert!(
+                    runtime.reads.count("recovery") > 8,
+                    "finite burst really retried"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn read_only_observation_serves_the_last_complete_prefix_during_continuous_commits() {
     // Cause/effect graph: C1 the canonical reducer has published one complete
     // warm prefix; C2 a later root Thread commit advances between both reads of
@@ -4258,7 +4391,7 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
         .store(usize::MAX, Ordering::SeqCst);
 
     state
-        .refresh_committed_events_for_observation(&session.id)
+        .refresh_committed_events_for_observation(&session.id, None)
         .await
         .expect("E1 warm observation must remain available while the tail advances");
 
