@@ -512,6 +512,23 @@ impl std::fmt::Display for InvalidBackendRef {
 
 impl std::error::Error for InvalidBackendRef {}
 
+/// An A2A endpoint is executable when it is an absolute `http`/`https` URL
+/// with a host. The `url` crate is the production authority for that syntax.
+#[cfg(not(kani))]
+fn a2a_endpoint_is_executable(endpoint: &str) -> bool {
+    url::Url::parse(endpoint)
+        .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+}
+
+/// Under Kani the `url` crate's IDNA tables are outside the supported codegen,
+/// so proofs treat every non-empty, unpadded `a2a:` endpoint as executable.
+/// URL syntax is a declared TCB assumption of the ModelBinding proofs, never a
+/// claim they establish; the executable tests cover the real parser.
+#[cfg(kani)]
+fn a2a_endpoint_is_executable(endpoint: &str) -> bool {
+    !endpoint.is_empty() && endpoint.trim() == endpoint
+}
+
 impl Backend {
     /// Classify and validate a `backend_ref`. The result is total so inspection
     /// code can retain the rejected spelling, while runnable variants themselves
@@ -525,10 +542,7 @@ impl Backend {
                 Backend::Invalid(InvalidBackendRef(backend_ref.to_string()))
             }
         } else if let Some(endpoint) = backend_ref.strip_prefix("a2a:") {
-            let valid = url::Url::parse(endpoint).is_ok_and(|url| {
-                matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
-            });
-            if valid {
+            if a2a_endpoint_is_executable(endpoint) {
                 Backend::Remote(A2aBackend(endpoint.to_string()))
             } else {
                 Backend::Invalid(InvalidBackendRef(backend_ref.to_string()))

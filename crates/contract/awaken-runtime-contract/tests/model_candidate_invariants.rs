@@ -88,7 +88,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
         "B2",
     );
     assert_rejected(
-        ModelBinding::new("identity-a", "", "native"),
+        ModelBinding::new("identity-a", "model-a", "native"),
         ModelProvisioning::BackendOwned {
             credential: credential(),
             model_selection: BackendModelSelection::Default,
@@ -96,10 +96,16 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
         },
         "backend-owned provisioning requires an exact ACP backend",
     );
+    // A padded model reference is refused one level down, by the binding
+    // itself: `ModelBinding::new` applies the wire admission, so the candidate
+    // constructor can never be handed one.
+    assert!(matches!(
+        ModelBinding::parse("identity-a", " model-a", "acp:codex"),
+        Err(awaken_runtime_contract::resolved::InvalidModelBinding::Whitespace { .. })
+    ));
     for (selection, model) in [
         (BackendModelSelection::Default, "model-a"),
         (BackendModelSelection::Exact, ""),
-        (BackendModelSelection::Exact, " model-a"),
     ] {
         assert_rejected(
             ModelBinding::new("identity-a", model, "acp:codex"),
@@ -264,7 +270,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
         "R1",
     );
     assert_rejected(
-        ModelBinding::new("agent-a", "", "native"),
+        ModelBinding::new("agent-a", "model-a", "native"),
         ModelProvisioning::Remote {
             scope_id: "workspace-a".into(),
             credential: None,

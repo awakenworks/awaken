@@ -197,7 +197,14 @@ mod tests {
             )
             .await
             .expect("L1 create Session");
-        let app = router(state.clone());
+        // The Session is owned by a Workspace, so the request must arrive
+        // stamped the way the composition root stamps a single-machine
+        // deployment. An unstamped request is refused with 404 before the
+        // handler body, which is what this precondition used to trip over.
+        let app = crate::workspace_path::with_platform_workspace(
+            router(state.clone()),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
+        );
         let response = app
             .oneshot(
                 Request::builder()

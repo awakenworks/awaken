@@ -1568,7 +1568,31 @@ def selftest_composite_identity_is_stated() -> None:
 # the admission even while the old ones are still being moved. The durable
 # ingress is already closed: deserialization goes through `parse`.
 UNVALIDATED_MODEL_BINDING_PRODUCER = re.compile(r"\bModelBinding::new\s*\(")
-UNVALIDATED_MODEL_BINDING_BASELINE = 468
+UNVALIDATED_MODEL_BINDING_BASELINE = 467
+# The one place `ModelBinding::new` is the subject rather than a producer: the
+# round-trip property asserts that every binding `new` builds also decodes,
+# which is the invariant whose absence let a constructible binding stall a run
+# at the wire. Rewriting it to `parse` would delete the property. The key is
+# `<path>::<fn>`, so the exemption covers one function, not a file: a second
+# producer added elsewhere in the same file is still counted.
+UNVALIDATED_MODEL_BINDING_EXEMPTIONS: dict[str, str] = {
+    "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs::constructible": (
+        "the round-trip property observes whether `new` admits what `parse` admits; "
+        "it must call the constructor under test"
+    ),
+    "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs"
+    "::the_documented_shapes_are_admitted_or_refused_exactly": (
+        "the named rows of the admission table are built through `new` to prove "
+        "each admitted shape round-trips through the wire"
+    ),
+}
+ENCLOSING_FN = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _enclosing_fn(text: str, offset: int) -> str:
+    """Name of the nearest `fn` declared before `offset`, or "" at file scope."""
+    names = ENCLOSING_FN.findall(text, 0, offset)
+    return names[-1] if names else ""
 
 
 def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> list[str]:
@@ -1579,9 +1603,13 @@ def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> 
             continue
         for path in sorted(root.rglob("*.rs")):
             text = path.read_text(encoding="utf-8", errors="ignore")
+            relative = path.relative_to(repo_root).as_posix()
             for match in UNVALIDATED_MODEL_BINDING_PRODUCER.finditer(text):
+                key = f"{relative}::{_enclosing_fn(text, match.start())}"
+                if key in UNVALIDATED_MODEL_BINDING_EXEMPTIONS:
+                    continue
                 line = text[: match.start()].count("\n") + 1
-                sites.append(f"{path.relative_to(repo_root)}:{line}")
+                sites.append(f"{relative}:{line}")
     if len(sites) > UNVALIDATED_MODEL_BINDING_BASELINE:
         return [
             f"{len(sites)} ModelBinding::new call sites, baseline "
@@ -1597,6 +1625,44 @@ def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> 
             f"UNVALIDATED_MODEL_BINDING_BASELINE to {len(sites)} so the ground gained is held."
         ]
     return []
+
+
+def selftest_model_binding_producers_are_ratcheted() -> None:
+    """Cause/effect: a producer above the baseline rejects unless its fn is registered."""
+    # C1 a `ModelBinding::new(` site exists beyond the baseline; C2 the site's
+    # enclosing fn is registered; C3 another fn in the same file also calls
+    # `new`. Effects: E1 reject (count rose); E2 admit.
+    #
+    # | Rule | site | registered | sibling fn | Effect |
+    # | M1   | T    | F          | F          | E1     |
+    # | M2   | T    | T          | F          | E2     |
+    # | M3   | T    | T          | T          | E1     |
+    global UNVALIDATED_MODEL_BINDING_BASELINE
+    saved = UNVALIDATED_MODEL_BINDING_BASELINE
+    UNVALIDATED_MODEL_BINDING_BASELINE = 0
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "crates/example/src/lib.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "fn proves() { let _ = ModelBinding::new(a, b, c); }\n", encoding="utf-8"
+            )
+            assert check_model_binding_producers_are_ratcheted(root), "M1/E1"
+            key = f"{source.relative_to(root).as_posix()}::proves"
+            UNVALIDATED_MODEL_BINDING_EXEMPTIONS[key] = "selftest"
+            try:
+                assert not check_model_binding_producers_are_ratcheted(root), "M2/E2"
+                source.write_text(
+                    "fn proves() { let _ = ModelBinding::new(a, b, c); }\n"
+                    "fn produces() { let _ = ModelBinding::new(a, b, c); }\n",
+                    encoding="utf-8",
+                )
+                assert check_model_binding_producers_are_ratcheted(root), "M3/E1"
+            finally:
+                del UNVALIDATED_MODEL_BINDING_EXEMPTIONS[key]
+    finally:
+        UNVALIDATED_MODEL_BINDING_BASELINE = saved
 
 
 def _sdk_tier_dependency_errors(
@@ -1696,6 +1762,7 @@ def main() -> int:
     selftest_no_ambient_tenant_default()
     selftest_backend_configuration_is_opaque()
     selftest_composite_identity_is_stated()
+    selftest_model_binding_producers_are_ratcheted()
     selftest_sdk_tier_is_standalone()
     errors = (
         check_no_direct_transport_dependency()
