@@ -595,6 +595,18 @@ export interface CredentialMaterialInput {
  * profile authoring may instead use `protocol_endpoint_id`; admission rejects
  * a target containing both.
  *
+ * Every field of a target is a qualifier that narrows which Offering is
+ * selected, so a field the reader does not model is not decoration: it is
+ * authored intent that would be dropped, resolving to a *different* model than
+ * the author asked for. `deny_unknown_fields` reports it instead — `endpoint`
+ * written for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected
+ * document, never a target that quietly ignores the qualifier.
+ *
+ * This is the hazard the wrapping `ModelSelectionWire` already documents for
+ * its own variants. Serde's `deny_unknown_fields` does **not** recurse into a
+ * field's type, so that wrapper never protected this struct; the guard has to
+ * be stated on every wire type that models authored input, including this one.
+ *
  * This interface was referenced by the generated JSON Schema
  * via the `definition` "ModelTarget".
  */
@@ -609,7 +621,6 @@ export interface ModelTarget {
   model_id: string;
   protocol_endpoint_id?: string | null;
   provider_id?: string | null;
-  [k: string]: unknown;
 }
 /**
  * One explicit step in a profile's failover chain. Binding credentials per

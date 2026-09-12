@@ -251,3 +251,69 @@ fn every_mounted_route_is_documented() {
         MOUNTED.len(),
     );
 }
+
+/// Architecture fitness function: no wire type in the **model-authoring** graph
+/// accepts input it does not model.
+///
+/// An authored model selection is all qualifiers — provider, dialect, endpoint.
+/// A key the reader has never heard of is therefore never decoration: accepting
+/// and dropping it resolves a *different* model than the author asked for, with
+/// a success status and no diagnostic. Serde says that in
+/// `#[serde(deny_unknown_fields)]`; schemars projects it as
+/// `additionalProperties: false`; this walk checks the projection, so the
+/// property is asserted over the whole reachable graph rather than one struct
+/// at a time.
+///
+/// The guard is needed per type because `deny_unknown_fields` does **not**
+/// recurse into a field's own type — `ModelSelectionWire` carried it while the
+/// `ModelTarget` it wraps did not, and every authored `endpoint`, written for
+/// `endpoint_name`, was silently discarded.
+///
+/// Scope is the model-authoring graph deliberately. Secret-free response views
+/// are not authored input, and several request bodies outside this graph still
+/// permit unknown keys; widening the gate is a separate, reviewed change rather
+/// than a side effect of this one.
+#[test]
+fn the_model_authoring_graph_models_every_field_it_accepts() {
+    let doc = openapi_document();
+    let schemas = doc["components"]["schemas"]
+        .as_object()
+        .expect("schemas object");
+
+    // A schema that names a field set (`properties`) must close it. A map-shaped
+    // object (`additionalProperties: <schema>`, no `properties`) is a modelled
+    // open map, not an unmodelled field, and is left alone.
+    fn open_field_sets(node: &serde_json::Value, path: &str, found: &mut Vec<String>) {
+        match node {
+            serde_json::Value::Object(map) => {
+                if map.contains_key("properties")
+                    && map.get("additionalProperties") != Some(&serde_json::Value::Bool(false))
+                {
+                    found.push(path.to_string());
+                }
+                for (key, value) in map {
+                    open_field_sets(value, &format!("{path}/{key}"), found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, value) in items.iter().enumerate() {
+                    open_field_sets(value, &format!("{path}[{index}]"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut open = Vec::new();
+    for root in ["ModelSelection", "ModelTarget"] {
+        let schema = schemas
+            .get(root)
+            .unwrap_or_else(|| panic!("the authoring graph must export `{root}`"));
+        open_field_sets(schema, root, &mut open);
+    }
+    assert!(
+        open.is_empty(),
+        "these authored schemas accept fields they do not model \
+         (add #[serde(deny_unknown_fields)] to the Rust type): {open:?}"
+    );
+}
