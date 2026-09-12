@@ -577,7 +577,6 @@ async fn port_allow_maps_to_allow_decision() {
 fn allow_when_unmatched() -> PermissionRuleset {
     PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Allow,
-        mode: Mode::Default,
         rules: Vec::new(),
     }
 }
