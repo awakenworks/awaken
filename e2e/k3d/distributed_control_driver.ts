@@ -664,6 +664,17 @@ export function auditLoadResults(
   return { errors, expected, completed: latencies.length, p50, p95, max };
 }
 
+export function loadShape(environment: Record<string, string | undefined>) {
+  const count = Number(environment.ADR71_LOAD_REQUESTS ?? 48);
+  const concurrency = Number(environment.ADR71_LOAD_CONCURRENCY ?? 12);
+  const rounds = Number(environment.ADR71_LOAD_ROUNDS ?? 1);
+  assert.ok(Number.isInteger(count) && Number.isInteger(concurrency)
+    && Number.isInteger(rounds) && count > 0 && concurrency > 0
+    && concurrency <= count && rounds > 0 && rounds <= 100,
+    `invalid load shape requests=${count} concurrency=${concurrency} rounds=${rounds}`);
+  return { count, concurrency, rounds };
+}
+
 async function load(base: string, environmentId: string) {
   // Cause/effect graph: C1 a new Resource-bearing K8s Session has no reusable
   // Pod because its projected mounts are Session-specific -> first execution
@@ -685,19 +696,12 @@ async function load(base: string, environmentId: string) {
   // | L3 | yes + public reads responsive | bounded receipt-scoped turns | zero
   // |    | errors and marker+idle completion p95 <= configured limit |
   // | L4 | yes | bounded + active/active | every full-history marker exactly once |
-  const count = Number(process.env.ADR71_LOAD_REQUESTS ?? 48);
-  const concurrency = Number(process.env.ADR71_LOAD_CONCURRENCY ?? 12);
-  assert.ok(
-    Number.isInteger(count) && Number.isInteger(concurrency)
-      && count > 0 && concurrency > 0 && concurrency <= count,
-    `invalid load shape requests=${count} concurrency=${concurrency}`,
-  );
+  const {count,concurrency,rounds} = loadShape(process.env);
   // Five seconds is a performance regression gate for the complete
   // public->Coordinator->claim->Worker->Provider->commit->idle round trip, not
   // an admission SLO.
   const p95Limit = Number(process.env.ADR71_TURN_P95_MS ?? 5_000);
   const coldStartLimit = Number(process.env.ADR71_COLD_START_MAX_MS ?? 30_000);
-  const markers = Array.from({ length: count }, (_, index) => `ADR71-LOAD-${Date.now()}-${index}`);
   const managed = clientFor(base);
   const sessions = await createParallelSessions(managed, environmentId, concurrency);
   const coldMarkers = sessions.map((_, index) => `ADR71-COLD-${Date.now()}-${index}`);
@@ -716,43 +720,49 @@ async function load(base: string, environmentId: string) {
   // Keep cold start and observed read recovery outside the steady-state timer.
   // These public probes intentionally make no per-replica coverage claim.
   await awaitResponsivePublicReads(managed, sessions);
-  const latencies: number[] = [];
-  const samples: { marker: string; admissionMs: number; observationMs: number }[] = [];
-  async function runClient(clientIndex: number) {
-    for (let index = clientIndex; index < markers.length; index += concurrency) {
-      const observation = await sendAndWaitForAgentMarker(
-        managed, sessions[clientIndex], markers[index], 300_000,
-      );
-      latencies.push(observation.elapsed);
-      samples.push({ marker: markers[index], admissionMs: observation.admissionMs, observationMs: observation.observationMs });
-      histories[clientIndex] = observation.events;
+  // L6 repeats use these same resident Sessions and the same per-window gate.
+  // No averaging or best-of selection can hide a failed window; an assertion
+  // stops later writes, retaining every prior audit and the failed evidence.
+  for (let round = 1; round <= rounds; round += 1) {
+    const markers = Array.from({length:count}, (_,index) => `ADR71-LOAD-${Date.now()}-${round}-${index}`);
+    const latencies: number[] = [];
+    const samples: { marker: string; admissionMs: number; observationMs: number }[] = [];
+    async function runClient(clientIndex: number) {
+      for (let index = clientIndex; index < markers.length; index += concurrency) {
+        const observation = await sendAndWaitForAgentMarker(
+          managed, sessions[clientIndex], markers[index], 300_000,
+        );
+        latencies.push(observation.elapsed);
+        samples.push({ marker: markers[index], admissionMs: observation.admissionMs, observationMs: observation.observationMs });
+        histories[clientIndex] = observation.events;
+      }
     }
+    // A failed Session stops its own dependent sends. Join the independent
+    // clients before auditing; do not replay an ambiguously accepted write.
+    const clients = await Promise.allSettled(Array.from({ length: concurrency }, (_, index) => runClient(index)));
+    const markersBySession = sessions.map(() => [] as string[]);
+    markers.forEach((marker, index) => markersBySession[index % concurrency].push(marker));
+    // Refresh durable history after all clients settle, including those whose
+    // response was lost. Cached successful observations cannot establish the
+    // outcome of the last failed request. A failed read remains an audit error.
+    const finalReads = await Promise.allSettled(sessions.map((session) => listSessionEvents(managed, session)));
+    finalReads.forEach((read, index) => {
+      if (read.status === 'fulfilled') histories[index] = read.value;
+    });
+    const audit = auditLoadResults(histories, markersBySession, latencies, p95Limit);
+    finalReads.forEach((read, index) => {
+      if (read.status === 'rejected') audit.errors.push(`Session ${index} final history: ${String(read.reason)}`);
+    });
+    clients.forEach((client, index) => {
+      if (client.status === 'rejected') audit.errors.push(`Session ${index}: ${String(client.reason)}`);
+    });
+    console.log(`LOAD AUDIT ${JSON.stringify({ ...audit, round, rounds, coldMs: coldElapsed, samples })}`);
+    assert.deepEqual(audit.errors, [], 'L3-L5 complete latency and durable-history audit');
+    console.log(
+      `OK load round=${round}/${rounds} requests=${count} concurrency=${concurrency} cold_ms=${coldElapsed.toFixed(1)} `
+        + `turn_p50_ms=${audit.p50} turn_p95_ms=${audit.p95} turn_max_ms=${audit.max}`,
+    );
   }
-  // A failed Session stops its own dependent sends. Join the independent
-  // clients before auditing; do not replay an ambiguously accepted write.
-  const clients = await Promise.allSettled(Array.from({ length: concurrency }, (_, index) => runClient(index)));
-  const markersBySession = sessions.map(() => [] as string[]);
-  markers.forEach((marker, index) => markersBySession[index % concurrency].push(marker));
-  // Refresh durable history after all clients settle, including those whose
-  // response was lost. Cached successful observations cannot establish the
-  // outcome of the last failed request. A failed read remains an audit error.
-  const finalReads = await Promise.allSettled(sessions.map((session) => listSessionEvents(managed, session)));
-  finalReads.forEach((read, index) => {
-    if (read.status === 'fulfilled') histories[index] = read.value;
-  });
-  const audit = auditLoadResults(histories, markersBySession, latencies, p95Limit);
-  finalReads.forEach((read, index) => {
-    if (read.status === 'rejected') audit.errors.push(`Session ${index} final history: ${String(read.reason)}`);
-  });
-  clients.forEach((client, index) => {
-    if (client.status === 'rejected') audit.errors.push(`Session ${index}: ${String(client.reason)}`);
-  });
-  console.log(`LOAD AUDIT ${JSON.stringify({ ...audit, coldMs: coldElapsed, samples })}`);
-  assert.deepEqual(audit.errors, [], 'L3-L5 complete latency and durable-history audit');
-  console.log(
-    `OK load requests=${count} concurrency=${concurrency} cold_ms=${coldElapsed.toFixed(1)} `
-      + `turn_p50_ms=${audit.p50} turn_p95_ms=${audit.p95} turn_max_ms=${audit.max}`,
-  );
 }
 
 async function main() {
