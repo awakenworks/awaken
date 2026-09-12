@@ -14567,6 +14567,58 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
 }
 
 #[tokio::test]
+async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandbox() {
+    // J4 causes: a claim-fenced Native toolless snapshot, explicit Workspace,
+    // and no declared Session/Environment/Resources. Effects: one execution
+    // context carries the exact publication and Scope, but no physical Sandbox.
+    // This is the Worker half of the Judge proof; using CoordinationEnvelope
+    // instead would improperly drop execution authority to avoid realization.
+    let published = awaken_ext_goal::grader::default_judge_agent(
+        "stub",
+        "claim-judge",
+        awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS,
+    );
+    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub"));
+    let thread = "claim-inference-only-judge";
+    host.register_thread_workspace(thread, "workspace-judge");
+    let identity = RuntimePublicationIdentity::from_publications(&published, &[], "stub");
+    let publications = Arc::new(
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([published.clone()])
+            .unwrap(),
+    );
+    let context = host
+        .ctx_for_claimed_snapshot(
+            thread,
+            Some("claim-judge"),
+            published,
+            ClaimedRuntimeInput {
+                identity: identity.clone(),
+                publications,
+                effective_model_ref: "stub".into(),
+            },
+        )
+        .await
+        .expect("claim-fenced inference context");
+    assert_eq!(
+        context.purpose,
+        super::session_ctx::RuntimeContextPurpose::Execution
+    );
+    assert_eq!(
+        context.runtime_publication_identity.as_ref(),
+        Some(&identity)
+    );
+    assert!(host.session_environment(thread).await.is_none());
+    assert_eq!(
+        context
+            .context()
+            .execution_scope
+            .as_ref()
+            .map(|scope| scope.0.as_str()),
+        Some("workspace-judge")
+    );
+}
+
+#[tokio::test]
 async fn claimed_snapshot_is_the_worker_session_authority() {
     let published = awaken_runtime_contract::ExecutableAgentSnapshot::builder("published-agent")
         .model(test_model_binding())
@@ -16284,15 +16336,19 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .await
         .expect("trusted Awaiting fence");
     let mut stale_fence = fence.clone();
-    *stale_fence
-        .prior_session_activity_epoch
-        .as_mut()
-        .expect("this fixture starts from a coordinated activity") += 1;
+    if let awaken_session_contract::SessionThreadToolReplyActivity::Session {
+        prior_epoch: Some(epoch),
+    } = &mut stale_fence.activity
+    {
+        *epoch += 1;
+    } else {
+        panic!("this fixture starts from a coordinated activity");
+    }
     assert!(
         host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
             command: command.clone(),
             fence: stale_fence,
-            session_activity_epoch: resumed_epoch,
+            session_activity_epoch: Some(resumed_epoch),
         })
         .await
         .is_err(),
@@ -16306,7 +16362,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
         command: command.clone(),
         fence: fence.clone(),
-        session_activity_epoch: resumed_epoch,
+        session_activity_epoch: Some(resumed_epoch),
     })
     .await
     .expect("CR1 stage coordinated reply");
@@ -16362,7 +16418,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
         command: command.clone(),
         fence: fence.clone(),
-        session_activity_epoch: resumed_epoch,
+        session_activity_epoch: Some(resumed_epoch),
     })
     .await
     .expect("CR2 exact reply replay");
@@ -16428,7 +16484,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
         command: command.clone(),
         fence: replay_fence,
-        session_activity_epoch: resumed_epoch,
+        session_activity_epoch: Some(resumed_epoch),
     })
     .await
     .expect("CR8 exact response-loss retry is a no-op");
@@ -16452,7 +16508,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
             command: conflicting_system,
             fence: fence.clone(),
-            session_activity_epoch: resumed_epoch + 1,
+            session_activity_epoch: Some(resumed_epoch + 1),
         })
         .await
         .is_err(),
@@ -16508,7 +16564,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
             command: conflicting,
             fence,
-            session_activity_epoch: resumed_epoch + 1,
+            session_activity_epoch: Some(resumed_epoch + 1),
         },)
             .await
             .is_err(),
@@ -16826,221 +16882,230 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_dispatch::{DispatchOutcome, Outbox as _, RunDispatch};
 
-    let parent = ThreadId("primary-reply-session".into());
-    let run_id = RunId("primary-reply-run".into());
-    let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
-            .expect("primary reply dispatch"),
-    );
-    let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
-    );
-    let ctx = host
-        .ctx_for(&parent.0, None)
-        .await
-        .expect("primary Session context");
-    let commit = host
-        .commit_for_read(&parent.0)
-        .await
-        .expect("primary commit partition");
-    commit
-        .commit(ThreadCommit::assemble(
-            parent.clone(),
-            RunDisposition::running(run_id.clone()),
-            true,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ))
-        .await
-        .expect("commit primary Running");
-    let ticket = ResumeTicket::new(
-        "primary-reply-correlation",
-        run_id.clone(),
-        parent.clone(),
-        "primary-reply-snapshot",
-        "primary-reply-catalog",
-        AwaitTarget::ToolCall {
-            reason: ToolAwaitReason::ClientExecution,
-            call_id: "primary-reply-tool-use".into(),
-            tool: PendingTool {
-                tool_id: "client_lookup".into(),
-                arguments: serde_json::json!({"query": "answer"}),
-            },
-            authority: ToolCallAuthority::RuntimeToolBatch,
-        },
-    );
-    commit
-        .commit(ThreadCommit::assemble(
-            parent.clone(),
-            RunDisposition::awaiting(ticket.clone()),
-            true,
-            Vec::new(),
-            vec![awaiting_tool_batch_state(
-                &run_id,
-                &ticket,
-                awaken_runtime_contract::ToolWaitKind::ExternalResult,
-            )],
-            Vec::new(),
-        ))
-        .await
-        .expect("commit primary Awaiting ticket");
-
-    let initial_epoch = 51;
-    let resumed_epoch = 52;
-    dispatch
-        .enqueue(
-            RunDispatch::new(RunActivation::new(
-                run_id.clone(),
+    // PR4 repeats PR1-PR3 for an extension-owned Run: same ticket/result checks,
+    // no Session epoch, unchanged ordinary affinity. This is the real Outcome tool boundary.
+    for extension in [false, true] {
+        let parent = ThreadId(format!("primary-reply-session-{extension}"));
+        let run_id = RunId("primary-reply-run".into());
+        let dispatch = Arc::new(
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+                .expect("primary reply dispatch"),
+        );
+        let (host, _managed) = dispatch_test_host(
+            SharedHost::new(Arc::new(MemoryHostModel), "stub")
+                .with_dispatch_store(dispatch.clone()),
+        );
+        let ctx = host
+            .ctx_for(&parent.0, None)
+            .await
+            .expect("primary Session context");
+        let commit = host
+            .commit_for_read(&parent.0)
+            .await
+            .expect("primary commit partition");
+        commit
+            .commit(ThreadCommit::assemble(
                 parent.clone(),
-                ctx.config.clone(),
+                RunDisposition::running(run_id.clone()),
+                true,
+                Vec::new(),
+                Vec::new(),
                 Vec::new(),
             ))
-            .for_session(parent.clone())
-            .with_session_activity_epoch(initial_epoch),
-        )
-        .await
-        .expect("enqueue primary dispatch");
-    let claimed = dispatch
-        .claim_run(
-            &run_id,
-            "primary-reply-owner",
-            DEFAULT_LEASE_MS,
-            0,
-            &Default::default(),
-        )
-        .await
-        .expect("claim primary dispatch")
-        .expect("primary dispatch runnable");
-    assert_eq!(
-        dispatch
-            .settle(&run_id, claimed.lease.epoch, DispatchOutcome::Awaiting, &[],)
             .await
-            .expect("settle primary Awaiting"),
-        awaken_dispatch::SettleOutcome::Applied
-    );
-
-    let command = awaken_session_contract::SessionThreadToolReplyCommand {
-        session_id: parent.0.clone(),
-        tool_request_event_id: Some("evt-primary-reply-tool-use-1".into()),
-        expected_thread_version: None,
-        target: awaken_session_contract::SessionThreadTarget::Primary,
-        expected_run_id: run_id.clone(),
-        expected_correlation_id: ticket.correlation_id.clone(),
-        tool_use_id: "primary-reply-tool-use".into(),
-        reply: awaken_session_contract::SessionThreadToolReply::Result {
-            content: vec![ContentBlock::text("client answer")],
-            is_error: false,
-        },
-        accompanying_system: None,
-    };
-    let mut stale = command.clone();
-    stale.expected_run_id = RunId("later-primary-run".into());
-    assert!(
-        host.session_thread_tool_reply_fence(&stale).await.is_err(),
-        "PR2/E3"
-    );
-    assert_eq!(
-        dispatch.relay().await.expect("PR2 no delivery"),
-        0,
-        "PR2/E3"
-    );
-
-    let mut conflicting_batch = awaken_runtime_contract::ToolBatch::for_step(
-        run_id.clone(),
-        0,
-        [(
-            awaken_runtime_contract::llm::ToolCall {
+            .expect("commit primary Running");
+        let ticket = ResumeTicket::new(
+            "primary-reply-correlation",
+            run_id.clone(),
+            parent.clone(),
+            "primary-reply-snapshot",
+            "primary-reply-catalog",
+            AwaitTarget::ToolCall {
+                reason: ToolAwaitReason::ClientExecution,
                 call_id: "primary-reply-tool-use".into(),
-                tool_id: "client_lookup".into(),
-                arguments: serde_json::json!({"query": "another request"}),
+                tool: PendingTool {
+                    tool_id: "client_lookup".into(),
+                    arguments: serde_json::json!({"query": "answer"}),
+                },
+                authority: ToolCallAuthority::RuntimeToolBatch,
             },
-            awaken_runtime_contract::ToolRecoveryPolicy::default(),
-        )],
-    )
-    .expect("PR3 internally valid conflicting batch");
-    conflicting_batch
-        .mark_awaiting(
-            "primary-reply-tool-use",
-            awaken_runtime_contract::ToolWaitKind::ExternalResult,
-            ticket.correlation_id.clone(),
-        )
-        .expect("PR3 conflicting batch awaits");
-    commit
-        .commit(ThreadCommit::assemble(
-            parent.clone(),
-            RunDisposition::awaiting(ticket.clone()),
-            true,
-            Vec::new(),
-            vec![awaken_runtime_contract::ActiveToolBatch::write(&Some(
-                conflicting_batch,
-            ))],
-            Vec::new(),
-        ))
-        .await
-        .expect("PR3 commit conflicting batch projection");
-    assert!(
-        host.session_thread_tool_reply_fence(&command)
+        );
+        commit
+            .commit(ThreadCommit::assemble(
+                parent.clone(),
+                RunDisposition::awaiting(ticket.clone()),
+                true,
+                Vec::new(),
+                vec![awaiting_tool_batch_state(
+                    &run_id,
+                    &ticket,
+                    awaken_runtime_contract::ToolWaitKind::ExternalResult,
+                )],
+                Vec::new(),
+            ))
             .await
-            .is_err(),
-        "PR3/E4"
-    );
-    assert_eq!(
-        dispatch.relay().await.expect("PR3 no delivery"),
-        0,
-        "PR3/E4"
-    );
-    commit
-        .commit(ThreadCommit::assemble(
-            parent.clone(),
-            RunDisposition::awaiting(ticket.clone()),
-            true,
-            Vec::new(),
-            vec![awaiting_tool_batch_state(
-                &run_id,
-                &ticket,
-                awaken_runtime_contract::ToolWaitKind::ExternalResult,
-            )],
-            Vec::new(),
-        ))
-        .await
-        .expect("restore exact PR1 batch fixture");
+            .expect("commit primary Awaiting ticket");
 
-    let fence = host
-        .session_thread_tool_reply_fence(&command)
-        .await
-        .expect("PR1 exact primary fence");
-    host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
-        command,
-        fence,
-        session_activity_epoch: resumed_epoch,
-    })
-    .await
-    .expect("PR1 stage primary result");
-    let resumed = dispatch
-        .claim_run(
-            &run_id,
-            "primary-reply-owner",
-            DEFAULT_LEASE_MS,
-            1,
-            &Default::default(),
+        let initial_epoch = 51;
+        let resumed_epoch = 52;
+        let ordinary = RunDispatch::new(RunActivation::new(
+            run_id.clone(),
+            parent.clone(),
+            ctx.config.clone(),
+            Vec::new(),
+        ));
+        let request = if extension {
+            ordinary
+        } else {
+            ordinary
+                .for_session(parent.clone())
+                .with_session_activity_epoch(initial_epoch)
+        };
+        dispatch
+            .enqueue(request)
+            .await
+            .expect("enqueue primary dispatch");
+        let claimed = dispatch
+            .claim_run(
+                &run_id,
+                "primary-reply-owner",
+                DEFAULT_LEASE_MS,
+                0,
+                &Default::default(),
+            )
+            .await
+            .expect("claim primary dispatch")
+            .expect("primary dispatch runnable");
+        assert_eq!(
+            dispatch
+                .settle(&run_id, claimed.lease.epoch, DispatchOutcome::Awaiting, &[],)
+                .await
+                .expect("settle primary Awaiting"),
+            awaken_dispatch::SettleOutcome::Applied
+        );
+
+        let command = awaken_session_contract::SessionThreadToolReplyCommand {
+            session_id: parent.0.clone(),
+            tool_request_event_id: Some("evt-primary-reply-tool-use-1".into()),
+            expected_thread_version: None,
+            target: awaken_session_contract::SessionThreadTarget::Primary,
+            expected_run_id: run_id.clone(),
+            expected_correlation_id: ticket.correlation_id.clone(),
+            tool_use_id: "primary-reply-tool-use".into(),
+            reply: awaken_session_contract::SessionThreadToolReply::Result {
+                content: vec![ContentBlock::text("client answer")],
+                is_error: false,
+            },
+            accompanying_system: None,
+        };
+        let mut stale = command.clone();
+        stale.expected_run_id = RunId("later-primary-run".into());
+        assert!(
+            host.session_thread_tool_reply_fence(&stale).await.is_err(),
+            "PR2/E3"
+        );
+        assert_eq!(
+            dispatch.relay().await.expect("PR2 no delivery"),
+            0,
+            "PR2/E3"
+        );
+
+        let mut conflicting_batch = awaken_runtime_contract::ToolBatch::for_step(
+            run_id.clone(),
+            0,
+            [(
+                awaken_runtime_contract::llm::ToolCall {
+                    call_id: "primary-reply-tool-use".into(),
+                    tool_id: "client_lookup".into(),
+                    arguments: serde_json::json!({"query": "another request"}),
+                },
+                awaken_runtime_contract::ToolRecoveryPolicy::default(),
+            )],
         )
+        .expect("PR3 internally valid conflicting batch");
+        conflicting_batch
+            .mark_awaiting(
+                "primary-reply-tool-use",
+                awaken_runtime_contract::ToolWaitKind::ExternalResult,
+                ticket.correlation_id.clone(),
+            )
+            .expect("PR3 conflicting batch awaits");
+        commit
+            .commit(ThreadCommit::assemble(
+                parent.clone(),
+                RunDisposition::awaiting(ticket.clone()),
+                true,
+                Vec::new(),
+                vec![awaken_runtime_contract::ActiveToolBatch::write(&Some(
+                    conflicting_batch,
+                ))],
+                Vec::new(),
+            ))
+            .await
+            .expect("PR3 commit conflicting batch projection");
+        assert!(
+            host.session_thread_tool_reply_fence(&command)
+                .await
+                .is_err(),
+            "PR3/E4"
+        );
+        assert_eq!(
+            dispatch.relay().await.expect("PR3 no delivery"),
+            0,
+            "PR3/E4"
+        );
+        commit
+            .commit(ThreadCommit::assemble(
+                parent.clone(),
+                RunDisposition::awaiting(ticket.clone()),
+                true,
+                Vec::new(),
+                vec![awaiting_tool_batch_state(
+                    &run_id,
+                    &ticket,
+                    awaken_runtime_contract::ToolWaitKind::ExternalResult,
+                )],
+                Vec::new(),
+            ))
+            .await
+            .expect("restore exact PR1 batch fixture");
+
+        let fence = host
+            .session_thread_tool_reply_fence(&command)
+            .await
+            .expect("PR1 exact primary fence");
+        host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+            command,
+            fence,
+            session_activity_epoch: (!extension).then_some(resumed_epoch),
+        })
         .await
-        .expect("claim resumed primary")
-        .expect("primary result makes dispatch runnable");
-    assert_eq!(
-        resumed.request.session_activity_epoch,
-        Some(resumed_epoch),
-        "PR1/E1"
-    );
-    assert_eq!(resumed.pending.len(), 1, "PR1/E1");
-    match &resumed.pending[0].result {
-        awaken_runtime_contract::resume::ResumeResult::ToolResult(output) => {
-            assert_eq!(output.call_id, "primary-reply-tool-use", "PR1/E2");
-            assert_eq!(output.text(), "client answer", "PR1/E2");
-            assert!(!output.is_error, "PR1/E2");
+        .expect("PR1 stage primary result");
+        let resumed = dispatch
+            .claim_run(
+                &run_id,
+                "primary-reply-owner",
+                DEFAULT_LEASE_MS,
+                1,
+                &Default::default(),
+            )
+            .await
+            .expect("claim resumed primary")
+            .expect("primary result makes dispatch runnable");
+        assert_eq!(
+            resumed.request.session_activity_epoch,
+            (!extension).then_some(resumed_epoch),
+            "PR1/E1"
+        );
+        assert_eq!(resumed.pending.len(), 1, "PR1/E1");
+        match &resumed.pending[0].result {
+            awaken_runtime_contract::resume::ResumeResult::ToolResult(output) => {
+                assert_eq!(output.call_id, "primary-reply-tool-use", "PR1/E2");
+                assert_eq!(output.text(), "client answer", "PR1/E2");
+                assert!(!output.is_error, "PR1/E2");
+            }
+            other => panic!("PR1 expected ToolResult, got {other:?}"),
         }
-        other => panic!("PR1 expected ToolResult, got {other:?}"),
     }
 }
 

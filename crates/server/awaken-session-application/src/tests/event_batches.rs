@@ -357,7 +357,9 @@ impl SessionRuntime for EventBatchRuntime {
         let staged = self.staged_tool_replies.lock().unwrap();
         if staged.get(&operation) == Some(command) {
             return Ok(SessionThreadToolReplyFence {
-                prior_session_activity_epoch: None,
+                activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                    prior_epoch: None,
+                },
                 already_applied: true,
             });
         }
@@ -378,7 +380,9 @@ impl SessionRuntime for EventBatchRuntime {
             ));
         }
         Ok(SessionThreadToolReplyFence {
-            prior_session_activity_epoch: Some(prior_session_activity_epoch),
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(prior_session_activity_epoch),
+            },
             already_applied: false,
         })
     }
@@ -5195,6 +5199,56 @@ async fn outcome_busy_is_retryable_and_cannot_mark_the_root_entry_processed() {
         repository.get("outcome-busy").await.unwrap().event_batches[0].events[0].processed,
         "B2/E3"
     );
+}
+
+#[test]
+fn initial_outcome_reconciliation_does_not_wait_for_its_own_first_run() {
+    // Cause/effect graph: C1 retained DefineOutcome is processed; C2 Session is
+    // Idle or awaiting initial realization; C3 an activity still owns a Run.
+    // R1 C1+C2+!C3 -> select the existing Outcome continuation, whose normal Run
+    // admission owns realization. R2 !C1 -> no drive before durable preparation.
+    // R3 C3 -> no duplicate Worker Run. R4 Running/Rescheduling/terminal -> no
+    // competing driver. The live Managed initial_events probe exposed R1 at
+    // Preparing: no first Run could be created while the selector required Idle.
+    use awaken_session_contract::SessionExecutionState as State;
+    for state in [
+        State::Preparing,
+        State::Activating,
+        State::Idle,
+        State::Running,
+        State::Rescheduling,
+        State::ActivationFailed,
+        State::Terminated,
+    ] {
+        for processed in [false, true] {
+            for active in [false, true] {
+                let mut session = planned_session(
+                    "initial-outcome-selection",
+                    vec![SessionEventInput::DefineOutcome {
+                        description: "ship".into(),
+                        rubric: SessionOutcomeRubric::Text {
+                            content: "verified artifact".into(),
+                        },
+                        max_iterations: Some(3),
+                    }],
+                );
+                session.execution = state;
+                session.active_activity_epochs.clear();
+                if active {
+                    session.active_activity_epochs.insert(1);
+                }
+                session.event_batches[0].events[0].processed = processed;
+                let expected = processed
+                    && !active
+                    && matches!(state, State::Preparing | State::Activating | State::Idle);
+                assert_eq!(
+                    session.needs_outcome_reconciliation(),
+                    expected,
+                    "state={state:?}, processed={processed}, active={active}"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]

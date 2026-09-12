@@ -27,6 +27,34 @@ use awaken_session_contract::{
 
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
 
+fn reply_dispatch_activity(
+    dispatch: Option<&awaken_dispatch::DispatchSummary>,
+    thread: &ThreadId,
+    parent: &ThreadId,
+) -> Result<awaken_session_contract::SessionThreadToolReplyActivity, HostError> {
+    use awaken_session_contract::SessionThreadToolReplyActivity;
+    match dispatch {
+        Some(row) if row.thread_id == *thread => SessionThreadToolReplyActivity::from_dispatch(
+            thread,
+            row.session_thread_id.as_ref(),
+            row.session_activity_epoch,
+            parent,
+        )
+        .ok_or_else(|| {
+            HostError::bad_request("Session Thread reply dispatch affinity is inconsistent")
+        }),
+        Some(_) => Err(HostError::bad_request(
+            "Session Thread reply dispatch affinity is inconsistent",
+        )),
+        None if thread == parent => {
+            Ok(SessionThreadToolReplyActivity::Session { prior_epoch: None })
+        }
+        None => Err(HostError::internal(
+            "Session child Thread reply has no exact durable dispatch row",
+        )),
+    }
+}
+
 fn dispatch_admission_error(error: awaken_dispatch::DispatchError) -> HostError {
     match error {
         awaken_dispatch::DispatchError::Rejected(message) => HostError::bad_request(message),
@@ -442,7 +470,10 @@ impl SharedHost {
             Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
                 SessionReplyReceipt::Exact => {
                     return Ok(awaken_session_contract::SessionThreadToolReplyFence {
-                        prior_session_activity_epoch: None,
+                        activity:
+                            awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                                prior_epoch: None,
+                            },
                         already_applied: true,
                     });
                 }
@@ -462,32 +493,9 @@ impl SharedHost {
             .map_err(|error| HostError::internal(error.to_string()))?
             .into_iter()
             .find(|dispatch| dispatch.run_id == command.expected_run_id);
-        let prior_session_activity_epoch = match dispatch {
-            Some(dispatch)
-                if dispatch.thread_id == thread_id
-                    && dispatch.session_thread_id.as_ref() == Some(&parent) =>
-            {
-                dispatch.session_activity_epoch
-            }
-            Some(_) => {
-                return Err(HostError::bad_request(
-                    "Session Thread reply dispatch affinity is inconsistent",
-                ));
-            }
-            None if thread_id == parent => None,
-            None => {
-                return Err(HostError::internal(
-                    "Session child Thread reply has no exact durable dispatch row",
-                ));
-            }
-        };
-        if prior_session_activity_epoch == Some(0) {
-            return Err(HostError::internal(
-                "Session Thread reply has an invalid durable activity coordinate",
-            ));
-        }
+        let activity = reply_dispatch_activity(dispatch.as_ref(), &thread_id, &parent)?;
         Ok(awaken_session_contract::SessionThreadToolReplyFence {
-            prior_session_activity_epoch,
+            activity,
             already_applied: false,
         })
     }
@@ -538,31 +546,19 @@ impl SharedHost {
             .map_err(|error| HostError::internal(error.to_string()))?
             .into_iter()
             .find(|dispatch| dispatch.run_id == command.expected_run_id);
-        let store = match dispatch {
-            Some(dispatch)
-                if dispatch.thread_id == thread_id
-                    && dispatch.session_thread_id.as_ref() == Some(&parent) =>
-            {
-                store
-            }
-            Some(_) => {
-                return Err(HostError::bad_request(
-                    "Session Thread reply dispatch affinity is inconsistent",
-                ));
-            }
-            None if thread_id == parent && fence.prior_session_activity_epoch.is_none() => {
-                self.enqueue_foreground_session_resume_dispatch(
-                    &command.session_id,
-                    &ticket,
-                    session_activity_epoch,
-                )
+        let activity = reply_dispatch_activity(dispatch.as_ref(), &thread_id, &parent)?;
+        if std::mem::discriminant(&activity) != std::mem::discriminant(&fence.activity) {
+            return Err(HostError::bad_request(
+                "Session Thread reply ownership changed after admission",
+            ));
+        }
+        let store = if dispatch.is_some() {
+            store
+        } else {
+            let epoch = session_activity_epoch
+                .ok_or_else(|| HostError::internal("foreground Session reply requires activity"))?;
+            self.enqueue_foreground_session_resume_dispatch(&command.session_id, &ticket, epoch)
                 .await?
-            }
-            None => {
-                return Err(HostError::internal(
-                    "Session Thread reply lost its exact durable dispatch row",
-                ));
-            }
         };
         let context_messages = command
             .accompanying_system
@@ -586,7 +582,7 @@ impl SharedHost {
             .stage_session_resume(
                 input,
                 &parent,
-                fence.prior_session_activity_epoch,
+                fence.activity.prior_epoch(),
                 session_activity_epoch,
             )
             .await

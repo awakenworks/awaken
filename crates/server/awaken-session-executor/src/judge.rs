@@ -17,34 +17,6 @@ use crate::host::SharedHost;
 use crate::run_exec::BoundRunExecutor;
 use crate::store::HostCommit;
 
-/// A Judge can omit a physical Environment only when its complete immutable
-/// execution surface is environment-free. Inference-only Native/A2A routes do
-/// not need a Sandbox; ACP owns a CLI process and every executable integration
-/// keeps the ordinary Session Environment path.
-fn environment_free_judge(snapshot: &ExecutableAgentSnapshot) -> bool {
-    let agent = &snapshot.resolved_spec.plugin_config.agent;
-    snapshot.resolved_spec.tool_descriptors.is_empty()
-        && snapshot.resolved_spec.plugin_ids.is_empty()
-        && agent.mcp_servers.is_empty()
-        && agent.skills.is_empty()
-        && agent.delegates.is_empty()
-        && agent.advisor.is_none()
-        && agent.toolsets.is_empty()
-        && snapshot
-            .resolved_spec
-            .attempt_candidates(None)
-            .into_iter()
-            .all(|candidate| {
-                matches!(
-                    awaken_runtime_contract::resolved::Backend::from_ref(
-                        &candidate.binding().backend_ref,
-                    ),
-                    awaken_runtime_contract::resolved::Backend::Native
-                        | awaken_runtime_contract::resolved::Backend::Remote(_)
-                )
-            })
-}
-
 /// Host integration of the extension-owned Agent Grader. It resolves the fresh
 /// Grader Thread and supplies Host backend/durable context; prompt, identity,
 /// recovery, restrictions, and parsing remain in `awaken-ext-goal`.
@@ -62,7 +34,21 @@ impl Grader for HostAgentGrader<'_> {
         input: &GradingInput,
     ) -> Result<Grade, GraderError> {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
-        let context = if environment_free_judge(snapshot) {
+        let workspace = self
+            .host
+            .thread_workspace(&input.transcript_snapshot.thread_id.0);
+        if self
+            .host
+            .registered_thread_workspace(&thread.0)
+            .is_some_and(|existing| existing != workspace)
+        {
+            return Err(GraderError::Execution(
+                "Outcome grader Workspace conflicts with its source Thread".into(),
+            ));
+        }
+        self.host.register_thread_workspace(&thread.0, &workspace);
+        tracing::debug!(thread = %thread.0, "Outcome grader context opening");
+        let context = if crate::provisioning::environment_free_inference(snapshot) {
             self.host
                 .ctx_for_environment_free_snapshot(
                     &thread.0,
@@ -80,6 +66,7 @@ impl Grader for HostAgentGrader<'_> {
                 .await
         }
         .map_err(|error| GraderError::Execution(error.to_string()))?;
+        tracing::debug!(thread = %thread.0, "Outcome grader context ready");
         let executor = BoundRunExecutor::new(self.host, context.clone())
             .with_cancellation_mirror(self.worker_cancel.clone());
         AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
@@ -212,9 +199,20 @@ mod tests {
         // table: R1=C1+C2=>E1; R2=C3=>E2; R3=C4=>E2. This prevents a crash from
         // stranding an unfenced legacy Judge Sandbox without weakening the
         // provider's foreign-root fail-closed invariant.
-        let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
-            .expect("literal model reference");
-        assert!(environment_free_judge(&inference_only), "R1/E1");
+        let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS).expect("literal model reference");
+        assert!(
+            crate::provisioning::environment_free_inference(&inference_only),
+            "R1/E1"
+        );
+        // The same R1 surface must not acquire namespace requirements again
+        // in Dispatch: a Workdir Worker can execute pure inference without a Hand.
+        let placement =
+            crate::remote_worker_placement(&inference_only.resolved_spec, None, None, true);
+        assert_eq!(
+            placement.sandbox,
+            awaken_provisioning_contract::SandboxRequirements::default(),
+            "R1/E1 placement agrees with the environment-free proof"
+        );
 
         let with_tool = ExecutableAgentSnapshot::builder("judge-tool")
             .model(awaken_runtime_contract::ModelBinding::new(
@@ -227,7 +225,10 @@ mod tests {
                 serde_json::json!({"type": "object"}),
             ))
             .build();
-        assert!(!environment_free_judge(&with_tool), "R2/E2");
+        assert!(
+            !crate::provisioning::environment_free_inference(&with_tool),
+            "R2/E2"
+        );
 
         let acp = ExecutableAgentSnapshot::builder("judge-acp")
             .model(awaken_runtime_contract::ModelBinding::new(
@@ -236,7 +237,10 @@ mod tests {
                 "acp:fixture",
             ))
             .build();
-        assert!(!environment_free_judge(&acp), "R3/E2");
+        assert!(
+            !crate::provisioning::environment_free_inference(&acp),
+            "R3/E2"
+        );
     }
 
     #[tokio::test]
@@ -250,6 +254,7 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let host = judge_test_host(model.clone());
+        host.register_thread_workspace("worker", "workspace-judge-source");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         let input = grading_input("agent-grade-exact-json");
@@ -268,6 +273,29 @@ mod tests {
             host.session_environment(&thread.0).await.is_none(),
             "J1 the tool-less Judge must not materialize an unowned Environment"
         );
+        // J1 scope cause/effect: a non-default Worker Workspace -> the fresh,
+        // environment-free grader inherits it and carries it in ordinary Dispatch.
+        // Resource absence must not erase the credential/execution ownership boundary.
+        assert_eq!(
+            host.registered_thread_workspace(&thread.0).as_deref(),
+            Some("workspace-judge-source")
+        );
+        let dispatch = host
+            .resolved_dispatch(awaken_runtime_contract::activation::RunActivation::new(
+                RunId("judge-dispatch-scope".into()),
+                thread.clone(),
+                snapshot.clone(),
+                Vec::new(),
+            ))
+            .unwrap();
+        assert_eq!(
+            dispatch
+                .execution_scope
+                .as_ref()
+                .map(|scope| scope.0.as_str()),
+            Some("workspace-judge-source")
+        );
+        assert!(dispatch.session_resources.is_none());
         let requests = model.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert!(requests[0].tools.is_empty());
@@ -278,6 +306,34 @@ mod tests {
                 .any(|message| message.content.iter().any(|block| {
                     matches!(block, awaken_agent_contract::agent::content::ContentBlock::Text { text } if text.contains("all tests pass"))
                 }))
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_grader_rejects_a_conflicting_workspace_before_execution() {
+        // J3: source Workspace A + an existing derived grader bound to B ->
+        // fail before model I/O and preserve B; do not relabel an existing Thread.
+        let model = Arc::new(FixedJudge {
+            reply: r#"{"result":"satisfied","explanation":"ok"}"#.into(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let host = judge_test_host(model.clone());
+        host.register_thread_workspace("worker", "workspace-a");
+        let input = grading_input("grader-workspace-conflict");
+        let thread = grader_thread_id(&input.outcome_id, input.iteration);
+        host.register_thread_workspace(&thread.0, "workspace-b");
+        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let result = HostAgentGrader {
+            host: host.as_ref(),
+            worker_cancel: Arc::new(std::sync::Mutex::new(None)),
+        }
+        .grade(&snapshot, &input)
+        .await;
+        assert!(matches!(result, Err(GraderError::Execution(_))));
+        assert!(model.requests.lock().unwrap().is_empty());
+        assert_eq!(
+            host.registered_thread_workspace(&thread.0).as_deref(),
+            Some("workspace-b")
         );
     }
 

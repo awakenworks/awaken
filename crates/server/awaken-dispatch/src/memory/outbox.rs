@@ -33,7 +33,7 @@ impl Outbox for MemoryDispatchStore {
         input: PendingInput,
         session_thread_id: &ThreadId,
         prior_session_activity_epoch: Option<u64>,
-        session_activity_epoch: u64,
+        session_activity_epoch: Option<u64>,
     ) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         let input = normalize_pending_millis(input);
@@ -83,7 +83,7 @@ impl Outbox for MemoryDispatchStore {
             .get_mut(&input.run_id)
             .expect("validated dispatch row remains under the transaction mutex")
             .request
-            .session_activity_epoch = Some(session_activity_epoch);
+            .session_activity_epoch = session_activity_epoch;
         state.outbox.push(input);
         Ok(true)
     }

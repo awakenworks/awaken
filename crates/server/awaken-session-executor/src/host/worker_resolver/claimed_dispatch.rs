@@ -252,6 +252,17 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             .execution_scope
             .as_ref()
             .map_or_else(|| host.local_workspace(), |scope| scope.0.0.as_str());
+        if let Some(scope) = &claimed.request.execution_scope {
+            if host
+                .registered_thread_workspace(&thread_id.0)
+                .is_some_and(|existing| existing != scope.0.as_str())
+            {
+                return Err(Self::execution_error(
+                    "claimed Thread Workspace conflicts with its dispatch",
+                ));
+            }
+            host.register_thread_workspace(&thread_id.0, scope.0.as_str());
+        }
         let claimed_source = crate::agent_catalog::exact_run_publication_source(
             &claimed.request.activation.snapshot,
             &claimed.request.agent_publications,

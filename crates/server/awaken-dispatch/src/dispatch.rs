@@ -740,9 +740,9 @@ pub(crate) fn validate_session_resume_target(
     input: &PendingInput,
     session_thread_id: &awaken_agent_contract::agent::thread::Id,
     prior_session_activity_epoch: Option<u64>,
-    session_activity_epoch: u64,
+    session_activity_epoch: Option<u64>,
 ) -> Result<(), DispatchError> {
-    if session_activity_epoch == 0 || prior_session_activity_epoch == Some(0) {
+    if session_activity_epoch == Some(0) || prior_session_activity_epoch == Some(0) {
         return Err(DispatchError::Rejected(
             "Session resume requires nonzero activity epochs".to_string(),
         ));
@@ -752,9 +752,24 @@ pub(crate) fn validate_session_resume_target(
             "Session resume does not match its dispatch Run and Thread".to_string(),
         ));
     }
-    if request.session_thread_id.as_ref() != Some(session_thread_id) {
+    let activity = awaken_session_contract::SessionThreadToolReplyActivity::from_dispatch(
+        request.thread_id(),
+        request.session_thread_id.as_ref(),
+        request.session_activity_epoch,
+        session_thread_id,
+    );
+    let ownership_matches = match activity {
+        Some(awaken_session_contract::SessionThreadToolReplyActivity::Session { .. }) => {
+            session_activity_epoch.is_some()
+        }
+        Some(awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension) => {
+            session_activity_epoch.is_none() && prior_session_activity_epoch.is_none()
+        }
+        None => false,
+    };
+    if !ownership_matches {
         return Err(DispatchError::Rejected(
-            "Session resume does not match the dispatch Session affinity".to_string(),
+            "Session resume does not match the dispatch Session affinity or ownership".to_string(),
         ));
     }
     if request.session_activity_epoch == Some(0) {
@@ -780,11 +795,11 @@ pub(crate) fn validate_session_resume_target(
 pub(crate) fn validate_session_resume_activity_transition(
     current_session_activity_epoch: Option<u64>,
     prior_session_activity_epoch: Option<u64>,
-    session_activity_epoch: u64,
+    session_activity_epoch: Option<u64>,
     exact_payload_replay: bool,
 ) -> Result<bool, DispatchError> {
     if exact_payload_replay {
-        return if current_session_activity_epoch == Some(session_activity_epoch) {
+        return if current_session_activity_epoch == session_activity_epoch {
             Ok(false)
         } else {
             Err(DispatchError::Rejected(
@@ -796,7 +811,7 @@ pub(crate) fn validate_session_resume_activity_transition(
         Some(prior) => current_session_activity_epoch == Some(prior),
         None => {
             current_session_activity_epoch.is_none()
-                || current_session_activity_epoch == Some(session_activity_epoch)
+                || current_session_activity_epoch == session_activity_epoch
         }
     };
     if !owns_expected_coordinate {

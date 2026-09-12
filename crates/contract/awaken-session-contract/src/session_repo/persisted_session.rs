@@ -1094,17 +1094,23 @@ impl PersistedSession {
     /// work exists. A live Session activity owns the Thread until its committed
     /// boundary is observed; driving the Outcome concurrently would replay the
     /// same stable Worker Run while its resume is still in flight. This trades a
-    /// bounded read for one source of effect truth.
+    /// bounded read for one source of effect truth. A prepared initial Outcome
+    /// may also drive the first Run while physical realization is pending: the
+    /// existing Run admission/Worker path owns that realization. Requiring Idle
+    /// here would wait for a Run that this very continuation must first create.
     #[must_use]
     pub fn needs_outcome_reconciliation(&self) -> bool {
         !self.is_terminal()
-            && self.execution == crate::SessionExecutionState::Idle
+            && !self.has_active_activities()
+            && (self.execution == crate::SessionExecutionState::Idle
+                || self.execution.requires_initial_realization_recovery())
             && self.event_batches.iter().any(|batch| {
                 batch.events.iter().any(|entry| {
-                    matches!(
-                        entry.event,
-                        crate::SessionEventCommand::DefineOutcome { .. }
-                    )
+                    entry.processed
+                        && matches!(
+                            entry.event,
+                            crate::SessionEventCommand::DefineOutcome { .. }
+                        )
                 })
             })
     }
