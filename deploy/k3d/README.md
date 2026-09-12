@@ -149,7 +149,15 @@ cluster replacement and again before image import, accounting for every node,
 transport archives and a reserve. Remote Docker contexts fail closed because
 client filesystem observations cannot establish daemon capacity. These are
 conservative fixture budgets, not reservations: actual import and cleanup errors
-still fail the run.
+still fail the run. Imported images are intentionally local to these disposable
+nodes. The same node storage policy sets the image GC high threshold to 100
+on all roles, so a host above the default 85% usage cannot discard an unused
+local image between fault stages. Absolute Pod eviction and capacity admission
+remain enabled. Image import rejects absent, mismatched or duplicate GC policy
+alongside the eviction-policy checks. This is an offline test-fixture policy;
+production clusters should serve pinned images from their durable registry.
+The [kubelet option contract](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/)
+defines 100 as disabling usage-triggered image GC.
 
 The scenario driver is the test entry point. Applying a base directly is useful
 for inspection, but it does not constitute end-to-end verification.
@@ -178,23 +186,35 @@ up front unless both replicas are Ready on distinct nodes.
 
 The network fault first records the exact container ID, IPv4 address, MAC,
 interface and ifindex. The shared harness atomically installs one owned filter
-chain on that immutable container ID, dropping both local and forwarded IPv4
-traffic on its underlay interface. It does not detach or reset the interface.
+chain on that immutable container ID. Three independent rounds drop ingress,
+egress, then both local and forwarded IPv4 traffic on its underlay interface.
+Each round validates its exact directional rule inventory before and after the
+fault; a cleanup request for a different profile fails without changing rules. It does not detach or reset the interface.
 The driver waits for Node unavailability and reads committed Deployment,
 Session and unique Event facts through the same public edge. It sends no new
 business input while the original executor is unobservable. After exact filter
 removal, the original routes, Pod UID and PVC UID must match; every role must
 be Ready before one new input is submitted. Any failed rollout propagates its
 status, including when the caller uses a Bash OR-list. The following hard-stop
-phase sends SIGKILL to the exact container ID, requires stopped state and exit
-code 137 before replacing Pods, and verifies another node retains the bytes.
+phase sends SIGKILL once to the exact container ID and observes that same object
+for at most ten seconds, including when the command ACK is lost. It requires
+stopped state and exit code 137 before replacing Pods, and verifies another node
+retains the bytes. Observation errors, an incorrect terminal state or an expired
+budget reject the fault receipt.
 
-The inline P1–P4, F1–F8 and R0–R5 test comments own the fault-helper and rollout decision
+The inline P1–P6, F1–F9 and R0–R5 test comments own the fault-helper and rollout decision
 tables. Pure tests reject wrong/replaced identities, partial rules, failed
 observations/transactions and silent no-ops; the real topology validates packet
 loss, convergence and product outcomes. These containers share one host kernel,
 Docker daemon and storage substrate. Passing them does not establish physical
 host power-loss durability, independent-host fencing or real switch behavior.
+
+The load stage accepts `ADR71_LOAD_ROUNDS` (default 1, maximum 100). For
+repeated acceptance use `ADR71_LOAD_ROUNDS=5`: each round independently sends
+the configured request count (default 48, concurrency 12), audits every retained
+Session, and requires p95 ≤ 5 seconds. A failing window stops the run; no average
+or best-window selection masks it. The separate cold-start bound remains 30
+seconds. Record host pressure alongside the run when evaluating shared hosts.
 
 The four logical owner databases share one disposable PostgreSQL primary and
 streaming standby to keep this topology affordable. Database names, role

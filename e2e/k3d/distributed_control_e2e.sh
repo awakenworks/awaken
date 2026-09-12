@@ -21,6 +21,7 @@ STOPPED_NODE=""
 STOPPED_CONTAINER=""
 PARTITIONED_NODE=""
 PARTITIONED_NODE_RECEIPT=""
+PARTITION_DIRECTION=both
 WORKER_TLS_DIR=""
 ROLE_OVERLAY=""
 CONTINUATION_VOLUME=""
@@ -86,7 +87,7 @@ cleanup() {
     return
   fi
   [ -z "$PARTITIONED_NODE" ] || k3d_set_node_network_partition \
-    "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" open >/dev/null 2>&1 || true
+    "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" open "$PARTITION_DIRECTION" >/dev/null 2>&1 || true
   [ -z "$STOPPED_CONTAINER" ] || docker start "$STOPPED_CONTAINER" >/dev/null 2>&1 || true
   [ -z "$API_PF" ] || kill "$API_PF" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
@@ -638,38 +639,43 @@ kubectl -n "$NS" exec "$CONTINUITY_POD" -c agent -- /bin/sh -ec \
 # While its executor is unobservable, the driver performs reads only. Removing
 # the exact owned filter must recover the same Pod and PVC before the first new
 # business Event, which is then submitted once through the ordinary oracle.
-PARTITIONED_NODE="$CHAOS_NODE"
-PARTITIONED_NODE_RECEIPT=$(k3d_node_network_identity "$CLUSTER" "$PARTITIONED_NODE")
-ok "prepared node network identity receipt=$PARTITIONED_NODE_RECEIPT"
-PARTITIONED_INTERFACE=$(cut -d '|' -f 2 <<<"$PARTITIONED_NODE_RECEIPT")
-PARTITIONED_ROUTES=$(docker exec "$PARTITIONED_NODE" ip -4 route show dev "$PARTITIONED_INTERFACE" | sort)
-k3d_set_node_network_partition "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" blocked
-for _ in $(seq 1 120); do
-  NODE_READY=$(kubectl get node "$PARTITIONED_NODE" \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
-  [ "$NODE_READY" != "True" ] && break
-  sleep 1
+# N11 each one-way direction independently crosses detection, read-only truth,
+# exact restoration and same-executor continuity. No profile may borrow another
+# profile's success. The prepared direction remains available to cleanup.
+for PARTITION_DIRECTION in ingress egress both; do
+  PARTITIONED_NODE="$CHAOS_NODE"
+  PARTITIONED_NODE_RECEIPT=$(k3d_node_network_identity "$CLUSTER" "$PARTITIONED_NODE")
+  ok "prepared node network identity direction=$PARTITION_DIRECTION receipt=$PARTITIONED_NODE_RECEIPT"
+  PARTITIONED_INTERFACE=$(cut -d '|' -f 2 <<<"$PARTITIONED_NODE_RECEIPT")
+  PARTITIONED_ROUTES=$(docker exec "$PARTITIONED_NODE" ip -4 route show dev "$PARTITIONED_INTERFACE" | sort)
+  k3d_set_node_network_partition "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" blocked "$PARTITION_DIRECTION"
+  for _ in $(seq 1 120); do
+    NODE_READY=$(kubectl get node "$PARTITIONED_NODE" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+    [ "$NODE_READY" != "True" ] && break
+    sleep 1
+  done
+  [ "${NODE_READY:-True}" != "True" ] \
+    || { err "partitioned node remained Ready=True beyond its detection deadline"; exit 1; }
+  start_public_endpoint
+  node "$DRIVER" read-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS
+  k3d_set_node_network_partition "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" open "$PARTITION_DIRECTION"
+  # N8 removing the fault must preserve the original underlay routes as well as
+  # the receipt's container, interface, ifindex, IP and MAC. An interface reset
+  # can preserve an address while silently losing its gateway.
+  [ "$(docker exec "$PARTITIONED_NODE" ip -4 route show dev "$PARTITIONED_INTERFACE" | sort)" = "$PARTITIONED_ROUTES" ] \
+    || { err "network fault changed the node's underlay routes"; exit 1; }
+  PARTITIONED_NODE=""
+  PARTITIONED_NODE_RECEIPT=""
+  kubectl wait --for=condition=Ready "node/$CHAOS_NODE" --timeout=180s
+  wait_roles || { diagnostics; exit 1; }
+  [ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.uid}')" = "$POD_UID_BEFORE" ] \
+    || { err "transient network partition replaced the retained Session Pod"; exit 1; }
+  [ "$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadata.uid}')" = "$CLAIM_UID_BEFORE" ] \
+    || { err "transient network partition changed continuation volume identity"; exit 1; }
+  node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" "ADR71-AFTER-NETWORK-$PARTITION_DIRECTION"
+  ok "node $PARTITION_DIRECTION network partition retained committed truth and recovered the same Session executor"
 done
-[ "${NODE_READY:-True}" != "True" ] \
-  || { err "partitioned node remained Ready=True beyond its detection deadline"; exit 1; }
-start_public_endpoint
-node "$DRIVER" read-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS
-k3d_set_node_network_partition "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" open
-# N8 removing the fault must preserve the original underlay routes as well as
-# the receipt's container, interface, ifindex, IP and MAC. An interface reset
-# can preserve an address while silently losing its gateway.
-[ "$(docker exec "$PARTITIONED_NODE" ip -4 route show dev "$PARTITIONED_INTERFACE" | sort)" = "$PARTITIONED_ROUTES" ] \
-  || { err "network fault changed the node's underlay routes"; exit 1; }
-PARTITIONED_NODE=""
-PARTITIONED_NODE_RECEIPT=""
-kubectl wait --for=condition=Ready "node/$CHAOS_NODE" --timeout=180s
-wait_roles || { diagnostics; exit 1; }
-[ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.uid}')" = "$POD_UID_BEFORE" ] \
-  || { err "transient network partition replaced the retained Session Pod"; exit 1; }
-[ "$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadata.uid}')" = "$CLAIM_UID_BEFORE" ] \
-  || { err "transient network partition changed continuation volume identity"; exit 1; }
-node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-NETWORK-PARTITION
-ok "node network partition retained committed truth and recovered the same Session executor"
 
 STOPPED_NODE="$CHAOS_NODE"
 STOPPED_CONTAINER=$(docker inspect --format '{{.Id}}' -- "$STOPPED_NODE")
