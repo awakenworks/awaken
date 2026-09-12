@@ -369,7 +369,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness applied_receipt_is_exact_and_names_one_successor_record \
     --harness toolset_policy_exact_override_replaces_only_the_matching_default \
     --harness tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls \
-    --harness stream_terminal_projection_is_exact_fail_closed_and_absorbing
+    --harness stream_terminal_projection_is_exact_fail_closed_and_absorbing \
+    --harness autonomy_is_a_total_order_whose_ceiling_test_is_exactly_rank_comparison \
+    --harness every_requirement_sits_at_exactly_one_autonomy_level
   # Exact final wire encoding only: SHA/FNV algorithms and enclosing request
   # histories keep their separate obligations. Every default check stays on.
   run_kani awaken-agent-contract --checked-loop-profile fingerprint-fnv-hex-v1 \
@@ -907,8 +909,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness plugin_activation_never_admits_a_duplicate_identity
   run_kani awaken-ext-permission \
     --harness retired_mode_compiles_into_one_exact_unmatched_default \
-    --harness a_compiled_ruleset_can_never_short_circuit_a_deny_rule \
-    --harness matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority
+    --harness matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority \
+    --harness a_matching_deny_decides_the_whole_fold_whatever_else_matched \
+    --harness the_fold_returns_a_behavior_some_matching_rule_actually_carried
   run_kani awaken-ext-state-machine \
     --harness tool_and_event_transitions_never_cross_trigger_kinds \
     --harness state_transition_requires_every_exact_precondition \
