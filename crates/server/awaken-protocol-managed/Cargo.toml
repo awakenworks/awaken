@@ -142,6 +142,10 @@ required-features = ["test-support"]
 name = "streaming"
 required-features = ["test-support"]
 
+[[test]]
+name = "tenancy_required"
+required-features = ["test-support"]
+
 [dev-dependencies]
 awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
