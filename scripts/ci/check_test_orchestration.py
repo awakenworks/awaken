@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -100,6 +101,33 @@ STORE_BACKEND_TESTS = (
     "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
 )
 INGRESS_CONFORMANCE = "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
+NEXTEST_CONFIG = ".config/nextest.toml"
+# A test may wait, but it must say how long. The runner's deadline stops a
+# stuck test from taking the suite with it; it cannot tell you what the test
+# was waiting for. This count may only fall.
+UNBOUNDED_WAIT_BASELINE = 58
+# HTTP tests in the Managed protocol crate must name the status a body arrived
+# with. Discarding it is how a route that had begun answering 404 went
+# unnoticed: the test read the empty body and then waited for work the failed
+# request never scheduled. `dreams.rs` makes this a type error by returning a
+# response whose body is unreachable without an expectation; the helpers that
+# still return a bare tuple are counted here and the count may only fall.
+MANAGED_HTTP_TESTS = "crates/server/awaken-protocol-managed/tests"
+TUPLE_HELPER_BASELINE = 25
+HTTP_HELPER_RETURN = re.compile(r"->\s*\(StatusCode,\s*Value\)")
+RUST_FN = re.compile(r"\bfn\s+(\w+)")
+TUPLE_HELPER = re.compile(r"->\s*\(StatusCode,\s*Value\)")
+TEST_ATTRIBUTE = re.compile(
+    r"#\[(?:tokio::)?test[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+(\w+)"
+)
+UNBOUNDED_WAIT = re.compile(r"\.(?:notified|recv|acquire|changed)\(\)\s*\.await")
+BOUNDED_WAIT = re.compile(r"time::timeout|tokio::select!|select!|signaled\(")
+# A unit or integration test that has not finished in five minutes is not slow,
+# it is stuck. The bound exists so no configuration edit can restore the
+# unbounded run that once parked a gate for eight hours.
+MAX_TEST_DEADLINE_SECONDS = 300.0
+DURATION = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ms|s|m|h)\Z")
+DURATION_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 QUALITY_WORKFLOW = ".github/workflows/quality.yml"
 RELEASE_WORKFLOW = ".github/workflows/release.yml"
 K8S_CONTAINER_GATE = "scripts/e2e/k8s_container_e2e.sh"
@@ -519,6 +547,207 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     return errors
 
 
+def deadline_seconds(slow_timeout: object) -> float | None:
+    """The wall-clock bound a slow-timeout table puts on one test.
+
+    ``period`` alone only makes nextest *report* a slow test; without
+    ``terminate-after`` the test still runs forever. Return None whenever the
+    table states no bound, so the caller rejects rather than guesses.
+    """
+
+    if not isinstance(slow_timeout, dict):
+        return None
+    terminate = slow_timeout.get("terminate-after")
+    if not isinstance(terminate, int) or isinstance(terminate, bool) or terminate < 1:
+        return None
+    match = DURATION.fullmatch(str(slow_timeout.get("period", "")).strip())
+    if match is None:
+        return None
+    return float(match["value"]) * DURATION_UNITS[match["unit"]] * terminate
+
+
+def test_deadline_errors(config_text: str, rust_gate: str) -> list[str]:
+    """Require one runner-enforced deadline on every Rust test.
+
+    Neither libtest nor ``cargo test`` can bound a single test, so one test
+    awaiting a signal nobody will send parks the entire gate with no output and
+    no end. nextest can, and this keeps that the only way the suite runs:
+    the profile must terminate a test, no override may relax that past the
+    bound, and the gate may not fall back to an unbounded runner.
+    """
+
+    errors: list[str] = []
+    try:
+        config = tomllib.loads(config_text)
+    except tomllib.TOMLDecodeError as error:
+        return [f"{NEXTEST_CONFIG} does not parse: {error}"]
+
+    profiles = config.get("profile", {})
+    default = profiles.get("default", {}) if isinstance(profiles, dict) else {}
+    bound = deadline_seconds(default.get("slow-timeout"))
+    if bound is None:
+        errors.append(
+            f"{NEXTEST_CONFIG} [profile.default] must set slow-timeout with "
+            "terminate-after; period alone only reports a slow test"
+        )
+    elif bound > MAX_TEST_DEADLINE_SECONDS:
+        errors.append(
+            f"{NEXTEST_CONFIG} [profile.default] deadline is {bound:.0f}s, "
+            f"above the {MAX_TEST_DEADLINE_SECONDS:.0f}s bound; bound the wait "
+            "inside the test instead of widening the runner"
+        )
+    for name, profile in (profiles.items() if isinstance(profiles, dict) else ()):
+        for index, override in enumerate(profile.get("overrides", []) or []):
+            if "slow-timeout" not in override:
+                continue
+            relaxed = deadline_seconds(override["slow-timeout"])
+            if relaxed is None or relaxed > MAX_TEST_DEADLINE_SECONDS:
+                errors.append(
+                    f"{NEXTEST_CONFIG} [profile.{name}] override {index} "
+                    f"({override.get('filter', 'no filter')}) removes the "
+                    "per-test deadline"
+                )
+
+    if not re.search(r"cargo nextest run --workspace", rust_gate):
+        errors.append("check-rust.sh must run the workspace suite under nextest")
+    unbounded = [
+        line.strip()
+        for line in rust_gate.splitlines()
+        if re.search(r"(?<!nextest run )cargo test --workspace", line)
+        and "--doc" not in line
+        and not line.strip().startswith("#")
+    ]
+    if unbounded:
+        errors.append(
+            "check-rust.sh runs the workspace suite without a per-test "
+            f"deadline: {unbounded[0]}"
+        )
+    if "cargo nextest --version" not in rust_gate:
+        errors.append(
+            "check-rust.sh must fail closed when cargo-nextest is absent "
+            "instead of falling back to an unbounded runner"
+        )
+    return errors
+
+
+
+def test_body(text: str, start: int) -> str:
+    """The brace-balanced body of the test function declared at ``start``."""
+
+    opening = text.find("{", start)
+    if opening < 0:
+        return ""
+    depth, index = 0, opening
+    while index < len(text):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[opening : index + 1]
+        index += 1
+    return text[opening:]
+
+
+def unbounded_wait_errors(sources: dict[str, str]) -> list[str]:
+    """Ratchet the tests that wait on a signal without stating a deadline.
+
+    Such a test does not fail when its producer stops running -- it parks and
+    reports nothing. The runner now kills it, which bounds the damage but
+    still leaves a test whose failure says "timed out" instead of naming what
+    it waited for. The existing ones are counted, and the count may only fall.
+    """
+
+    offenders: list[str] = []
+    for relative, text in sorted(sources.items()):
+        for match in TEST_ATTRIBUTE.finditer(text):
+            body = test_body(text, match.end())
+            if UNBOUNDED_WAIT.search(body) and not BOUNDED_WAIT.search(body):
+                offenders.append(f"{relative}::{match.group(1)}")
+    if len(offenders) > UNBOUNDED_WAIT_BASELINE:
+        listed = ", ".join(offenders[:5])
+        return [
+            f"{len(offenders)} tests wait without a deadline, baseline "
+            f"{UNBOUNDED_WAIT_BASELINE}: {len(offenders) - UNBOUNDED_WAIT_BASELINE} "
+            f"new one(s). Wrap the wait in tokio::time::timeout so the failure "
+            f"names what it waited for. First: {listed}"
+        ]
+    if len(offenders) < UNBOUNDED_WAIT_BASELINE:
+        return [
+            f"only {len(offenders)} tests wait without a deadline, below the "
+            f"{UNBOUNDED_WAIT_BASELINE} baseline; lower UNBOUNDED_WAIT_BASELINE "
+            "to hold the ground"
+        ]
+    return []
+
+
+
+def http_helpers(text: str) -> set[str]:
+    """Names of the functions in one test file that return a status and a body.
+
+    Taken by looking back from each `-> (StatusCode, Value)` to the nearest
+    preceding `fn`, because these signatures wrap across lines.
+    """
+
+    names: set[str] = set()
+    for match in HTTP_HELPER_RETURN.finditer(text):
+        declared = RUST_FN.findall(text[: match.start()])
+        if declared:
+            names.add(declared[-1])
+    return names
+
+
+def discarded_status_errors(sources: dict[str, str]) -> list[str]:
+    """Refuse an HTTP test that reads a body without naming its status.
+
+    Two rules, because they fail differently. Discarding the status is the
+    defect itself and is refused outright. Returning the bare tuple is only
+    what makes the defect writable, and there is too much of it to refuse at
+    once, so it is counted and the count may only fall.
+    """
+
+    errors: list[str] = []
+    discards: list[str] = []
+    for relative, text in sorted(sources.items()):
+        helpers = http_helpers(text)
+        if not helpers:
+            continue
+        # Only a call to one of this file's HTTP helpers carries a status to
+        # discard. Other two-value returns here mean something else entirely --
+        # a store generation, a pair of handles -- and ignoring their first
+        # element is not this defect.
+        discard = re.compile(
+            r"^[^/\n]*let \(_, \w+\) =\s*(?:"
+            + "|".join(sorted(re.escape(name) for name in helpers))
+            + r")\(",
+            re.MULTILINE,
+        )
+        discards.extend(
+            f"{relative}:{text[: match.start()].count(chr(10)) + 1}"
+            for match in discard.finditer(text)
+        )
+    if discards:
+        errors.append(
+            f"{len(discards)} HTTP tests read a body without naming the status "
+            f"it arrived with, starting at {discards[0]}. Assert the status, or "
+            "return a response type whose body needs one (see tests/dreams.rs)."
+        )
+    helpers = sum(len(TUPLE_HELPER.findall(text)) for text in sources.values())
+    if helpers > TUPLE_HELPER_BASELINE:
+        errors.append(
+            f"{helpers} test helpers return a bare (StatusCode, Value), "
+            f"baseline {TUPLE_HELPER_BASELINE}: {helpers - TUPLE_HELPER_BASELINE} "
+            "new one(s). Return a response type that requires an expectation."
+        )
+    if helpers < TUPLE_HELPER_BASELINE:
+        errors.append(
+            f"only {helpers} test helpers return a bare (StatusCode, Value), "
+            f"below the {TUPLE_HELPER_BASELINE} baseline; lower "
+            "TUPLE_HELPER_BASELINE to hold the ground"
+        )
+    return errors
+
+
 def validate(root: Path) -> list[str]:
     package = json.loads((root / "e2e/package.json").read_text(encoding="utf-8"))
     scripts: dict[str, str] = package.get("scripts", {})
@@ -561,6 +790,30 @@ def validate(root: Path) -> list[str]:
         (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
     ))
     errors.extend(
+        test_deadline_errors(
+            (root / NEXTEST_CONFIG).read_text(encoding="utf-8"),
+            (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
+        )
+    )
+    errors.extend(
+        discarded_status_errors(
+            {
+                path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+                for path in (root / MANAGED_HTTP_TESTS).rglob("*.rs")
+            }
+        )
+    )
+    errors.extend(
+        unbounded_wait_errors(
+            {
+                path.relative_to(root).as_posix(): path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                for path in (root / "crates").rglob("*.rs")
+            }
+        )
+    )
+    errors.extend(
         shared_conformance_errors(
             (root / STORE_CONFORMANCE).read_text(encoding="utf-8"),
             {
@@ -582,6 +835,63 @@ def validate(root: Path) -> list[str]:
 
 
 def self_test() -> None:
+    # Per-test deadline decision table. C1 the default profile terminates a
+    # test; C2 the deadline is within the bound; C3 no override removes it;
+    # C4 the Rust gate runs the suite under nextest; C5 the gate runs no
+    # unbounded workspace suite; C6 the gate fails closed without nextest.
+    #
+    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
+    # | D1   | T  | T  | T  | T  | T  | T  | accept |
+    # | D2   | F  | *  | *  | T  | T  | T  | reject reporting-only timeout |
+    # | D3   | T  | F  | *  | T  | T  | T  | reject widened deadline |
+    # | D4   | T  | T  | F  | T  | T  | T  | reject relaxing override |
+    # | D5   | T  | T  | T  | F  | T  | T  | reject suite off the bounded runner |
+    # | D6   | T  | T  | T  | T  | F  | T  | reject unbounded workspace run |
+    # | D7   | T  | T  | T  | T  | T  | F  | reject silent fallback |
+    # A doctest line names the same binary but cannot hang a workspace suite
+    # the way an async integration test can, so C5 exempts it by name.
+    deadline_config = (ROOT / NEXTEST_CONFIG).read_text(encoding="utf-8")
+    deadline_gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
+    assert not test_deadline_errors(deadline_config, deadline_gate), "D1 bounded"
+    assert test_deadline_errors(
+        deadline_config.replace(", terminate-after = 5 }", " }"), deadline_gate
+    ), "D2 period alone"
+    assert test_deadline_errors(
+        deadline_config.replace('period = "60s", terminate-after = 5', 'period = "60s", terminate-after = 10'),
+        deadline_gate,
+    ), "D3 widened"
+    assert test_deadline_errors(
+        deadline_config
+        + '\n[[profile.default.overrides]]\nfilter = \'test(slow)\'\nslow-timeout = "10m"\n',
+        deadline_gate,
+    ), "D4 relaxing override"
+    assert test_deadline_errors(
+        deadline_config, deadline_gate.replace("cargo nextest run --workspace", "cargo test --workspace")
+    ), "D5 off the bounded runner"
+    assert test_deadline_errors(
+        deadline_config, deadline_gate + "\n      cargo test --workspace\n"
+    ), "D6 unbounded workspace run"
+    assert test_deadline_errors(
+        deadline_config, deadline_gate.replace("cargo nextest --version", "true")
+    ), "D7 silent fallback"
+    assert not test_deadline_errors(
+        deadline_config, deadline_gate + "\n      cargo test --workspace --doc\n"
+    ), "D1 doctest line is not an unbounded suite"
+    # Unbounded-wait ratchet. W1 the tree is at the baseline -> accept;
+    # W2 one more test waits without a deadline -> reject; W3 one fewer ->
+    # reject until the baseline is lowered with it; W4 a wait the test bounds
+    # itself is not counted.
+    waiting = '#[tokio::test]\nasync fn waits() { gate.notified().await; }\n'
+    bounded = ('#[tokio::test]\nasync fn waits() '
+               '{ tokio::time::timeout(d, gate.notified()).await; }\n')
+    at_baseline = {f"crates/x/src/w{index}.rs": waiting
+                   for index in range(UNBOUNDED_WAIT_BASELINE)}
+    assert not unbounded_wait_errors(at_baseline), "W1 baseline"
+    assert unbounded_wait_errors({**at_baseline, "crates/x/src/new.rs": waiting}), "W2 one more"
+    assert unbounded_wait_errors(
+        {key: value for index, (key, value) in enumerate(at_baseline.items()) if index}
+    ), "W3 one fewer without lowering the baseline"
+    assert not unbounded_wait_errors({**at_baseline, "crates/x/src/ok.rs": bounded}), "W4 bounded"
     # Hook cause/effect table: H1 canonical nested owner + checker-edit trigger
     # + static-before-Cargo -> accept. H2 duplicate direct/nested invocation ->
     # reject. H3 missing nested invocation/trigger -> reject. H4 Cargo checked
