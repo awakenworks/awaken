@@ -49,12 +49,15 @@ impl ClaimedSessionControl for WorkerControlSessionClient {
         &self,
         claim: &RunClaim,
         session_id: &str,
+        session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
     ) -> Result<
         Option<awaken_session_contract::SessionRealizationDirective>,
         ClaimedSessionControlError,
     > {
         self.control
-            .resume_session(&self.identity, claim, session_id)
+            .resume_session(&self.identity, claim, session_id, session_work_authority)
             .await
     }
 

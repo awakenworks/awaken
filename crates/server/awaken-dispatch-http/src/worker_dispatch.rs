@@ -736,6 +736,60 @@ fn checkpoint_store(
         .ok_or_else(|| HostError::internal("worker checkpoint store is not configured"))
 }
 
+/// Attach the exact subordinate Work authority to a newly claimed Session Run.
+/// This is the only production issuer: it consumes the result of the canonical
+/// acquisition port and never accepts caller-supplied Work coordinates.
+async fn bind_claimed_session_work_authority(
+    service: &WorkerDispatchService,
+    authority: &ClaimAuthority,
+    mut claimed: Option<awaken_dispatch::Claimed>,
+) -> Result<Option<awaken_dispatch::Claimed>, HostError> {
+    let Some(claimed_run) = claimed.as_mut() else {
+        return Ok(None);
+    };
+    if !claimed_run.request.requires_session_work_authority() {
+        return Ok(claimed);
+    }
+    let session_id = claimed_run.request.session_thread_id().0.as_str();
+    let work = service
+        .session_work
+        .as_ref()
+        .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
+    let receipt = awaken_session_contract::work_queue::acquire_session_work_receipt(
+        work.as_ref(),
+        session_id,
+        &authority.owner,
+        authority.now_ms,
+        awaken_session_contract::work_queue::SessionWorkAcquisition::ClaimedRun,
+    )
+    .await;
+    let receipt = match receipt {
+        Ok(Some(receipt)) => receipt,
+        Ok(None) => {
+            let claim = RunClaim::from(&claimed_run.lease);
+            service
+                .dispatch
+                .relinquish_claim(&claim)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            return Err(HostError::conflict(
+                "Session Work is owned by another Worker attempt",
+            ));
+        }
+        Err(error) => {
+            let claim = RunClaim::from(&claimed_run.lease);
+            service
+                .dispatch
+                .relinquish_claim(&claim)
+                .await
+                .map_err(|rollback| HostError::internal(rollback.to_string()))?;
+            return Err(HostError::unavailable(error.to_string()));
+        }
+    };
+    claimed_run.session_work_authority = Some(receipt);
+    Ok(claimed)
+}
+
 async fn claim_is_current(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -824,6 +878,47 @@ async fn recovery_snapshot(
             return Err(HostError::bad_request(
                 "guarded dispatch does not match the recovery claim",
             ));
+        }
+        let session = dispatch.session_thread_id();
+        match (
+            dispatch.requires_session_work_authority(),
+            request.session_work_authority.as_ref(),
+        ) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(HostError::bad_request(
+                    "ordinary recovery cannot present Session Work authority",
+                ));
+            }
+            (true, None) => {
+                return Err(HostError::bad_request(
+                    "recovery requires exact Session Work authority",
+                ));
+            }
+            (true, Some(receipt)) => {
+                if receipt.session_id() != session.0 || receipt.worker_owner() != authority.owner {
+                    return Err(HostError::bad_request(
+                        "Session recovery Work authority identity does not match the claim",
+                    ));
+                }
+                let work = service.session_work.as_ref().ok_or_else(|| {
+                    HostError::internal("Session Work authority is not configured")
+                })?;
+                let observed = work
+                    .acquire_session_work(
+                        &session.0,
+                        &authority.owner,
+                        authority.now_ms,
+                        awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
+                    )
+                    .await
+                    .map_err(|error| HostError::unavailable(error.to_string()))?;
+                if !receipt.matches_observation(&observed) {
+                    return Err(HostError::bad_request(
+                        "Session recovery Work authority is stale",
+                    ));
+                }
+            }
         }
         let source = service
             .recovery

@@ -635,6 +635,9 @@ mod tests {
             &self,
             _claim: &RunClaim,
             _session_id: &str,
+            _session_work_authority: Option<
+                &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+            >,
         ) -> Result<
             Option<awaken_session_contract::SessionRealizationDirective>,
             awaken_dispatch_contract::ClaimedSessionControlError,

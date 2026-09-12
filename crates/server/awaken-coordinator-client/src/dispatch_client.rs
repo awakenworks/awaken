@@ -361,6 +361,7 @@ impl DispatchQueue for HttpDispatchQueue {
                 &RecoveryRequest {
                     claim: claim.clone(),
                     identity: Some(self.worker_identity.clone()),
+                    session_work_authority: None,
                 },
                 self.worker_id(),
             )
@@ -485,6 +486,9 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn load_recovery_snapshot(
         &self,
         claim: &RunClaim,
+        session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
     {
         let value = self
@@ -493,6 +497,7 @@ impl DispatchQueue for HttpDispatchQueue {
                 &RecoveryRequest {
                     claim: claim.clone(),
                     identity: Some(self.worker_identity.clone()),
+                    session_work_authority: session_work_authority.cloned(),
                 },
                 self.worker_id(),
             )

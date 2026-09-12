@@ -534,6 +534,9 @@ pub trait DispatchQueue: Send + Sync {
     async fn load_recovery_snapshot(
         &self,
         _claim: &RunClaim,
+        _session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
     {
         Err(DispatchError::Rejected(

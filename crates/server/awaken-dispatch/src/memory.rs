@@ -642,6 +642,7 @@ fn claim_exact_with_mode(
         .map(|pending| pending.input.clone())
         .collect();
     let claimed = Claimed {
+        session_work_authority: None,
         request,
         lease: lease.clone(),
         credential_bindings,

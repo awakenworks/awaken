@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Record as RunRecord, RunState};
@@ -230,6 +230,8 @@ impl DispatchSettlementObserver for FailFirstTerminalSettlement {
 struct RecordingSessionWork {
     releases: AtomicUsize,
     acquisitions: AtomicUsize,
+    epoch: AtomicU64,
+    unavailable: AtomicBool,
     mode: Mutex<WorkMode>,
 }
 
@@ -256,6 +258,13 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for Recordin
         awaken_session_contract::work_queue::WorkQueueError,
     > {
         self.acquisitions.fetch_add(1, Ordering::SeqCst);
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Err(
+                awaken_session_contract::work_queue::WorkQueueError::Storage(
+                    "injected Work authority outage".into(),
+                ),
+            );
+        }
         let mode = *self.mode.lock().unwrap();
         if matches!(mode, WorkMode::Retired) {
             return Ok(awaken_session_contract::work_queue::SessionWorkOwnership::Unowned);
@@ -271,7 +280,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for Recordin
                     } else {
                         worker_owner.into()
                     },
-                    epoch: 1,
+                    epoch: self.epoch.load(Ordering::SeqCst).max(1),
                     expires_at_unix_ms: now_ms + 60_000,
                 },
             ),
@@ -444,6 +453,149 @@ async fn applied_remote_dispatch_invokes_one_exact_post_settlement_callback() {
     assert_eq!(status, StatusCode::OK, "R2: {replay}");
     assert_eq!(replay["settled"], false, "R2");
     assert_eq!(coordination.finalized.lock().unwrap().len(), 1, "R2");
+}
+
+#[tokio::test]
+async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch() {
+    // Cause/effect graph: C1 the Dispatch claim is exact; C2 the receipt names
+    // the claimed Session and authenticated incarnation; C3 Work id,
+    // Environment, and epoch equal the canonical Work observation; C4 the Work
+    // authority is available. E1 only C1+C2+C3+C4 may read and return committed
+    // Thread truth; E2 every missing, mismatched, stale, or unavailable Work
+    // observation rejects before RunRecoverySource is called.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // |---|---|---|---|---|---|
+    // | W1 exact | yes | yes | yes | yes | E1 one read |
+    // | W2 same-owner ABA | yes | yes | stale epoch | yes | E2 zero reads |
+    // | W3 wrong Work/Environment | yes | yes | no | yes | E2 zero reads |
+    // | W4 wrong Session/incarnation | yes | no | n/a | yes | E2 zero reads |
+    // | W5 missing receipt | yes | no | n/a | yes | E2 zero reads |
+    // | W6 authority outage | yes | yes | unknown | no | E2 zero reads |
+    // Constraint: the receipt comes from claim admission and recovery may never
+    // self-sign the latest owner/epoch. The read-count assertion makes the
+    // validation-before-Thread-read ordering observable.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let run_id = RunId("work-epoch-recovery-run".into());
+    let session_id = ThreadId("work-epoch-session".into());
+    let request = RunDispatch::new(activation(&run_id.0, &session_id.0))
+        .for_session(session_id.clone())
+        .with_session_activity_epoch(1);
+    store.enqueue(request).await.expect("enqueue Session Run");
+    let recovery = terminal_recovery(
+        &session_id,
+        &session_id,
+        &run_id,
+        Ok(terminal_snapshot(
+            &session_id,
+            &run_id,
+            RunState::Ended(EndCause::NaturalEnd),
+        )),
+    );
+    let work = Arc::new(RecordingSessionWork::default());
+    let router = dispatch_transport_router_with_service(Arc::new(
+        WorkerDispatchService::new(
+            store,
+            Arc::new(HeaderWorkerAuthenticator),
+            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        )
+        .with_recovery_source(recovery.clone())
+        .with_session_work_authority(work.clone()),
+    ));
+
+    let (status, body) = post(
+        &router,
+        "work-epoch-worker",
+        "/v1/worker/dispatch/claim",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "claim: {body}");
+    let claimed: awaken_dispatch::Claimed =
+        serde_json::from_value(body["claimed"].clone()).expect("claimed response");
+    let claim = RunClaim::from(&claimed.lease);
+    let receipt = claimed
+        .session_work_authority
+        .clone()
+        .expect("claim edge issues exact Session Work receipt");
+    let exact_request = json!({
+        "claim": claim,
+        "session_work_authority": receipt,
+    });
+
+    let (status, _) = post(
+        &router,
+        "work-epoch-worker",
+        "/v1/worker/recovery/snapshot",
+        exact_request.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "W1");
+    assert_eq!(recovery.observed.lock().unwrap().len(), 1, "W1");
+
+    work.epoch.store(2, Ordering::SeqCst);
+    recovery.observed.lock().unwrap().clear();
+    let (status, _) = post(
+        &router,
+        "work-epoch-worker",
+        "/v1/worker/recovery/snapshot",
+        exact_request.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "W2 same-owner ABA");
+    assert!(recovery.observed.lock().unwrap().is_empty(), "W2");
+
+    work.epoch.store(1, Ordering::SeqCst);
+    for (tag, field, value) in [
+        ("W3-work", "work_id", json!("other-work")),
+        ("W3-environment", "environment_id", json!("other-env")),
+        ("W4-session", "session_id", json!("other-session")),
+        ("W4-owner", "worker_owner", json!("other-incarnation")),
+    ] {
+        let mut request = exact_request.clone();
+        let receipt = request["session_work_authority"]
+            .as_object_mut()
+            .expect("receipt object");
+        if field == "work_id" || field == "environment_id" {
+            receipt["authority"]
+                .as_object_mut()
+                .expect("authority object")
+                .insert(field.into(), value);
+        } else {
+            receipt.insert(field.into(), value);
+        }
+        let (status, _) = post(
+            &router,
+            "work-epoch-worker",
+            "/v1/worker/recovery/snapshot",
+            request,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{tag}");
+        assert!(recovery.observed.lock().unwrap().is_empty(), "{tag}");
+    }
+
+    let (status, _) = post(
+        &router,
+        "work-epoch-worker",
+        "/v1/worker/recovery/snapshot",
+        json!({ "claim": claim }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "W5");
+    assert!(recovery.observed.lock().unwrap().is_empty(), "W5");
+
+    work.unavailable.store(true, Ordering::SeqCst);
+    let (status, _) = post(
+        &router,
+        "work-epoch-worker",
+        "/v1/worker/recovery/snapshot",
+        exact_request,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "W6");
+    assert!(recovery.observed.lock().unwrap().is_empty(), "W6");
 }
 
 #[tokio::test(flavor = "multi_thread")]

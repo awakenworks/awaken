@@ -7,6 +7,8 @@ pub(super) struct SessionResumeReq {
     claim: RunClaim,
     identity: WorkerIdentity,
     session_id: String,
+    session_work_authority:
+        Option<awaken_session_contract::work_queue::SessionWorkAuthorityReceipt>,
 }
 
 #[derive(Deserialize)]
@@ -281,14 +283,32 @@ pub(super) async fn session_resume(
             .map_err(|error| {
                 RealizationHttpError::from(HostError::bad_request(error.to_string()))
             })?;
-        acquire_session_work_owner(
+        let receipt = request.session_work_authority.as_ref().ok_or_else(|| {
+            RealizationHttpError::from(HostError::bad_request(
+                "Session resume requires exact Work authority",
+            ))
+        })?;
+        if receipt.session_id() != request.session_id
+            || receipt.worker_owner() != request.identity.lease_owner()
+        {
+            return Err(RealizationHttpError::from(HostError::bad_request(
+                "Session resume Work authority identity does not match the claim",
+            )));
+        }
+        let observed = session_work_ownership(
             &service,
             &request.session_id,
             &request.identity.lease_owner(),
             authority.now_ms,
-            awaken_session_contract::work_queue::SessionWorkAcquisition::ClaimedRun,
+            awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
         )
-        .await?;
+        .await
+        .map_err(RealizationHttpError::from)?;
+        if !receipt.matches_observation(&observed) {
+            return Err(RealizationHttpError::from(HostError::bad_request(
+                "Session resume Work authority is stale",
+            )));
+        }
         let control = service.session_control.as_ref().ok_or_else(|| {
             RealizationHttpError::from(HostError::internal("Session control is not configured"))
         })?;
@@ -303,7 +323,7 @@ pub(super) async fn session_resume(
             .min(registry_expiry);
         let realization = match control
             .begin_session_realization(awaken_session_contract::BeginSessionRealization {
-                session_id: request.session_id,
+                session_id: request.session_id.clone(),
                 expected_resources,
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: request.identity.worker_id.clone(),
@@ -320,7 +340,14 @@ pub(super) async fn session_resume(
             })
             .await
         {
-            Ok(realization) => Some(realization),
+            Ok(realization) if receipt.binds_realization(&request.session_id, &realization) => {
+                Some(realization)
+            }
+            Ok(_) => {
+                return Err(RealizationHttpError::from(HostError::bad_request(
+                    "Session realization directive does not match claimed Work authority",
+                )));
+            }
             Err(awaken_session_contract::SessionRealizationControlFailure::NotReady) => {
                 return Err(RealizationHttpError::Control(
                     awaken_session_contract::SessionRealizationControlFailure::NotReady,

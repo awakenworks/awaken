@@ -212,9 +212,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
     async fn install_claimed_recovery_projection(
         &self,
-        claim: &RunClaim,
+        claimed: &Claimed,
         thread_id: &ThreadId,
     ) -> Result<ClaimedSnapshotAuthority, Error> {
+        let claim = RunClaim::from(&claimed.lease);
         if let Some(projection) = &self.recovery_projection {
             let snapshot = match &self.recovery_source {
                 Some(source) => source
@@ -223,7 +224,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     .map_err(|error| {
                         crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
                     })?,
-                None => self.store.load_recovery_snapshot(claim).await?,
+                None => {
+                    self.store
+                        .load_recovery_snapshot(&claim, claimed.session_work_authority.as_ref())
+                        .await?
+                }
             };
             projection
                 .install(&claim.run_id, thread_id, snapshot)
@@ -231,7 +236,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
                 })?;
         }
-        Ok(ClaimedSnapshotAuthority::installed(claim, thread_id))
+        Ok(ClaimedSnapshotAuthority::installed(&claim, thread_id))
     }
 
     async fn refresh_local_recovery_projection(
@@ -910,7 +915,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             self.runtime.metrics().record_dispatch_queue_depth(depth);
         }
         let claimed_snapshot = self
-            .install_claimed_recovery_projection(&claim, &thread_id)
+            .install_claimed_recovery_projection(&claimed, &thread_id)
             .await?;
         let mut all_pending: Vec<String> = claimed
             .pending

@@ -52,6 +52,7 @@ pub(super) async fn claim_new_run(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
+        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -88,6 +89,7 @@ pub(super) async fn deliver_and_claim(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
+        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -138,6 +140,7 @@ pub(super) async fn claim(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
+        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -161,6 +164,7 @@ pub(super) async fn claim_retry_exhausted(
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
+        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -193,6 +197,7 @@ pub(super) async fn claim_run(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
+        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
