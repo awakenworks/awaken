@@ -1538,6 +1538,46 @@ def selftest_composite_identity_is_stated() -> None:
     NON_IDENTITY_COMPOSITES = original
 
 
+# The producer half of the same class, ratcheted the same way. A
+# `ModelBinding` has one *validating* constructor, `ModelBinding::parse`, which
+# refuses the coordinates that make two bindings on different provider accounts
+# compare equal. `ModelBinding::new` is the pre-existing path that performs no
+# admission; it exists only because converting its call sites is a migration,
+# not a fix. The count may fall and may not rise, so a new producer cannot skip
+# the admission even while the old ones are still being moved. The durable
+# ingress is already closed: deserialization goes through `parse`.
+UNVALIDATED_MODEL_BINDING_PRODUCER = re.compile(r"\bModelBinding::new\s*\(")
+UNVALIDATED_MODEL_BINDING_BASELINE = 468
+
+
+def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> list[str]:
+    """`ModelBinding::new` performs no admission; its call sites may only shrink."""
+    sites: list[str] = []
+    for root in (repo_root / "crates", repo_root / "e2e"):
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for match in UNVALIDATED_MODEL_BINDING_PRODUCER.finditer(text):
+                line = text[: match.start()].count("\n") + 1
+                sites.append(f"{path.relative_to(repo_root)}:{line}")
+    if len(sites) > UNVALIDATED_MODEL_BINDING_BASELINE:
+        return [
+            f"{len(sites)} ModelBinding::new call sites, baseline "
+            f"{UNVALIDATED_MODEL_BINDING_BASELINE}: "
+            f"{len(sites) - UNVALIDATED_MODEL_BINDING_BASELINE} new producer(s) skip the "
+            "completeness admission. Use ModelBinding::parse, which returns "
+            "Result<_, InvalidModelBinding>."
+        ]
+    if len(sites) < UNVALIDATED_MODEL_BINDING_BASELINE:
+        return [
+            f"{len(sites)} ModelBinding::new call sites, below the baseline of "
+            f"{UNVALIDATED_MODEL_BINDING_BASELINE}. Lower "
+            f"UNVALIDATED_MODEL_BINDING_BASELINE to {len(sites)} so the ground gained is held."
+        ]
+    return []
+
+
 def main() -> int:
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
@@ -1576,6 +1616,7 @@ def main() -> int:
         + check_tenancy_is_not_optional()
         + check_no_ambient_tenant_default()
         + check_composite_identity_is_stated()
+        + check_model_binding_producers_are_ratcheted()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _wire_closure_fitness.check_all(REPO_ROOT, CRATES)
