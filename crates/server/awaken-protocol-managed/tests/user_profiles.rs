@@ -313,7 +313,8 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
     }
 
     // First page of 2 → more remain, next_page names the last row of the page.
-    let (_, p1) = call(&app, "GET", "/v1/user_profiles?limit=2", None).await;
+    let (status, p1) = call(&app, "GET", "/v1/user_profiles?limit=2", None).await;
+    assert_eq!(status, StatusCode::OK);
     let ids1: Vec<&str> = p1["data"]
         .as_array()
         .unwrap()
@@ -326,13 +327,14 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
 
     // RunResume with `?page=<next_page>` → the remaining row, terminal (next_page null).
     let cursor = p1["next_page"].as_str().unwrap();
-    let (_, p2) = call(
+    let (status, p2) = call(
         &app,
         "GET",
         &format!("/v1/user_profiles?page={cursor}"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let ids2: Vec<&str> = p2["data"]
         .as_array()
         .unwrap()

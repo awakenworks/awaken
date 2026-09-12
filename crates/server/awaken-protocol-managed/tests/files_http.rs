@@ -228,10 +228,13 @@ async fn equal_upload_bytes_deduplicate_privately_but_keep_distinct_public_files
     // Rule R3: equal bytes + two upload operations → two logical File ids and
     // metadata records (E6), while physical dedup remains an unexposed store fact.
     let router = router();
-    let (_, a) = upload(&router, "a.bin", b"same bytes").await;
-    let (_, b) = upload(&router, "b.bin", b"same bytes").await;
+    let (status, a) = upload(&router, "a.bin", b"same bytes").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, b) = upload(&router, "b.bin", b"same bytes").await;
+    assert_eq!(status, StatusCode::OK);
     assert_ne!(a["id"], b["id"], "each upload is a logical File");
-    let (_, c) = upload(&router, "c.bin", b"other bytes").await;
+    let (status, c) = upload(&router, "c.bin", b"other bytes").await;
+    assert_eq!(status, StatusCode::OK);
     assert_ne!(a["id"], c["id"]);
     assert_eq!(
         delete(&router, &format!("/v1/files/{}", a["id"].as_str().unwrap()))
@@ -532,7 +535,8 @@ async fn standard_global_and_scoped_lists_reject_private_filters() {
     // request; E4 the same catalog page (beta selection changes no File truth).
     // Decision table: C1 -> E1; C1+C2 -> E2; C1+C3 -> E3; C1+C4 -> E4.
     let router = router();
-    let (_, uploaded) = upload(&router, "listed.txt", b"listed").await;
+    let (status, uploaded) = upload(&router, "listed.txt", b"listed").await;
+    assert_eq!(status, StatusCode::OK);
     let (status, body) = get(&router, "/v1/files").await;
     assert_eq!(status, StatusCode::OK);
     let list: Value = serde_json::from_slice(&body).unwrap();

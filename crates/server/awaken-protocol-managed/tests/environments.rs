@@ -460,13 +460,14 @@ async fn official_worker_header_and_heartbeat_cas_are_wired() {
     assert_eq!(status, StatusCode::OK);
     let wid = work["id"].as_str().unwrap();
 
-    let (_, stats) = call(
+    let (status, stats) = call(
         &app,
         "GET",
         &format!("/v1/environments/{id}/work/stats"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(stats["workers_polling"], 1);
 
     // Before any heartbeat receipt exists, the claim owner is still authority:
@@ -601,13 +602,14 @@ async fn official_sdk_credential_owns_optional_worker_id_lease_lifecycle() {
     assert_eq!(status, StatusCode::OK, "P1");
     let wid = work["id"].as_str().unwrap();
 
-    let (_, stats) = call(
+    let (status, stats) = call(
         &app,
         "GET",
         &format!("/v1/environments/{id}/work/stats"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(stats["workers_polling"], 1, "P1 observes W, not K and W");
 
     let (status, acknowledged) = call_with_lease_headers(
@@ -872,13 +874,14 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
     let replay = authoring.application().create(command).await.unwrap();
     assert_eq!(first.id, replay.id, "R1/R2");
     let app = environment_authoring_router(authoring).merge(environment_work_router(execution));
-    let (_, work) = call(
+    let (status, work) = call(
         &app,
         "GET",
         &format!("/v1/environments/{}/work", first.id),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(work["data"].as_array().unwrap().len(), 1, "R2");
 }
 
@@ -889,13 +892,14 @@ async fn executable_registration_seeds_work_only_for_self_hosted_environments() 
     // executed by Awaken and therefore creates no external worker work item.
     let app = app();
     let self_hosted = make_env(&app).await;
-    let (_, self_hosted_work) = call(
+    let (status, self_hosted_work) = call(
         &app,
         "GET",
         &format!("/v1/environments/{self_hosted}/work"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(self_hosted_work["data"].as_array().unwrap().len(), 1, "R1");
 
     let (status, cloud) = call(
@@ -910,13 +914,14 @@ async fn executable_registration_seeds_work_only_for_self_hosted_environments() 
     .await;
     assert_eq!(status, StatusCode::OK);
     let cloud_id = cloud["id"].as_str().unwrap();
-    let (_, cloud_work) = call(
+    let (status, cloud_work) = call(
         &app,
         "GET",
         &format!("/v1/environments/{cloud_id}/work"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert!(cloud_work["data"].as_array().unwrap().is_empty(), "R2");
 }
 
@@ -943,20 +948,22 @@ async fn environment_crud_and_work_lifecycle() {
     assert!(id.starts_with("env_"));
 
     // Work list shows the seeded queued item.
-    let (_, list) = call(&app, "GET", &format!("/v1/environments/{id}/work"), None).await;
+    let (status, list) = call(&app, "GET", &format!("/v1/environments/{id}/work"), None).await;
+    assert_eq!(status, StatusCode::OK);
     let works = list["data"].as_array().unwrap();
     assert_eq!(works.len(), 1);
     assert_eq!(works[0]["state"], "queued");
     assert_eq!(works[0]["data"]["type"], "healthcheck");
 
     // Stats: one queued, depth 1.
-    let (_, stats) = call(
+    let (status, stats) = call(
         &app,
         "GET",
         &format!("/v1/environments/{id}/work/stats"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(stats["type"], "work_queue_stats");
     assert_eq!(stats["depth"], 1);
     // Nothing claimed yet: the seeded healthcheck is queued, so `pending` (claimed &
@@ -977,60 +984,66 @@ async fn environment_crud_and_work_lifecycle() {
     let wid = leased["id"].as_str().unwrap().to_string();
 
     // A second poll returns null (single active lease == the single-worker cap).
-    let (_, again) = call(
+    let (status, again) = call(
         &app,
         "GET",
         &format!("/v1/environments/{id}/work/poll"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert!(again.is_null(), "only one active lease at a time");
 
     // Ack + heartbeat + stop.
-    let (_, acked) = call(
+    let (status, acked) = call(
         &app,
         "POST",
         &format!("/v1/environments/{id}/work/{wid}/ack"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert!(acked["acknowledged_at"].is_string());
-    let (_, hb) = call(
+    let (status, hb) = call(
         &app,
         "POST",
         &format!("/v1/environments/{id}/work/{wid}/heartbeat"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(hb["type"], "work_heartbeat");
     assert_eq!(hb["lease_extended"], true);
     assert_eq!(hb["ttl_seconds"], 60);
-    let (_, stopped) = call(
+    let (status, stopped) = call(
         &app,
         "POST",
         &format!("/v1/environments/{id}/work/{wid}/stop"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(stopped["state"], "stopped");
     assert!(stopped["stop_requested_at"].is_string());
 
     // Retrieve + update work (metadata).
-    let (_, upd) = call(
+    let (status, upd) = call(
         &app,
         "POST",
         &format!("/v1/environments/{id}/work/{wid}"),
         Some(json!({ "metadata": { "run": "1", "remove_me": "yes" } })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(upd["metadata"]["run"], "1");
-    let (_, deleted_metadata) = call(
+    let (status, deleted_metadata) = call(
         &app,
         "POST",
         &format!("/v1/environments/{id}/work/{wid}"),
         Some(json!({ "metadata": { "run": "2", "remove_me": null } })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(deleted_metadata["metadata"]["run"], "2");
     assert!(
         deleted_metadata["metadata"].get("remove_me").is_none(),
@@ -1038,23 +1051,26 @@ async fn environment_crud_and_work_lifecycle() {
     );
 
     // Env retrieve / update / list / archive.
-    let (_, upenv) = call(
+    let (status, upenv) = call(
         &app,
         "POST",
         &format!("/v1/environments/{id}"),
         Some(json!({ "description": "the prod env" })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(upenv["description"], "the prod env");
-    let (_, page) = call(&app, "GET", "/v1/environments", None).await;
+    let (status, page) = call(&app, "GET", "/v1/environments", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(page["data"].as_array().unwrap()[0]["id"], id);
-    let (_, arch) = call(
+    let (status, arch) = call(
         &app,
         "POST",
         &format!("/v1/environments/{id}/archive"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert!(arch["archived_at"].is_string());
     let (s, del) = call(&app, "DELETE", &format!("/v1/environments/{id}"), None).await;
     assert_eq!(s, StatusCode::OK);

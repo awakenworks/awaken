@@ -172,13 +172,14 @@ async fn environment_is_pinned_at_creation() {
 async fn environment_is_immutable_across_update() {
     let (app, environment_id) = app().await;
 
-    let (_, session) = call(
+    let (status, session) = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "a", "environment_id": environment_id })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let id = session["id"].as_str().unwrap().to_string();
 
     // Causes: C1 update omits the immutable Environment and supplies a title; C2

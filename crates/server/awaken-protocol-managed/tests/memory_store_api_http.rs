@@ -61,7 +61,8 @@ async fn memory_creation_replays_a_lost_response_and_rejects_changed_payloads() 
     assert_eq!(first.0, StatusCode::OK);
     let retry = create(&router, "test", "request-1", body.clone()).await;
     assert_eq!(first, retry);
-    let (_, inventory) = call_scoped(&router, "test", "GET", "/v1/memory_stores", None).await;
+    let (status, inventory) = call_scoped(&router, "test", "GET", "/v1/memory_stores", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(inventory["data"].as_array().unwrap().len(), 1);
     assert!(
         inventory.to_string().find("creation_request").is_none(),
@@ -81,7 +82,8 @@ async fn memory_creation_replays_a_lost_response_and_rejects_changed_payloads() 
             StatusCode::BAD_REQUEST
         );
     }
-    let (_, inventory) = call_scoped(&router, "test", "GET", "/v1/memory_stores", None).await;
+    let (status, inventory) = call_scoped(&router, "test", "GET", "/v1/memory_stores", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(inventory["data"].as_array().unwrap().len(), 1);
 }
 
@@ -259,7 +261,8 @@ async fn resource_routes_require_a_preselected_workspace() {
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
     }
 
-    let (_, listed) = call(&router, "GET", "/v1/memory_stores", None).await;
+    let (status, listed) = call(&router, "GET", "/v1/memory_stores", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty());
 }
 
@@ -377,7 +380,8 @@ async fn store_lifecycle_create_get_list_update_archive_delete() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_ne!(archived["archived_at"], Value::Null);
-    let (_, list) = call(&router, "GET", "/v1/memory_stores", None).await;
+    let (status, list) = call(&router, "GET", "/v1/memory_stores", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
         !list["data"]
             .as_array()
@@ -538,25 +542,27 @@ async fn memory_crud_with_precondition_and_version_log() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(full["data"][0]["content"], "hello");
-    let (_, basic) = call(
+    let (status, basic) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(
         basic["data"][0]["content"],
         Value::Null,
         "basic view elides content"
     );
-    let (_, explicit_basic) = call(
+    let (status, explicit_basic) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories?view=basic"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(explicit_basic["data"][0]["content"], Value::Null, "R2");
 
     // Retrieve by id.
@@ -684,13 +690,14 @@ async fn memory_crud_with_precondition_and_version_log() {
             .all(|version| version["content"] == Value::Null),
         "R7 version list defaults to basic"
     );
-    let (_, full_versions) = call(
+    let (status, full_versions) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions?view=full"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(full_versions["data"][0]["content"], "hello", "R7");
     assert_eq!(full_versions["data"][1]["content"], "world", "R7");
     // Actor cause/effect decision table: A1 authenticated API create/update ->
@@ -705,21 +712,23 @@ async fn memory_crud_with_precondition_and_version_log() {
         full_versions["data"][0]["created_by"]["api_key_id"], "api_test",
         "A1"
     );
-    let (_, actor_match) = call(
+    let (status, actor_match) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions?api_key_id=api_test"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(actor_match["data"].as_array().unwrap().len(), 2, "A3");
-    let (_, actor_miss) = call(
+    let (status, actor_miss) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions?api_key_id=other"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert!(actor_miss["data"].as_array().unwrap().is_empty(), "A3");
     let first_vid = versions["data"][0]["id"].as_str().unwrap().to_string();
     // Version-id cause/effect rules: V1 create atomically appends one real
@@ -744,13 +753,14 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(ver["operation"], "created");
     assert_eq!(ver["content"], "hello");
-    let (_, basic_ver) = call(
+    let (status, basic_ver) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions/{first_vid}?view=basic"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(basic_ver["content"], Value::Null, "R7");
 
     for route in [
@@ -789,21 +799,23 @@ async fn memory_crud_with_precondition_and_version_log() {
         StatusCode::BAD_REQUEST,
         "R8 invalid update view"
     );
-    let (_, unchanged) = call(
+    let (status, unchanged) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(unchanged["content"], "world", "R8 rejects before mutation");
-    let (_, unchanged_list) = call(
+    let (status, unchanged_list) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories?view=full"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
         unchanged_list["data"]
             .as_array()
@@ -846,21 +858,23 @@ async fn memory_crud_with_precondition_and_version_log() {
         stale_delete["error"]["type"],
         "memory_precondition_failed_error"
     );
-    let (_, after_stale) = call(
+    let (status, after_stale) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(after_stale["content"], "world");
-    let (_, versions_after_stale) = call(
+    let (status, versions_after_stale) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(versions_after_stale["data"].as_array().unwrap().len(), 2);
 
     // Matching delete → receipt + exactly one `deleted` version row.
@@ -877,15 +891,10 @@ async fn memory_crud_with_precondition_and_version_log() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(receipt["type"], "memory_deleted");
-    let (_, after) = call(
-        &router,
-        "GET",
-        &format!("/v1/memory_stores/{store}/memories/{mid}"),
-        None,
-    )
-    .await;
-    // The head is gone: retrieve by id is now 404.
-    let (status, _) = call(
+    // The head is gone: retrieve by id is now 404. One request answers both
+    // the status and the diagnostic; the second identical GET only existed
+    // because the first discarded its status.
+    let (status, after) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
@@ -893,13 +902,14 @@ async fn memory_crud_with_precondition_and_version_log() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "deleted memory: {after}");
-    let (_, versions_after_delete) = call(
+    let (status, versions_after_delete) = call(
         &router,
         "GET",
         &format!("/v1/memory_stores/{store}/memory_versions"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let deleted = versions_after_delete["data"]
         .as_array()
         .unwrap()
