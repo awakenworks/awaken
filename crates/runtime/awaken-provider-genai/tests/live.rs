@@ -68,11 +68,7 @@ fn live_executor() -> (GenaiExecutor, String) {
 
 fn text_request(model: String, prompt: &str) -> ChatRequest {
     ChatRequest {
-        model_binding: ModelBinding {
-            provider_identity_ref: "live".to_string(),
-            model_ref: model,
-            backend_ref: "genai".to_string(),
-        },
+        model_binding: ModelBinding::new("live".to_string(), model, "genai".to_string()),
         inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
@@ -222,11 +218,7 @@ async fn live_deepseek_anthropic_messages_streaming_binds_signed_thinking_in_ord
     let response = executor
         .infer_streaming(
             ChatRequest {
-                model_binding: ModelBinding {
-                    provider_identity_ref: "deepseek".into(),
-                    model_ref: model,
-                    backend_ref: "genai".into(),
-                },
+                model_binding: ModelBinding::new("deepseek", model, "genai"),
                 inference: Default::default(),
                 messages: vec![compatibility_user("anthropic-stream")],
                 tools: vec![compatibility_tool()],
@@ -545,11 +537,7 @@ async fn assert_deepseek_three_large_tool_rounds(
         let response = infer_for_test_transport(
             executor,
             ChatRequest {
-                model_binding: ModelBinding {
-                    provider_identity_ref: "deepseek".into(),
-                    model_ref: model.clone(),
-                    backend_ref: "genai".into(),
-                },
+                model_binding: ModelBinding::new("deepseek", model.clone(), "genai"),
                 inference: Default::default(),
                 messages: messages.clone(),
                 tools: tools.clone(),
@@ -586,11 +574,7 @@ async fn assert_deepseek_three_large_tool_rounds(
     let terminal = infer_for_test_transport(
         executor,
         ChatRequest {
-            model_binding: ModelBinding {
-                provider_identity_ref: "deepseek".into(),
-                model_ref: model,
-                backend_ref: "genai".into(),
-            },
+            model_binding: ModelBinding::new("deepseek", model, "genai"),
             inference: Default::default(),
             messages,
             tools,
@@ -644,11 +628,7 @@ async fn assert_deepseek_reasoning_tool_round_trip(
     let user = compatibility_user(requested_marker);
     let first = executor
         .infer(ChatRequest {
-            model_binding: ModelBinding {
-                provider_identity_ref: "deepseek".into(),
-                model_ref: model.clone(),
-                backend_ref: "genai".into(),
-            },
+            model_binding: ModelBinding::new("deepseek", model.clone(), "genai"),
             inference: Default::default(),
             messages: vec![user.clone()],
             tools: vec![tool.clone()],
@@ -683,11 +663,7 @@ async fn assert_deepseek_reasoning_tool_round_trip(
 
     let second = executor
         .infer(ChatRequest {
-            model_binding: ModelBinding {
-                provider_identity_ref: "deepseek".into(),
-                model_ref: model,
-                backend_ref: "genai".into(),
-            },
+            model_binding: ModelBinding::new("deepseek", model, "genai"),
             inference: Default::default(),
             messages: vec![
                 user,
@@ -725,11 +701,7 @@ fn compatibility_user(requested_marker: &str) -> ChatMessage {
 
 async fn assert_text_completion(executor: &dyn LlmExecutor, model: String) {
     let request = ChatRequest {
-        model_binding: ModelBinding {
-            provider_identity_ref: "deepseek".to_string(),
-            model_ref: model,
-            backend_ref: "genai".to_string(),
-        },
+        model_binding: ModelBinding::new("deepseek".to_string(), model, "genai".to_string()),
         inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,

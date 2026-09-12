@@ -452,11 +452,11 @@ fn snapshot(tool_ids: &[&str]) -> ExecutableAgentSnapshot {
             max_steps: 8,
             delegation_limits: Default::default(),
             model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                ModelBinding {
-                    provider_identity_ref: "provider".to_string(),
-                    model_ref: "model".to_string(),
-                    backend_ref: "backend".to_string(),
-                },
+                ModelBinding::new(
+                    "provider".to_string(),
+                    "model".to_string(),
+                    "backend".to_string(),
+                ),
             ),
             tool_descriptors: tool_ids
                 .iter()

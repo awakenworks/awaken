@@ -177,11 +177,9 @@ mod metadata_tests {
     #[test]
     fn embedded_compatibility_and_local_identity_are_single_snapshot_operations() {
         let mut snapshot = ExecutableAgentSnapshot::builder("agent-1")
-            .model(crate::resolved::ModelBinding {
-                provider_identity_ref: "local".into(),
-                model_ref: "model-a".into(),
-                backend_ref: "genai".into(),
-            })
+            .model(crate::resolved::ModelBinding::new(
+                "local", "model-a", "genai",
+            ))
             .build();
         snapshot.validate_embedded_native().unwrap();
         let before = snapshot.fingerprint.clone();

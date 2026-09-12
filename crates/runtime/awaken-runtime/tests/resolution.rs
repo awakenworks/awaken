@@ -25,11 +25,11 @@ fn snapshot(fingerprint: &str) -> ExecutableAgentSnapshot {
             max_steps: 16,
             delegation_limits: Default::default(),
             model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                ModelBinding {
-                    provider_identity_ref: "provider-1".to_string(),
-                    model_ref: "model-1".to_string(),
-                    backend_ref: "backend-1".to_string(),
-                },
+                ModelBinding::new(
+                    "provider-1".to_string(),
+                    "model-1".to_string(),
+                    "backend-1".to_string(),
+                ),
             ),
             tool_descriptors: Vec::new(),
             plugin_ids: Vec::new(),
