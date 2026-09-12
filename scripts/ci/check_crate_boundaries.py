@@ -1309,6 +1309,273 @@ def selftest_backend_configuration_is_opaque() -> None:
         ),
     ), "S1/E2 comments"
     assert not _opaque_backend_config_errors(rel, "let x = 1;"), "S1/E2 clean"
+# L2 guard for the composite identity (see `awaken_runtime_contract::resolved::
+# ModelBinding`). A struct with two or more bare `String` coordinates — fields
+# whose names end in `_id`, `_ref`, `_key` or `_name` — is, by this
+# repository's own vocabulary, a value with several identity coordinates. When
+# such a struct also *derives* `PartialEq`, the derive silently answers a
+# question the domain never asked: "are all of these fields part of this
+# identity, and is every one of them required?" It answers "yes" to both, and
+# the two halves of that answer fail in opposite directions.
+#
+# The producer half: `ModelBinding::new("", "m-first", "")` used to compile, so
+# the empty string was a representable wildcard. Two candidates on *different*
+# provider accounts then compared equal, a pinned model resolved onto the wrong
+# account, and inference was billed and routed there.
+#
+# The consumer half: a derived `PartialEq` re-answers the question every time a
+# field is added. A coordinate that joins the struct joins every comparison
+# fence that value gates — a dedup set, an idempotency replay check, a
+# conditional-write precondition — with no edit at the fence and no review.
+#
+# The rule is therefore: such a struct states its identity, rather than letting
+# the derive state it. Stating it means either a hand-written
+# `impl PartialEq for <Name>` (so the significant coordinates are written down)
+# or an inherent `fn identity(&self)` projection that every comparison goes
+# through — the shape `ManagementAuditRecord` and `ModelBinding` already use.
+# A struct that is *not* an identity says so here instead.
+#
+# Whole-repo scan plus a registry, never a file allow-list: a list freezes
+# today's instances and governs nothing written tomorrow.
+COMPOSITE_IDENTITY_COORDINATE = re.compile(
+    r"\n\s*pub (\w*(?:_ref|_id|_name|_key))\s*:\s*String\s*,"
+)
+COMPOSITE_IDENTITY_STRUCT = re.compile(
+    r"#\[derive\([^)]*\bPartialEq\b[^)]*\)\][^\n]*\n(?:#\[[^\n]*\]\n)*pub struct (\w+) \{(.*?)\n\}",
+    re.S,
+)
+
+# Key: the struct's name. Value: why its coordinates are not an identity that a
+# production decision compares. Every entry is a triage result someone can
+# argue with; a struct whose value *does* gate a comparison belongs in neither
+# this registry nor the ratchet, but in the stated form.
+#
+# Two kinds are recorded here:
+#   * plain records — carried, serialized, logged, persisted, but never
+#     compared to decide anything in production;
+#   * foreign-shaped values — mirrors of an external system's open structure,
+#     where whole-value equality is unwinnable by construction because the
+#     foreign system, not this repository, owns the field set.
+NON_IDENTITY_COMPOSITES: dict[str, str] = {
+    # Plain records.
+    "AgentListRequest": "coordinates are emptiness-checked and forwarded to the listing port",
+    "AgentMessageRequest": "destructured straight into SessionAgentMessageCommand, never compared",
+    "BrokeredInferenceRequest": "serialized to the gateway; the key becomes an HTTP header only",
+    "CheckpointObjectMetadata": "byte-custody metadata handed to the object store; no production impl compares it",
+    "ControlSessionCreationInputs": "destructured field-by-field into SessionBaseline at creation",
+    "CoordinatedRunCommand": "destructured on arrival; the id routes, it is never compared",
+    "DreamPreparation": "copied into the durable job record and read back to build ids",
+    "EventAdmissionReceipt": "a response-only proof; the idempotency decision happens earlier on the key",
+    "ExecutableModelOption": "a sorted admin-API projection; selection happens in select_offering",
+    "InferenceTriple": "resolution output rendered into a preview; select_offering owns the decision",
+    "PlacementContext": "placement reads requirements and attributes; the two ids are carried for identification",
+    "SessionExecutionEvidence": "a read-only wire projection of SessionExecutionObservation",
+    "SessionExecutionObservation": "a read-only projection handed straight to wire projection",
+    "SessionResourceActivation": "every decision keys on state and revision; activation_id is derived and never read back",
+    "SessionToolUseObservation": "its coordinates are only formatted into a public tool-event id",
+    "SessionUserRunCommand": "forwarded into AdmitSessionRun, which owns the reservation fence",
+    "WorkDispatchFailure": "a reconciliation report entry; consumers count and log it",
+    # Foreign-shaped.
+    "TaskArtifactUpdateEvent": "A2A v0.3 spec-owned streaming event; the foreign system owns the field set",
+    "TaskStatusUpdateEvent": "A2A v0.3 spec-owned streaming event; the foreign system owns the field set",
+}
+
+# The shape predates the gate. Converting every remaining comparison witness at
+# once would be a migration, not a fix, so the untriaged remainder is ratcheted:
+# the count may fall and may not rise. That is what makes this gate refuse a
+# *new* unstated composite identity today rather than only after the migration
+# finishes. Lower this number as witnesses are converted or recorded above;
+# never raise it.
+UNSTATED_COMPOSITE_IDENTITY_BASELINE = 59
+
+
+def _unstated_composite_identities(
+    repo_root: Path = REPO_ROOT, crates: Path = CRATES
+) -> tuple[list[str], set[str]]:
+    """Locate every derived-equality struct with two or more String coordinates."""
+    found: list[str] = []
+    registered: set[str] = set()
+    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+        if "/tests/" in str(path) or path.name.endswith(("tests.rs", "test_support.rs")):
+            continue
+        relative = path.relative_to(repo_root)
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+        for match in COMPOSITE_IDENTITY_STRUCT.finditer(production):
+            name, body = match.group(1), match.group(2)
+            if len(COMPOSITE_IDENTITY_COORDINATE.findall(body)) < 2:
+                continue
+            if name in NON_IDENTITY_COMPOSITES:
+                registered.add(name)
+                continue
+            found.append(f"{relative}: {name}")
+    return found, registered
+
+
+def check_composite_identity_is_stated(
+    repo_root: Path = REPO_ROOT, crates: Path = CRATES, baseline: int | None = None
+) -> list[str]:
+    """A multi-coordinate value states its identity, or says it is not one."""
+    baseline = UNSTATED_COMPOSITE_IDENTITY_BASELINE if baseline is None else baseline
+    found, registered = _unstated_composite_identities(repo_root, crates)
+    errors = [
+        f"{name} is recorded in NON_IDENTITY_COMPOSITES but no longer derives "
+        "PartialEq over two or more String coordinates; drop the stale entry"
+        for name in sorted(set(NON_IDENTITY_COMPOSITES) - registered)
+    ]
+    if len(found) > baseline:
+        errors.extend(
+            f"{entry} derives PartialEq over two or more bare String coordinates, so the "
+            "derive decides which of them are required and which are compared. Write the "
+            "identity down — a hand-written `impl PartialEq` or an inherent `fn identity(&self)` "
+            "every comparison goes through — or record in NON_IDENTITY_COMPOSITES why this "
+            "value never gates a decision"
+            for entry in found
+        )
+        errors.append(
+            f"{len(found)} unstated composite identities, baseline {baseline}: "
+            f"{len(found) - baseline} new one(s)."
+        )
+    elif len(found) < baseline:
+        errors.append(
+            f"{len(found)} unstated composite identities, below the baseline of {baseline}. "
+            f"Lower UNSTATED_COMPOSITE_IDENTITY_BASELINE to {len(found)} so the ground gained "
+            "is held."
+        )
+    return errors
+
+
+def selftest_composite_identity_is_stated() -> None:
+    """Cause/effect: only an unstated multi-coordinate identity raises the count."""
+    # Causes: C1 two String coordinates with a derived PartialEq; C2 the derive
+    # is replaced by a hand-written impl; C3 only one coordinate; C4 the
+    # coordinates are not bare Strings; C5 no PartialEq at all; C6 the struct is
+    # recorded as a non-identity; C7 the declaration is test-only; C8 a recorded
+    # name no longer matches anything.
+    # Effects: E1 counted toward the ratchet, E2 not counted, E3 an error.
+    #
+    # | Rule | derive PartialEq | >=2 String coords | registered | test-only | Effect |
+    # | I1   | T                | T                 | F          | F         | E1     |
+    # | I2   | F (hand-written) | T                 | F          | F         | E2     |
+    # | I3   | T                | F (one)           | F          | F         | E2     |
+    # | I4   | T                | F (typed)         | F          | F         | E2     |
+    # | I5   | F (no eq)        | T                 | F          | F         | E2     |
+    # | I6   | T                | T                 | T          | F         | E2     |
+    # | I7   | T                | T                 | F          | T         | E2     |
+    # | I8   | -                | -                 | stale      | -         | E3     |
+    global NON_IDENTITY_COMPOSITES
+    original = NON_IDENTITY_COMPOSITES
+    two = (
+        "#[derive(Debug, Clone, PartialEq, Eq)]\n"
+        "pub struct Widget {\n"
+        "    pub tenant_id: String,\n"
+        "    pub widget_ref: String,\n"
+        "}\n"
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        scan = root / "crates"
+        source = scan / "contract/example/src/lib.rs"
+        source.parent.mkdir(parents=True)
+
+        def count() -> int:
+            return len(_unstated_composite_identities(root, scan)[0])
+
+        NON_IDENTITY_COMPOSITES = {}
+        source.write_text(two, encoding="utf-8")
+        assert count() == 1, "I1"
+        source.write_text(
+            "pub struct Widget {\n"
+            "    pub tenant_id: String,\n"
+            "    pub widget_ref: String,\n"
+            "}\n"
+            "impl PartialEq for Widget {\n"
+            "    fn eq(&self, other: &Self) -> bool { self.identity() == other.identity() }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        assert count() == 0, "I2"
+        source.write_text(
+            "#[derive(PartialEq)]\npub struct Widget {\n    pub tenant_id: String,\n}\n",
+            encoding="utf-8",
+        )
+        assert count() == 0, "I3"
+        source.write_text(
+            "#[derive(PartialEq)]\n"
+            "pub struct Widget {\n"
+            "    pub tenant_id: TenantId,\n"
+            "    pub widget_ref: WidgetRef,\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        assert count() == 0, "I4"
+        source.write_text(
+            "#[derive(Debug, Clone)]\n"
+            "pub struct Widget {\n"
+            "    pub tenant_id: String,\n"
+            "    pub widget_ref: String,\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        assert count() == 0, "I5"
+        source.write_text(two, encoding="utf-8")
+        NON_IDENTITY_COMPOSITES = {"Widget": "a report row nothing compares"}
+        assert count() == 0, "I6"
+        assert not check_composite_identity_is_stated(root, scan, baseline=0), "I6 admits"
+        NON_IDENTITY_COMPOSITES = {}
+        source.write_text("#[cfg(test)]\n" + two, encoding="utf-8")
+        assert count() == 0, "I7"
+        NON_IDENTITY_COMPOSITES = {"Absent": "no longer declared anywhere"}
+        assert check_composite_identity_is_stated(root, scan, baseline=0), "I8"
+        # The ratchet itself: above the baseline is a new instance, below it is
+        # ground gained that must be recorded.
+        NON_IDENTITY_COMPOSITES = {}
+        source.write_text(two, encoding="utf-8")
+        assert check_composite_identity_is_stated(root, scan, baseline=0), "ratchet rises"
+        assert not check_composite_identity_is_stated(root, scan, baseline=1), "ratchet holds"
+        assert check_composite_identity_is_stated(root, scan, baseline=2), "ratchet falls"
+    NON_IDENTITY_COMPOSITES = original
+
+
+# The producer half of the same class, ratcheted the same way. A
+# `ModelBinding` has one *validating* constructor, `ModelBinding::parse`, which
+# refuses the coordinates that make two bindings on different provider accounts
+# compare equal. `ModelBinding::new` is the pre-existing path that performs no
+# admission; it exists only because converting its call sites is a migration,
+# not a fix. The count may fall and may not rise, so a new producer cannot skip
+# the admission even while the old ones are still being moved. The durable
+# ingress is already closed: deserialization goes through `parse`.
+UNVALIDATED_MODEL_BINDING_PRODUCER = re.compile(r"\bModelBinding::new\s*\(")
+UNVALIDATED_MODEL_BINDING_BASELINE = 468
+
+
+def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> list[str]:
+    """`ModelBinding::new` performs no admission; its call sites may only shrink."""
+    sites: list[str] = []
+    for root in (repo_root / "crates", repo_root / "e2e"):
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for match in UNVALIDATED_MODEL_BINDING_PRODUCER.finditer(text):
+                line = text[: match.start()].count("\n") + 1
+                sites.append(f"{path.relative_to(repo_root)}:{line}")
+    if len(sites) > UNVALIDATED_MODEL_BINDING_BASELINE:
+        return [
+            f"{len(sites)} ModelBinding::new call sites, baseline "
+            f"{UNVALIDATED_MODEL_BINDING_BASELINE}: "
+            f"{len(sites) - UNVALIDATED_MODEL_BINDING_BASELINE} new producer(s) skip the "
+            "completeness admission. Use ModelBinding::parse, which returns "
+            "Result<_, InvalidModelBinding>."
+        ]
+    if len(sites) < UNVALIDATED_MODEL_BINDING_BASELINE:
+        return [
+            f"{len(sites)} ModelBinding::new call sites, below the baseline of "
+            f"{UNVALIDATED_MODEL_BINDING_BASELINE}. Lower "
+            f"UNVALIDATED_MODEL_BINDING_BASELINE to {len(sites)} so the ground gained is held."
+        ]
+    return []
 
 
 def main() -> int:
@@ -1333,6 +1600,7 @@ def main() -> int:
     selftest_tenancy_is_required()
     selftest_no_ambient_tenant_default()
     selftest_backend_configuration_is_opaque()
+    selftest_composite_identity_is_stated()
     errors = (
         check_no_direct_transport_dependency()
         +
@@ -1347,6 +1615,8 @@ def main() -> int:
         + check_mcp_tool_identity_is_owned()
         + check_tenancy_is_not_optional()
         + check_no_ambient_tenant_default()
+        + check_composite_identity_is_stated()
+        + check_model_binding_producers_are_ratcheted()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _wire_closure_fitness.check_all(REPO_ROOT, CRATES)
