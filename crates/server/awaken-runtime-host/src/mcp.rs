@@ -133,6 +133,20 @@ pub(crate) fn project_mcp_session_transport(
                     "MCP client-injection receipt does not match its exact stage request",
                 )
             })?;
+    } else if receipt.actual_realization_kind
+        == Some(awaken_runtime_contract::CredentialRealizationKind::PlatformRelay)
+    {
+        receipt
+            .verify_for_delivery(
+                request,
+                awaken_credential_contract::McpCredentialDelivery::GatewayMediation,
+                awaken_runtime_contract::CredentialRealizationKind::PlatformRelay,
+            )
+            .map_err(|_| {
+                HostError::internal(
+                    "MCP gateway-mediation receipt does not match its exact stage request",
+                )
+            })?;
     } else {
         receipt.verify(request).map_err(|_| {
             HostError::internal("MCP realization receipt does not match its exact stage request")
@@ -195,6 +209,15 @@ pub(crate) fn project_mcp_session_transport(
                 generation.attachment_id().0,
                 generation.generation.version()
             )));
+        }
+        // A Platform-mediated generation already dials the mediator: staging
+        // put the mediator's route here and resolved no material at all. Say so
+        // explicitly rather than letting it share the anonymous arm, so the two
+        // stay distinguishable.
+        None if receipt.actual_realization_kind
+            == Some(awaken_runtime_contract::CredentialRealizationKind::PlatformRelay) =>
+        {
+            (original_url.to_string(), None)
         }
         None => (original_url.to_string(), None),
     };
