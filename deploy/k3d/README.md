@@ -191,6 +191,26 @@ and its publication fact are the only deterministic edge fixture. The Control
 Pod uses the existing scenario adapter to inject that fact into the production
 Control assembly; Coordinator and both Workers run the shipped production
 artifacts, and no scenario router replaces a business authority.
+
+The final stage first runs the real Kubernetes identity/reopen/stop-evidence
+test, then holds only the predecessor's finish ACK after one terminal Provider
+response has committed. It hard-kills that exact CRI container, checks its
+retained terminal identity, and starts a differently named/UID successor.
+Acceptance requires the same public receipt to finish, the old Dispatch row to
+settle, the predecessor Pod to be removed, the successor to remain live, and
+exactly one Provider request across the crash. This proves the evidence-backed
+terminal-recovery case, not safe replay of opaque in-flight model/tool effects
+or arbitrary historical Runs lacking termination evidence.
+
+On 2026-09-13 (Asia/Singapore), commit `d09552fcf` passed all eleven stages in
+`awaken-adr71-d095-browser-0913`, including the non-skipped real Kubernetes test.
+The pressure stage completed 48/48 requests with zero errors and approximately
+2.62 seconds P95; these are fixture observations, not production or DeepSeek
+latency guarantees. The script exited successfully and removed its dedicated
+cluster and staged binaries. This run selected the harness's existing
+`AWAKEN_K3D_BUILD_NETWORK=host` and the Sandbox builder's
+`AWAKEN_SANDBOX_BUILD_NETWORK=host` after the default build network failed;
+neither capacity admission nor fault assertions were bypassed.
 Replicated stateless roles and Workers use a 15-second `not-ready`/`unreachable`
 `NoExecute` tolerance in this overlay. A dead node is therefore removed from
 Service routing and its workloads become replaceable within the test's bounded
