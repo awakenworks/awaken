@@ -296,17 +296,21 @@ impl AgentBindings {
         {
             return Some(policy);
         }
-        let suffix = tool_id.strip_prefix("mcp__")?;
-        let (server_name, name) = suffix.split_once("__")?;
+        // The id carries the *encoded* server name and the toolset carries the
+        // *configured* one. Comparing those two spellings directly is what let a
+        // disabled toolset on `github-mcp` resolve to no policy at all, so the
+        // identity type owns the comparison and encodes both sides.
+        let mcp = awaken_agent_contract::McpToolId::parse(tool_id)?;
+        let tool_name = mcp.tool_name();
         self.toolsets
             .iter()
             .find(|policy| {
                 matches!(
                     &policy.source,
-                    ToolsetSource::Mcp { server_name: configured } if configured == server_name
+                    ToolsetSource::Mcp { server_name } if mcp.is_served_by(server_name)
                 )
             })
-            .map(|policy| policy.policy_for(name))
+            .map(|policy| policy.policy_for(&tool_name))
     }
 }
 
@@ -374,7 +378,89 @@ impl DerefMut for ResolvedConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentMcpServerBinding, AgentMcpTransportBinding};
+    use super::{
+        AgentBindings, AgentMcpServerBinding, AgentMcpTransportBinding, ToolExecutionPolicy,
+        ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+    };
+    use awaken_agent_contract::McpToolId;
+
+    fn disabled_toolset(server_name: &str) -> AgentBindings {
+        AgentBindings {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Mcp {
+                    server_name: server_name.into(),
+                },
+                default: ToolExecutionPolicy {
+                    enabled: false,
+                    permission: ToolPermissionRequirement::AlwaysAsk,
+                },
+                overrides: Vec::new(),
+            }],
+            ..AgentBindings::default()
+        }
+    }
+
+    #[test]
+    fn a_disabled_toolset_governs_every_punctuated_server_spelling() {
+        // The live bypass: an operator disables `github-mcp`, the producer emits
+        // an encoded id, and the consumer used to compare that encoded segment
+        // against the raw configured name — `None`, which means *no policy*.
+        for server_name in ["github-mcp", "githubmcp", "github.mcp", "api.example.com"] {
+            let bindings = disabled_toolset(server_name);
+            let tool_id = McpToolId::new(server_name, "search").expect("id");
+            let policy = bindings.tool_policy(tool_id.as_str()).unwrap_or_else(|| {
+                panic!("disabled toolset on {server_name:?} must govern {tool_id}")
+            });
+            assert!(!policy.enabled, "{server_name:?} must stay disabled");
+        }
+    }
+
+    #[test]
+    fn one_servers_policy_never_leaks_onto_a_differently_punctuated_neighbour() {
+        let bindings = disabled_toolset("a-b");
+        for neighbour in ["a.b", "a_b", "ab"] {
+            let tool_id = McpToolId::new(neighbour, "search").expect("id");
+            assert_eq!(
+                bindings.tool_policy(tool_id.as_str()),
+                None,
+                "{neighbour:?} must not inherit the policy authored for \"a-b\""
+            );
+        }
+    }
+
+    #[test]
+    fn an_override_is_matched_by_the_tool_name_the_server_advertises() {
+        let bindings = AgentBindings {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Mcp {
+                    server_name: "github-mcp".into(),
+                },
+                default: ToolExecutionPolicy {
+                    enabled: false,
+                    permission: ToolPermissionRequirement::AlwaysAsk,
+                },
+                overrides: vec![ToolPolicyOverride::new(
+                    "search.issues",
+                    ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAsk,
+                    },
+                )],
+            }],
+            ..AgentBindings::default()
+        };
+        let allowed = McpToolId::new("github-mcp", "search.issues").expect("id");
+        assert_eq!(
+            bindings.tool_policy(allowed.as_str()).map(|p| p.enabled),
+            Some(true)
+        );
+        let other = McpToolId::new("github-mcp", "search_issues").expect("id");
+        assert_eq!(
+            bindings.tool_policy(other.as_str()).map(|p| p.enabled),
+            Some(false),
+            "a different tool name falls to the disabled toolset default"
+        );
+    }
 
     #[test]
     fn flattened_mcp_transport_accepts_binding_metadata_for_both_variants() {

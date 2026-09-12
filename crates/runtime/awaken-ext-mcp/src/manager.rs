@@ -33,11 +33,10 @@ impl McpManager {
         Self::default()
     }
 
-    /// Add a connected server. Fails closed on a duplicate raw name, and on a
-    /// sanitized-namespace collision: two distinct raw names (e.g. `a-b` and
-    /// `a.b`) can sanitize to the same `mcp__a_b__` namespace, which would shadow
-    /// each other's tool ids, so the second is rejected rather than silently
-    /// registered.
+    /// Add a connected server. Fails closed on a duplicate raw name, and keeps
+    /// the namespace check as a structural backstop: the id encoding is
+    /// injective, so distinct raw names already occupy distinct namespaces, and
+    /// any future collision would mean the encoding itself regressed.
     pub fn add(&mut self, server: McpServer) -> Result<(), McpError> {
         if self.servers.iter().any(|s| s.name() == server.name()) {
             return Err(McpError::DuplicateServerName(server.name().to_string()));
@@ -178,31 +177,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_server_colliding_on_the_sanitized_namespace_is_rejected() {
-        // "a-b" and "a.b" are distinct RAW names, but both sanitize to the same
-        // namespace `mcp__a_b__`. add() must fail closed on the second rather than
-        // register two servers that shadow each other's tool ids.
+    async fn distinct_raw_server_names_keep_distinct_namespaces() {
+        // "a-b" and "a.b" are distinct RAW names. Under the historical encoding
+        // both collapsed to `mcp__a_b__`, so one shadowed the other's tool ids
+        // and a policy authored for one governed the other. The encoding is now
+        // injective, so both register and route unambiguously.
         let mut manager = McpManager::new();
         manager
             .add(server("a-b", "t", true).await)
             .expect("adds a-b");
-        let err = manager.add(server("a.b", "t", true).await);
-        assert!(
-            matches!(
-                &err,
-                Err(McpError::NamespaceCollision { name, namespace, existing })
-                    if name == "a.b" && namespace == "mcp__a_b__" && existing == "a-b"
-            ),
-            "second add rejected with a namespace collision, got {err:?}"
-        );
+        manager
+            .add(server("a.b", "t", true).await)
+            .expect("adds a.b");
 
-        // Only the first server is registered, so tool-id routing stays unambiguous.
-        assert_eq!(manager.len(), 1);
-        let ids: Vec<_> = manager
+        assert_eq!(manager.len(), 2);
+        let mut ids: Vec<_> = manager
             .plugins()
             .iter()
             .map(|p| p.resolve().dynamic_tools[0].descriptor().id.clone())
             .collect();
-        assert_eq!(ids, vec!["mcp__a_b__t".to_string()]);
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["mcp__a-2db__t".to_string(), "mcp__a-2eb__t".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_namespace_backstop_still_fails_closed() {
+        // The encoding makes this unreachable through `add`'s public inputs, so
+        // the backstop is exercised directly: were injectivity ever to regress,
+        // the second server must be rejected, never silently registered.
+        let mut manager = McpManager::new();
+        manager
+            .add(server("shared", "t", true).await)
+            .expect("first");
+        let mut clashing = server("other", "t", true).await;
+        clashing.set_namespace_for_test("mcp__shared__".into());
+        let err = manager.add(clashing);
+        assert!(
+            matches!(
+                &err,
+                Err(McpError::NamespaceCollision { name, namespace, existing })
+                    if name == "other" && namespace == "mcp__shared__" && existing == "shared"
+            ),
+            "collision must fail closed, got {err:?}"
+        );
+        assert_eq!(manager.len(), 1);
     }
 }

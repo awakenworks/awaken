@@ -6,6 +6,10 @@ use super::{
     ToolPromptInjection, ToolSchema, tool_search_descriptor,
 };
 
+/// The in-Session MCP server through which a builtin tool is bridged to an SDK
+/// that can only address MCP identities.
+const AWAKEN_SESSION_MCP_SERVER: &str = "awaken_session";
+
 impl ToolPresentation {
     /// Build from `(canonical_id, override)` pairs; entirely default entries
     /// (no alias, description, or exposure change) are dropped so an all-default
@@ -65,10 +69,16 @@ impl ToolPresentation {
             {
                 return Err("ACP_TOOL_UNSUPPORTED: invalid tool alias".into());
             }
-            let actual = if target.starts_with("mcp__") {
+            // A builtin target is bridged through the in-Session MCP server; an
+            // already-canonical target keeps its own identity. Both spellings
+            // come from the one owning constructor.
+            let actual = if awaken_agent_contract::McpToolId::claims_namespace(target) {
                 target.clone()
             } else {
-                format!("mcp__awaken_session__{target}")
+                awaken_agent_contract::McpToolId::new(AWAKEN_SESSION_MCP_SERVER, target)
+                    .map_err(|error| format!("ACP_TOOL_UNSUPPORTED: {error}"))?
+                    .as_str()
+                    .to_string()
             };
             if aliases.insert(alias.clone(), actual).is_some() {
                 return Err("ACP_TOOL_UNSUPPORTED: duplicate tool alias".into());

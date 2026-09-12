@@ -27,6 +27,7 @@ use awaken_agent_channel::AgentChannel;
 // Re-exported so a host composing an [`AgentSession`] can name the channel type without
 // a direct dependency on the foundational channel crate (crate-boundary compliant).
 pub use awaken_agent_channel::AgentChannel as AgentChannelType;
+use awaken_agent_contract::McpToolId;
 use awaken_agent_contract::agent::awaiting::{
     AwaitReason, AwaitTarget, PauseReason, PendingTool, ResumeTicket, ToolAwaitReason,
 };
@@ -1482,27 +1483,27 @@ struct AliasedMcpPermissionResolver<'a> {
     mcp_server_names: &'a [String],
 }
 
+/// The in-Session MCP server through which Awaken bridges its own builtin
+/// tools. A call on it is the builtin tool, not an external MCP tool.
+const AWAKEN_SESSION_MCP_SERVER: &str = "awaken_session";
+
+/// Project whatever spelling an ACP agent reported onto the one canonical tool
+/// identity, so a permission decision, a committed ToolUse and a resume match
+/// all compare the same string.
+///
+/// Both spellings are decomposed by the owning type: this function used to
+/// build `mcp__{server}__{name}` from an unsanitized ACP-reported server and
+/// split the dotted form on its *first* dot, so `mcp.a.b.c` on server `a.b`
+/// produced `mcp__a__b.c` — an id belonging to no configured namespace, which
+/// therefore matched no policy.
 fn canonical_permission_tool_id(tool: &str) -> String {
-    if let Some(name) = tool
-        .strip_prefix("mcp__awaken_session__")
-        .filter(|name| !name.is_empty())
-    {
-        return name.to_string();
-    }
-    let Some(mcp) = tool.strip_prefix("mcp.") else {
+    let Some(id) = McpToolId::parse(tool).or_else(|| McpToolId::from_dotted(tool)) else {
         return tool.to_string();
     };
-    let Some((server, name)) = mcp.split_once('.') else {
-        return tool.to_string();
-    };
-    if server.is_empty() || name.is_empty() {
-        return tool.to_string();
+    if id.is_served_by(AWAKEN_SESSION_MCP_SERVER) {
+        return id.tool_name();
     }
-    if server == "awaken_session" {
-        name.to_string()
-    } else {
-        format!("mcp__{server}__{name}")
-    }
+    id.as_str().to_string()
 }
 
 #[async_trait]
@@ -1526,19 +1527,15 @@ impl PermissionResolver for NarrowedPermissionResolver<'_> {
 #[async_trait]
 impl PermissionResolver for AliasedMcpPermissionResolver<'_> {
     async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        let Some(mcp) = ask.tool.strip_prefix("mcp.") else {
+        let Some(reported) = McpToolId::from_dotted(&ask.tool) else {
             return self.base.resolve(ask).await;
         };
-        let Some((reported_server, tool_name)) = mcp.split_once('.') else {
-            return self.base.resolve(ask).await;
-        };
-        if reported_server.is_empty()
-            || tool_name.is_empty()
-            || self.mcp_server_names.is_empty()
+        let tool_name = reported.tool_name();
+        if self.mcp_server_names.is_empty()
             || self
                 .mcp_server_names
                 .iter()
-                .any(|name| name == reported_server)
+                .any(|name| reported.is_served_by(name))
         {
             return self.base.resolve(ask).await;
         }
@@ -1547,7 +1544,7 @@ impl PermissionResolver for AliasedMcpPermissionResolver<'_> {
         let mut confirmation = None;
         for server_name in self.mcp_server_names {
             let candidate = PermissionAsk {
-                tool: format!("mcp.{server_name}.{tool_name}"),
+                tool: McpToolId::dotted(server_name, &tool_name),
                 call_id: ask.call_id.clone(),
                 arguments: ask.arguments.clone(),
             };

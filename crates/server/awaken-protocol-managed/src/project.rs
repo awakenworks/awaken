@@ -54,7 +54,7 @@ pub(crate) fn decode_managed_tool_event_id(id: &str) -> Option<ManagedToolEventI
 }
 
 /// Reserved MCP tool-name prefix — a custom tool may not claim it.
-const MCP_RESERVED_PREFIX: &str = "mcp__";
+const MCP_RESERVED_PREFIX: &str = awaken_agent_contract::MCP_TOOL_ID_PREFIX;
 /// Anthropic's custom-tool name length ceiling.
 const MAX_TOOL_NAME_LEN: usize = 128;
 /// JSON-Schema composition keywords the managed toolset input_schema rejects.
@@ -257,17 +257,15 @@ impl ProjectedEvent {
     }
 }
 
-/// The MCP tool-name prefix (`mcp__<server>__<tool>`). A call whose tool name
-/// carries it projects as the distinct `agent.mcp_tool_use`/`agent.mcp_tool_result`
-/// events rather than the generic `agent.tool_use`/`agent.tool_result`.
-const MCP_TOOL_PREFIX: &str = "mcp__";
-
-/// The MCP server segment of an `mcp__<server>__<tool>` name (`""` when absent).
+/// The MCP server behind an `mcp__<server>__<tool>` name, in the operator's own
+/// spelling (`""` when the name carries no recoverable MCP identity).
+///
+/// The id is decomposed by its owning type, so the server reported on the wire
+/// is the name the operator configured rather than its encoded segment.
 fn mcp_server_name(name: &str) -> String {
-    name.strip_prefix(MCP_TOOL_PREFIX)
-        .and_then(|rest| rest.split("__").next())
+    awaken_agent_contract::McpToolId::parse(name)
+        .map(|id| id.server_name())
         .unwrap_or_default()
-        .to_string()
 }
 
 /// The Managed Agents transcoder: neutral projection events to public
@@ -302,7 +300,7 @@ impl Transcoder for ManagedEncoder {
                 name,
                 input,
                 disposition,
-            } if name.starts_with(MCP_TOOL_PREFIX) => {
+            } if awaken_agent_contract::McpToolId::claims_namespace(name) => {
                 self.mcp_ids.insert(id.clone());
                 let evaluated_permission = match disposition {
                     ToolDisposition::PendingBuiltin => Some(EvaluatedPermission::Ask),

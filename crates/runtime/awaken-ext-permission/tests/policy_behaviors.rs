@@ -642,3 +642,85 @@ async fn port_allow_maps_to_allow_decision() {
         ToolPermissionVerdict::Allow
     ));
 }
+
+// ---------------------------------------------------------------------------
+// MCP toolset identity: a disabled toolset must reach the decision
+// ---------------------------------------------------------------------------
+
+/// A permission ruleset whose unmatched behavior is the common, permissive one.
+/// This is the substrate the bypass rode on: when the MCP toolset lookup
+/// returned `None`, the call matched no rule and fell straight to `Allow`.
+fn allow_when_unmatched() -> PermissionRuleset {
+    PermissionRuleset {
+        default_behavior: ToolPermissionBehavior::Allow,
+        mode: Mode::Default,
+        rules: Vec::new(),
+    }
+}
+
+fn disabled_mcp_toolset(
+    server_name: &str,
+) -> awaken_runtime_contract::agent_bindings::ToolsetPolicy {
+    awaken_runtime_contract::agent_bindings::ToolsetPolicy {
+        source: awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp {
+            server_name: server_name.into(),
+        },
+        default: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+            enabled: false,
+            permission:
+                awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+        },
+        overrides: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn a_disabled_mcp_toolset_denies_however_its_server_name_is_punctuated() {
+    // The operator disabled the toolset. Whatever punctuation the server name
+    // carries, the tool the producer emits for it must reach a Deny — never the
+    // permissive unmatched default.
+    for server_name in ["github-mcp", "githubmcp", "github.mcp", "api.example.com"] {
+        let policy = RuleBasedToolPermissionPolicy::new(allow_when_unmatched())
+            .with_mcp_toolsets(&[disabled_mcp_toolset(server_name)]);
+        let tool_id = awaken_agent_contract::McpToolId::new(server_name, "search")
+            .expect("canonical id")
+            .as_str()
+            .to_string();
+        let verdict = policy
+            .evaluate(&ToolCall {
+                call_id: "bypass".into(),
+                tool_id: tool_id.clone(),
+                arguments: json!({}),
+            })
+            .await;
+        assert!(
+            matches!(verdict, ToolPermissionVerdict::Deny { .. }),
+            "disabled toolset on {server_name:?} must deny {tool_id}, got {verdict:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_toolset_never_governs_a_differently_punctuated_neighbour() {
+    let policy = RuleBasedToolPermissionPolicy::new(allow_when_unmatched())
+        .with_mcp_toolsets(&[disabled_mcp_toolset("a-b")]);
+    for neighbour in ["a.b", "a_b"] {
+        let tool_id = awaken_agent_contract::McpToolId::new(neighbour, "search")
+            .expect("canonical id")
+            .as_str()
+            .to_string();
+        assert!(
+            matches!(
+                policy
+                    .evaluate(&ToolCall {
+                        call_id: "neighbour".into(),
+                        tool_id,
+                        arguments: json!({}),
+                    })
+                    .await,
+                ToolPermissionVerdict::Allow
+            ),
+            "the policy authored for \"a-b\" must not reach {neighbour:?}"
+        );
+    }
+}
