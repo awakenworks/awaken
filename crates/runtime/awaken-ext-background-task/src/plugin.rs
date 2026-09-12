@@ -8,7 +8,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::BACKGROUND_TASK_STATE_PREFIX;
-use crate::tools::{CancelBackgroundTask, GetBackgroundTask, ListBackgroundTasks, RunInBackground};
 use crate::{
     BackgroundTaskError, BackgroundTaskLifecycle, BackgroundTaskSupervisor, task_state_cell,
     tasks_from_state,
@@ -24,6 +23,8 @@ pub struct BackgroundTaskConfig {
     /// concurrency, recovery, or resource policies.
     #[serde(default)]
     pub tools: BTreeSet<String>,
+    #[serde(default)]
+    pub notifications: crate::TaskNotifications,
 }
 
 /// Authoring schema derived from the one typed configuration shape.
@@ -64,11 +65,13 @@ impl BackgroundTaskPlugin {
         let mut contributions = Contributions::new(BACKGROUND_TASK_PLUGIN_ID);
         if !config.tools.is_empty() {
             contributions.declare_state_key(BACKGROUND_TASK_STATE_PREFIX);
+            contributions.declare_state_key(crate::notification::RECEIPT_PREFIX);
             for tool in crate::tools::tools(config.tools, self.supervisor.clone()) {
                 contributions.register_dynamic_tool(tool);
             }
             contributions.register_hook(Arc::new(ReconcileBackgroundTasks {
                 supervisor: self.supervisor.clone(),
+                notifications: config.notifications,
             }));
         }
         contributions
@@ -82,13 +85,13 @@ impl Plugin for BackgroundTaskPlugin {
             requires: Vec::new(),
             config_sections: vec![BACKGROUND_TASK_PLUGIN_ID.into()],
             bound: CapabilityBound {
-                tools: IdBound::Exact(vec![
-                    RunInBackground::ID.into(),
-                    ListBackgroundTasks::ID.into(),
-                    GetBackgroundTask::ID.into(),
-                    CancelBackgroundTask::ID.into(),
-                ]),
-                state_keys: IdBound::Namespace(BACKGROUND_TASK_STATE_PREFIX.into()),
+                tools: IdBound::Exact(
+                    crate::management_tool_ids()
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                ),
+                state_keys: IdBound::Namespace("background_task".into()),
                 phase_hooks: vec![PhaseHookPoint::StepStart],
                 ..Default::default()
             },
@@ -118,12 +121,17 @@ impl Plugin for BackgroundTaskPlugin {
                 "background tools must be non-empty ordinary tool ids",
             ));
         }
+        config
+            .notifications
+            .validate()
+            .map_err(|error| PluginConfigError::new(BACKGROUND_TASK_PLUGIN_ID, error))?;
         Ok(self.contributions(config))
     }
 }
 
 struct ReconcileBackgroundTasks {
     supervisor: Arc<BackgroundTaskSupervisor>,
+    notifications: crate::TaskNotifications,
 }
 
 #[async_trait::async_trait]
@@ -142,9 +150,14 @@ impl PhaseHook for ReconcileBackgroundTasks {
             return HookReaction::default();
         };
         let mut commands = Vec::new();
+        let mut messages = Vec::new();
         for mut task in tasks {
             if task.lifecycle.is_terminal() {
                 self.supervisor.retire_terminal(&task.id);
+                if let Some((message, receipt)) = self.notifications.message(&task, state) {
+                    messages.push(message);
+                    commands.push(receipt);
+                }
                 continue;
             }
             let committed_fence = task.attempt().map(|attempt| attempt.fence());
@@ -155,6 +168,10 @@ impl PhaseHook for ReconcileBackgroundTasks {
             {
                 if let Ok(command) = task_state_cell(&task.id).write(&task) {
                     commands.push(command);
+                    if let Some((message, receipt)) = self.notifications.message(&task, state) {
+                        messages.push(message);
+                        commands.push(receipt);
+                    }
                 }
                 continue;
             }
@@ -212,8 +229,14 @@ impl PhaseHook for ReconcileBackgroundTasks {
             // post-commit Host observer; no local shortcut certifies termination.
             if let Ok(command) = task_state_cell(&task.id).write(&task) {
                 commands.push(command);
+                if let Some((message, receipt)) = self.notifications.message(&task, state) {
+                    messages.push(message);
+                    commands.push(receipt);
+                }
             }
         }
-        HookReaction::state(commands)
+        let mut reaction = HookReaction::state(commands);
+        reaction.messages = messages;
+        reaction
     }
 }

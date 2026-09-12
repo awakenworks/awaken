@@ -140,6 +140,7 @@ mod tests {
                 BackgroundTaskPlugin::with_supervisor(
                     BackgroundTaskConfig {
                         tools: BTreeSet::from(["remote".into()]),
+                        ..Default::default()
                     },
                     supervisor.clone(),
                 ),
@@ -294,6 +295,7 @@ mod tests {
                     Arc::new(BackgroundTaskPlugin::with_supervisor(
                         BackgroundTaskConfig {
                             tools: BTreeSet::from(["remote".into()]),
+                            ..Default::default()
                         },
                         supervisor.clone(),
                     )),
@@ -446,6 +448,7 @@ mod tests {
                 let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
                     BackgroundTaskConfig {
                         tools: BTreeSet::from(["remote".into()]),
+                        ..Default::default()
                     },
                     supervisor.clone(),
                 ));

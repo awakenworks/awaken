@@ -100,9 +100,9 @@ fn attention_message(
         format!(
             "Background task {} has {}.\n\n\
              The runtime reconciles the latest fenced task state before this inference. \
-             Use get_background_task with this task_id to inspect the authoritative status \
-             and result. Decide whether to incorporate it, cancel related work, or continue \
-             without it. Do not repeat work already completed by the task.",
+             Accepted terminal results are supplied directly as source-labelled messages \
+             according to the published notification policy. Continue from those results \
+             without repeating work already completed by the task.",
             task_id.as_str(),
             kind.reason(),
         ),
@@ -964,7 +964,10 @@ mod tests {
         assert_eq!(message_a.role, Role::System, "R3 system input");
         let text = message_a.text_content();
         assert!(text.contains(task.as_str()), "R3 task reference");
-        assert!(text.contains("get_background_task"), "R3 state lookup");
+        assert!(
+            !text.contains("get_background_task"),
+            "R3 no redundant model lookup"
+        );
         assert!(!text.contains("worker-secret"), "R3 no worker identity");
     }
 
@@ -1357,6 +1360,7 @@ mod tests {
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
                 tools: BTreeSet::from(["count".into()]),
+                ..Default::default()
             },
             supervisor.clone(),
         ));
@@ -1603,6 +1607,7 @@ mod tests {
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
                 tools: BTreeSet::from(["remote".into()]),
+                ..Default::default()
             },
             supervisor.clone(),
         ));

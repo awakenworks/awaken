@@ -36,6 +36,7 @@ impl ToolExecutionFactsResolver for FixtureExecutionFacts {
 fn environment() -> ResolvedExecutionEnv {
     let plugin = BackgroundTaskPlugin::new(BackgroundTaskConfig {
         tools: BTreeSet::from(["bash".into()]),
+        ..Default::default()
     });
     ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())])
         .expect("fixture plugin resolves within its manifest")
@@ -94,6 +95,7 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
             tools: BTreeSet::from(["bash".into()]),
+            ..Default::default()
         },
         supervisor,
     );
@@ -142,7 +144,7 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
             let mut state = Store::new();
             state.apply(&task_state_cell(&task.id).write(&task).unwrap());
             let reaction = hook.on_phase(&ctx, &[], &state).await;
-            assert_eq!(reaction.state.len(), 1);
+            assert_eq!(reaction.state.len(), if remote { 1 } else { 2 });
             state.apply(&reaction.state[0]);
             let next = task_state_cell(&task.id).load(&state).unwrap().unwrap();
             assert_eq!(next.revision, task.revision + 1, "one canonical transition");
@@ -383,6 +385,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
             tools: BTreeSet::from(["bash".into()]),
+            ..Default::default()
         },
         supervisor.clone(),
     );
@@ -434,7 +437,11 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
             .expect("completed state"),
     );
     let reaction = hook.on_phase(&ctx, &[], &completed_state).await;
-    assert_eq!(reaction.state.len(), 1, "C1/E1");
+    assert_eq!(
+        reaction.state.len(),
+        2,
+        "C1/E1 task and notification receipt"
+    );
     completed_state.apply(&reaction.state[0]);
     let folded = task_state_cell(&completed.id)
         .load(&completed_state)
@@ -564,7 +571,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     let current = hook.on_phase(&ctx, &[], &replacement_state).await;
     assert_eq!(
         current.state.len(),
-        1,
+        2,
         "C5/E5 current Run can still fold completion"
     );
     replacement_state.apply(&current.state[0]);
@@ -618,6 +625,7 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
             tools: BTreeSet::from(["bash".into()]),
+            ..Default::default()
         },
         supervisor.clone(),
     );
@@ -665,7 +673,7 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     );
 
     let rejected = hook.on_phase(&ctx, &[], &durable).await;
-    assert_eq!(rejected.state.len(), 1, "R1");
+    assert_eq!(rejected.state.len(), 2, "R1 task and notification receipt");
     assert!(supervisor.completion(&task.id).is_some(), "R2");
     assert!(
         supervisor.register(&task.id, &fence).is_none(),
@@ -673,9 +681,15 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     );
 
     let retried = hook.on_phase(&ctx, &[], &durable).await;
-    assert_eq!(retried.state.len(), 1, "R2 retry");
+    assert_eq!(retried.state.len(), 2, "R2 retry");
     assert_eq!(retried.state, rejected.state, "R2 exact staged retry");
-    durable.apply(&retried.state[0]);
+    assert_eq!(
+        retried.messages, rejected.messages,
+        "R2 exact content retry"
+    );
+    for command in &retried.state {
+        durable.apply(command);
+    }
     let ended = task_state_cell(&task.id)
         .load(&durable)
         .expect("typed durable task")

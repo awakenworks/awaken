@@ -348,6 +348,40 @@ required for the completion decision because the Agent reads terminal state.
 
 ## Consequences
 
+### 2026-09-13 amendment — result-bearing notification projection
+
+The extension may project an accepted terminal task result directly into a
+source-labelled User message at StepStart. The Host wake remains a minimal
+control message, but must not instruct the Agent to query a result that the
+extension can already provide. Task state is reconciled before projection;
+unaccepted process candidates are never model context. The notification's stable
+message identity is derived from the task and its terminal revision. Normal
+ThreadCommit carries it together with the state transition and a small
+`background_task_notification/{task_id}` revision receipt. That receipt survives
+transcript compaction; it is neither a notification queue nor another task store.
+
+BackgroundTask owns a bounded presentation policy with per-event rules and exact
+tool overrides. Rules choose enabled/disabled, JSON or tagged rendering, selected
+public result fields, a bounded heading template, and a content budget. They
+cannot alter source identity, destination, execution permission, recovery, or
+task status. Omitted policy delivers terminal results directly. Filtering model
+content does not disable the existing internal recovery wake or lifecycle fold.
+Large bodies use an explicit truncation marker; the canonical result remains
+available through the existing get tool. This amendment supersedes the earlier
+result-free attention constraint only for this post-reconciliation projection.
+Remote task ids, invocation arguments and lease identities remain excluded.
+
+Host baseline policy admits the extension-owned Thread-local management tools.
+The configured target remains independently authorized by PreparedToolExecutor
+before start; a management allowance cannot grant the target, and explicit
+authored management denials retain their normal precedence. This avoids a second
+approval for merely creating a task whose actual tool is already allowed.
+
+The first slice is the extension projection and actual Runtime inference tests.
+MCP task-status push, intermediate business notifications, live media routing and
+distributed Worker completion transport remain separate changes to their current
+owners; this amendment does not claim those paths are implemented.
+
 - The capability remains one explicit bounded context and does not weaken the
   ADR-0003 ban on a generic asynchronous-work umbrella.
 - Runtime remains storage-, worker-, and lease-neutral.
