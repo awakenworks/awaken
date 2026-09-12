@@ -8,6 +8,7 @@ pub mod event;
 pub mod fingerprint;
 pub mod id;
 pub mod mcp_target;
+pub mod mcp_tool_id;
 pub mod model_spec;
 pub mod model_target;
 pub mod observation;
@@ -34,6 +35,10 @@ pub use id::fresh_process_id;
 pub use mcp_target::{
     HttpMcpTarget, McpTarget, McpTargetError, McpTargetIdentity, SandboxStdioMcpTarget,
     SandboxStdioMcpTargetKind,
+};
+pub use mcp_tool_id::{
+    MCP_DOTTED_TOOL_PREFIX, MCP_TOOL_ID_PREFIX, MCP_TOOL_ID_SEPARATOR, McpToolId,
+    McpToolIdComponent, McpToolIdError,
 };
 pub use model_spec::ModelSpec;
 pub use model_target::ModelTarget;
