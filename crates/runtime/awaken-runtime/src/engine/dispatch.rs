@@ -8,6 +8,56 @@
 use super::delegation::is_resolved_advisor_call;
 use super::*;
 
+fn is_client_executed(resolved: &ResolvedRun, call: &ToolCall) -> bool {
+    resolved.spec.tool_descriptors.iter().any(|descriptor| {
+        descriptor.id == call.tool_id && descriptor.kind == ToolKind::ClientExecuted
+    })
+}
+
+/// One client ownership branch for initial and recovered Requested calls. An external
+/// tool never enters the Host permission/execution path merely because its batch resumed.
+#[allow(clippy::too_many_arguments)]
+async fn await_client_call(
+    context: &RuntimeRunContext,
+    resolved: &ResolvedRun,
+    run_id: &RunId,
+    delegation_origin: Option<&DelegationOrigin>,
+    call: &ToolCall,
+    batch: &mut ToolBatch,
+    ledger: &mut StepLedger,
+    store: &mut Store,
+) -> Result<Option<RunDisposition>> {
+    if !is_client_executed(resolved, call) {
+        return Ok(None);
+    }
+    let ticket = resume_ticket(
+        context,
+        resolved,
+        run_id,
+        delegation_origin,
+        &call.call_id,
+        call,
+        ToolAwaitReason::ClientExecution,
+    );
+    emit(
+        context,
+        run_id,
+        AgentEvent::Fact(Fact::Awaiting {
+            pending_tool_use_id: ticket.call_id().map(str::to_owned),
+        }),
+    )
+    .await;
+    batch
+        .mark_awaiting(
+            &call.call_id,
+            ToolWaitKind::ExternalResult,
+            ticket.correlation_id.clone(),
+        )
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    stage_batch(batch, ledger, store);
+    Ok(Some(RunDisposition::awaiting(ticket)))
+}
+
 fn call_concurrency(
     runtime: &Runtime,
     context: &RuntimeRunContext,
@@ -28,9 +78,7 @@ fn call_concurrency(
             })
     } else if RuntimeToolOperation::classify(&call.tool_id).is_some()
         || is_resolved_advisor_call(resolved, call)
-        || resolved.spec.tool_descriptors.iter().any(|descriptor| {
-            descriptor.id == call.tool_id && descriptor.kind == ToolKind::ClientExecuted
-        })
+        || is_client_executed(resolved, call)
     {
         ToolConcurrency::Serial
     } else {
@@ -46,9 +94,7 @@ fn call_concurrency(
 fn requires_sequential_dispatch(resolved: &ResolvedRun, call: &ToolCall) -> bool {
     RuntimeToolOperation::classify(&call.tool_id) == Some(RuntimeToolOperation::ToolSearch)
         || is_resolved_advisor_call(resolved, call)
-        || resolved.spec.tool_descriptors.iter().any(|descriptor| {
-            descriptor.id == call.tool_id && descriptor.kind == ToolKind::ClientExecuted
-        })
+        || is_client_executed(resolved, call)
 }
 
 fn is_detached_only_call(descriptors: &[ToolDescriptor], call: &ToolCall) -> bool {
@@ -158,35 +204,19 @@ pub(super) async fn run_tool_calls(
         // bypasses the gate and never reaches an executor.
         let mut entered_executor = false;
         let mut delegation_started = false;
-        if resolved.spec.tool_descriptors.iter().any(|descriptor| {
-            descriptor.id == call.tool_id && descriptor.kind == ToolKind::ClientExecuted
-        }) {
-            let ticket = resume_ticket(
-                context,
-                resolved,
-                run_id,
-                delegation_origin,
-                &call.call_id,
-                &call,
-                ToolAwaitReason::ClientExecution,
-            );
-            emit(
-                context,
-                run_id,
-                AgentEvent::Fact(Fact::Awaiting {
-                    pending_tool_use_id: ticket.call_id().map(str::to_owned),
-                }),
-            )
-            .await;
-            batch
-                .mark_awaiting(
-                    &call.call_id,
-                    ToolWaitKind::ExternalResult,
-                    ticket.correlation_id.clone(),
-                )
-                .map_err(|error| Error::Execution(error.to_string()))?;
-            stage_batch(&batch, ledger, store);
-            return Ok(Some(RunDisposition::awaiting(ticket)));
+        if let Some(disposition) = await_client_call(
+            context,
+            resolved,
+            run_id,
+            delegation_origin,
+            &call,
+            &mut batch,
+            ledger,
+            store,
+        )
+        .await?
+        {
+            return Ok(Some(disposition));
         }
         let reaction_call = call.clone();
         let output = if let Some(output) =
@@ -911,6 +941,22 @@ pub(super) async fn recover_tool_batch(
                 continue;
             }
             ToolCallPhase::Requested | ToolCallPhase::Executing { .. } => {}
+        }
+
+        if matches!(&durable.phase, ToolCallPhase::Requested)
+            && let Some(disposition) = await_client_call(
+                context,
+                resolved,
+                run_id,
+                delegation_origin,
+                &call,
+                &mut batch,
+                ledger,
+                store,
+            )
+            .await?
+        {
+            return Ok(Some(disposition));
         }
 
         let capability =
