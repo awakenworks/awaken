@@ -1,0 +1,34 @@
+# One executable deadline for the whole Rust test suite.
+#
+# Neither `cargo test` nor libtest can bound a single test: a test that awaits
+# something no one will signal parks its runtime forever, and because the
+# workspace suite is one process tree, that one test wedges the entire gate.
+# This has happened: a `dreams` integration test waited on a `Notify` whose
+# producer never ran because the request under test had started returning 404,
+# and the run was still parked in `epoll_wait(timeout=-1)` eight hours later
+# having burned 0.02 seconds of CPU.
+#
+# `terminate-after` is what makes that impossible. nextest reports a slow test
+# every `period`, then kills it and records a failure. The deadline is the
+# product: period x terminate-after. Raising either weakens the guarantee, so
+# `scripts/ci/check_test_orchestration.py` bounds the product and requires
+# `terminate-after` to be present here and in every override.
+#
+# A test that needs longer than the deadline is a defect in the test, not a
+# reason to raise it: bound the wait inside the test with `tokio::time::timeout`
+# so it fails with its own message instead of this one.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Report every failure, not just the first. `cargo test` used to run a whole
+# test binary before stopping, so a developer saw the full set; stopping at
+# the first test would make the gate say less than it used to, and the whole
+# suite is under three minutes.
+fail-fast = false
+
+# Kept deliberately empty. An override raises the deadline for the tests it
+# matches, which is the one way this guarantee can be quietly undone, so each
+# entry must carry the reason the work genuinely cannot be bounded inside the
+# test and must still name `terminate-after`.
+[[profile.default.overrides]]
+filter = 'test(=__awaken_no_test_matches_this_filter__)'
+slow-timeout = { period = "60s", terminate-after = 5 }

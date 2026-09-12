@@ -100,6 +100,18 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+# The workspace suite runs under nextest because nextest is the only runner
+# that can bound a single test. libtest cannot: a test that awaits a signal no
+# one will send parks its runtime forever, and one such test wedges this whole
+# gate with no output and no end. The deadline lives in .config/nextest.toml.
+# Falling back to `cargo test` here would silently restore the unbounded run,
+# so a missing runner fails the gate instead of quietly weakening it.
+if [ "$mode" = "--full" ] && ! cargo nextest --version >/dev/null 2>&1; then
+  echo "ERROR: cargo-nextest is required to run the test suite under a per-test" >&2
+  echo "       deadline. Install it with: cargo install cargo-nextest --locked" >&2
+  exit 1
+fi
+
 step "fmt" "cargo fmt --all" \
   cargo fmt --all -- --check
 
@@ -170,8 +182,13 @@ case "$mode" in
       # Scenario/Coordinator integration uses the real release Hand companion.
       # C1 full workspace tests => E1 build its authored feature in the same
       # Cargo graph; a thin default binary must not replace the tested companion.
-      step "test" "re-run a single failure with: cargo test --workspace <test_name> -- --nocapture" \
-        cargo test --workspace --features "$workspace_features" "${locked[@]}"
+      # nextest bounds every test with the deadline in .config/nextest.toml;
+      # it does not run doctests, so the doctest target keeps its own step
+      # rather than silently going unrun.
+      step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
+        cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
+      step "doctest" "re-run with: cargo test --workspace --doc <test_name> -- --nocapture" \
+        cargo test --workspace --doc --features "$workspace_features" "${locked[@]}"
     else
       echo "   (skipping tests until clippy compiles)" >&2
     fi
