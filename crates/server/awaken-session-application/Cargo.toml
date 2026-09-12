@@ -22,6 +22,7 @@ awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
