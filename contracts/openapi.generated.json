@@ -248,6 +248,7 @@
       },
       "ArchiveCredentialRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
         "description": "Retire one exact credential revision. The expected version is mandatory so\nan operator cannot erase material that was rotated after its read.",
         "properties": {
           "expected_version": {
@@ -1094,7 +1095,7 @@
                 "type": "object"
               },
               {
-                "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.",
+                "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.\n\nThis is also the one mechanism for core ENV and private-file delivery:\nsee [`PROCESS_ENV_CONSUMER`] and [`PRIVATE_FILE_CONSUMER`]. Physical\nlocations stay inside `public_config` so no deployment detail — an ENV\nname, a host path — enters the credential domain model.",
                 "properties": {
                   "consumer_id": {
                     "type": "string"
@@ -1190,38 +1191,6 @@
                 },
                 "required": [
                   "type"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "environment_variable",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "name"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "path": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "file",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "path"
                 ],
                 "type": "object"
               }
@@ -1558,6 +1527,7 @@
             ]
           },
           "CredentialMaterialInput": {
+            "additionalProperties": false,
             "properties": {
               "fields": {
                 "additionalProperties": {
@@ -1806,7 +1776,7 @@
                 "type": "object"
               },
               {
-                "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.",
+                "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.\n\nThis is also the one mechanism for core ENV and private-file delivery:\nsee [`PROCESS_ENV_CONSUMER`] and [`PRIVATE_FILE_CONSUMER`]. Physical\nlocations stay inside `public_config` so no deployment detail — an ENV\nname, a host path — enters the credential domain model.",
                 "properties": {
                   "consumer_id": {
                     "type": "string"
@@ -1904,38 +1874,6 @@
                   "type"
                 ],
                 "type": "object"
-              },
-              {
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "environment_variable",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "name"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "path": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "file",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "path"
-                ],
-                "type": "object"
               }
             ]
           },
@@ -2016,6 +1954,7 @@
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
         "description": "The credential-entry wire body. `secret` is write-only: it is sealed into the\nSecretStore and never appears on any response. `RedactedString` is\nintentionally not `Deserialize`, so the raw secret crosses the wire once.",
         "properties": {
           "descriptor": {
@@ -2255,7 +2194,7 @@
           },
           "ModelTarget": {
             "additionalProperties": false,
-            "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead \u2014 `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
+            "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead — `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
             "properties": {
               "api_dialect": {
                 "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
@@ -2436,7 +2375,7 @@
           },
           "ModelTarget": {
             "additionalProperties": false,
-            "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead \u2014 `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
+            "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead — `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
             "properties": {
               "api_dialect": {
                 "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
@@ -2607,7 +2546,7 @@
       "ModelTarget": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead \u2014 `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
+        "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead — `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
         "properties": {
           "api_dialect": {
             "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
@@ -3782,7 +3721,7 @@
                 "type": "object"
               },
               {
-                "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.",
+                "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.\n\nThis is also the one mechanism for core ENV and private-file delivery:\nsee [`PROCESS_ENV_CONSUMER`] and [`PRIVATE_FILE_CONSUMER`]. Physical\nlocations stay inside `public_config` so no deployment detail — an ENV\nname, a host path — enters the credential domain model.",
                 "properties": {
                   "consumer_id": {
                     "type": "string"
@@ -3878,38 +3817,6 @@
                 },
                 "required": [
                   "type"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "environment_variable",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "name"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "path": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "file",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "path"
                 ],
                 "type": "object"
               }
@@ -4385,7 +4292,7 @@
           },
           "ModelTarget": {
             "additionalProperties": false,
-            "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead \u2014 `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
+            "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead — `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
             "properties": {
               "api_dialect": {
                 "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
@@ -4639,6 +4546,7 @@
             ]
           },
           "CredentialMaterialInput": {
+            "additionalProperties": false,
             "properties": {
               "fields": {
                 "additionalProperties": {
@@ -4869,7 +4777,7 @@
                 "type": "object"
               },
               {
-                "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.",
+                "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.\n\nThis is also the one mechanism for core ENV and private-file delivery:\nsee [`PROCESS_ENV_CONSUMER`] and [`PRIVATE_FILE_CONSUMER`]. Physical\nlocations stay inside `public_config` so no deployment detail — an ENV\nname, a host path — enters the credential domain model.",
                 "properties": {
                   "consumer_id": {
                     "type": "string"
@@ -4967,38 +4875,6 @@
                   "type"
                 ],
                 "type": "object"
-              },
-              {
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "environment_variable",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "name"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "path": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "file",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "path"
-                ],
-                "type": "object"
               }
             ]
           },
@@ -5069,6 +4945,7 @@
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
         "description": "Rotate the primary material of one exact active Vault credential revision.\nScalar or typed material is write-only and the response remains secret-free.",
         "properties": {
           "descriptor": {

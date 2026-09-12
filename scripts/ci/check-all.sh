@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_provider_environment.sh
 awaken_unset_ambient_api_keys
 
-groups=(static docs rust api formal reliability postgres kubernetes k3d frontend e2e sandbox)
+groups=(static docs rust api contracts formal reliability postgres kubernetes k3d frontend e2e sandbox)
 requested_group=all
 case "${1:-}" in
   "") ;;
@@ -119,6 +119,11 @@ run docs "documentation" scripts/ci/check-docs.sh
 run rust "rust" scripts/ci/check-rust.sh --full
 run rust "dependency-policy" cargo deny --log-level error check advisories bans
 run api "public-api" scripts/ci/check_public_api.sh --require-tools
+# Generated wire artifacts (JSON Schema, OpenAPI, TS types, the Managed SDK
+# oracle) are derived from Rust DTOs and the pinned official SDK. They drift
+# silently unless a gate regenerates and compares them.
+run contracts "generated-contracts" scripts/contract/generate-contracts.sh --check
+run contracts "managed-sdk-oracle" pnpm --filter @awaken/managed-sdk-oracle check
 run formal "formal" scripts/ci/check_formal.sh --require-tools
 run reliability "reliability" scripts/ci/check-reliability.sh --require-tools
 # Release completeness is strict: unavailable infrastructure is a failed gate,
