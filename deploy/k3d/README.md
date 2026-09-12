@@ -14,7 +14,7 @@ copied cluster setup scripts.
 | `product-backend/` | Private all-in-one product backend with durable control state and retained Session workspaces, no public Service/Ingress, and an ingress allowlist for Awaken Design backends |
 | `distributed-control/` | ADR-0071 production Control/Coordinator/Worker composition, four owner databases on a primary/streaming-standby fixture, authenticated boundaries, and a single public edge |
 | `failover/`, `scaling/`, `cold-start/`, `nats-wake/`, `worker-failover/` | Placement, replica counts, dependencies, and fault behavior layered over the Postgres and durable-brain bases |
-| `e2e/k3d/harness.sh` | Tool admission, cluster lifecycle, Cargo executable resolution, single-platform image import, CoreDNS refresh, and collision-free IPv4 port forwarding |
+| `e2e/k3d/harness.sh` | Tool admission, cluster lifecycle, Cargo executable resolution, single-platform image import, CoreDNS refresh, collision-free IPv4 port forwarding, and exact-node IPv4 fault injection |
 | `e2e/k3d/*_e2e.sh` | Scenario triggers, fault timing, and terminal assertions only |
 
 Kustomize resolves every overlay before Kubernetes creates an object. In
@@ -123,6 +123,7 @@ Run the pure harness rules with:
 
 ```bash
 bash e2e/k3d/harness.sh --self-test
+bash e2e/k3d/distributed_control_e2e.sh --self-test
 bash e2e/k3d/product_backend_contract_test.sh
 ```
 
@@ -134,7 +135,11 @@ bash e2e/k3d/distributed_control_e2e.sh
 ```
 
 Set `ADR71_KEEP_FAILED_CLUSTER=1` only while diagnosing a failure; the default
-always deletes the dedicated `awaken-adr71` cluster and disposable role binaries.
+always deletes its dedicated cluster and disposable role binaries.
+The default name is `awaken-adr71`; concurrent worktrees must set distinct
+`AWAKEN_K3D_CLUSTER` names and private `KUBECONFIG`/`TMPDIR` locations. Each run
+uses `awaken-roles:<cluster>` through the same Kustomize topology, preventing
+another worktree from replacing a shared role tag during image import.
 Every distributed-control run resolves the current role binaries through Cargo
 and builds the Hand through the canonical sandbox builder. Cargo and Docker
 retain their incremental caches; the old tag-only reuse bypass has been removed
@@ -152,10 +157,11 @@ for inspection, but it does not constitute end-to-end verification.
 `distributed_control_e2e.sh` is the canonical black-box acceptance suite for
 ADR-0071 and P2-B. The test client knows only `svc/awaken-api`; Kubernetes and
 SQL access are used exclusively for fault injection and ownership evidence.
-Its ten stages cover build/deploy, the complete configuration-to-application
+Its eleven stages cover build/deploy, the complete configuration-to-application
 path, the complete request-to-response path, Worker process isolation,
 Coordinator-total-outage recovery, Pod and in-flight Worker failure, K3D node
-loss, PostgreSQL standby promotion, and concurrent pressure. Model inference
+network partition and loss, PostgreSQL standby promotion, concurrent pressure,
+and a Kubernetes-owned Native Worker crash receipt. Model inference
 and its publication fact are the only deterministic edge fixture. The Control
 Pod uses the existing scenario adapter to inject that fact into the production
 Control assembly; Coordinator and both Workers run the shipped production
@@ -169,6 +175,26 @@ The suite also scales the K3S CoreDNS Deployment to two hostname-spread replicas
 before application admission. Service discovery therefore remains available
 when the node-chaos stage removes either DNS placement; the topology is rejected
 up front unless both replicas are Ready on distinct nodes.
+
+The network fault first records the exact container ID, IPv4 address, MAC,
+interface and ifindex. The shared harness atomically installs one owned filter
+chain on that immutable container ID, dropping both local and forwarded IPv4
+traffic on its underlay interface. It does not detach or reset the interface.
+The driver waits for Node unavailability and reads committed Deployment,
+Session and unique Event facts through the same public edge. It sends no new
+business input while the original executor is unobservable. After exact filter
+removal, the original routes, Pod UID and PVC UID must match; every role must
+be Ready before one new input is submitted. Any failed rollout propagates its
+status, including when the caller uses a Bash OR-list. The following hard-stop
+phase sends SIGKILL to the exact container ID, requires stopped state and exit
+code 137 before replacing Pods, and verifies another node retains the bytes.
+
+The inline P1–P4, F1–F8 and R0–R5 test comments own the fault-helper and rollout decision
+tables. Pure tests reject wrong/replaced identities, partial rules, failed
+observations/transactions and silent no-ops; the real topology validates packet
+loss, convergence and product outcomes. These containers share one host kernel,
+Docker daemon and storage substrate. Passing them does not establish physical
+host power-loss durability, independent-host fencing or real switch behavior.
 
 The four logical owner databases share one disposable PostgreSQL primary and
 streaming standby to keep this topology affordable. Database names, role

@@ -477,6 +477,34 @@ async function verifyDurable(
   console.log(`OK durable flow ${marker}`);
 }
 
+async function readDurableDuringFault(
+  base: string,
+  deploymentId: string,
+  sessionId: string,
+  committedMarker: string,
+) {
+  // Node-partition cause/effect table:
+  // C1 one non-database k3d node is unreachable; C2 the replicated public edge
+  // remains stable; C3 no write is issued while the exact Session executor is
+  // unobservable. R1=C1+C2+C3 => the committed Deployment and Session remain
+  // readable with their exact identities and event set. R2=!C2 => bounded
+  // failure. R3 never retries a write, so an ambiguous transport result cannot
+  // manufacture a duplicate Event while the node is partitioned.
+  const client = clientFor(base);
+  const deployment = await expectRawIdempotentStatusEventually(
+    base, 'GET', `/v1/deployments/${deploymentId}`, 200, undefined, 60_000,
+  );
+  assert.equal(deployment.id, deploymentId);
+  const session = await client.beta.sessions.retrieve(sessionId, { betas: BETAS });
+  assert.equal(session.id, sessionId);
+  const events = await listSessionEvents(client, sessionId);
+  const eventIds = events.map((event: any) => event.id);
+  assert.equal(new Set(eventIds).size, eventIds.length, 'committed event ids stay unique');
+  assertProviderResponseCount(events, committedMarker);
+  assertProviderResponsesAreUnique(events);
+  console.log(`OK read-only partition observation events=${eventIds.length} marker=${committedMarker}`);
+}
+
 async function prepareNativeCrash(base: string, environmentId: string, marker: string) {
   // The final k3d phase must use a genuinely closed Native surface: no tools,
   // Skills, Resources or authored plugins. One public Event receipt anchors the
@@ -734,6 +762,7 @@ async function main() {
     case 'unavailable-publication': return unavailablePublication(base);
     case 'retry-publication': return retryPublication(base);
     case 'verify-durable': return verifyDurable(base, args[0], args[1], args[2]);
+    case 'read-durable': return readDurableDuringFault(base, args[0], args[1], args[2]);
     case 'prepare-native-crash': return prepareNativeCrash(base, args[0], args[1]);
     case 'verify-native-crash': return verifyNativeCrash(base, args[0], args[1], args[2]);
     case 'batch': return batch(base, args[0], args[1], args[2], Number(args[3]));
