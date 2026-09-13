@@ -550,14 +550,16 @@ fn read_recovery_snapshot(
         read_thread_json_rows_with_commit::<Message>(&tx, "message", &thread_id)?;
     let (state_commit_cursors, state) =
         read_thread_json_rows_with_commit::<StateCommand>(&tx, "state_command", &thread_id)?;
+    // The committed Run set owns this Thread's event/ticket scope. A subquery
+    // uses the same transaction without one bind per Run or a cache-owner join.
     let mut events = Vec::new();
     {
         let mut statement = tx
             .prepare(&format!(
                 "SELECT event.sequence, event.run_id, event.kind, event.payload \
                      FROM {NS}_event AS event \
-                     JOIN {NS}_run_record AS run ON run.run_id = event.run_id \
-                     WHERE run.thread_id = ?1 ORDER BY event.sequence"
+                     WHERE event.run_id IN (SELECT run_id FROM {NS}_commit WHERE thread_id = ?1) \
+                     ORDER BY event.sequence"
             ))
             .map_err(recovery_reject)?;
         let rows = statement
@@ -588,8 +590,8 @@ fn read_recovery_snapshot(
             .prepare(&format!(
                 "SELECT waiting.run_id, waiting.ticket \
                      FROM {NS}_waiting AS waiting \
-                     JOIN {NS}_run_record AS run ON run.run_id = waiting.run_id \
-                     WHERE run.thread_id = ?1 ORDER BY waiting.run_id"
+                     WHERE waiting.run_id IN (SELECT run_id FROM {NS}_commit WHERE thread_id = ?1) \
+                     ORDER BY waiting.run_id"
             ))
             .map_err(recovery_reject)?;
         let rows = statement
