@@ -5144,16 +5144,44 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     create(repo.as_ref(), persisted("advisor-usage", false, "idle")).await;
     let runtime = Arc::new(
         RecordingBoundaryBudgetRuntime::new(awaken_session_contract::SessionUsage {
+            input_tokens: 3,
             output_tokens: 7,
-            ..Default::default()
+            cache_read_tokens: 2,
+            cache_creation_tokens: 5,
+            web_fetch_requests: 4,
+            web_search_requests: 2,
+            active_seconds: 888,
+            by_model: std::collections::BTreeMap::from([(
+                "shared-model".into(),
+                awaken_session_contract::SessionModelUsage {
+                    input_tokens: 3,
+                    output_tokens: 7,
+                    cache_read_tokens: 2,
+                    cache_creation_tokens: 5,
+                },
+            )]),
         })
         .with_child_target(awaken_session_contract::CoordinatedThreadTarget::Advisor {
             model: "advisor-model".into(),
         }),
     );
     runtime.set_root_usage(awaken_session_contract::SessionUsage {
+        input_tokens: 10,
         output_tokens: 14,
-        ..Default::default()
+        cache_read_tokens: 4,
+        cache_creation_tokens: 1,
+        web_fetch_requests: 9,
+        web_search_requests: 6,
+        active_seconds: 999,
+        by_model: std::collections::BTreeMap::from([(
+            "shared-model".into(),
+            awaken_session_contract::SessionModelUsage {
+                input_tokens: 10,
+                output_tokens: 14,
+                cache_read_tokens: 4,
+                cache_creation_tokens: 1,
+            },
+        )]),
     });
     runtime.commit_boundary(
         "advisor-usage",
@@ -5163,7 +5191,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         "advice",
     );
     let app = application_with_runtime(
-        runtime,
+        runtime.clone(),
         repo,
         Arc::new(RecordingEnvironmentSource::default()),
     );
@@ -5185,15 +5213,228 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         "A1/E1 Advisor attribution"
     );
     let usage = app
-        .session_usage("advisor-usage")
+        .session_usage("advisor-usage", None)
         .await
         .expect("A1 Session usage");
-    assert_eq!(usage.output_tokens, 21, "A1/E2");
+    let expected_one = awaken_session_contract::SessionUsage {
+        input_tokens: 13,
+        output_tokens: 21,
+        cache_read_tokens: 6,
+        cache_creation_tokens: 6,
+        web_fetch_requests: 13,
+        web_search_requests: 8,
+        active_seconds: 0,
+        by_model: std::collections::BTreeMap::from([(
+            "shared-model".into(),
+            awaken_session_contract::SessionModelUsage {
+                input_tokens: 13,
+                output_tokens: 21,
+                cache_read_tokens: 6,
+                cache_creation_tokens: 6,
+            },
+        )]),
+    };
+    assert_eq!(
+        usage, expected_one,
+        "A1 every counter and model attribution; Session owns active time"
+    );
     let gated_usage = app
         .session_usage_for_model_request("advisor-usage", "advisor-thread")
         .await
         .expect("A2 gated Session usage");
     assert_eq!(gated_usage.output_tokens, 21, "A2/E2+E3");
+    // A3 the same logical child has another committed Run, so this Runtime's
+    // relation projection contains that Thread twice. Its cumulative counter
+    // is still 7, not two independent per-Run charges. Both ordinary and
+    // model-request totals must stay 14+7, reusing the existing identity set.
+    let mut snapshot = runtime
+        .boundaries
+        .snapshot("advisor-usage", "advisor-thread")
+        .unwrap();
+    let second_run = RunId("advisor-run-2".into());
+    snapshot
+        .runs
+        .push(awaken_agent_contract::agent::run::Record {
+            id: second_run.clone(),
+            thread_id: ThreadId("advisor-thread".into()),
+            state: RunState::Ended(EndCause::NaturalEnd),
+        });
+    snapshot
+        .messages
+        .push(awaken_agent_contract::agent::message::Message::text(
+            awaken_agent_contract::agent::message::Id::assistant(&second_run, 0),
+            awaken_agent_contract::agent::message::Role::Assistant,
+            "second advice",
+        ));
+    snapshot.thread_version += 1;
+    snapshot.store_cursor += 1;
+    snapshot.message_commit_cursors.push(snapshot.store_cursor);
+    snapshot.claimed_run_id = second_run.clone();
+    snapshot.latest_run_id = Some(second_run);
+    runtime.boundaries.set_recovery_snapshot(
+        "advisor-usage",
+        &ThreadId("advisor-thread".into()),
+        snapshot,
+    );
+    assert_eq!(
+        runtime
+            .coordinated_threads("advisor-usage", None)
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "A3 repeated Thread fixture"
+    );
+    assert_eq!(
+        app.session_usage("advisor-usage", None)
+            .await
+            .unwrap()
+            .output_tokens,
+        21,
+        "A3 cumulative usage once"
+    );
+    assert_eq!(
+        app.session_usage_for_model_request("advisor-usage", "advisor-thread")
+            .await
+            .unwrap()
+            .output_tokens,
+        21,
+        "A3 model gate cumulative usage once"
+    );
+    // A4 observed links (including repeated same-Thread links) omit a later
+    // child until the next complete prefix. The counters themselves stay current;
+    // no relationship read occurs and every included logical Thread is read once.
+    // A5 an observed empty set sums only the primary. A6 ordinary/model reads
+    // still discover current links and include an unlinked executing child once.
+    // A7 a foreign Session link fails before any child query; the primary may
+    // already have been read. A8 a root entry cannot charge the primary twice.
+    let observed = runtime
+        .coordinated_threads("advisor-usage", None)
+        .await
+        .unwrap();
+    runtime.commit_boundary(
+        "advisor-usage",
+        &ThreadId("later-child".into()),
+        &RunId("later-run".into()),
+        RunState::Ended(EndCause::NaturalEnd),
+        "later advice",
+    );
+    let before = runtime.usage_relationship_reads.load(Ordering::SeqCst);
+    runtime.usage_thread_reads.lock().unwrap().clear();
+    let usage = app
+        .session_usage("advisor-usage", Some(&observed))
+        .await
+        .unwrap();
+    assert_eq!(usage, expected_one, "A4 exact observed child set");
+    assert_eq!(
+        runtime.usage_relationship_reads.load(Ordering::SeqCst),
+        before,
+        "A4 no repeated relationship query"
+    );
+    assert_eq!(
+        *runtime.usage_thread_reads.lock().unwrap(),
+        ["advisor-thread"],
+        "A4 one cumulative child read"
+    );
+    runtime.usage_thread_reads.lock().unwrap().clear();
+    assert_eq!(
+        app.session_usage("advisor-usage", Some(&[]))
+            .await
+            .unwrap()
+            .output_tokens,
+        14,
+        "A5 root only"
+    );
+    assert!(
+        runtime.usage_thread_reads.lock().unwrap().is_empty(),
+        "A5 no child reads"
+    );
+    assert_eq!(
+        runtime.usage_relationship_reads.load(Ordering::SeqCst),
+        before,
+        "A5 explicit empty observation is not discovery"
+    );
+    assert_eq!(
+        app.session_usage("advisor-usage", None)
+            .await
+            .unwrap()
+            .output_tokens,
+        28,
+        "A6 latest child set"
+    );
+    assert_eq!(
+        runtime.usage_relationship_reads.load(Ordering::SeqCst),
+        before + 1,
+        "A6 discovery retained"
+    );
+    for (additional, expected) in [
+        ("advisor-usage", 28),
+        ("advisor-thread", 28),
+        ("executing-before-link", 35),
+    ] {
+        assert_eq!(
+            app.session_usage_for_model_request("advisor-usage", additional)
+                .await
+                .unwrap()
+                .output_tokens,
+            expected,
+            "A6 {additional}"
+        );
+    }
+    // A6b failed fresh discovery propagates; the already observed read does
+    // not invoke that dependency. The Managed read-cut matrix separately proves
+    // that its later final relationship failure still rejects publication.
+    runtime
+        .fail_usage_relationship_read
+        .store(true, Ordering::SeqCst);
+    runtime.usage_thread_reads.lock().unwrap().clear();
+    assert_eq!(
+        app.session_usage("advisor-usage", None)
+            .await
+            .unwrap_err()
+            .kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "A6b fresh dependency error"
+    );
+    assert!(runtime.usage_thread_reads.lock().unwrap().is_empty());
+    assert_eq!(
+        app.session_usage("advisor-usage", Some(&observed))
+            .await
+            .unwrap(),
+        expected_one,
+        "A6b no hidden discovery in observed read"
+    );
+    runtime
+        .fail_usage_relationship_read
+        .store(false, Ordering::SeqCst);
+    let mut foreign = observed[0].clone();
+    foreign.session_id = "foreign-session".into();
+    for invalid in [vec![foreign.clone()], vec![observed[0].clone(), foreign]] {
+        runtime.usage_thread_reads.lock().unwrap().clear();
+        let error = app
+            .session_usage("advisor-usage", Some(&invalid))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            awaken_session_contract::RunErrorKind::Internal,
+            "A7"
+        );
+        assert!(
+            runtime.usage_thread_reads.lock().unwrap().is_empty(),
+            "A7 prevalidate all source scopes before child queries"
+        );
+    }
+    let mut root_entry = observed[0].clone();
+    root_entry.thread_id = ThreadId("advisor-usage".into());
+    assert_eq!(
+        app.session_usage("advisor-usage", Some(&[root_entry]))
+            .await
+            .unwrap()
+            .output_tokens,
+        14,
+        "A8 primary once"
+    );
 }
 
 #[tokio::test]

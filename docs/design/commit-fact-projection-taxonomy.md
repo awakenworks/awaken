@@ -85,11 +85,23 @@ projector and lifecycle-watermark enrichment remain the sole implementation;
 the ordinary query uses the same Thread recovery reader to obtain a fresh prefix.
 A supplied snapshot for another root is rejected before reading sources. No
 relationship cache or second recovery algorithm is added. Command admission,
-usage collection, final relationship validation and the final Root Thread read
+usage counters, final relationship validation and the final Root Thread read
 still observe current truth. Reusing an initial prefix therefore removes one
 repeated recovery read without weakening the closing consistency fences. The
 query-policy counter and old-prefix/new-commit decision table verify this scope;
 existing publication proofs do not prove query performance or SQL isolation.
+
+Usage aggregation also borrows that candidate's initial relationship set rather
+than querying it again. Ordinary accounting and model admission still discover
+current links, and the executing Thread is included even before its link appears.
+The existing Thread identity set now skips repeated links and the already counted
+primary, so a cumulative Thread counter is read and charged once across multiple
+Run observations. All link scopes are checked before child reads; per-model,
+cache and web counters retain the same aggregation owner, and elapsed activity
+still comes from the Session root. The final fresh relation/Thread checks remain
+mandatory before a Managed candidate may publish. The read-cut test derives its
+44 failure rules from both complete actual traces, including competing writers;
+removing the redundant query removes only its now-unreachable failure cuts.
 
 Session inbound visibility and processing completion are distinct observations
 of the same retained command. While a User Run is Running, the Session application

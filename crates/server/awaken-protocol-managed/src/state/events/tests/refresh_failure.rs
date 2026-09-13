@@ -256,6 +256,9 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
     // Bounds: these two actual topologies, one lifecycle page, one retained
     // Outcome or one child, every listed read ordinal, both writer schedules.
     // This covers control-flow cuts, not arbitrary topology/SQL refinement.
+    // Usage now reuses the initial relationship set. Its redundant coordination
+    // read is absent; every remaining actual cut and the final fresh relation
+    // fence are still exercised, and an unexpected extra read fails R0.
     let mut checked_rules = 0;
     for with_child in [false, true] {
         let expected = if with_child {
@@ -266,7 +269,6 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                 "child_snapshot",
                 "lifecycle",
                 "usage",
-                "coordination",
                 "child_usage",
                 "session",
                 "coordination",
@@ -282,7 +284,6 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                 "coordination",
                 "lifecycle",
                 "usage",
-                "coordination",
                 "session",
                 "coordination",
                 "root_snapshot",
@@ -401,7 +402,7 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
         }
     }
     assert_eq!(
-        checked_rules, 48,
+        checked_rules, 44,
         "R1-R2 every read cut and competing-writer schedule executes"
     );
 }
