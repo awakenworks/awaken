@@ -188,6 +188,16 @@ algorithm change with exhaustive bounded equivalence and codec decision-table
 tests; it does not change publication fences or establish a distributed latency
 guarantee.
 
+Runtime Host coordination reconstruction consumes that same decoder and builds
+one Run-id index for the root snapshot. It no longer retains its former loop
+that tried every Run for each Assistant message. Truncated, malformed, foreign
+and non-Assistant messages stay excluded; duplicate selected Run records retain
+the former fail-closed ambiguity error. Thus both Managed event projection and
+Host relationship reconstruction share one identity grammar while keeping their
+separate domain outputs. A 10,000-unrelated-Run integration case covers the
+indexed membership boundary; it is algorithmic test evidence, not a latency or
+allocator proof.
+
 For tool waits and external results:
 
 ```text
