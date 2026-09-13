@@ -1008,13 +1008,16 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             committed_state.push(command);
         }
 
+        // Scope event/ticket reads with the Run set from this transaction's
+        // committed Thread prefix. This permits direct use of the Run index
+        // and prevents a damaged cache owner from misattributing committed facts.
+        // One array bind preserves index access without one query per Run.
+        let committed_run_ids = runs.iter().map(|run| run.id.0.as_str()).collect::<Vec<_>>();
         let event_rows = sqlx::query(&format!(
-            "SELECT event.sequence, event.run_id, event.kind, event.payload \
-             FROM {p}_event AS event \
-             JOIN {p}_run_record AS run ON run.run_id = event.run_id \
-             WHERE run.thread_id = $1 ORDER BY event.sequence"
+            "SELECT sequence, run_id, kind, payload FROM {p}_event \
+             WHERE run_id = ANY($1) ORDER BY sequence"
         ))
-        .bind(&thread_id.0)
+        .bind(&committed_run_ids)
         .fetch_all(&mut *tx)
         .await
         .map_err(recovery_reject)?;
@@ -1040,12 +1043,10 @@ impl RunRecoverySource for PostgresCommitCoordinator {
         }
 
         let ticket_rows = sqlx::query(&format!(
-            "SELECT waiting.run_id, waiting.ticket \
-             FROM {p}_waiting AS waiting \
-             JOIN {p}_run_record AS run ON run.run_id = waiting.run_id \
-             WHERE run.thread_id = $1 ORDER BY waiting.run_id"
+            "SELECT run_id, ticket FROM {p}_waiting \
+             WHERE run_id = ANY($1) ORDER BY run_id"
         ))
-        .bind(&thread_id.0)
+        .bind(&committed_run_ids)
         .fetch_all(&mut *tx)
         .await
         .map_err(recovery_reject)?;

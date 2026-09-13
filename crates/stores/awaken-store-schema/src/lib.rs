@@ -167,6 +167,14 @@ pub fn commit_bundle() -> Result<MigrationBundle, MigrationError> {
         "index committed event predecessors within each Run",
         "CREATE INDEX {prefix}_event_run_sequence ON {prefix}_event (run_id, sequence)",
     )?);
+    migrations.push(Migration::new(
+        12,
+        "index committed Thread and Run recovery ranges",
+        "CREATE INDEX {prefix}_commit_thread_sequence ON {prefix}_commit (thread_id, sequence);\
+         CREATE INDEX {prefix}_commit_run_sequence ON {prefix}_commit (run_id, sequence);\
+         CREATE INDEX {prefix}_message_thread_id ON {prefix}_message (thread_id, id);\
+         CREATE INDEX {prefix}_state_command_thread_id ON {prefix}_state_command (thread_id, id)",
+    )?);
     MigrationBundle::new(COMMIT_BUNDLE_ID, migrations)
 }
 
@@ -218,20 +226,20 @@ mod tests {
     #[test]
     fn commit_bundle_has_one_table_per_committed_field_plus_forward_migrations() {
         let bundle = commit_bundle().expect("bundle builds");
-        assert_eq!(bundle.migrations().len(), 11);
+        assert_eq!(bundle.migrations().len(), 12);
     }
 
     // The migrator requires a strictly increasing version stream; a duplicated or
     // out-of-order version (a copy-paste slip when appending a spec) must be caught
-    // here, not at first migration against a live DB. Pin the stream is dense 1..=11.
+    // here, not at first migration against a live DB. Pin the stream is dense 1..=12.
     #[test]
     fn commit_bundle_versions_are_dense_and_strictly_increasing() {
         let bundle = commit_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-            "dense 1..=11, in order"
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            "dense 1..=12, in order"
         );
         assert!(
             versions.windows(2).all(|w| w[0] < w[1]),
