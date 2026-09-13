@@ -570,12 +570,15 @@ async fn scenario(
         },
     )
     .await;
-    let state = provider.state.lock().unwrap();
-    assert_eq!(state.dialled, 1);
+    // One guard per assertion region. The lock is an uncontended test fixture,
+    // so re-taking it costs nothing and makes "no guard is held across an
+    // await" a property of the shape rather than of remembering to drop.
+    assert_eq!(provider.state.lock().unwrap().dialled, 1);
     if let Some(case) = customer {
-        let mut verdict = customers::evaluate(case, &state);
-        let voices = state.voices.clone();
-        drop(state);
+        let (mut verdict, voices) = {
+            let state = provider.state.lock().unwrap();
+            (customers::evaluate(case, &state), state.voices.clone())
+        };
         if let Some(driver) = customer_driver {
             driver.await.unwrap();
         }
@@ -596,48 +599,52 @@ async fn scenario(
     if hard_cancel {
         // A local cancelled Future is not a remote terminal receipt. This is
         // a fail-closed safety case, NOT successful conversational continuation.
-        assert_eq!(state.voices.len(), 2);
-        assert_eq!(state.ended, 0);
-        assert!(state.assessment.is_none());
+        {
+            let state = provider.state.lock().unwrap();
+            assert_eq!(state.voices.len(), 2);
+            assert_eq!(state.ended, 0);
+            assert!(state.assessment.is_none());
+        }
         assert_eq!(
             interrupt.as_ref().unwrap().returned.load(Ordering::SeqCst),
             0
         );
-        drop(state);
         if let Some(driver) = interrupt_driver {
             driver.await.unwrap();
         }
         server.abort();
         return;
     }
-    assert_eq!(state.voices.len(), 3);
-    assert_eq!(state.chat_messages.len(), 1);
-    assert_eq!(
-        state.assessment.as_ref().unwrap()["budget"],
-        if interrupt.is_some() { 30000 } else { 50000 }
-    );
-    assert!(!state.voices.iter().any(|s| s.contains("五百万元")));
-    if let Some(gate) = interrupt {
+    {
+        let state = provider.state.lock().unwrap();
+        assert_eq!(state.voices.len(), 3);
+        assert_eq!(state.chat_messages.len(), 1);
         assert_eq!(
-            gate.cancelled.load(Ordering::SeqCst),
-            1,
-            "old inference future relinquished"
+            state.assessment.as_ref().unwrap()["budget"],
+            if interrupt.is_some() { 30000 } else { 50000 }
         );
-        assert_eq!(
-            gate.returned.load(Ordering::SeqCst),
-            1,
-            "old inference reached a real return"
-        );
-        assert_eq!(
-            state.stale_replies, 1,
-            "provider rejected the obsolete completed tool call"
-        );
-        assert!(
-            !state.voices.iter().any(|s| s.contains("五万元")),
-            "old partial tool call never played"
-        );
+        assert!(!state.voices.iter().any(|s| s.contains("五百万元")));
+        if let Some(gate) = interrupt {
+            assert_eq!(
+                gate.cancelled.load(Ordering::SeqCst),
+                1,
+                "old inference future relinquished"
+            );
+            assert_eq!(
+                gate.returned.load(Ordering::SeqCst),
+                1,
+                "old inference reached a real return"
+            );
+            assert_eq!(
+                state.stale_replies, 1,
+                "provider rejected the obsolete completed tool call"
+            );
+            assert!(
+                !state.voices.iter().any(|s| s.contains("五万元")),
+                "old partial tool call never played"
+            );
+        }
     }
-    drop(state);
     if let Some(driver) = interrupt_driver {
         driver.await.unwrap();
     }
