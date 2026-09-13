@@ -763,6 +763,7 @@ pub awaken_protocol_managed::types::session::OutboundKind::SpanOutcomeEvaluation
 pub awaken_protocol_managed::types::session::OutboundKind::SpanOutcomeEvaluationEnd::outcome_evaluation_start_id: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::SpanOutcomeEvaluationEnd::outcome_id: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::SpanOutcomeEvaluationEnd::result: alloc::string::String
+pub awaken_protocol_managed::types::session::OutboundKind::SpanOutcomeEvaluationEnd::usage: awaken_protocol_managed::types::SpanModelUsage
 pub awaken_protocol_managed::types::session::OutboundKind::SpanOutcomeEvaluationOngoing
 pub awaken_protocol_managed::types::session::OutboundKind::SpanOutcomeEvaluationOngoing::iteration: u32
 pub awaken_protocol_managed::types::session::OutboundKind::SpanOutcomeEvaluationOngoing::outcome_id: alloc::string::String
@@ -1043,6 +1044,8 @@ pub awaken_protocol_managed::types::session::SpanModelUsage::cache_read_input_to
 pub awaken_protocol_managed::types::session::SpanModelUsage::input_tokens: u64
 pub awaken_protocol_managed::types::session::SpanModelUsage::output_tokens: u64
 pub awaken_protocol_managed::types::session::SpanModelUsage::speed: core::option::Option<alloc::string::String>
+impl core::convert::From<awaken_agent_contract::audit::model_request::TokenUsage> for awaken_protocol_managed::types::SpanModelUsage
+pub fn awaken_protocol_managed::types::SpanModelUsage::from(awaken_agent_contract::audit::model_request::TokenUsage) -> Self
 pub struct awaken_protocol_managed::types::session::Usage
 pub awaken_protocol_managed::types::session::Usage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
@@ -1553,6 +1556,7 @@ pub awaken_protocol_managed::types::OutboundKind::SpanOutcomeEvaluationEnd::iter
 pub awaken_protocol_managed::types::OutboundKind::SpanOutcomeEvaluationEnd::outcome_evaluation_start_id: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::SpanOutcomeEvaluationEnd::outcome_id: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::SpanOutcomeEvaluationEnd::result: alloc::string::String
+pub awaken_protocol_managed::types::OutboundKind::SpanOutcomeEvaluationEnd::usage: awaken_protocol_managed::types::SpanModelUsage
 pub awaken_protocol_managed::types::OutboundKind::SpanOutcomeEvaluationOngoing
 pub awaken_protocol_managed::types::OutboundKind::SpanOutcomeEvaluationOngoing::iteration: u32
 pub awaken_protocol_managed::types::OutboundKind::SpanOutcomeEvaluationOngoing::outcome_id: alloc::string::String
@@ -1848,6 +1852,8 @@ pub awaken_protocol_managed::types::SpanModelUsage::cache_read_input_tokens: u64
 pub awaken_protocol_managed::types::SpanModelUsage::input_tokens: u64
 pub awaken_protocol_managed::types::SpanModelUsage::output_tokens: u64
 pub awaken_protocol_managed::types::SpanModelUsage::speed: core::option::Option<alloc::string::String>
+impl core::convert::From<awaken_agent_contract::audit::model_request::TokenUsage> for awaken_protocol_managed::types::SpanModelUsage
+pub fn awaken_protocol_managed::types::SpanModelUsage::from(awaken_agent_contract::audit::model_request::TokenUsage) -> Self
 pub struct awaken_protocol_managed::types::Usage
 pub awaken_protocol_managed::types::Usage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>

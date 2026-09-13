@@ -1,11 +1,12 @@
 //! Agent-backed Outcome grading over the ordinary Runtime Run boundary.
 
 use awaken_runtime_contract::execution::RunExecutor;
+use awaken_runtime_contract::llm::{ThreadUsage, TokenUsage};
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::resolved::InvalidModelBinding;
 use awaken_runtime_contract::{
     CommittedThreadView, EndCause, ExecutableAgentSnapshot, Message, MessageId, ModelBinding, Role,
-    RunActivation, RunState, RuntimeRunContext, TranscriptSliceSpec,
+    RunActivation, RunState, RuntimeRunContext, ThreadId, TranscriptSliceSpec,
 };
 
 use crate::outcome::{Grade, Grader, GraderError, GradingInput, parse_grade};
@@ -73,6 +74,17 @@ pub fn grading_prompt(input: &GradingInput) -> Result<String, GraderError> {
             )
         })
         .map_err(|error| GraderError::Execution(error.to_string()))
+}
+
+/// What the Judge Run cost, read from the Thread it ran on through the one
+/// canonical reader of the usage cell. The read is committed state, so it is
+/// the same answer whether this call executed the Run or recovered an already
+/// ended one. An empty tally means the backend recorded no token usage for the
+/// grading Run at all; that stays distinct from a provider that reported zero,
+/// so the caller can decline to claim a cost it never observed.
+fn judge_usage(reader: &dyn CommittedThreadView, thread_id: &ThreadId) -> Option<TokenUsage> {
+    let usage = ThreadUsage::from_committed_state(&reader.committed_state(thread_id));
+    (!usage.is_empty()).then(|| usage.total())
 }
 
 /// Direct Agent-backed Grader. It executes a pinned Judge snapshot on a stable,
@@ -181,7 +193,9 @@ impl Grader for AgentGrader<'_> {
             .find(|message| message.role == Role::Assistant)
             .map(Message::text_content)
             .ok_or_else(|| GraderError::InvalidOutput("Judge returned no reply".into()))?;
-        parse_grade(&reply)
+        let mut grade = parse_grade(&reply)?;
+        grade.usage = judge_usage(self.reader, &thread_id);
+        Ok(grade)
     }
 }
 
@@ -190,7 +204,7 @@ mod tests {
     use super::*;
     use crate::outcome::{Id, Rubric};
     use awaken_runtime_contract::{
-        ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView,
+        ResumeTicket, RunRecord, ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView,
     };
 
     fn input() -> GradingInput {
@@ -315,6 +329,103 @@ mod tests {
                 .mcp_servers
                 .is_empty(),
             "R1/E2"
+        );
+    }
+
+    /// A committed view that answers only what `judge_usage` reads.
+    struct UsageOnlyView(Vec<awaken_runtime_contract::StateCommand>);
+
+    impl CommittedThreadView for UsageOnlyView {
+        fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {
+            Vec::new()
+        }
+
+        fn run(&self, _run_id: &awaken_runtime_contract::RunId) -> Option<RunRecord> {
+            None
+        }
+
+        fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
+            None
+        }
+
+        fn resume_ticket(&self, _run_id: &awaken_runtime_contract::RunId) -> Option<ResumeTicket> {
+            None
+        }
+
+        fn open_wait_for_thread(
+            &self,
+            _thread_id: &ThreadId,
+        ) -> Option<(awaken_runtime_contract::RunId, ResumeTicket)> {
+            None
+        }
+
+        fn committed_state(
+            &self,
+            _thread_id: &ThreadId,
+        ) -> Vec<awaken_runtime_contract::StateCommand> {
+            self.0.clone()
+        }
+    }
+
+    fn committed_usage(usage: &ThreadUsage) -> awaken_runtime_contract::StateCommand {
+        awaken_runtime_contract::StateCommand::set(
+            awaken_runtime_contract::Scope::Thread,
+            awaken_runtime_contract::MergePolicy::Commutative,
+            awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+            serde_json::to_value(usage).expect("a thread usage tally serializes"),
+        )
+    }
+
+    fn tokens(prompt: u64, completion: u64, read: u64, creation: u64) -> TokenUsage {
+        TokenUsage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_read_tokens: read,
+            cache_creation_tokens: creation,
+        }
+    }
+
+    #[test]
+    fn judge_cost_is_read_from_the_judge_thread_and_never_invented() {
+        /* Cause/effect graph: C1 the Judge Thread committed usage on one model;
+         * C2 it committed usage on several (a fallback route took over mid
+         * grading); C3 it committed no usage cell at all; C4 it committed an
+         * empty tally. Effects: E1 the reported cost is that Thread's own
+         * recorded total; E2 nothing is reported. Decision table: J1=C1=>E1
+         * with the exact counters; J2=C2=>E1 with the per-model sum, because
+         * this is one evaluation's cost and a route change is not a second
+         * evaluation; J3=C3=>E2 and J4=C4=>E2, so a backend that reports no
+         * counters is never turned into a claim that grading cost zero. */
+        let thread = ThreadId("outcome/o/grader/0".into());
+
+        let mut one = ThreadUsage::default();
+        one.record("judge-model", tokens(40, 6, 1, 0));
+        assert_eq!(
+            judge_usage(&UsageOnlyView(vec![committed_usage(&one)]), &thread),
+            Some(tokens(40, 6, 1, 0)),
+            "J1/E1"
+        );
+
+        let mut two = one.clone();
+        two.record("fallback-model", tokens(2, 3, 0, 5));
+        assert_eq!(
+            judge_usage(&UsageOnlyView(vec![committed_usage(&two)]), &thread),
+            Some(tokens(42, 9, 1, 5)),
+            "J2/E1"
+        );
+
+        assert_eq!(
+            judge_usage(&UsageOnlyView(Vec::new()), &thread),
+            None,
+            "J3/E2"
+        );
+        assert_eq!(
+            judge_usage(
+                &UsageOnlyView(vec![committed_usage(&ThreadUsage::default())]),
+                &thread
+            ),
+            None,
+            "J4/E2 an empty committed tally is still nothing observed"
         );
     }
 

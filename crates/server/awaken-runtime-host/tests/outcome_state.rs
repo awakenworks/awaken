@@ -159,6 +159,15 @@ async fn state_codec_recovers_append_only_evaluation_and_clears_terminal_pointer
         grade: Grade {
             decision: GradeDecision::NeedsRevision,
             explanation: "missing proof".into(),
+            // The Judge Run's observed cost is part of the committed evidence,
+            // so the durable round trip below proves it survives a restart
+            // rather than being recomputed from a live Run that is gone.
+            usage: Some(awaken_agent_contract::audit::model_request::TokenUsage {
+                prompt_tokens: 88,
+                completion_tokens: 12,
+                cache_read_tokens: 3,
+                cache_creation_tokens: 1,
+            }),
         },
     };
     adapter

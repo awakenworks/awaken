@@ -1310,6 +1310,7 @@ pub awaken_session_contract::OutcomeIteration::iteration: u32
 pub awaken_session_contract::OutcomeIteration::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_session_contract::OutcomeIteration::outcome_id: alloc::string::String
 pub awaken_session_contract::OutcomeIteration::result: alloc::string::String
+pub awaken_session_contract::OutcomeIteration::usage: core::option::Option<awaken_agent_contract::audit::model_request::TokenUsage>
 pub struct awaken_session_contract::OutcomeReport
 pub awaken_session_contract::OutcomeReport::iterations: alloc::vec::Vec<awaken_session_contract::OutcomeIteration>
 pub struct awaken_session_contract::Pending

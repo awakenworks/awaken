@@ -24,6 +24,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import { waitForSessionEventReceipt, withRealServer } from './harness.mjs';
+import { FAKE_USAGE } from './fixtures/fake_anthropic_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38103);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -108,8 +109,26 @@ async function main() {
       assert.ok(satisfied.length >= 2, `expected >=2 rounds, got ${satisfied.length}`);
       assert.equal(satisfied[0].result, 'needs_revision');
       assert.equal(satisfied.at(-1).result, 'satisfied');
+      // Each evaluation span reports what its own Judge Run cost, read from that
+      // Run's committed Thread usage cell. One grading request per round, so the
+      // counters are exactly one FAKE_USAGE reply: the provider reports prompt
+      // tokens inclusive of the cache breakdown, so input is 11 + 3 + 2. A
+      // defaulted or omitted field would show as zeroes or a missing key, and
+      // the SDK declares this one required.
+      const judgeCost = {
+        input_tokens: FAKE_USAGE.input_tokens
+          + FAKE_USAGE.cache_read_input_tokens
+          + FAKE_USAGE.cache_creation_input_tokens,
+        output_tokens: FAKE_USAGE.output_tokens,
+        cache_read_input_tokens: FAKE_USAGE.cache_read_input_tokens,
+        cache_creation_input_tokens: FAKE_USAGE.cache_creation_input_tokens,
+      };
+      for (const end of satisfied) {
+        assert.deepEqual(end.usage, judgeCost,
+          `evaluation ${end.iteration} must report the Judge Run's own cost`);
+      }
       await assertTerminalEvaluation(client, satisfiedRun, 'satisfied');
-      console.log('  ok: needs_revision -> satisfied');
+      console.log('  ok: needs_revision -> satisfied, each round reports its Judge cost');
 
       // Unsatisfiable rubric within the budget -> max_iterations_reached.
       const exhaustedRun = await draftThenOutcome(client, 'NEVER_PRESENT_TOKEN', 2);

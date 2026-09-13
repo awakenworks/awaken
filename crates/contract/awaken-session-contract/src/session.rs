@@ -69,6 +69,10 @@ pub struct OutcomeIteration {
     pub iteration: u32,
     pub result: String,
     pub explanation: String,
+    /// What grading this round cost, observed on the Judge Run's own Thread.
+    /// `None` is a distinct fact from zero: the round was never graded, or the
+    /// backend recorded no token usage for the grading Run.
+    pub usage: Option<awaken_agent_contract::audit::model_request::TokenUsage>,
 }
 
 /// The result of `user.define_outcome`: the ordered evaluation rounds. The loop
@@ -164,100 +168,9 @@ pub struct SessionSandboxLayout {
     pub resources: Vec<awaken_resource_contract::InputBinding>,
 }
 
-/// A queued live-inbox message on the Session's in-flight Run. `id` is the
-/// runtime's queue identity — targetable until the engine consumes the entry.
-/// Neutral: the adapter projects it onto the wire snapshot at the route.
-#[derive(Debug, Clone)]
-pub struct LiveInboxEntry {
-    pub id: u64,
-    pub content: Vec<ContentBlock>,
-}
-
-/// The session's live-inbox resource: the editable queue of messages addressed
-/// to the in-flight Run. `active: false` means no native Run is executing (the
-/// queue shows empty; sends go through the normal event path instead). Neutral —
-/// the wire shaping (`Json`) lives in the `ext::live_inbox` route.
-#[derive(Debug, Clone)]
-pub struct LiveInboxSnapshot {
-    pub active: bool,
-    pub version: u64,
-    pub messages: Vec<LiveInboxEntry>,
-}
-
-impl LiveInboxSnapshot {
-    pub fn inactive() -> Self {
-        Self {
-            active: false,
-            version: 0,
-            messages: Vec::new(),
-        }
-    }
-}
-
-/// Why a live-inbox operation failed. Mirrors the runtime contract's edit
-/// errors, plus `Inactive` for "no native Run in flight on this Session".
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub enum LiveInboxError {
-    #[error("no Run is in flight; send the message as a normal event")]
-    Inactive,
-    #[error("no queued message with that id")]
-    UnknownMessage,
-    #[error("proposed order does not match the current queue")]
-    StaleOrder,
-}
-
-/// Protocol-neutral application failure for the editable in-flight inbox.
-/// Wire adapters decide how these three domain outcomes map to their envelopes.
-#[derive(Debug, thiserror::Error)]
-pub enum LiveInboxApplicationError {
-    #[error("session not found")]
-    NotFound,
-    #[error(transparent)]
-    Edit(#[from] LiveInboxError),
-    #[error("live inbox unavailable: {0}")]
-    Unavailable(String),
-}
-
-/// Driving port for Awaken's live-inbox protocol. The Session application is
-/// the sole owner: protocol adapters supply the trusted Workspace scope and do
-/// not perform a second ownership lookup or reach through protocol state.
-#[async_trait]
-pub trait LiveInboxApplication: Send + Sync {
-    async fn snapshot(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-    ) -> Result<LiveInboxSnapshot, LiveInboxApplicationError>;
-
-    async fn queue(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        content: Vec<ContentBlock>,
-    ) -> Result<u64, LiveInboxApplicationError>;
-
-    async fn remove(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        message_id: u64,
-    ) -> Result<(), LiveInboxApplicationError>;
-
-    async fn replace(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        message_id: u64,
-        content: Vec<ContentBlock>,
-    ) -> Result<(), LiveInboxApplicationError>;
-
-    async fn reorder(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        order: Vec<u64>,
-    ) -> Result<(), LiveInboxApplicationError>;
-}
+// Keep the live-inbox names' public defining path at `session::…` while their
+// implementation remains physically split below the repository file limit.
+include!("session/live_inbox.rs");
 
 /// Public exact-generation realization port owned by the Session application
 /// boundary. Local Host relay/connection code and downstream platform gateways

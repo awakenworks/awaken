@@ -482,6 +482,10 @@ fn append_durable_outcome_projections(
                                 iteration: iteration.iteration,
                                 result: iteration.result.clone(),
                                 explanation: iteration.explanation.clone(),
+                                usage: iteration
+                                    .usage
+                                    .map(crate::types::SpanModelUsage::from)
+                                    .unwrap_or_default(),
                             },
                         ),
                     ] {

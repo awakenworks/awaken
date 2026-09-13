@@ -89,15 +89,7 @@ impl ManagedState {
                         kind: OutboundKind::SpanModelRequestEnd {
                             model_request_start_id: start_id,
                             is_error: Some(observation.is_error),
-                            model_usage: SpanModelUsage {
-                                input_tokens: observation.usage.prompt_tokens,
-                                output_tokens: observation.usage.completion_tokens,
-                                cache_read_input_tokens: observation.usage.cache_read_tokens,
-                                cache_creation_input_tokens: observation
-                                    .usage
-                                    .cache_creation_tokens,
-                                speed: None,
-                            },
+                            model_usage: SpanModelUsage::from(observation.usage),
                         },
                         processed_at: None,
                     },

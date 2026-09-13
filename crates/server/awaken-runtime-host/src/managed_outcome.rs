@@ -22,6 +22,7 @@ fn report(report: HostOutcomeReport) -> OutcomeReport {
                 iteration: iteration.iteration,
                 result: iteration.result,
                 explanation: iteration.explanation,
+                usage: iteration.usage,
             })
             .collect(),
     }

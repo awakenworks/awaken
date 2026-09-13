@@ -29,15 +29,10 @@ use serde_json::{Value, json};
 
 /// Required SDK fields this adapter does not emit yet, each with the reason the
 /// gap is real rather than an oversight. A gap listed here is a visible debt;
-/// one not listed here fails the build.
+/// one not listed here fails the build. Empty is the goal state, and reaching
+/// it is what keeps this list honest rather than decorative.
 fn known_gaps() -> BTreeMap<&'static str, BTreeMap<&'static str, &'static str>> {
-    BTreeMap::from([(
-        "span.outcome_evaluation_end",
-        BTreeMap::from([(
-            "usage",
-            "the outcome controller does not observe the grading model's token usage; inventing zeros would misreport cost",
-        )]),
-    )])
+    BTreeMap::new()
 }
 
 fn oracle_shapes() -> Value {
@@ -272,6 +267,13 @@ fn samples() -> Vec<Event> {
             iteration: 1,
             result: "pass".into(),
             explanation: "fine".into(),
+            usage: SpanModelUsage {
+                input_tokens: 31,
+                output_tokens: 7,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                speed: None,
+            },
         }),
     ]
 }

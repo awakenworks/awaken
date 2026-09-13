@@ -31,6 +31,10 @@ pub struct IterationReport {
     pub iteration: u32,
     pub result: EvaluationResult,
     pub explanation: String,
+    /// What grading this round cost, as observed on the Judge Run's own Thread.
+    /// `None` where no usage was recorded for it — including the synthesized
+    /// round below, which closes an interrupted Outcome without ever grading.
+    pub usage: Option<awaken_runtime_contract::llm::TokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -553,6 +557,7 @@ fn report_from(aggregate: &Aggregate, transcript: &[Message]) -> Result<Report, 
                 iteration: evaluation.iteration,
                 result: evaluation_result(evaluation, &aggregate.definition),
                 explanation: evaluation.grade.explanation.clone(),
+                usage: evaluation.grade.usage,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -592,6 +597,8 @@ fn report_from(aggregate: &Aggregate, transcript: &[Message]) -> Result<Report, 
                 iteration: aggregate.state.iteration,
                 result: EvaluationResult::Interrupted,
                 explanation: "the outcome was interrupted".into(),
+                // No Judge Run graded this round, so there is no cost to claim.
+                usage: None,
             });
         }
     }
@@ -922,6 +929,17 @@ mod tests {
         seen: Mutex<Vec<GradingInput>>,
     }
 
+    /// A fixed, recognizable cost for the deterministic Judge double, so a test
+    /// can tell a report that carried the Judge's observed usage from one that
+    /// defaulted it.
+    const RANGE_GRADER_USAGE: awaken_runtime_contract::llm::TokenUsage =
+        awaken_runtime_contract::llm::TokenUsage {
+            prompt_tokens: 41,
+            completion_tokens: 5,
+            cache_read_tokens: 2,
+            cache_creation_tokens: 0,
+        };
+
     #[async_trait]
     impl Grader for RangeGrader {
         async fn grade(
@@ -942,6 +960,7 @@ mod tests {
                     GradeDecision::NeedsRevision
                 },
                 explanation: "deterministic test grade".into(),
+                usage: Some(RANGE_GRADER_USAGE),
             })
         }
     }
@@ -957,6 +976,7 @@ mod tests {
             Ok(Grade {
                 decision: GradeDecision::Satisfied,
                 explanation: "recorded".into(),
+                usage: None,
             })
         }
     }
@@ -975,6 +995,7 @@ mod tests {
             Ok(Grade {
                 decision: GradeDecision::Satisfied,
                 explanation: "pinned snapshot used".into(),
+                usage: None,
             })
         }
     }
@@ -1009,6 +1030,10 @@ mod tests {
         let report = drive(&satisfied, 3).await.unwrap();
         assert_eq!(report.iterations.len(), 1);
         assert_eq!(report.iterations[0].result, EvaluationResult::Satisfied);
+        // What grading cost belongs to the round it graded. The report is the
+        // only place a caller can read it, so every graded round must carry the
+        // Grade's own observation rather than a report-wide total.
+        assert_eq!(report.iterations[0].usage, Some(RANGE_GRADER_USAGE));
 
         let revised = World::new(&["draft", "FINAL"]);
         let report = drive(&revised, 3).await.unwrap();
@@ -1019,6 +1044,13 @@ mod tests {
                 .map(|iteration| iteration.result)
                 .collect::<Vec<_>>(),
             vec![EvaluationResult::NeedsRevision, EvaluationResult::Satisfied]
+        );
+        assert!(
+            report
+                .iterations
+                .iter()
+                .all(|iteration| iteration.usage == Some(RANGE_GRADER_USAGE)),
+            "each graded round reports the Judge Run that graded it"
         );
 
         let exhausted = World::new(&["draft", "acknowledged"]);
@@ -1075,6 +1107,7 @@ mod tests {
             grade: Grade {
                 decision: GradeDecision::NeedsRevision,
                 explanation: "revise".into(),
+                usage: None,
             },
         };
 
@@ -1155,6 +1188,7 @@ mod tests {
             grade: Grade {
                 decision: GradeDecision::NeedsRevision,
                 explanation: "revise".into(),
+                usage: None,
             },
         };
 

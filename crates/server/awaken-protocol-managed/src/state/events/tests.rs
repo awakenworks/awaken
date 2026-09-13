@@ -6004,6 +6004,7 @@ fn outcome_projection_requires_a_terminal_fence_and_anchors_synthetic_interrupts
                             iteration: *iteration,
                             result: (*result).into(),
                             explanation: "test".into(),
+                            usage: None,
                         },
                     )
                     .collect(),
@@ -6125,6 +6126,7 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
                     iteration: 1,
                     result: "satisfied".into(),
                     explanation: "correct".into(),
+                    usage: None,
                 }],
             },
         ),
@@ -12109,6 +12111,7 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
                     iteration: 0,
                     result: "needs_revision".into(),
                     explanation: "add FINAL".into(),
+                    usage: None,
                 },
                 OutcomeIteration {
                     messages: vec![final_message],
@@ -12117,6 +12120,12 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
                     iteration: 1,
                     result: "satisfied".into(),
                     explanation: "done".into(),
+                    usage: Some(awaken_agent_contract::audit::model_request::TokenUsage {
+                        prompt_tokens: 120,
+                        completion_tokens: 9,
+                        cache_read_tokens: 4,
+                        cache_creation_tokens: 0,
+                    }),
                 },
             ],
         }),

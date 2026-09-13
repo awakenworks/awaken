@@ -35,6 +35,7 @@ pub awaken_ext_goal::controller::IterationReport::iteration: u32
 pub awaken_ext_goal::controller::IterationReport::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_ext_goal::controller::IterationReport::outcome_id: awaken_ext_goal::outcome::Id
 pub awaken_ext_goal::controller::IterationReport::result: awaken_ext_goal::outcome::EvaluationResult
+pub awaken_ext_goal::controller::IterationReport::usage: core::option::Option<awaken_agent_contract::audit::model_request::TokenUsage>
 pub struct awaken_ext_goal::controller::Report
 pub awaken_ext_goal::controller::Report::iterations: alloc::vec::Vec<awaken_ext_goal::controller::IterationReport>
 pub mod awaken_ext_goal::grader
@@ -136,6 +137,7 @@ pub awaken_ext_goal::outcome::Evaluation::worker_run_id: awaken_agent_contract::
 pub struct awaken_ext_goal::outcome::Grade
 pub awaken_ext_goal::outcome::Grade::decision: awaken_ext_goal::outcome::GradeDecision
 pub awaken_ext_goal::outcome::Grade::explanation: alloc::string::String
+pub awaken_ext_goal::outcome::Grade::usage: core::option::Option<awaken_agent_contract::audit::model_request::TokenUsage>
 pub struct awaken_ext_goal::outcome::GradingInput
 pub awaken_ext_goal::outcome::GradingInput::description: alloc::string::String
 pub awaken_ext_goal::outcome::GradingInput::evidence: alloc::vec::Vec<awaken_ext_goal::outcome::DeliverableEvidence>
