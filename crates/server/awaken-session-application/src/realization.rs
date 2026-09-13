@@ -672,6 +672,14 @@ impl SessionApplication {
             quarantined: candidates.quarantined.clone(),
             ..Default::default()
         };
+        let local_candidates = candidates
+            .sessions
+            .iter()
+            .filter(|candidate| candidate.interests.local_realization)
+            .collect::<Vec<_>>();
+        if local_candidates.is_empty() {
+            return report;
+        }
         let admission = match self.refresh_executable_projections().await {
             Ok(admission) => admission,
             Err(error) => {
@@ -682,7 +690,7 @@ impl SessionApplication {
                 return report;
             }
         };
-        for candidate in &candidates.sessions {
+        for candidate in local_candidates {
             let session = match admission
                 .enter(|| self.session_repository().get(&candidate.session_id))
                 .await

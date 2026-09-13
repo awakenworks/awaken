@@ -89,6 +89,18 @@ and the 30–300 second retry backoff remains unchanged. This bounds added wake
 latency and removes load-amplifying duplicate scans without adding a queue,
 leader, durable cursor or second reconciliation path.
 
+The repository's existing atomic reconciliation scan also derives three
+request-local scheduling hints: incomplete Event batches, a possibly due
+Environment continuation, and a possibly local realization. A false hint skips
+only that phase's redundant root reload; it cannot authorize or complete work.
+Every true Event hint still performs one fresh root read, now reused as the
+first input of the bounded Event loop, and every Continuation or Realization
+effect still begins from its ordinary fresh root/authority checks. The hints
+carry no Session payload, receipt or cursor. A transition after the scan prefix
+is handled by the retained wake permit or scheduled recovery, so this removes
+duplicate reads without creating a recovery registry or weakening effect-time
+validation.
+
 Within one Managed candidate, the initial coordination query borrows its already
 observed atomic Root Thread snapshot. The Runtime Host's existing relationship
 projector and lifecycle-watermark enrichment remain the sole implementation;

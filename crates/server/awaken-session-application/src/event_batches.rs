@@ -602,11 +602,12 @@ impl SessionApplication {
         // per-Session FIFO, root CAS, Runtime admission and interruption order.
         let completed = super::recovery_sweep::map_candidates(candidates, |candidate| async move {
             let mut result = EventBatchReconciliation::default();
+            if !candidate.interests.event_batches {
+                return result;
+            }
             let session = match self.session_repository().get(&candidate.session_id).await {
                 Ok(session) => session,
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
-                    return result;
-                }
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => return result,
                 Err(error) => {
                     result
                         .failures
@@ -614,17 +615,18 @@ impl SessionApplication {
                     return result;
                 }
             };
-            if session.needs_event_reconciliation() {
-                result.pending = 1;
-                let session_id = session.session_id;
-                match self
-                    .reconcile_session_event_batches(&session_id, None)
-                    .await
-                {
-                    Ok(true) => result.settled = 1,
-                    Ok(false) => {}
-                    Err(error) => result.failures.push((session_id, error.to_string())),
-                }
+            if !session.needs_event_reconciliation() {
+                return result;
+            }
+            result.pending = 1;
+            let session_id = session.session_id.clone();
+            match self
+                .reconcile_session_event_batches(&session_id, None, Some(session))
+                .await
+            {
+                Ok(true) => result.settled = 1,
+                Ok(false) => {}
+                Err(error) => result.failures.push((session_id, error.to_string())),
             }
             result
         })
@@ -648,7 +650,7 @@ impl SessionApplication {
         preferred_batch_id: Option<&str>,
     ) -> Result<(), RunError> {
         let _ = self
-            .reconcile_session_event_batches(session_id, preferred_batch_id)
+            .reconcile_session_event_batches(session_id, preferred_batch_id, None)
             .await?;
         Ok(())
     }
@@ -657,16 +659,20 @@ impl SessionApplication {
         &self,
         session_id: &str,
         preferred_batch_id: Option<&str>,
+        mut initial_session: Option<PersistedSession>,
     ) -> Result<bool, RunError> {
         // Bound one supervisor slice. Retained history may contain many batches,
         // but each Advanced result persists one entry and a later scan resumes.
         for _ in 0..EVENT_BATCH_RECONCILIATION_STEPS {
-            let session = self
-                .session_repository()
-                .get(session_id)
-                .await
-                .map_err(repository_failure)
-                .map_err(mutation_run_error)?;
+            let session = match initial_session.take() {
+                Some(session) => session,
+                None => self
+                    .session_repository()
+                    .get(session_id)
+                    .await
+                    .map_err(repository_failure)
+                    .map_err(mutation_run_error)?,
+            };
             if session.is_terminal() {
                 return self.resolve_terminal_event_batches(session_id).await;
             }
