@@ -64,7 +64,10 @@ async fn minimax_endpoint_authenticates_and_reaches_the_model() {
 async fn minimax_agent_edits_a_real_file() {
     let model = std::env::var("AWAKEN_MODEL").unwrap_or_else(|_| "MiniMax-M3".to_string());
     let llm = build_executor().expect("build executor");
-    let session = CodingSession::new(build_runtime(llm), coding_config(&model));
+    let session = CodingSession::new(
+        build_runtime(llm),
+        coding_config(&model).expect("model reference is an executable binding"),
+    );
 
     let dir = std::env::temp_dir().join(format!("awaken_minimax_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -102,7 +105,10 @@ async fn minimax_agent_edits_a_real_file() {
 async fn minimax_agent_denied_edit_leaves_the_file_unchanged() {
     let model = std::env::var("AWAKEN_MODEL").unwrap_or_else(|_| "MiniMax-M3".to_string());
     let llm = build_executor().expect("build executor");
-    let session = CodingSession::new(build_runtime(llm), coding_config(&model));
+    let session = CodingSession::new(
+        build_runtime(llm),
+        coding_config(&model).expect("model reference is an executable binding"),
+    );
 
     let dir = std::env::temp_dir().join(format!("awaken_deny_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

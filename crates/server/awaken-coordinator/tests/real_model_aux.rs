@@ -271,7 +271,9 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
 async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     // The judge is now an ordinary agent resolved by id; grade with a real one.
-    let host = host.with_judge("judge");
+    let host = host
+        .with_judge("judge")
+        .expect("live host model reference is an executable binding");
 
     let progress = host
         .define_outcome(

@@ -51,7 +51,7 @@ async fn tui_session_pieces_run_one_turn_without_a_terminal() {
     let llm = Arc::new(ScriptedCoder::new(path.clone(), "TODO", "DONE"));
     let session = CodingSession::new_with_hand_context(
         build_runtime(llm),
-        coding_config("scripted-model"),
+        coding_config("scripted-model").expect("model reference is an executable binding"),
         HandToolContext::new(&dir),
     );
 

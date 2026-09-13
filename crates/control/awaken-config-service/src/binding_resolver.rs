@@ -11,7 +11,9 @@
 //! and skips `Pinned` ones; re-publish is idempotent by content address.
 
 use awaken_agent_config::ModelSelection;
-use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+use awaken_runtime_contract::resolved::{
+    InvalidModelBinding, ModelBinding, ResolvedModelCandidate,
+};
 use awaken_tenancy::ScopeId;
 
 /// Stable failure vocabulary for publication-time model resolution.
@@ -34,8 +36,28 @@ pub enum PublicationResolutionError {
     },
     #[error("duplicate model candidate `{0:?}`")]
     DuplicateBinding(ModelBinding),
+    /// Coordinates read from `origin` (a catalog offering, an authored target,
+    /// a Worker capability row) were refused by [`ModelBinding::parse`], so
+    /// no candidate could even be named for a `CandidateUnavailable`.
+    #[error("model coordinates from {origin} are not an executable binding: {error}")]
+    InvalidBinding {
+        origin: String,
+        #[source]
+        error: InvalidModelBinding,
+    },
     #[error("invalid model publication: {0}")]
     Invalid(String),
+}
+
+impl PublicationResolutionError {
+    /// Refuse coordinates that `origin` supplied and `parse` would not admit.
+    #[must_use]
+    pub fn invalid_binding(origin: impl Into<String>, error: InvalidModelBinding) -> Self {
+        Self::InvalidBinding {
+            origin: origin.into(),
+            error,
+        }
+    }
 }
 
 impl From<String> for PublicationResolutionError {
@@ -177,5 +199,38 @@ impl PublicationBindingReconciler for ConfigServiceReconciler {
         self.plane
             .recover_all_registrations(&self.execution_workspace)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Decision table for the refusal row: C1 the origin's coordinates are
+    /// refused by `parse` -> E1 the error names the origin and carries the
+    /// admission refusal as its source, so an operator reads *where* the bad
+    /// coordinates came from, not only that they were bad.
+    #[test]
+    fn invalid_binding_names_its_origin_and_keeps_the_admission_refusal() {
+        let refusal = ModelBinding::parse("", "m-only", "genai")
+            .expect_err("a native route without a provider identity is refused");
+        let error = PublicationResolutionError::invalid_binding(
+            "catalog offering `m-only`",
+            refusal.clone(),
+        );
+        assert_eq!(
+            error,
+            PublicationResolutionError::InvalidBinding {
+                origin: "catalog offering `m-only`".into(),
+                error: refusal.clone(),
+            }
+        );
+        let message = error.to_string();
+        assert!(message.contains("catalog offering `m-only`"), "{message}");
+        assert!(message.contains(&refusal.to_string()), "{message}");
+        assert_eq!(
+            std::error::Error::source(&error).map(ToString::to_string),
+            Some(refusal.to_string())
+        );
     }
 }

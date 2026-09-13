@@ -38,7 +38,8 @@ pub(crate) fn agent_config(id: &str) -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
+        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
+            .expect("literal coordinates"),
         inference: Default::default(),
         tool_ids: vec![],
         model_fallbacks: Vec::new(),

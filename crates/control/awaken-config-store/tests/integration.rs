@@ -223,7 +223,8 @@ fn agent_config() -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
+        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
+            .expect("literal coordinates"),
         inference: Default::default(),
         tool_ids: vec!["echo".to_string()],
         model_fallbacks: Vec::new(),
@@ -771,7 +772,7 @@ fn scoped_agent(id: &str) -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned("p", "m", "b"),
+        model_binding: ModelSelection::pinned("p", "m", "b").expect("literal coordinates"),
         inference: Default::default(),
         tool_ids: Vec::new(),
         ..Default::default()
@@ -899,7 +900,7 @@ fn agent_with(id: &str, instructions: &str) -> AgentConfig {
         instructions: instructions.to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned("p", "m", "b"),
+        model_binding: ModelSelection::pinned("p", "m", "b").expect("literal coordinates"),
         inference: Default::default(),
         tool_ids: Vec::new(),
         ..Default::default()

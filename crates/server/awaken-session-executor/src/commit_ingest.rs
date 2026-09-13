@@ -131,7 +131,8 @@ mod tests {
             )]),
             &[],
             ContextPolicy::KeepAll,
-        );
+        )
+        .expect("literal model reference");
         let override_candidate = ResolvedModelCandidate::host(ModelBinding::new(
             "claimed-override-provider",
             OVERRIDE_MODEL_REF,

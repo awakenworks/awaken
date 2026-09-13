@@ -437,7 +437,7 @@ async fn draft_agent_pins_a_model_when_given_one() {
     let stored = h.store.stored("a").unwrap();
     assert_eq!(
         stored.model_binding,
-        ModelSelection::pinned("default", "m-1", "default")
+        ModelSelection::pinned("default", "m-1", "default").expect("literal coordinates")
     );
 }
 

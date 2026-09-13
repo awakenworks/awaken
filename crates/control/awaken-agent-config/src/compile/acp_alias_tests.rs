@@ -30,7 +30,8 @@ fn acp_alias_publication_decision_table() {
     };
     let mut cfg = config(&["write"]);
     // Exact identity of authoring and publication must agree.
-    cfg.model_binding = ModelSelection::pinned("identity", "", "acp:claude");
+    cfg.model_binding =
+        ModelSelection::pinned("identity", "", "acp:claude").expect("literal coordinates");
     let tools = [tool("write")];
     let publish = |cfg: &AgentConfig, supported| {
         compile_published(
@@ -61,7 +62,8 @@ fn acp_alias_publication_decision_table() {
     ));
     cfg.tool_overrides[0].description = None;
     let mut managed_cfg = cfg.clone();
-    managed_cfg.model_binding = ModelSelection::pinned("identity", "model", "acp:claude");
+    managed_cfg.model_binding =
+        ModelSelection::pinned("identity", "model", "acp:claude").expect("literal coordinates");
     let managed = |supported| {
         ResolvedModelCandidate::try_provider_with_acp(
             ModelBinding::new("identity", "model", "acp:claude"),

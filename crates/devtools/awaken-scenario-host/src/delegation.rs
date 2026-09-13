@@ -72,8 +72,14 @@ pub async fn build_delegation_router_with_deployment(
                 })
                 .into_iter()
                 .collect();
+            // `model_ref` comes from `scenario_model` (possibly `ANTHROPIC_MODEL`),
+            // so it is admitted and a bad reference fails at scenario startup.
+            let binding =
+                ModelBinding::parse("default", &model_ref, backend_ref).unwrap_or_else(|error| {
+                    panic!("scenario model `{model_ref}` on backend `{backend_ref}`: {error}")
+                });
             builder
-                .model(ModelBinding::new("default", &model_ref, backend_ref))
+                .model(binding)
                 .tools(tools)
                 .metadata(metadata(owner_id))
                 .agent_bindings(AgentBindings {
@@ -99,7 +105,10 @@ pub async fn build_delegation_router_with_deployment(
     // descriptor and its frozen binding. Reusing it here keeps the real-process
     // scenario from hand-maintaining a second copy of that capability.
     let tool_catalog = awaken_session_executor::authorable_tools();
-    let primary = ResolvedModelCandidate::host(ModelBinding::new("default", &model_ref, "default"));
+    let primary = ResolvedModelCandidate::host(
+        ModelBinding::parse("default", &model_ref, "default")
+            .unwrap_or_else(|error| panic!("scenario model `{model_ref}`: {error}")),
+    );
     let advisor =
         ResolvedModelCandidate::host(ModelBinding::new("default", "fake-advisor", "default"));
     let mut targets = vec![

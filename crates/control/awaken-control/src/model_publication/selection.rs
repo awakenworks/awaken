@@ -27,20 +27,26 @@ impl CatalogModelPublicationResolver {
         }
         if let Some((target, backend_ref)) = selection.target() {
             let offering = select_offering(catalog, target, &[]).map_err(|error| {
-                PublicationResolutionError::CandidateUnavailable {
-                    binding: ModelBinding::new(
-                        target.provider_id.as_deref().unwrap_or_default(),
-                        &target.model_id,
-                        backend_ref,
-                    ),
-                    reason: error.to_string(),
-                }
+                super::offering_resolution::target_unavailable(
+                    target,
+                    backend_ref,
+                    error.to_string(),
+                )
             })?;
-            let primary = ModelBinding::new(
+            let primary = ModelBinding::parse(
                 offering.provider_id.as_str(),
                 &offering.model_id,
                 backend_ref,
-            );
+            )
+            .map_err(|error| {
+                PublicationResolutionError::invalid_binding(
+                    format!(
+                        "catalog offering `{}` for authored target on backend `{backend_ref}`",
+                        offering.model_id
+                    ),
+                    error,
+                )
+            })?;
             return Ok((
                 primary,
                 fallbacks
@@ -50,7 +56,12 @@ impl CatalogModelPublicationResolver {
             ));
         }
         if let Some(backend_ref) = selection.backend_default_ref() {
-            let primary = ModelBinding::new("", "", backend_ref);
+            let primary = ModelBinding::parse("", "", backend_ref).map_err(|error| {
+                PublicationResolutionError::invalid_binding(
+                    format!("authored backend-default selection on `{backend_ref}`"),
+                    error,
+                )
+            })?;
             self.validate_acp_binding(&primary, BackendModelSelection::Default)?;
             return Ok((
                 primary,
@@ -61,7 +72,12 @@ impl CatalogModelPublicationResolver {
             ));
         }
         if let Some((backend_ref, model_ref)) = selection.backend_exact() {
-            let primary = ModelBinding::new("", model_ref, backend_ref);
+            let primary = ModelBinding::parse("", model_ref, backend_ref).map_err(|error| {
+                PublicationResolutionError::invalid_binding(
+                    format!("authored backend-exact selection `{model_ref}` on `{backend_ref}`"),
+                    error,
+                )
+            })?;
             self.validate_acp_binding(&primary, BackendModelSelection::Exact)?;
             return Ok((
                 primary,
@@ -79,8 +95,10 @@ impl CatalogModelPublicationResolver {
             .next()
             .ok_or(PublicationResolutionError::MissingPrimary)?;
         Ok((
-            Self::binding_of(primary),
-            offerings.map(Self::binding_of).collect(),
+            Self::binding_of(primary)?,
+            offerings
+                .map(Self::binding_of)
+                .collect::<Result<Vec<_>, _>>()?,
         ))
     }
 
@@ -141,11 +159,20 @@ impl CatalogModelPublicationResolver {
                 reason: error.to_string(),
             }
         })?;
-        Ok(ModelBinding::new(
+        ModelBinding::parse(
             offering.provider_id.as_str(),
             &offering.model_id,
             &binding.backend_ref,
-        ))
+        )
+        .map_err(|error| {
+            PublicationResolutionError::invalid_binding(
+                format!(
+                    "catalog offering `{}` canonicalizing pinned binding `{}`",
+                    offering.model_id, binding.model_ref
+                ),
+                error,
+            )
+        })
     }
 
     pub(super) fn validate_acp_binding(

@@ -15,7 +15,7 @@ impl CatalogModelPublicationResolver {
     ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
         if !self.brokered_access_enabled {
             return Err(PublicationResolutionError::CandidateUnavailable {
-                binding: Self::binding_of(offering),
+                binding: Self::binding_of(offering)?,
                 reason: "cloud_models_disabled: brokered model supply is disabled".into(),
             });
         }
@@ -80,7 +80,7 @@ impl CatalogModelPublicationResolver {
                 && !self.brokered_access_enabled
             {
                 return Err(PublicationResolutionError::CandidateUnavailable {
-                    binding: Self::binding_of(offering),
+                    binding: Self::binding_of(offering)?,
                     reason: "cloud_models_disabled: brokered model supply is disabled".into(),
                 });
             }
@@ -104,7 +104,7 @@ impl CatalogModelPublicationResolver {
                 sources: &sources,
                 pool: pool.as_ref(),
             };
-            let binding = Self::binding_of(offering);
+            let binding = Self::binding_of(offering)?;
             let access = self
                 .publication_access(
                     &lookup,

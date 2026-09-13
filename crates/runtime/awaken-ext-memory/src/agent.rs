@@ -1,7 +1,9 @@
 //! The memory-extractor agent: id, instructions (Claude Code's memory taxonomy),
 //! its default config, and the per-run extraction prompt.
 
-use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+use awaken_runtime_contract::resolved::{
+    InvalidModelBinding, ModelBinding, ResolvedModelCandidate,
+};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
 use crate::tool::write_memory_descriptor;
@@ -92,12 +94,20 @@ Any prose or other format is invalid. Do not explain, do not use tools.";
 
 /// A default `memory-selector` agent config: no tools, a single step (it replies
 /// once), and no plugins — its Agent config therefore cannot invoke memory recall.
-pub fn default_selector_agent(model_ref: &str, instructions: &str) -> ExecutableAgentSnapshot {
-    ExecutableAgentSnapshot::builder(SELECTOR_AGENT_ID)
+///
+/// `model_ref` is the host's configured default model reference; it is
+/// admitted here so a blank or padded reference is refused where it was
+/// configured instead of stalling the selector Run.
+pub fn default_selector_agent(
+    model_ref: &str,
+    instructions: &str,
+) -> Result<ExecutableAgentSnapshot, InvalidModelBinding> {
+    let model = ModelBinding::parse("default", model_ref, "default")?;
+    Ok(ExecutableAgentSnapshot::builder(SELECTOR_AGENT_ID)
         .instructions(instructions)
-        .model(ModelBinding::new("default", model_ref, "default"))
+        .model(model)
         .max_steps(1)
-        .build()
+        .build())
 }
 
 #[cfg(test)]
@@ -121,7 +131,8 @@ mod tests {
 
     #[test]
     fn selector_is_toolless_and_requires_the_strict_wire() {
-        let cfg = default_selector_agent("stub", DEFAULT_SELECTOR_INSTRUCTIONS);
+        let cfg = default_selector_agent("stub", DEFAULT_SELECTOR_INSTRUCTIONS)
+            .expect("literal model reference");
         assert!(cfg.resolved_spec.tool_descriptors.is_empty());
         assert!(cfg.resolved_spec.instructions.contains("Any prose"));
         assert!(cfg.resolved_spec.instructions.contains("untrusted data"));

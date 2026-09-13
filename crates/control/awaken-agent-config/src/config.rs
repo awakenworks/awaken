@@ -7,7 +7,8 @@ use awaken_runtime_contract::agent_bindings::InferenceOptions;
 use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
 use awaken_runtime_contract::delegation::DelegationLimits;
 use awaken_runtime_contract::resolved::{
-    AcpBackend, AcpSessionConfiguration, ContextPolicy, ExactModelRef, ModelBinding, ToolDescriptor,
+    AcpBackend, AcpSessionConfiguration, ContextPolicy, ExactModelRef, InvalidModelBinding,
+    ModelBinding, ToolDescriptor,
 };
 use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -77,18 +78,17 @@ impl ModelSelection {
         }
     }
 
-    /// A pinned binding from its three refs (ergonomic constructor for the many
-    /// call sites that authored a concrete `ModelBinding::new(...)`).
+    /// A pinned binding from its three refs. The coordinates are admitted by
+    /// [`ModelBinding::parse`], so a selection that names a non-executable
+    /// backend or an under-specified native route is refused here rather than
+    /// at the durable boundary.
     pub fn pinned(
         provider_identity_ref: impl Into<String>,
         model_ref: impl Into<String>,
         backend_ref: impl Into<String>,
-    ) -> Self {
-        ModelSelection::Pinned(ModelBinding::new(
-            provider_identity_ref,
-            model_ref,
-            backend_ref,
-        ))
+    ) -> Result<Self, InvalidModelBinding> {
+        ModelBinding::parse(provider_identity_ref, model_ref, backend_ref)
+            .map(ModelSelection::Pinned)
     }
 
     pub fn try_backend_default(
@@ -417,7 +417,8 @@ impl<'de> Deserialize<'de> for ModelSelection {
                 provider_identity_ref,
                 model_ref,
                 backend_ref,
-            } => Ok(Self::pinned(provider_identity_ref, model_ref, backend_ref)),
+            } => Self::pinned(provider_identity_ref, model_ref, backend_ref)
+                .map_err(serde::de::Error::custom),
         }
     }
 }
@@ -1154,7 +1155,11 @@ mod model_selection_tests {
                 .expect("exact ACP selection")
                 .requires_reconciliation()
         );
-        assert!(!ModelSelection::pinned("provider", "model", "genai").requires_reconciliation());
+        assert!(
+            !ModelSelection::pinned("provider", "model", "genai")
+                .expect("literal coordinates")
+                .requires_reconciliation()
+        );
     }
 
     #[test]
@@ -1210,7 +1215,8 @@ mod model_selection_tests {
             "a2a:https://agent.example",
         ] {
             let config = AgentConfig {
-                model_binding: ModelSelection::pinned("provider", "model", backend_ref),
+                model_binding: ModelSelection::pinned("provider", "model", backend_ref)
+                    .expect("literal coordinates"),
                 ..Default::default()
             };
             let expected = config.kind();

@@ -106,11 +106,9 @@ fn executor_only(executor: &str, original: &str) -> Result<ModelSelection, Manag
             ModelSelection::try_backend_default(backend_ref, AcpSessionConfiguration::default())
                 .map_err(|_| ManagedModelIdError::Invalid(original.into()))
         }
-        Backend::Remote(_) => Ok(ModelSelection::Pinned(ModelBinding::new(
-            "",
-            "",
-            backend_ref,
-        ))),
+        Backend::Remote(_) => ModelBinding::parse("", "", backend_ref)
+            .map(ModelSelection::Pinned)
+            .map_err(|_| ManagedModelIdError::Invalid(original.into())),
         Backend::Native | Backend::Invalid(_) => Err(ManagedModelIdError::Invalid(original.into())),
     }
 }
