@@ -10,6 +10,24 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def check_event_batch_model_mutants(tlc_jar: Path) -> None:
+    # AQ1-AQ4 cause/effect: old Awaiting + later queued User needs an exact
+    # post-settlement recovery; disabling it must violate eventual action
+    # visibility, while dropping settlement must violate no-early-close safety.
+    # Reuse the existing Session/Dispatch kernels and semantic TLC oracle.
+    session_source = (ROOT / "formal/tla/SessionEventProtocol.tla").read_text()
+    session_config = (ROOT / "formal/tla/SessionEventProtocol.cfg").read_text()
+    progress_config = "\n".join(line for line in session_config.splitlines()
+                                if not line.startswith(("PROPERTY ", "PROPERTIES ")))
+    progress_config += "\nPROPERTIES AwaitingActionEventuallyVisible\n"
+    recovery = "RecoverAwaitingInterval == /\\ intervalOpen /\\ BoundarySettled"
+    assert session_source.count(recovery) == 1, "one exact Session interval recovery action"
+    check_tlc_model_mutations(tlc_jar, "SessionEventProtocol", session_source, session_config, [
+        (session_source.replace(recovery, recovery + " /\\ FALSE", 1), progress_config,
+         "temporal:AwaitingActionEventuallyVisible"),
+        (session_source.replace(recovery, "RecoverAwaitingInterval == /\\ intervalOpen", 1),
+         session_config, "Safety"),
+    ], dependencies=("SessionEventKernel", "SessionActivityKernel", "RunIngressKernel"))
+    print("Session interval: lost recovery and premature closure mutants qualified")
     source = (ROOT / "formal/tla/ToolResultProtocol.tla").read_text()
     # Keep the same protocol and every batch outcome. Smaller unrelated tool
     # domains avoid multiplying the independent ToolReply state space per mutant.
