@@ -113,6 +113,7 @@ pub enum CloudNetworkingParams {
     },
 }
 
+/// `BetaPackagesParams`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackagesParams {
@@ -354,6 +355,7 @@ impl<T> From<Option<T>> for RequiredNullable<T> {
     }
 }
 
+/// `Work`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Work {

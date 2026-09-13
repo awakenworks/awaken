@@ -185,6 +185,8 @@ pub struct Credential {
     pub display_name: Option<String>,
 }
 
+/// `CredentialCreateParams`.
+///
 /// Credential create params, discriminated by `type`, one variant per SDK
 /// `*CreateParams` shape. An unknown tag deserialize-fails into a clean `400`.
 /// All secret fields are write-only.

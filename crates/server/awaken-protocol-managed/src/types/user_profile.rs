@@ -92,6 +92,8 @@ pub struct ExternalUserDetails {
     pub reference_id: Option<String>,
 }
 
+/// SDK: inline — `BetaUserProfileExternalUserDetails.account_status`, which the SDK
+/// declares as an anonymous string union rather than a named type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountStatus {
@@ -100,6 +102,8 @@ pub enum AccountStatus {
     Blocked,
 }
 
+/// SDK: inline — `BetaUserProfileExternalUserDetails.entity_type`, which the SDK
+/// declares as an anonymous string union rather than a named type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityType {
@@ -131,6 +135,8 @@ pub struct ExternalUserDetailsParams {
     pub reference_id: Option<Option<String>>,
 }
 
+/// `BetaUserProfile`.
+///
 /// The response is selected solely by the explicit beta capability carried on
 /// the request. The enum is untagged because both variants are official wire
 /// shapes, not an Awaken-owned discriminator.

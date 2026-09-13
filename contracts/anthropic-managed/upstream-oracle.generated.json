@@ -102,6 +102,639 @@
   ],
   "current": {
     "declaration_file_count": 58,
+    "declared_types": [
+      "AccumulatedEvent",
+      "AgentArchiveParams",
+      "AgentCreateParams",
+      "AgentListParams",
+      "AgentRetrieveParams",
+      "AgentToolContext",
+      "AgentUpdateParams",
+      "Agents",
+      "BashSession",
+      "BashTimeoutError",
+      "BetaCapabilitySupport",
+      "BetaCloudConfig",
+      "BetaCloudConfigParams",
+      "BetaContextManagementCapability",
+      "BetaDeletedFile",
+      "BetaDeletedSkill",
+      "BetaDeletedSkillVersion",
+      "BetaDream",
+      "BetaDreamError",
+      "BetaDreamInput",
+      "BetaDreamMemoryStoreInput",
+      "BetaDreamMemoryStoreOutput",
+      "BetaDreamModelConfig",
+      "BetaDreamModelConfigParam",
+      "BetaDreamOutput",
+      "BetaDreamSessionsInput",
+      "BetaDreamStatus",
+      "BetaDreamUsage",
+      "BetaDreamingError",
+      "BetaDreamsPageCursor",
+      "BetaEffortCapability",
+      "BetaEnvironment",
+      "BetaEnvironmentDeleteResponse",
+      "BetaEnvironmentsPageCursor",
+      "BetaFileMetadata",
+      "BetaFileMetadataPageCursor",
+      "BetaFileScope",
+      "BetaHealthCheckWorkData",
+      "BetaLimitedNetwork",
+      "BetaLimitedNetworkParams",
+      "BetaManagedAgentsAPIActor",
+      "BetaManagedAgentsActor",
+      "BetaManagedAgentsAdvisor",
+      "BetaManagedAgentsAdvisorParams",
+      "BetaManagedAgentsAgent",
+      "BetaManagedAgentsAgentArchivedDeploymentPausedReasonError",
+      "BetaManagedAgentsAgentArchivedRunError",
+      "BetaManagedAgentsAgentAutoEvaluatedPermission",
+      "BetaManagedAgentsAgentAutoEvaluatedPermissionAllow",
+      "BetaManagedAgentsAgentAutoEvaluatedPermissionAsk",
+      "BetaManagedAgentsAgentAutoEvaluatedPermissionDeny",
+      "BetaManagedAgentsAgentCustomToolUseEvent",
+      "BetaManagedAgentsAgentMCPToolResultEvent",
+      "BetaManagedAgentsAgentMCPToolUseEvent",
+      "BetaManagedAgentsAgentMessageEvent",
+      "BetaManagedAgentsAgentMessagePreview",
+      "BetaManagedAgentsAgentParams",
+      "BetaManagedAgentsAgentReference",
+      "BetaManagedAgentsAgentThinkingEvent",
+      "BetaManagedAgentsAgentThinkingPreview",
+      "BetaManagedAgentsAgentThreadContextCompactedEvent",
+      "BetaManagedAgentsAgentThreadMessageReceivedEvent",
+      "BetaManagedAgentsAgentThreadMessageSentEvent",
+      "BetaManagedAgentsAgentToolConfig",
+      "BetaManagedAgentsAgentToolConfigParams",
+      "BetaManagedAgentsAgentToolEvaluation",
+      "BetaManagedAgentsAgentToolEvaluationAlwaysAllow",
+      "BetaManagedAgentsAgentToolEvaluationAlwaysAsk",
+      "BetaManagedAgentsAgentToolEvaluationAuto",
+      "BetaManagedAgentsAgentToolResultEvent",
+      "BetaManagedAgentsAgentToolUseEvent",
+      "BetaManagedAgentsAgentToolset20260401",
+      "BetaManagedAgentsAgentToolset20260401BashInput",
+      "BetaManagedAgentsAgentToolset20260401EditInput",
+      "BetaManagedAgentsAgentToolset20260401GlobInput",
+      "BetaManagedAgentsAgentToolset20260401GrepInput",
+      "BetaManagedAgentsAgentToolset20260401Params",
+      "BetaManagedAgentsAgentToolset20260401ReadInput",
+      "BetaManagedAgentsAgentToolset20260401WriteInput",
+      "BetaManagedAgentsAgentToolsetDefaultConfig",
+      "BetaManagedAgentsAgentToolsetDefaultConfigParams",
+      "BetaManagedAgentsAgentWithOverridesParams",
+      "BetaManagedAgentsAgentsPageCursor",
+      "BetaManagedAgentsAlwaysAllowPolicy",
+      "BetaManagedAgentsAlwaysAskPolicy",
+      "BetaManagedAgentsAnthropicSkill",
+      "BetaManagedAgentsAnthropicSkillParams",
+      "BetaManagedAgentsAutoPolicy",
+      "BetaManagedAgentsBase64DocumentSource",
+      "BetaManagedAgentsBase64ImageSource",
+      "BetaManagedAgentsBashToolConfig",
+      "BetaManagedAgentsBashToolConfigParams",
+      "BetaManagedAgentsBillingError",
+      "BetaManagedAgentsBranchCheckout",
+      "BetaManagedAgentsBudgetLimit",
+      "BetaManagedAgentsCacheCreationUsage",
+      "BetaManagedAgentsCommitCheckout",
+      "BetaManagedAgentsConflictError",
+      "BetaManagedAgentsContentSha256Precondition",
+      "BetaManagedAgentsCredential",
+      "BetaManagedAgentsCredentialHostUnreachableError",
+      "BetaManagedAgentsCredentialNetworkingParams",
+      "BetaManagedAgentsCredentialValidation",
+      "BetaManagedAgentsCredentialValidationStatus",
+      "BetaManagedAgentsCredentialsPageCursor",
+      "BetaManagedAgentsCronSchedule",
+      "BetaManagedAgentsCronScheduleParams",
+      "BetaManagedAgentsCustomSkill",
+      "BetaManagedAgentsCustomSkillParams",
+      "BetaManagedAgentsCustomTool",
+      "BetaManagedAgentsCustomToolInputSchema",
+      "BetaManagedAgentsCustomToolParams",
+      "BetaManagedAgentsDeleteSessionResource",
+      "BetaManagedAgentsDeletedCredential",
+      "BetaManagedAgentsDeletedMemory",
+      "BetaManagedAgentsDeletedMemoryStore",
+      "BetaManagedAgentsDeletedSession",
+      "BetaManagedAgentsDeletedVault",
+      "BetaManagedAgentsDeltaContent",
+      "BetaManagedAgentsDeltaEvent",
+      "BetaManagedAgentsDeltaType",
+      "BetaManagedAgentsDeployment",
+      "BetaManagedAgentsDeploymentInitialEvent",
+      "BetaManagedAgentsDeploymentInitialEventParams",
+      "BetaManagedAgentsDeploymentPausedReason",
+      "BetaManagedAgentsDeploymentPausedReasonError",
+      "BetaManagedAgentsDeploymentRun",
+      "BetaManagedAgentsDeploymentRunsPageCursor",
+      "BetaManagedAgentsDeploymentStatus",
+      "BetaManagedAgentsDeploymentSystemMessageEvent",
+      "BetaManagedAgentsDeploymentUserDefineOutcomeEvent",
+      "BetaManagedAgentsDeploymentUserMessageEvent",
+      "BetaManagedAgentsDeploymentsPageCursor",
+      "BetaManagedAgentsDocumentBlock",
+      "BetaManagedAgentsEditToolConfig",
+      "BetaManagedAgentsEditToolConfigParams",
+      "BetaManagedAgentsEffortHigh",
+      "BetaManagedAgentsEffortLow",
+      "BetaManagedAgentsEffortMax",
+      "BetaManagedAgentsEffortMedium",
+      "BetaManagedAgentsEffortXhigh",
+      "BetaManagedAgentsEnvironmentArchivedDeploymentPausedReasonError",
+      "BetaManagedAgentsEnvironmentArchivedRunError",
+      "BetaManagedAgentsEnvironmentNotFoundDeploymentPausedReasonError",
+      "BetaManagedAgentsEnvironmentNotFoundRunError",
+      "BetaManagedAgentsEnvironmentVariableAuthResponse",
+      "BetaManagedAgentsEnvironmentVariableCreateParams",
+      "BetaManagedAgentsEnvironmentVariableUpdateParams",
+      "BetaManagedAgentsError",
+      "BetaManagedAgentsErrorDeploymentPausedReason",
+      "BetaManagedAgentsEventParams",
+      "BetaManagedAgentsFileDocumentSource",
+      "BetaManagedAgentsFileImageSource",
+      "BetaManagedAgentsFileNotFoundDeploymentPausedReasonError",
+      "BetaManagedAgentsFileNotFoundRunError",
+      "BetaManagedAgentsFileResource",
+      "BetaManagedAgentsFileResourceConfig",
+      "BetaManagedAgentsFileResourceParams",
+      "BetaManagedAgentsFileRubric",
+      "BetaManagedAgentsFileRubricParams",
+      "BetaManagedAgentsGitHubRepositoryResource",
+      "BetaManagedAgentsGitHubRepositoryResourceConfig",
+      "BetaManagedAgentsGitHubRepositoryResourceParams",
+      "BetaManagedAgentsGlobToolConfig",
+      "BetaManagedAgentsGlobToolConfigParams",
+      "BetaManagedAgentsGrepToolConfig",
+      "BetaManagedAgentsGrepToolConfigParams",
+      "BetaManagedAgentsImageBlock",
+      "BetaManagedAgentsInjectionLocationParams",
+      "BetaManagedAgentsInjectionLocationResponse",
+      "BetaManagedAgentsInjectionLocationUpdateParams",
+      "BetaManagedAgentsLimitedCredentialNetworkingParams",
+      "BetaManagedAgentsLimitedCredentialNetworkingResponse",
+      "BetaManagedAgentsMCPAuthenticationFailedError",
+      "BetaManagedAgentsMCPConnectionFailedError",
+      "BetaManagedAgentsMCPEgressBlockedDeploymentPausedReasonError",
+      "BetaManagedAgentsMCPEgressBlockedRunError",
+      "BetaManagedAgentsMCPOAuthAuthResponse",
+      "BetaManagedAgentsMCPOAuthCreateParams",
+      "BetaManagedAgentsMCPOAuthRefreshParams",
+      "BetaManagedAgentsMCPOAuthRefreshResponse",
+      "BetaManagedAgentsMCPOAuthRefreshUpdateParams",
+      "BetaManagedAgentsMCPOAuthUpdateParams",
+      "BetaManagedAgentsMCPProbe",
+      "BetaManagedAgentsMCPServerURLDefinition",
+      "BetaManagedAgentsMCPToolConfig",
+      "BetaManagedAgentsMCPToolConfigParams",
+      "BetaManagedAgentsMCPToolset",
+      "BetaManagedAgentsMCPToolsetDefaultConfig",
+      "BetaManagedAgentsMCPToolsetDefaultConfigParams",
+      "BetaManagedAgentsMCPToolsetParams",
+      "BetaManagedAgentsManualDeploymentPausedReason",
+      "BetaManagedAgentsManualTriggerContext",
+      "BetaManagedAgentsMemory",
+      "BetaManagedAgentsMemoryListItem",
+      "BetaManagedAgentsMemoryListItemsPageCursor",
+      "BetaManagedAgentsMemoryPathConflictError",
+      "BetaManagedAgentsMemoryPreconditionFailedError",
+      "BetaManagedAgentsMemoryPrefix",
+      "BetaManagedAgentsMemoryStore",
+      "BetaManagedAgentsMemoryStoreArchivedDeploymentPausedReasonError",
+      "BetaManagedAgentsMemoryStoreArchivedRunError",
+      "BetaManagedAgentsMemoryStoreResource",
+      "BetaManagedAgentsMemoryStoreResourceConfig",
+      "BetaManagedAgentsMemoryStoreResourceParam",
+      "BetaManagedAgentsMemoryStoresPageCursor",
+      "BetaManagedAgentsMemoryVersion",
+      "BetaManagedAgentsMemoryVersionOperation",
+      "BetaManagedAgentsMemoryVersionsPageCursor",
+      "BetaManagedAgentsMemoryView",
+      "BetaManagedAgentsModel",
+      "BetaManagedAgentsModelConfig",
+      "BetaManagedAgentsModelConfigParams",
+      "BetaManagedAgentsModelOverloadedError",
+      "BetaManagedAgentsModelRateLimitedError",
+      "BetaManagedAgentsModelRequestFailedError",
+      "BetaManagedAgentsMultiagent",
+      "BetaManagedAgentsMultiagentCoordinator",
+      "BetaManagedAgentsMultiagentCoordinatorParams",
+      "BetaManagedAgentsMultiagentParams",
+      "BetaManagedAgentsMultiagentRosterEntryParams",
+      "BetaManagedAgentsMultiagentSelfParams",
+      "BetaManagedAgentsOrganizationDisabledDeploymentPausedReasonError",
+      "BetaManagedAgentsOrganizationDisabledRunError",
+      "BetaManagedAgentsOutcomeEvaluationResource",
+      "BetaManagedAgentsPlainTextDocumentSource",
+      "BetaManagedAgentsPrecondition",
+      "BetaManagedAgentsReadToolConfig",
+      "BetaManagedAgentsReadToolConfigParams",
+      "BetaManagedAgentsRedactedBlock",
+      "BetaManagedAgentsRefreshHTTPResponse",
+      "BetaManagedAgentsRefreshObject",
+      "BetaManagedAgentsRetryStatusExhausted",
+      "BetaManagedAgentsRetryStatusRetrying",
+      "BetaManagedAgentsRetryStatusTerminal",
+      "BetaManagedAgentsSchedule",
+      "BetaManagedAgentsScheduleParams",
+      "BetaManagedAgentsScheduleTriggerContext",
+      "BetaManagedAgentsSearchResultBlock",
+      "BetaManagedAgentsSearchResultCitations",
+      "BetaManagedAgentsSearchResultContent",
+      "BetaManagedAgentsSelfHostedResourcesUnsupportedDeploymentPausedReasonError",
+      "BetaManagedAgentsSelfHostedResourcesUnsupportedRunError",
+      "BetaManagedAgentsSendSessionEvents",
+      "BetaManagedAgentsServerToolUsage",
+      "BetaManagedAgentsServiceAccountActor",
+      "BetaManagedAgentsSession",
+      "BetaManagedAgentsSessionActor",
+      "BetaManagedAgentsSessionAgent",
+      "BetaManagedAgentsSessionAgentUpdate",
+      "BetaManagedAgentsSessionBudgetReached",
+      "BetaManagedAgentsSessionCreationRejectedRunError",
+      "BetaManagedAgentsSessionDeletedEvent",
+      "BetaManagedAgentsSessionEndTurn",
+      "BetaManagedAgentsSessionErrorEvent",
+      "BetaManagedAgentsSessionEvent",
+      "BetaManagedAgentsSessionEventsPageCursor",
+      "BetaManagedAgentsSessionMultiagentCoordinator",
+      "BetaManagedAgentsSessionRateLimitedRunError",
+      "BetaManagedAgentsSessionRequiresAction",
+      "BetaManagedAgentsSessionResource",
+      "BetaManagedAgentsSessionResourceConfig",
+      "BetaManagedAgentsSessionResourceNotFoundDeploymentPausedReasonError",
+      "BetaManagedAgentsSessionResourceNotFoundRunError",
+      "BetaManagedAgentsSessionResourcesPageCursor",
+      "BetaManagedAgentsSessionRetriesExhausted",
+      "BetaManagedAgentsSessionStats",
+      "BetaManagedAgentsSessionStatusIdleEvent",
+      "BetaManagedAgentsSessionStatusRescheduledEvent",
+      "BetaManagedAgentsSessionStatusRunningEvent",
+      "BetaManagedAgentsSessionStatusTerminatedEvent",
+      "BetaManagedAgentsSessionThread",
+      "BetaManagedAgentsSessionThreadAgent",
+      "BetaManagedAgentsSessionThreadCreatedEvent",
+      "BetaManagedAgentsSessionThreadStats",
+      "BetaManagedAgentsSessionThreadStatus",
+      "BetaManagedAgentsSessionThreadStatusIdleEvent",
+      "BetaManagedAgentsSessionThreadStatusRescheduledEvent",
+      "BetaManagedAgentsSessionThreadStatusRunningEvent",
+      "BetaManagedAgentsSessionThreadStatusTerminatedEvent",
+      "BetaManagedAgentsSessionThreadUsage",
+      "BetaManagedAgentsSessionThreadsPageCursor",
+      "BetaManagedAgentsSessionUpdatedEvent",
+      "BetaManagedAgentsSessionUsage",
+      "BetaManagedAgentsSessionUsageEvent",
+      "BetaManagedAgentsSessionUsageSnapshot",
+      "BetaManagedAgentsSessionsBidirectionalPageCursor",
+      "BetaManagedAgentsSkillNotFoundDeploymentPausedReasonError",
+      "BetaManagedAgentsSkillNotFoundRunError",
+      "BetaManagedAgentsSkillParams",
+      "BetaManagedAgentsSpanModelRequestEndEvent",
+      "BetaManagedAgentsSpanModelRequestStartEvent",
+      "BetaManagedAgentsSpanModelUsage",
+      "BetaManagedAgentsSpanOutcomeEvaluationEndEvent",
+      "BetaManagedAgentsSpanOutcomeEvaluationOngoingEvent",
+      "BetaManagedAgentsSpanOutcomeEvaluationStartEvent",
+      "BetaManagedAgentsStartEvent",
+      "BetaManagedAgentsStartEventPreview",
+      "BetaManagedAgentsStaticBearerAuthResponse",
+      "BetaManagedAgentsStaticBearerCreateParams",
+      "BetaManagedAgentsStaticBearerUpdateParams",
+      "BetaManagedAgentsStreamSessionEvents",
+      "BetaManagedAgentsStreamSessionThreadEvents",
+      "BetaManagedAgentsSystemContentBlock",
+      "BetaManagedAgentsSystemMessageEvent",
+      "BetaManagedAgentsSystemMessageEventParams",
+      "BetaManagedAgentsTextBlock",
+      "BetaManagedAgentsTextRubric",
+      "BetaManagedAgentsTextRubricParams",
+      "BetaManagedAgentsTokenEndpointAuthBasicParam",
+      "BetaManagedAgentsTokenEndpointAuthBasicResponse",
+      "BetaManagedAgentsTokenEndpointAuthBasicUpdateParam",
+      "BetaManagedAgentsTokenEndpointAuthNoneParam",
+      "BetaManagedAgentsTokenEndpointAuthNoneResponse",
+      "BetaManagedAgentsTokenEndpointAuthPostParam",
+      "BetaManagedAgentsTokenEndpointAuthPostResponse",
+      "BetaManagedAgentsTokenEndpointAuthPostUpdateParam",
+      "BetaManagedAgentsTriggerContext",
+      "BetaManagedAgentsTriggerType",
+      "BetaManagedAgentsURLDocumentSource",
+      "BetaManagedAgentsURLImageSource",
+      "BetaManagedAgentsURLMCPServerParams",
+      "BetaManagedAgentsUnknownDeploymentPausedReasonError",
+      "BetaManagedAgentsUnknownError",
+      "BetaManagedAgentsUnknownRunError",
+      "BetaManagedAgentsUnrestrictedCredentialNetworkingParams",
+      "BetaManagedAgentsUnrestrictedCredentialNetworkingResponse",
+      "BetaManagedAgentsUserActor",
+      "BetaManagedAgentsUserCustomToolResultEvent",
+      "BetaManagedAgentsUserCustomToolResultEventParams",
+      "BetaManagedAgentsUserDefineOutcomeEvent",
+      "BetaManagedAgentsUserDefineOutcomeEventParams",
+      "BetaManagedAgentsUserInterruptEvent",
+      "BetaManagedAgentsUserInterruptEventParams",
+      "BetaManagedAgentsUserLocation",
+      "BetaManagedAgentsUserMessageEvent",
+      "BetaManagedAgentsUserMessageEventParams",
+      "BetaManagedAgentsUserToolConfirmationEvent",
+      "BetaManagedAgentsUserToolConfirmationEventParams",
+      "BetaManagedAgentsUserToolResultEvent",
+      "BetaManagedAgentsUserToolResultEventParams",
+      "BetaManagedAgentsVault",
+      "BetaManagedAgentsVaultArchivedDeploymentPausedReasonError",
+      "BetaManagedAgentsVaultArchivedRunError",
+      "BetaManagedAgentsVaultNotFoundDeploymentPausedReasonError",
+      "BetaManagedAgentsVaultNotFoundRunError",
+      "BetaManagedAgentsVaultsPageCursor",
+      "BetaManagedAgentsWebFetchToolConfig",
+      "BetaManagedAgentsWebFetchToolConfigParams",
+      "BetaManagedAgentsWebSearchToolConfig",
+      "BetaManagedAgentsWebSearchToolConfigParams",
+      "BetaManagedAgentsWorkspaceArchivedDeploymentPausedReasonError",
+      "BetaManagedAgentsWorkspaceArchivedRunError",
+      "BetaManagedAgentsWriteToolConfig",
+      "BetaManagedAgentsWriteToolConfigParams",
+      "BetaModelCapabilities",
+      "BetaModelInfo",
+      "BetaModelInfosPage",
+      "BetaOutputBehavior",
+      "BetaOutputBehaviorCreateNew",
+      "BetaOutputBehaviorUpdateExisting",
+      "BetaPackages",
+      "BetaPackagesParams",
+      "BetaSelfHostedConfig",
+      "BetaSelfHostedConfigParams",
+      "BetaSelfHostedWork",
+      "BetaSelfHostedWorkHeartbeatResponse",
+      "BetaSelfHostedWorkListResponse",
+      "BetaSelfHostedWorkQueueStats",
+      "BetaSelfHostedWorkStopRequest",
+      "BetaSelfHostedWorkUpdateRequest",
+      "BetaSelfHostedWorksPageCursor",
+      "BetaSessionWorkData",
+      "BetaSkill",
+      "BetaSkillSource",
+      "BetaSkillVersion",
+      "BetaSkillVersionsPageCursor",
+      "BetaSkillsPageCursor",
+      "BetaTargetStoreHeldError",
+      "BetaThinkingCapability",
+      "BetaThinkingTypes",
+      "BetaTunnel",
+      "BetaTunnelCertificate",
+      "BetaTunnelCertificatesPageCursor",
+      "BetaTunnelToken",
+      "BetaTunnelsPageCursor",
+      "BetaUnrestrictedNetwork",
+      "BetaUserProfile",
+      "BetaUserProfileEnrollmentURL",
+      "BetaUserProfileExternalUserDetails",
+      "BetaUserProfileExternalUserDetailsParams",
+      "BetaUserProfileTrustGrant",
+      "BetaUserProfilesPageCursor",
+      "BetaWebhookAgentArchivedEventData",
+      "BetaWebhookAgentCreatedEventData",
+      "BetaWebhookAgentDeletedEventData",
+      "BetaWebhookAgentUpdatedEventData",
+      "BetaWebhookDeploymentArchivedEventData",
+      "BetaWebhookDeploymentCreatedEventData",
+      "BetaWebhookDeploymentDeletedEventData",
+      "BetaWebhookDeploymentPausedEventData",
+      "BetaWebhookDeploymentRunFailedEventData",
+      "BetaWebhookDeploymentRunStartedEventData",
+      "BetaWebhookDeploymentRunSucceededEventData",
+      "BetaWebhookDeploymentUnpausedEventData",
+      "BetaWebhookDeploymentUpdatedEventData",
+      "BetaWebhookEnvironmentArchivedEventData",
+      "BetaWebhookEnvironmentCreatedEventData",
+      "BetaWebhookEnvironmentDeletedEventData",
+      "BetaWebhookEnvironmentUpdatedEventData",
+      "BetaWebhookEvent",
+      "BetaWebhookEventData",
+      "BetaWebhookMemoryStoreArchivedEventData",
+      "BetaWebhookMemoryStoreCreatedEventData",
+      "BetaWebhookMemoryStoreDeletedEventData",
+      "BetaWebhookSessionArchivedEventData",
+      "BetaWebhookSessionBudgetReachedEventData",
+      "BetaWebhookSessionCreatedEventData",
+      "BetaWebhookSessionDeletedEventData",
+      "BetaWebhookSessionIdledEventData",
+      "BetaWebhookSessionOutcomeEvaluationEndedEventData",
+      "BetaWebhookSessionPendingEventData",
+      "BetaWebhookSessionRequiresActionEventData",
+      "BetaWebhookSessionRunningEventData",
+      "BetaWebhookSessionStatusIdledEventData",
+      "BetaWebhookSessionStatusRescheduledEventData",
+      "BetaWebhookSessionStatusRunStartedEventData",
+      "BetaWebhookSessionStatusTerminatedEventData",
+      "BetaWebhookSessionThreadCreatedEventData",
+      "BetaWebhookSessionThreadIdledEventData",
+      "BetaWebhookSessionThreadTerminatedEventData",
+      "BetaWebhookSessionUpdatedEventData",
+      "BetaWebhookVaultArchivedEventData",
+      "BetaWebhookVaultCreatedEventData",
+      "BetaWebhookVaultCredentialArchivedEventData",
+      "BetaWebhookVaultCredentialCreatedEventData",
+      "BetaWebhookVaultCredentialDeletedEventData",
+      "BetaWebhookVaultCredentialRefreshFailedEventData",
+      "BetaWebhookVaultDeletedEventData",
+      "BetaWorkSecret",
+      "CapabilitySupport",
+      "CertificateArchiveParams",
+      "CertificateCreateParams",
+      "CertificateListParams",
+      "CertificateRetrieveParams",
+      "Certificates",
+      "ContextManagementCapability",
+      "CredentialArchiveParams",
+      "CredentialCreateParams",
+      "CredentialDeleteParams",
+      "CredentialListParams",
+      "CredentialMCPOAuthValidateParams",
+      "CredentialRetrieveParams",
+      "CredentialUpdateParams",
+      "Credentials",
+      "DEFAULT_MEMORY_SYNC_INTERVAL_MS",
+      "DELETE_CORROBORATION_MS",
+      "DIR_CREATE_MODE",
+      "DeletedFile",
+      "DeletedSkill",
+      "DeletedSkillVersion",
+      "DeploymentArchiveParams",
+      "DeploymentCreateParams",
+      "DeploymentListParams",
+      "DeploymentPauseParams",
+      "DeploymentRetrieveParams",
+      "DeploymentRunListParams",
+      "DeploymentRunParams",
+      "DeploymentRunRetrieveParams",
+      "DeploymentRuns",
+      "DeploymentUnpauseParams",
+      "DeploymentUpdateParams",
+      "Deployments",
+      "DreamArchiveParams",
+      "DreamCancelParams",
+      "DreamCreateParams",
+      "DreamListParams",
+      "DreamRetrieveParams",
+      "Dreams",
+      "EffortCapability",
+      "EnvironmentArchiveParams",
+      "EnvironmentCreateParams",
+      "EnvironmentDeleteParams",
+      "EnvironmentListParams",
+      "EnvironmentRetrieveParams",
+      "EnvironmentUpdateParams",
+      "EnvironmentWorker",
+      "EnvironmentWorkerOptions",
+      "EnvironmentWorkerTools",
+      "Environments",
+      "EventListParams",
+      "EventSendParams",
+      "EventStreamParams",
+      "Events",
+      "FILE_CREATE_MODE",
+      "FileDeleteParams",
+      "FileDownloadParams",
+      "FileListParams",
+      "FileMetadata",
+      "FileMetadataPageCursor",
+      "FileRetrieveMetadataParams",
+      "FileUploadParams",
+      "Files",
+      "HandleItemOptions",
+      "MARKER_PATH",
+      "MEMORY_FLUSH_TIMEOUT_MS",
+      "MIN_MEMORY_SYNC_INTERVAL_MS",
+      "Memories",
+      "MemoryCreateParams",
+      "MemoryDeleteMode",
+      "MemoryDeleteParams",
+      "MemoryListParams",
+      "MemoryRetrieveParams",
+      "MemoryStoreArchiveParams",
+      "MemoryStoreCreateParams",
+      "MemoryStoreDeleteParams",
+      "MemoryStoreListParams",
+      "MemoryStoreRetrieveParams",
+      "MemoryStoreUpdateParams",
+      "MemoryStores",
+      "MemoryUpdateParams",
+      "MemoryVersionListParams",
+      "MemoryVersionRedactParams",
+      "MemoryVersionRetrieveParams",
+      "MemoryVersions",
+      "ModelCapabilities",
+      "ModelInfo",
+      "ModelInfosPage",
+      "ModelListParams",
+      "ModelRetrieveParams",
+      "Models",
+      "POLL_BLOCK_MS",
+      "ResourceAddParams",
+      "ResourceDeleteParams",
+      "ResourceListParams",
+      "ResourceRetrieveParams",
+      "ResourceRetrieveResponse",
+      "ResourceUpdateParams",
+      "ResourceUpdateResponse",
+      "Resources",
+      "SessionArchiveParams",
+      "SessionCreateParams",
+      "SessionDeleteParams",
+      "SessionListParams",
+      "SessionMemoryError",
+      "SessionMemoryStores",
+      "SessionMemoryStoresOptions",
+      "SessionRetrieveParams",
+      "SessionUpdateParams",
+      "Sessions",
+      "Skill",
+      "SkillCreateParams",
+      "SkillDeleteParams",
+      "SkillListParams",
+      "SkillRetrieveParams",
+      "SkillSource",
+      "SkillVersion",
+      "SkillVersionsPageCursor",
+      "Skills",
+      "SkillsPageCursor",
+      "ThinkingCapability",
+      "ThinkingTypes",
+      "ThreadArchiveParams",
+      "ThreadListParams",
+      "ThreadRetrieveParams",
+      "Threads",
+      "TunnelArchiveParams",
+      "TunnelCreateParams",
+      "TunnelListParams",
+      "TunnelRetrieveParams",
+      "TunnelRevealTokenParams",
+      "TunnelRotateTokenParams",
+      "Tunnels",
+      "UPLOAD_CONCURRENCY",
+      "UnwrapWebhookEvent",
+      "UserProfileCreateEnrollmentURLParams",
+      "UserProfileCreateParams",
+      "UserProfileListParams",
+      "UserProfileRetrieveParams",
+      "UserProfileUpdateParams",
+      "UserProfiles",
+      "VaultArchiveParams",
+      "VaultCreateParams",
+      "VaultDeleteParams",
+      "VaultListParams",
+      "VaultRetrieveParams",
+      "VaultUpdateParams",
+      "Vaults",
+      "VersionCreateParams",
+      "VersionDeleteParams",
+      "VersionDownloadParams",
+      "VersionListParams",
+      "VersionRetrieveParams",
+      "Versions",
+      "Webhooks",
+      "Work",
+      "WorkAckParams",
+      "WorkHeartbeatParams",
+      "WorkListParams",
+      "WorkPollParams",
+      "WorkPoller",
+      "WorkPollerOptions",
+      "WorkRetrieveParams",
+      "WorkStatsParams",
+      "WorkStopParams",
+      "WorkUpdateParams",
+      "accumulateManagedAgentsEvent",
+      "assertOnlyPlainEntries",
+      "atomicWriteFile",
+      "backoff",
+      "betaAgentToolset20260401",
+      "betaBashTool",
+      "betaEditTool",
+      "betaGlobTool",
+      "betaGrepTool",
+      "betaReadTool",
+      "betaWriteTool",
+      "betaZodOutputFormat",
+      "betaZodTool",
+      "canonicalize",
+      "checkMemorySyncInterval",
+      "classifyArchiveListing",
+      "confineToRoot",
+      "containingRoot",
+      "errnoCode",
+      "extractSkillArchive",
+      "fsErrorMessage",
+      "isWithin",
+      "resolvePath",
+      "sessionsTokenFromSecret",
+      "setupSkills"
+    ],
     "id": "current",
     "managed_export_count": 32,
     "managed_export_fingerprint": "ccaa28658729c9ccab5ec52398847d0ea6cb8101381fe570899373b333d1c49d",
@@ -1393,7 +2026,851 @@
         "preview": [
           "event_delta",
           "event_start"
-        ]
+        ],
+        "shapes": {
+          "agent.custom_tool_use": {
+            "optional": [
+              "session_thread_id"
+            ],
+            "required": [
+              "id",
+              "input",
+              "name",
+              "processed_at",
+              "type"
+            ]
+          },
+          "agent.mcp_tool_result": {
+            "optional": [
+              "content",
+              "is_error"
+            ],
+            "required": [
+              "id",
+              "mcp_tool_use_id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "agent.mcp_tool_use": {
+            "nested": {
+              "evaluation": {
+                "always_allow": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "always_ask": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "auto": {
+                  "nested": {
+                    "evaluated_permission": {
+                      "allow": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "ask": {
+                        "optional": [],
+                        "required": [
+                          "reason_code",
+                          "type"
+                        ]
+                      },
+                      "deny": {
+                        "optional": [],
+                        "required": [
+                          "reason_code",
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "evaluated_permission",
+                    "type"
+                  ]
+                }
+              }
+            },
+            "optional": [
+              "evaluated_permission",
+              "evaluation",
+              "session_thread_id"
+            ],
+            "required": [
+              "id",
+              "input",
+              "mcp_server_name",
+              "name",
+              "processed_at",
+              "type"
+            ]
+          },
+          "agent.message": {
+            "optional": [],
+            "required": [
+              "content",
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "agent.thinking": {
+            "optional": [],
+            "required": [
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "agent.thread_context_compacted": {
+            "optional": [],
+            "required": [
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "agent.thread_message_received": {
+            "optional": [
+              "from_agent_name"
+            ],
+            "required": [
+              "content",
+              "from_session_thread_id",
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "agent.thread_message_sent": {
+            "optional": [
+              "to_agent_name"
+            ],
+            "required": [
+              "content",
+              "id",
+              "processed_at",
+              "to_session_thread_id",
+              "type"
+            ]
+          },
+          "agent.tool_result": {
+            "optional": [
+              "content",
+              "is_error"
+            ],
+            "required": [
+              "id",
+              "processed_at",
+              "tool_use_id",
+              "type"
+            ]
+          },
+          "agent.tool_use": {
+            "nested": {
+              "evaluation": {
+                "always_allow": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "always_ask": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "auto": {
+                  "nested": {
+                    "evaluated_permission": {
+                      "allow": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "ask": {
+                        "optional": [],
+                        "required": [
+                          "reason_code",
+                          "type"
+                        ]
+                      },
+                      "deny": {
+                        "optional": [],
+                        "required": [
+                          "reason_code",
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "evaluated_permission",
+                    "type"
+                  ]
+                }
+              }
+            },
+            "optional": [
+              "evaluated_permission",
+              "evaluation",
+              "session_thread_id"
+            ],
+            "required": [
+              "id",
+              "input",
+              "name",
+              "processed_at",
+              "type"
+            ]
+          },
+          "session.deleted": {
+            "optional": [],
+            "required": [
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "session.error": {
+            "nested": {
+              "error": {
+                "billing_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "credential_host_unreachable_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "credential_id",
+                    "message",
+                    "retry_status",
+                    "type",
+                    "vault_id"
+                  ]
+                },
+                "mcp_authentication_failed_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "mcp_server_name",
+                    "message",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "mcp_connection_failed_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "mcp_server_name",
+                    "message",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "model_overloaded_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "model_rate_limited_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "model_request_failed_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "retry_status",
+                    "type"
+                  ]
+                },
+                "unknown_error": {
+                  "nested": {
+                    "retry_status": {
+                      "exhausted": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "retrying": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "terminal": {
+                        "optional": [],
+                        "required": [
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "message",
+                    "retry_status",
+                    "type"
+                  ]
+                }
+              }
+            },
+            "optional": [],
+            "required": [
+              "error",
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "session.status_idle": {
+            "nested": {
+              "stop_reason": {
+                "budget_reached": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "end_turn": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "requires_action": {
+                  "optional": [],
+                  "required": [
+                    "event_ids",
+                    "type"
+                  ]
+                },
+                "retries_exhausted": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                }
+              }
+            },
+            "optional": [],
+            "required": [
+              "id",
+              "processed_at",
+              "stop_reason",
+              "type"
+            ]
+          },
+          "session.status_rescheduled": {
+            "optional": [],
+            "required": [
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "session.status_running": {
+            "optional": [],
+            "required": [
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "session.status_terminated": {
+            "optional": [],
+            "required": [
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "session.thread_created": {
+            "optional": [],
+            "required": [
+              "agent_name",
+              "id",
+              "processed_at",
+              "session_thread_id",
+              "type"
+            ]
+          },
+          "session.thread_status_idle": {
+            "nested": {
+              "stop_reason": {
+                "budget_reached": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "end_turn": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                },
+                "requires_action": {
+                  "optional": [],
+                  "required": [
+                    "event_ids",
+                    "type"
+                  ]
+                },
+                "retries_exhausted": {
+                  "optional": [],
+                  "required": [
+                    "type"
+                  ]
+                }
+              }
+            },
+            "optional": [],
+            "required": [
+              "agent_name",
+              "id",
+              "processed_at",
+              "session_thread_id",
+              "stop_reason",
+              "type"
+            ]
+          },
+          "session.thread_status_rescheduled": {
+            "optional": [],
+            "required": [
+              "agent_name",
+              "id",
+              "processed_at",
+              "session_thread_id",
+              "type"
+            ]
+          },
+          "session.thread_status_running": {
+            "optional": [],
+            "required": [
+              "agent_name",
+              "id",
+              "processed_at",
+              "session_thread_id",
+              "type"
+            ]
+          },
+          "session.thread_status_terminated": {
+            "optional": [],
+            "required": [
+              "agent_name",
+              "id",
+              "processed_at",
+              "session_thread_id",
+              "type"
+            ]
+          },
+          "session.updated": {
+            "nested": {
+              "agent": {
+                "agent": {
+                  "nested": {
+                    "multiagent": {
+                      "coordinator": {
+                        "optional": [],
+                        "required": [
+                          "agents",
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "optional": [],
+                  "required": [
+                    "description",
+                    "id",
+                    "mcp_servers",
+                    "model",
+                    "multiagent",
+                    "name",
+                    "skills",
+                    "system",
+                    "tools",
+                    "type",
+                    "version"
+                  ]
+                }
+              },
+              "budget": {
+                "limit": {
+                  "optional": [],
+                  "required": [
+                    "max_list_cost",
+                    "type"
+                  ]
+                }
+              }
+            },
+            "optional": [
+              "agent",
+              "budget",
+              "metadata",
+              "title"
+            ],
+            "required": [
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "session.usage": {
+            "nested": {
+              "budget": {
+                "limit": {
+                  "optional": [],
+                  "required": [
+                    "max_list_cost",
+                    "type"
+                  ]
+                }
+              }
+            },
+            "optional": [
+              "budget"
+            ],
+            "required": [
+              "id",
+              "processed_at",
+              "type",
+              "usage"
+            ]
+          },
+          "span.model_request_end": {
+            "optional": [],
+            "required": [
+              "id",
+              "is_error",
+              "model_request_start_id",
+              "model_usage",
+              "processed_at",
+              "type"
+            ]
+          },
+          "span.model_request_start": {
+            "optional": [],
+            "required": [
+              "id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "span.outcome_evaluation_end": {
+            "optional": [],
+            "required": [
+              "explanation",
+              "id",
+              "iteration",
+              "outcome_evaluation_start_id",
+              "outcome_id",
+              "processed_at",
+              "result",
+              "type",
+              "usage"
+            ]
+          },
+          "span.outcome_evaluation_ongoing": {
+            "optional": [],
+            "required": [
+              "id",
+              "iteration",
+              "outcome_id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "span.outcome_evaluation_start": {
+            "optional": [],
+            "required": [
+              "id",
+              "iteration",
+              "outcome_id",
+              "processed_at",
+              "type"
+            ]
+          },
+          "system.message": {
+            "optional": [
+              "processed_at"
+            ],
+            "required": [
+              "content",
+              "id",
+              "type"
+            ]
+          },
+          "user.custom_tool_result": {
+            "optional": [
+              "content",
+              "is_error",
+              "processed_at",
+              "session_thread_id"
+            ],
+            "required": [
+              "custom_tool_use_id",
+              "id",
+              "type"
+            ]
+          },
+          "user.define_outcome": {
+            "nested": {
+              "rubric": {
+                "file": {
+                  "optional": [],
+                  "required": [
+                    "file_id",
+                    "type"
+                  ]
+                },
+                "text": {
+                  "optional": [],
+                  "required": [
+                    "content",
+                    "type"
+                  ]
+                }
+              }
+            },
+            "optional": [],
+            "required": [
+              "description",
+              "id",
+              "max_iterations",
+              "outcome_id",
+              "processed_at",
+              "rubric",
+              "type"
+            ]
+          },
+          "user.interrupt": {
+            "optional": [
+              "processed_at",
+              "session_thread_id"
+            ],
+            "required": [
+              "id",
+              "type"
+            ]
+          },
+          "user.message": {
+            "optional": [
+              "processed_at"
+            ],
+            "required": [
+              "content",
+              "id",
+              "type"
+            ]
+          },
+          "user.tool_confirmation": {
+            "optional": [
+              "deny_message",
+              "processed_at",
+              "session_thread_id"
+            ],
+            "required": [
+              "id",
+              "result",
+              "tool_use_id",
+              "type"
+            ]
+          },
+          "user.tool_result": {
+            "optional": [
+              "content",
+              "is_error",
+              "processed_at",
+              "session_thread_id"
+            ],
+            "required": [
+              "id",
+              "tool_use_id",
+              "type"
+            ]
+          }
+        }
       },
       "managed_betas": [
         "managed-agents-2026-04-01"

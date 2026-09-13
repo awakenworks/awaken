@@ -41,6 +41,10 @@ pub enum AutoEvaluatedPermission {
 /// What the committed audit recorded for one gated call: the decision, and the
 /// SDK `evaluation` that decision projects to when the recorded policy is in
 /// the SDK vocabulary.
+/// SDK: none — the adapter's own record of what the gate decided for one
+/// call, read back from the audit trail. Its two halves reach the wire as the
+/// event's `evaluated_permission` and `evaluation`; the pair itself is not a
+/// shape the SDK declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordedPermission {
     pub decision: EvaluatedPermission,
