@@ -217,6 +217,24 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         Ok((plan, adoption))
     }
 
+    /// Dispose never-used capacity that a cancelled creator left at `scope`.
+    ///
+    /// There is deliberately no handle, fence or spec here: the caller was
+    /// dropped before any of them could exist, and demanding one is exactly why
+    /// the container became unreachable. The runtime addresses the object by
+    /// the scope name alone, which only a warm pool mints, so this port cannot
+    /// reach a Session-owned environment.
+    #[cfg(any(feature = "connection", test))]
+    pub(crate) async fn dispose_unreceipted_capacity(
+        &self,
+        scope: &str,
+    ) -> Result<(), pc::SandboxError> {
+        self.runtime
+            .remove_unreceipted_scope(scope)
+            .await
+            .map_err(err)
+    }
+
     /// Realize a Session-owned container environment. The trait `create` boxes this.
     pub async fn create_container(
         &self,
@@ -741,6 +759,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 writeback_done: tokio::sync::Mutex::new(false),
                 remove_done: tokio::sync::Mutex::new(false),
             }),
+            execs: Arc::default(),
         })
     }
 
@@ -947,6 +966,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             realized: Vec::new(),
             recovered: true,
             lifecycle: Arc::new(lifecycle),
+            execs: Arc::default(),
         })
     }
 
@@ -1266,21 +1286,32 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         self.probe_runtime_ready().await
     }
 
-    async fn create_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(
-            self.create_container_for_effect(
-                spec,
-                Some(effect_fence),
-                Some(authority),
-                ContainerRealizationIntent::Create,
-            )
-            .await?,
-        ))
+    /// The container is born carrying its own record: the create request
+    /// stamps `MANAGED_SANDBOX_LABEL`, the scope, adoption, realization and
+    /// attempt labels, and the effect-fence labels, all computed from the spec
+    /// and fence before the request is issued. So a caller dropped mid-create
+    /// cannot separate the container from the evidence naming its owner, and
+    /// `existing_realization_decision` — which reads exactly those labels back
+    /// off the runtime — is the scan that decides its fate. Nothing is retained
+    /// in process, because nothing in process is needed to find it again.
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a pc::SandboxSpec,
+        effect_fence: &'a pc::SandboxEffectFence,
+        authority: &'a dyn pc::CurrentExecutionAuthority,
+    ) -> pc::ClaimedEffect<'a, Box<dyn pc::Sandbox>> {
+        let claim = pc::EffectClaim::self_recording(CONTAINER_REALIZATION_RECONCILER);
+        pc::ClaimedEffect::new(claim, async move {
+            Ok(Box::new(
+                self.create_container_for_effect(
+                    spec,
+                    Some(effect_fence),
+                    Some(authority),
+                    ContainerRealizationIntent::Create,
+                )
+                .await?,
+            ) as Box<dyn pc::Sandbox>)
+        })
     }
 
     async fn observe(

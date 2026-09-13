@@ -79,7 +79,7 @@ pub(super) fn k8s_exec_argv(
     if command.argv.is_empty() {
         return Err(backend("exec command argv is empty"));
     }
-    let pid_file = format!("/tmp/{id}.pid");
+    let pid_file = crate::exec_pid_file(id);
     let mut inline_env = Vec::new();
     let mut secrets = Vec::new();
     for var in command.env {
@@ -95,16 +95,19 @@ pub(super) fn k8s_exec_argv(
     let mut argv = vec![
         "sh".into(),
         "-c".into(),
-        "pid_file=$1; cwd=$2; secret_count=$3; shift 3; \
-         while [ \"$secret_count\" -gt 0 ]; do \
-           secret_name=$1; secret_length=$2; shift 2; \
-           secret_value=$(dd bs=1 count=\"$secret_length\" 2>/dev/null; printf .) || exit 125; \
-           secret_value=${secret_value%.}; export \"$secret_name=$secret_value\" || exit 125; \
-           secret_count=$((secret_count - 1)); \
-         done; \
-         printf '%s' \"$$\" > \"$pid_file\"; \
-         if [ -n \"$cwd\" ]; then cd -- \"$cwd\" || exit 126; fi; exec \"$@\""
-            .into(),
+        format!(
+            "pid_file=$1; cwd=$2; secret_count=$3; shift 3; \
+             while [ \"$secret_count\" -gt 0 ]; do \
+               secret_name=$1; secret_length=$2; shift 2; \
+               secret_value=$(dd bs=1 count=\"$secret_length\" 2>/dev/null; printf .) || exit 125; \
+               secret_value=${{secret_value%.}}; export \"$secret_name=$secret_value\" || exit 125; \
+               secret_count=$((secret_count - 1)); \
+             done; \
+             {} \
+             printf '%s' \"$$\" > \"$pid_file\"; \
+             if [ -n \"$cwd\" ]; then cd -- \"$cwd\" || exit 126; fi; exec \"$@\"",
+            crate::exec_pid_file_prelude()
+        ),
         "awaken-exec".into(),
         pid_file.clone(),
         command.cwd,

@@ -1,5 +1,6 @@
 use super::*;
 use pc::Sandbox as _;
+use std::future::IntoFuture;
 
 #[tokio::test]
 async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
@@ -28,7 +29,7 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                     .adopt_for_effect(spec, handle, fence, authority)
                     .await
             }
-            None => provider.create_for_effect(spec, fence, authority).await,
+            None => provider.claim_for_effect(spec, fence, authority).await,
         }
     }
     for operation in ["adopt", "create-replay", "create"] {
@@ -73,7 +74,7 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                             mounter.mount_gate.add_permits(1);
                             let old = make_provider();
                             let first = old
-                        .create_for_effect(
+                        .claim_for_effect(
                             &spec,
                             &create,
                             &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -262,7 +263,7 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
             let create =
                 pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX).unwrap();
             let first = provider
-                .create_for_effect(
+                .claim_for_effect(
                     &spec,
                     &create,
                     &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
@@ -286,7 +287,7 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
                     .unwrap()
             } else {
                 provider
-                    .create_for_effect(
+                    .claim_for_effect(
                         &spec,
                         &create,
                         &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
@@ -385,8 +386,11 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 let effect =
                     pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX).unwrap();
                 let create_authority = pc::test_support::EffectAuthority::new(&effect);
-                let mut first =
-                    Box::pin(provider.create_for_effect(&spec, &effect, &create_authority));
+                let mut first = Box::pin(
+                    provider
+                        .claim_for_effect(&spec, &effect, &create_authority)
+                        .into_future(),
+                );
                 assert_pending(first.as_mut()).await;
                 assert_eq!(mounter.mount_calls.load(Ordering::SeqCst), 1);
                 drop(first);
@@ -395,7 +399,7 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 if failures != 0 {
                     assert!(
                         provider
-                            .create_for_effect(
+                            .claim_for_effect(
                                 &spec,
                                 &effect,
                                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -409,7 +413,7 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                     assert_eq!(mounter.drops.load(Ordering::SeqCst), 0);
                 }
                 let first = provider
-                    .create_for_effect(
+                    .claim_for_effect(
                         &spec,
                         &effect,
                         &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect),
@@ -421,7 +425,7 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 let handle = first.handle();
                 drop(first);
                 let replay = provider
-                    .create_for_effect(
+                    .claim_for_effect(
                         &spec,
                         &effect,
                         &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect),

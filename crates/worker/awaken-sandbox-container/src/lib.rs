@@ -31,6 +31,7 @@ mod control;
 use control::ContainerControlPublicationRegistry;
 mod cgroup;
 mod egress;
+mod exec_attempts;
 mod files;
 mod live_inputs;
 mod packages;
@@ -52,6 +53,10 @@ pub use egress::{
     AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, EgressRealizationIdentity,
     ForwardProxy, NetworkMode, egress_plan, egress_plan_with_allowlist, normalize_hostname,
 };
+use exec_attempts::ExecAttempts;
+pub(crate) use exec_attempts::exec_orphan_reaper_command;
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) use exec_attempts::{exec_pid_file, exec_pid_file_prelude};
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 #[cfg(any(test, feature = "podman"))]
@@ -76,11 +81,13 @@ pub(crate) use restore_target::{
     RESTORE_PLAN_LABEL, restoration_evidence_from_metadata, restoration_metadata,
 };
 use restore_target::{restoration_runtime_scope, retained_host_staging};
+pub(crate) use runtime::{
+    CONTAINER_REALIZATION_RECONCILER, MANAGED_SANDBOX_LABEL, runtime_owner_id,
+};
 pub use runtime::{
     ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
     RuntimeAgentProcess, RuntimeError, RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
-pub(crate) use runtime::{MANAGED_SANDBOX_LABEL, runtime_owner_id};
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) use runtime::{
     RUNTIME_OWNER_LABEL, SANDBOX_ATTEMPT_LABEL, container_effect_fence_from_values,
@@ -1199,6 +1206,10 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// lifetime and removed on drop (after the container is gone). `None` when the run
     /// staged nothing.
     lifecycle: Arc<ContainerCleanupState>,
+    /// Every exec attempt started here, and the ones whose caller went away
+    /// before holding the process. Shared behind an `Arc` because a claim's
+    /// retention outlives the borrow that minted it.
+    execs: Arc<ExecAttempts>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
@@ -1210,10 +1221,45 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         command: pc::Command,
     ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
         let command = self.materialize_command(command).await?;
-        self.runtime
-            .spawn_agent(&self.container_id, command)
-            .await
-            .map_err(err)
+        self.claimed_spawn_agent(command).await
+    }
+
+    /// Start one agent exec whose responsibility record exists before the exec
+    /// can begin.
+    ///
+    /// [`pc::ClaimedEffect::new`] takes the claim by value, so the attempt is
+    /// counted and the retention is minted strictly before the future is built
+    /// and therefore before any poll reaches the runtime. A task cancelled
+    /// between the exec starting and the [`RuntimeAgentProcess`] reaching its
+    /// caller drops this value unsettled, which is the one transition that runs
+    /// the retention and leaves the attempt on record for
+    /// [`ContainerSandbox::prepare_disposal`] to reap.
+    ///
+    /// The record is in-process on purpose and is the weakest of the three
+    /// claim kinds: nothing outside this process can read it. What survives the
+    /// process is the enumerable pid file the exec wrapper wrote, which the
+    /// same disposal reaps by listing rather than by remembering.
+    fn claimed_spawn_agent(
+        &self,
+        command: pc::MaterializedCommand,
+    ) -> pc::ClaimedEffect<'_, RuntimeAgentProcess> {
+        let attempt = self.execs.begin();
+        let execs = self.execs.clone();
+        let in_flight = move || execs.retain_orphan(attempt);
+        pc::ClaimedEffect::new(pc::EffectClaim::in_process(in_flight), async move {
+            self.runtime
+                .spawn_agent(&self.container_id, command)
+                .await
+                .map_err(err)
+        })
+    }
+
+    /// Exec attempts started here whose caller never received the process.
+    /// Read by disposal and by the cancellation tests; an empty list is not
+    /// proof that no exec is running, only that none was dropped unsettled.
+    #[cfg(test)]
+    pub(crate) fn orphaned_exec_attempts(&self) -> Vec<String> {
+        self.execs.orphaned()
     }
 
     #[cfg(any(feature = "connection", test))]
@@ -1222,11 +1268,40 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         self
     }
 
+    /// Make the container stop every exec attempt this environment started.
+    ///
+    /// Gated on "an attempt was started" rather than on "an orphan is on
+    /// record": the record only sees spawns dropped inside this process, while
+    /// the container's pid files see every attempt, including ones whose
+    /// `ProcessHandle` was simply dropped without a wait. The gate is also what
+    /// keeps the demand honest — a Session environment that never exec'd cannot
+    /// be holding an orphan, so a runtime with no exec support is never asked
+    /// to reap and its fail-closed inherited implementation stays unreachable.
+    async fn reap_exec_orphans(&self) -> Result<(), pc::SandboxError> {
+        if !self.execs.any_started() {
+            return Ok(());
+        }
+        self.runtime
+            .reap_exec_orphans(&self.container_id)
+            .await
+            .map_err(err)?;
+        self.execs.clear_orphans();
+        Ok(())
+    }
+
     async fn prepare_disposal(
         &self,
         effect_fence: Option<&pc::SandboxEffectFence>,
         authorize: impl Fn() -> Result<(), pc::SandboxError> + Sync,
     ) -> Result<(), pc::SandboxError> {
+        authorize()?;
+        // Before anything reads the workspace. An exec whose caller was
+        // cancelled is still running and still writing, so Secret write-back
+        // and the Memory harvest below would otherwise capture bytes a live
+        // orphan is mutating. This is the single gate both disposal edges pass
+        // through: `dispose` reaches `dispose_once` through it, and
+        // `prepare_disposal_for_effect` reaches `dispose_for_effect` through it.
+        self.reap_exec_orphans().await?;
         authorize()?;
         self.control_publication.close_for_dispose().await;
         authorize()?;
@@ -1872,5 +1947,7 @@ pub mod pool;
 #[cfg(any(feature = "connection", test))]
 pub use pool::WarmContainerPool;
 
+#[cfg(test)]
+mod exec_cancellation_tests;
 #[cfg(test)]
 mod tests;

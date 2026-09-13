@@ -120,7 +120,7 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
     // ── Host A: realize the sandbox, optionally write a durable artifact, persist. ──
     let host_a = provider(tier, base.path());
     let sandbox_a = host_a
-        .create_for_effect(
+        .claim_for_effect(
             &sandbox_spec,
             &realization_fence,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&realization_fence),

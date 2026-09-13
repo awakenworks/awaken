@@ -131,7 +131,7 @@ impl RawTool for SandboxEcho {
         // below.
         let (fence, authority) = pc::test_support::fixture_effect("op-remote-hand");
         let sandbox = provider
-            .create_for_effect(&spec, &fence, &authority)
+            .claim_for_effect(&spec, &fence, &authority)
             .await
             .map_err(|e| run(format!("create: {e:?}")))?;
 

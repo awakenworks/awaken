@@ -2419,6 +2419,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-agent-channel",
  "awaken-agent-contract",
  "awaken-connection-plan",
  "awaken-coordinator-client",

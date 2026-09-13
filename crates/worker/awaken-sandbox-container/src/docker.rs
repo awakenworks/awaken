@@ -317,13 +317,30 @@ impl pc::ProcessHandle for DockerExecProcess {
     }
 }
 
+/// The attempt identity Docker stamps on one exec.
+///
+/// Podman and Kubernetes already minted `{kind}-exec-{process}-{sequence}`;
+/// Docker minted a bare process-local counter, which is why its pid file could
+/// not be attributed to anything. The process identity is what keeps two Worker
+/// incarnations exec'ing into the same adopted container from writing the same
+/// record.
+fn docker_exec_attempt_id() -> String {
+    format!(
+        "docker-exec-{}-{}",
+        std::process::id(),
+        EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 fn wrapped_exec_argv(command: Vec<String>) -> (String, Vec<String>) {
-    let sequence = EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let pid_file = format!("/tmp/awaken-exec-{sequence}.pid");
+    let pid_file = crate::exec_pid_file(&docker_exec_attempt_id());
     let mut argv = vec![
         "sh".to_string(),
         "-c".to_string(),
-        "pid_file=$1; shift; printf '%s' \"$$\" > \"$pid_file\"; exec \"$@\"".to_string(),
+        format!(
+            "pid_file=$1; shift; {} printf '%s' \"$$\" > \"$pid_file\"; exec \"$@\"",
+            crate::exec_pid_file_prelude()
+        ),
         "awaken-exec".to_string(),
         pid_file.clone(),
     ];
@@ -1858,6 +1875,29 @@ impl ContainerRuntime for DockerRuntime {
             )
             .await
             .map_err(backend)
+    }
+
+    async fn remove_unreceipted_scope(&self, scope: &str) -> Result<(), RuntimeError> {
+        // The daemon-global name is a pure function of namespace + scope, so
+        // the cancelled creator's object is addressable without any handle it
+        // never got to produce. 404 is success: the create was dropped before
+        // the daemon ever saw it, which is the other half of the same window.
+        let name = runtime_container_name(self.realization_namespace.as_str(), scope)?;
+        match self
+            .docker
+            .remove_container(
+                &name,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) if docker_not_found(&error) => Ok(()),
+            Err(error) => Err(backend(error)),
+        }
     }
 
     async fn remove_exact_incarnation(

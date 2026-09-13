@@ -899,8 +899,13 @@ pub(crate) async fn compensate_creation_failure(
         Ok(())
     };
     if teardown.is_err() || shredding.is_err() {
+        // Retaining the root is a statement, not silence. Say so durably before
+        // returning, so the next attempt at this scope refuses the evidence
+        // this path just chose to preserve instead of clearing it as an
+        // abandonment. A fenced guard already says it with its marker phase.
+        let retention = guard.retain_failed_compensation();
         return SandboxError::new(format!(
-            "{phase} failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
+            "{phase} failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained{}",
             teardown
                 .as_ref()
                 .err()
@@ -909,6 +914,9 @@ pub(crate) async fn compensate_creation_failure(
                 .as_ref()
                 .err()
                 .map_or_else(|| "ok".to_owned(), ToString::to_string),
+            retention
+                .err()
+                .map_or_else(String::new, |error| format!("; retention record: {error}")),
         ));
     }
     if let Err(cleanup) = guard.abort_creation() {
@@ -1059,6 +1067,7 @@ pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
 }
 
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041).
+mod abandoned_realization;
 mod artifacts;
 mod blob_cache;
 mod git_transport;
@@ -1074,6 +1083,7 @@ pub mod repository_effect;
 // The provider resolves mount bytes from an injected [`pc::BlobSource`] port
 // (ADR-0038 D6, dependency-inverted) — this worker-tier crate links no durable
 // store; the composition root adapts the content-addressed store to the port.
+pub use abandoned_realization::AbandonedRealizations;
 pub use awaken_local_process::LocalProcess;
 pub use blob_cache::{BlobLru, WorkspaceBlobCache};
 pub(crate) use git_transport::{git_bytes, provision_repo_at, push_repo_to_at, run_git};

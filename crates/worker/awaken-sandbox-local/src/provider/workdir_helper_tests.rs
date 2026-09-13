@@ -3,6 +3,7 @@ use crate::git_transport::git_stdout;
 use awaken_provisioning_contract::{
     IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
 };
+use std::future::IntoFuture;
 
 pub(crate) fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
     SandboxSpec {
@@ -202,7 +203,7 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     let root = tmp.path().join("resource-proof");
                     assert!(
                         provider
-                            .create_for_effect(
+                            .claim_for_effect(
                                 &spec,
                                 &fence,
                                 &pc::test_support::EffectAuthority::denied()
@@ -212,8 +213,11 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     );
                     assert!(!root.exists());
                     assert_eq!(source.calls.load(Ordering::SeqCst), 0);
-                    let mut pending =
-                        Box::pin(provider.create_for_effect(&spec, &fence, &authority));
+                    let mut pending = Box::pin(
+                        provider
+                            .claim_for_effect(&spec, &fence, &authority)
+                            .into_future(),
+                    );
                     std::future::poll_fn(|cx| {
                         assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
                         std::task::Poll::Ready(())
@@ -262,7 +266,7 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                         source.gate.add_permits(1);
                     }
                     let replay = provider
-                        .create_for_effect(&spec, &fence, &authority)
+                        .claim_for_effect(&spec, &fence, &authority)
                         .await
                         .unwrap();
                     assert_eq!(
@@ -279,7 +283,7 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     );
                     assert_eq!(
                         provider
-                            .create_for_effect(&spec, &fence, &authority)
+                            .claim_for_effect(&spec, &fence, &authority)
                             .await
                             .unwrap()
                             .handle(),
@@ -445,7 +449,7 @@ async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
                     pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
                 let result = if current {
                     provider
-                        .create_for_effect(
+                        .claim_for_effect(
                             &spec,
                             &effect,
                             &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -455,7 +459,7 @@ async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
                         .await
                 } else {
                     let __fx = pc::test_support::fixture_effect("fixture-create");
-                    provider.create_for_effect(&spec, &__fx.0, &__fx.1).await
+                    provider.claim_for_effect(&spec, &__fx.0, &__fx.1).await
                 };
                 let cause = result.err().expect("R1 later mount fails");
                 assert!(cause.to_string().contains("injected later mount failure"));
@@ -1814,4 +1818,112 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
         )
         .await
         .expect("R1 finish");
+}
+
+/// A creation this authority abandoned must be reclaimable; a live or foreign
+/// root must not be.
+///
+/// The legacy (unfenced) creation path is what Agent-Run execution reaches:
+/// `root_execution`/`child_execution` call `create_sandbox` on a `Fresh`
+/// `LocalProvider` with the child RunId as the scope. Before the durable
+/// creation record existed, a cancellation after the root was published left no
+/// evidence at all, and the next attempt's absence check refused that scope
+/// forever — a wedge, not a leak.
+///
+/// Causes: C1 the first attempt is dropped after its root exists and before it
+/// completes; C2 the retry runs on a *different* provider value, so only
+/// on-disk evidence can carry the decision; C3 the root at that scope came from
+/// a creation that completed; C4 the root was made by someone else.
+/// Effects: E1 the attempt realizes a sandbox; E2 the attempt is refused.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// | R1   | T  | T  | F  | F  | E1 — the abandonment is this authority's own |
+/// | R2   | F  | T  | T  | F  | E2 — a completed root is in use |
+/// | R3   | F  | T  | F  | T  | E2 — a root with no creation record is foreign |
+#[tokio::test]
+async fn an_abandoned_legacy_creation_is_reclaimed_while_a_live_or_foreign_root_is_refused() {
+    /// Pends forever inside `realize_mount`, which runs strictly after the
+    /// creation guard published the sandbox root. Dropping the caller there is
+    /// exactly the cancellation the production path has no compensation for.
+    struct NeverResolves;
+    #[async_trait::async_trait]
+    impl pc::BlobSource for NeverResolves {
+        async fn get(&self, _: &str) -> Option<Vec<u8>> {
+            std::future::pending().await
+        }
+    }
+
+    fn expect_refusal(outcome: Result<LocalSandbox, pc::SandboxError>) -> String {
+        match outcome {
+            Ok(_) => panic!("creation was admitted where it had to be refused"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    fn seeded_spec(scope: &str) -> SandboxSpec {
+        let mut spec = workdir_spec(scope, false);
+        spec.mounts.push(pc::MountRequirement {
+            mount_id: "seed".into(),
+            mount_path: "/workspace/seed".into(),
+            source: pc::MountSource::File {
+                file_id: "synthetic".into(),
+                content_hash: None,
+            },
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        });
+        spec
+    }
+
+    // R1 — abandon mid-flight, then retry the same scope on a fresh provider.
+    let tmp = tempfile::tempdir().unwrap();
+    let spec = seeded_spec("wedge");
+    let root = tmp.path().join("wedge");
+    {
+        let stalled = LocalProvider::new(tmp.path()).with_blob_source(Arc::new(NeverResolves));
+        let mut creation = Box::pin(stalled.create_sandbox(&spec));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            std::future::Future::poll(creation.as_mut(), &mut cx).is_pending(),
+            "the fixture must stall the creation inside the mount, not settle it"
+        );
+        assert!(
+            root.is_dir(),
+            "C1 requires the abandoned attempt to have published its root already"
+        );
+        drop(creation);
+    }
+    let retry = LocalProvider::new(tmp.path()).with_blob("synthetic", b"seed bytes".to_vec());
+    let reclaimed = retry
+        .create_sandbox(&spec)
+        .await
+        .expect("R1 a retry at an abandoned scope must make progress");
+    assert_eq!(
+        std::fs::read(root.join("workspace/seed")).unwrap(),
+        b"seed bytes",
+        "R1 the reclaimed root is realized from scratch, not half-inherited"
+    );
+    drop(reclaimed);
+
+    // R2 — the same scope is now a completed root, and creation is refused.
+    let error = expect_refusal(retry.create_sandbox(&spec).await);
+    assert!(
+        error.contains("legacy sandbox root"),
+        "R2 a completed root stays refused: {error}"
+    );
+
+    // R3 — a root nothing here created carries no record and stays refused.
+    let foreign = tempfile::tempdir().unwrap();
+    std::fs::create_dir(foreign.path().join("outsider")).unwrap();
+    let provider = LocalProvider::new(foreign.path());
+    let error = expect_refusal(
+        provider
+            .create_sandbox(&workdir_spec("outsider", false))
+            .await,
+    );
+    assert!(
+        error.contains("legacy sandbox root"),
+        "R3 a foreign root stays refused: {error}"
+    );
 }

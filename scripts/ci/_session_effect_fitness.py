@@ -940,7 +940,12 @@ def sandbox_port_obligation_violations(sources: dict[str, str]) -> list[str]:
         return [f"{SANDBOX_PORTS}: sandbox port definitions are missing"]
 
     for obligation in (
-        "async fn create_for_effect(",
+        # Creation is no longer an `async fn`: it hands back a `ClaimedEffect`
+        # minted synchronously, so a provider cannot hand out a future whose
+        # cancellation would strand the resource it creates. Pinning the
+        # claimed spelling here keeps a future edit from quietly restoring the
+        # bare async port along with that hazard.
+        "fn claim_for_effect",
         "async fn adopt_for_effect(",
         "async fn dispose_for_effect(",
         "async fn dispose_unattached(",
