@@ -1,7 +1,7 @@
 //! Live-session typed input CRUD and durable resource activation coordination.
 //! The persisted [`SessionResourceState`](awaken_session_contract::SessionResourceState)
-//! is authoritative; runtime mounts and wire DTOs are projections of its active
-//! manifest.
+//! is authoritative. Wire DTOs project its desired manifest; Runtime owns
+//! realization of that manifest.
 
 use super::*;
 
@@ -478,16 +478,33 @@ impl ManagedState {
         }
     }
 
-    pub fn list_resources(
+    fn resource_dto_for_binding(
+        session_id: &str,
+        state: &awaken_session_contract::SessionResourceState,
+        binding_id: &str,
+    ) -> Option<crate::types::resource::SessionResource> {
+        state
+            .desired()
+            .inputs()
+            .iter()
+            .find(|input| input.binding_id.as_str() == binding_id)
+            .map(|input| resolved_resource_dto(session_id, input))
+    }
+
+    /// Resource reads consume desired Session truth only. They do not need a
+    /// Run snapshot, transcript ordering, or a warm protocol cache.
+    pub async fn list_resources(
         &self,
         id: &str,
     ) -> Result<(u64, Vec<crate::types::resource::SessionResource>), StateError> {
-        let sessions = self.sessions.lock().unwrap();
-        let record = sessions.get(id).ok_or(StateError::NotFound)?;
+        let resource_state = self
+            .read_persisted_session_projection(id)
+            .await?
+            .session
+            .resources;
         Ok((
-            record.resource_state.revision,
-            record
-                .resource_state
+            resource_state.revision,
+            resource_state
                 .desired()
                 .inputs()
                 .iter()
@@ -538,19 +555,16 @@ impl ManagedState {
                     &[],
                 )
                 .await?;
-            let existing = outcome
-                .session
-                .resources
-                .desired()
-                .inputs()
-                .iter()
-                .find(|input| input.binding_id == existing_binding)
-                .ok_or_else(|| {
-                    StateError::Run(RunError::internal(
-                        "replayed Resource binding disappeared after Manifest convergence",
-                    ))
-                })?;
-            return Ok(resolved_resource_dto(id, existing));
+            return Self::resource_dto_for_binding(
+                id,
+                &outcome.session.resources,
+                existing_binding.as_str(),
+            )
+            .ok_or_else(|| {
+                StateError::Run(RunError::internal(
+                    "replayed Resource binding disappeared after Manifest convergence",
+                ))
+            });
         }
         if matches!(parsed.target, ParsedInputTarget::File(_))
             && current
@@ -593,35 +607,37 @@ impl ManagedState {
                 desired.sandbox_layout_bindings(),
             )
             .map_err(StateError::Run)?;
-        self.execute_resource_manifest_command(
-            id,
-            awaken_session_application::ReplaceSessionResourceManifest {
-                request_fingerprint: awaken_session_contract::stable_fingerprint(&desired),
-                resources: desired,
-                expected_resource_revision: Some(read_revision),
-                idempotency_key: None,
-            },
-            &[],
-        )
-        .await?;
-        self.get_resource(id, &format!("{id}:resource:{}", input.binding_id.as_str()))
+        let outcome = self
+            .execute_resource_manifest_command(
+                id,
+                awaken_session_application::ReplaceSessionResourceManifest {
+                    request_fingerprint: awaken_session_contract::stable_fingerprint(&desired),
+                    resources: desired,
+                    expected_resource_revision: Some(read_revision),
+                    idempotency_key: None,
+                },
+                &[],
+            )
+            .await?;
+        // The accepted command already owns the exact durable result. A query
+        // optimization must not add a fallible post-effect read or report a
+        // concurrent later generation as this command's receipt.
+        Self::resource_dto_for_binding(id, &outcome.session.resources, input.binding_id.as_str())
+            .ok_or(StateError::NotFound)
     }
 
-    pub fn get_resource(
+    pub async fn get_resource(
         &self,
         id: &str,
         resource_id: &str,
     ) -> Result<crate::types::resource::SessionResource, StateError> {
-        let sessions = self.sessions.lock().unwrap();
-        let record = sessions.get(id).ok_or(StateError::NotFound)?;
+        let resource_state = self
+            .read_persisted_session_projection(id)
+            .await?
+            .session
+            .resources;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
-        record
-            .resource_state
-            .desired()
-            .inputs()
-            .iter()
-            .find(|input| input.binding_id == binding_id)
-            .map(|input| resolved_resource_dto(id, input))
+        Self::resource_dto_for_binding(id, &resource_state, binding_id.as_str())
             .ok_or(StateError::NotFound)
     }
 
