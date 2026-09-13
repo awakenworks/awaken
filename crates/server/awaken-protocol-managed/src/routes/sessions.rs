@@ -1413,11 +1413,7 @@ async fn list_resources(
     ),
     WireErr,
 > {
-    state
-        .refresh_committed_events_for_observation(&id, None)
-        .await
-        .map_err(error_response)?;
-    let (revision, resources) = state.list_resources(&id).map_err(error_response)?;
+    let (revision, resources) = state.list_resources(&id).await.map_err(error_response)?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::ETAG,
@@ -1432,11 +1428,8 @@ async fn get_resource(
     Path((id, rid)): Path<(String, String)>,
 ) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
-        .refresh_committed_events_for_observation(&id, None)
-        .await
-        .map_err(error_response)?;
-    state
         .get_resource(&id, &rid)
+        .await
         .map(Json)
         .map_err(error_response)
 }
