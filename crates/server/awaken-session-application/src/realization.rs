@@ -43,7 +43,7 @@ use authority::{
 };
 use control::RefreshedSessionRealizationControl;
 use recovery_backoff::{
-    EXTERNAL_WAKE_COOLDOWN, SessionRecoveryTrigger, external_wake_coalescing_delay,
+    SessionRecoveryTrigger, external_wake_coalescing_delay, next_external_wake_cooldown,
     next_session_recovery_delay,
 };
 
@@ -243,6 +243,8 @@ impl SessionApplication {
                     tracing::warn!(error = ?error, "Session recovery candidate scan failed");
                     return SessionRecoveryCycle {
                         retryable_failures: 1,
+                        settled: 0,
+                        elapsed: cycle_started.elapsed(),
                     };
                 }
             };
@@ -252,6 +254,7 @@ impl SessionApplication {
         let resource_failure_count = resources.failures.len();
         let pending = resources.pending;
         let quarantined = resources.quarantined.len();
+        let settled_resources = resources.settled.len();
         for failure in resources.failures {
             tracing::warn!(
                 session = %failure.session_id,
@@ -279,6 +282,7 @@ impl SessionApplication {
         let realizations = self.reconcile_session_realizations_from(&candidates).await;
         let realizations_elapsed = cycle_started.elapsed();
         let realization_failure_count = realizations.failures.len();
+        let settled_realizations = realizations.settled.len();
         for failure in realizations.failures {
             tracing::warn!(
                 session = %failure.session_id,
@@ -326,6 +330,7 @@ impl SessionApplication {
         };
         let event_batches_elapsed = cycle_started.elapsed();
         let event_batch_failure_count = event_batches.failures.len();
+        let event_batches_settled = event_batches.settled;
         for (session_id, error) in event_batches.failures {
             tracing::warn!(
                 session = %session_id,
@@ -342,6 +347,7 @@ impl SessionApplication {
         let outcomes = self.reconcile_outcome_continuations_from(&candidates).await;
         let outcomes_elapsed = cycle_started.elapsed();
         let outcome_failure_count = outcomes.failures.len();
+        let outcomes_settled = outcomes.settled;
         for (session_id, error) in outcomes.failures {
             tracing::warn!(
                 session = %session_id,
@@ -404,7 +410,14 @@ impl SessionApplication {
             elapsed_ms = cycle_started.elapsed().as_millis(),
             "Session recovery scan completed"
         );
-        SessionRecoveryCycle { retryable_failures }
+        SessionRecoveryCycle {
+            retryable_failures,
+            settled: settled_resources
+                + settled_realizations
+                + event_batches_settled
+                + outcomes_settled,
+            elapsed: cycle_started.elapsed(),
+        }
     }
 
     /// Run the sole Session lifecycle supervisor for this application instance.
@@ -507,7 +520,8 @@ impl SessionApplication {
                 recovery_failure_streak.saturating_add(1)
             };
             let now = tokio::time::Instant::now();
-            external_wake_cooldown = now + EXTERNAL_WAKE_COOLDOWN;
+            external_wake_cooldown =
+                now + next_external_wake_cooldown(recovery_trigger, cycle.settled, cycle.elapsed);
             let existing_remaining = next_recovery.saturating_duration_since(now);
             next_recovery = now
                 + next_session_recovery_delay(
@@ -891,4 +905,13 @@ impl SessionApplication {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SessionRecoveryCycle {
     pub(crate) retryable_failures: usize,
+    /// How many durable items this scan actually moved forward. A scan that
+    /// settled nothing is the only one whose successor hint is plausibly
+    /// redundant, so this is what arms the external-wake coalescing window.
+    pub(crate) settled: usize,
+    /// What this scan cost. An empty hint-driven scan is charged its own
+    /// duration as the coalescing window, so scanning cannot exceed half the
+    /// supervisor's time and a later hint never inherits more delay than a
+    /// scan actually takes.
+    pub(crate) elapsed: std::time::Duration,
 }
