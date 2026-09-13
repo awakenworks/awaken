@@ -3,6 +3,7 @@ use crate::git_transport::git_stdout;
 use awaken_provisioning_contract::{
     IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
 };
+use std::future::IntoFuture;
 
 pub(crate) fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
     SandboxSpec {
@@ -202,7 +203,7 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     let root = tmp.path().join("resource-proof");
                     assert!(
                         provider
-                            .create_for_effect(
+                            .claim_for_effect(
                                 &spec,
                                 &fence,
                                 &pc::test_support::EffectAuthority::denied()
@@ -212,8 +213,11 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     );
                     assert!(!root.exists());
                     assert_eq!(source.calls.load(Ordering::SeqCst), 0);
-                    let mut pending =
-                        Box::pin(provider.create_for_effect(&spec, &fence, &authority));
+                    let mut pending = Box::pin(
+                        provider
+                            .claim_for_effect(&spec, &fence, &authority)
+                            .into_future(),
+                    );
                     std::future::poll_fn(|cx| {
                         assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
                         std::task::Poll::Ready(())
@@ -262,7 +266,7 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                         source.gate.add_permits(1);
                     }
                     let replay = provider
-                        .create_for_effect(&spec, &fence, &authority)
+                        .claim_for_effect(&spec, &fence, &authority)
                         .await
                         .unwrap();
                     assert_eq!(
@@ -279,7 +283,7 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     );
                     assert_eq!(
                         provider
-                            .create_for_effect(&spec, &fence, &authority)
+                            .claim_for_effect(&spec, &fence, &authority)
                             .await
                             .unwrap()
                             .handle(),
@@ -445,7 +449,7 @@ async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
                     pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
                 let result = if current {
                     provider
-                        .create_for_effect(
+                        .claim_for_effect(
                             &spec,
                             &effect,
                             &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -455,7 +459,7 @@ async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
                         .await
                 } else {
                     let __fx = pc::test_support::fixture_effect("fixture-create");
-                    provider.create_for_effect(&spec, &__fx.0, &__fx.1).await
+                    provider.claim_for_effect(&spec, &__fx.0, &__fx.1).await
                 };
                 let cause = result.err().expect("R1 later mount fails");
                 assert!(cause.to_string().contains("injected later mount failure"));

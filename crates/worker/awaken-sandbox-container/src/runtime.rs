@@ -527,6 +527,12 @@ pub(crate) use observation::sandbox_observation;
 #[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) use realization::existing_realization_decision;
 
+/// The scan a container creation claim names: the decision that reads the
+/// labels a created container carries back off the runtime and says what the
+/// realization they describe is. Named once here, beside the function it
+/// names, so the claim cannot drift from the scan that honours it.
+pub(crate) const CONTAINER_REALIZATION_RECONCILER: &str = "existing_realization_decision";
+
 /// Non-authoritative liveness projection used by the legacy Sandbox status
 /// surface. Unlike `sandbox_observation`, Gone here is never deletion evidence;
 /// destructive recovery must use the exact fingerprinted observation above.

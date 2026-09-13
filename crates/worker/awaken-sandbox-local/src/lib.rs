@@ -1059,6 +1059,7 @@ pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
 }
 
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041).
+mod abandoned_realization;
 mod artifacts;
 mod blob_cache;
 mod git_transport;
@@ -1074,6 +1075,7 @@ pub mod repository_effect;
 // The provider resolves mount bytes from an injected [`pc::BlobSource`] port
 // (ADR-0038 D6, dependency-inverted) — this worker-tier crate links no durable
 // store; the composition root adapts the content-addressed store to the port.
+pub use abandoned_realization::AbandonedRealizations;
 pub use awaken_local_process::LocalProcess;
 pub use blob_cache::{BlobLru, WorkspaceBlobCache};
 pub(crate) use git_transport::{git_bytes, provision_repo_at, push_repo_to_at, run_git};

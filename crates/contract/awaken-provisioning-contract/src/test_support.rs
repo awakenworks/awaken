@@ -49,6 +49,40 @@ impl CurrentExecutionAuthority for EffectAuthority {
     }
 }
 
+/// Every fake effect whose caller went away before it settled.
+///
+/// A test double creates nothing on a host, but it still owes the same answer
+/// as a real provider to "who is responsible for this?" — so it mints
+/// [`crate::EffectClaim::in_process`] against this ledger and the abandonment
+/// becomes as observable in a fixture as a stranded container is in production.
+/// Process-wide rather than per-double so a fake can stay a plain value that
+/// dozens of call sites construct positionally.
+static ABANDONED_EFFECTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The retention a test double hands to its claim: it records `identity` if and
+/// only if the claimed effect is dropped unsettled.
+pub fn retain_abandoned_effect(identity: impl Into<String>) -> impl FnOnce() + Send + 'static {
+    let identity = identity.into();
+    move || {
+        ABANDONED_EFFECTS
+            .lock()
+            .expect("abandoned effect ledger poisoned")
+            .push(identity);
+    }
+}
+
+/// Take everything the ledger has recorded so far, leaving it empty. Tests that
+/// assert on abandonment drain it; tests that do not are unaffected, because an
+/// effect that settles never records anything here in the first place.
+#[must_use]
+pub fn drain_abandoned_effects() -> Vec<String> {
+    std::mem::take(
+        &mut *ABANDONED_EFFECTS
+            .lock()
+            .expect("abandoned effect ledger poisoned"),
+    )
+}
+
 /// A live fence plus its matching authority, for tests that own no aggregate
 /// effect yet must still drive the provider's fenced obligations. Production
 /// callers always carry a real Session-owned effect; this exists so a test

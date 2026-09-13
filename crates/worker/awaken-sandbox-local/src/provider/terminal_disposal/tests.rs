@@ -364,7 +364,7 @@ async fn terminal_cleanup_uses_current_proof_not_provider_wall_time() {
                         None
                     } else {
                         let sandbox = provider
-                            .create_for_effect(
+                            .claim_for_effect(
                                 &spec,
                                 &create,
                                 &awaken_provisioning_contract::test_support::EffectAuthority::new(

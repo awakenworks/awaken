@@ -76,11 +76,13 @@ pub(crate) use restore_target::{
     RESTORE_PLAN_LABEL, restoration_evidence_from_metadata, restoration_metadata,
 };
 use restore_target::{restoration_runtime_scope, retained_host_staging};
+pub(crate) use runtime::{
+    CONTAINER_REALIZATION_RECONCILER, MANAGED_SANDBOX_LABEL, runtime_owner_id,
+};
 pub use runtime::{
     ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
     RuntimeAgentProcess, RuntimeError, RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
-pub(crate) use runtime::{MANAGED_SANDBOX_LABEL, runtime_owner_id};
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) use runtime::{
     RUNTIME_OWNER_LABEL, SANDBOX_ATTEMPT_LABEL, container_effect_fence_from_values,

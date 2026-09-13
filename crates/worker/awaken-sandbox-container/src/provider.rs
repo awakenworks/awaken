@@ -1266,21 +1266,32 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         self.probe_runtime_ready().await
     }
 
-    async fn create_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(
-            self.create_container_for_effect(
-                spec,
-                Some(effect_fence),
-                Some(authority),
-                ContainerRealizationIntent::Create,
-            )
-            .await?,
-        ))
+    /// The container is born carrying its own record: the create request
+    /// stamps `MANAGED_SANDBOX_LABEL`, the scope, adoption, realization and
+    /// attempt labels, and the effect-fence labels, all computed from the spec
+    /// and fence before the request is issued. So a caller dropped mid-create
+    /// cannot separate the container from the evidence naming its owner, and
+    /// `existing_realization_decision` — which reads exactly those labels back
+    /// off the runtime — is the scan that decides its fate. Nothing is retained
+    /// in process, because nothing in process is needed to find it again.
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a pc::SandboxSpec,
+        effect_fence: &'a pc::SandboxEffectFence,
+        authority: &'a dyn pc::CurrentExecutionAuthority,
+    ) -> pc::ClaimedEffect<'a, Box<dyn pc::Sandbox>> {
+        let claim = pc::EffectClaim::self_recording(CONTAINER_REALIZATION_RECONCILER);
+        pc::ClaimedEffect::new(claim, async move {
+            Ok(Box::new(
+                self.create_container_for_effect(
+                    spec,
+                    Some(effect_fence),
+                    Some(authority),
+                    ContainerRealizationIntent::Create,
+                )
+                .await?,
+            ) as Box<dyn pc::Sandbox>)
+        })
     }
 
     async fn observe(

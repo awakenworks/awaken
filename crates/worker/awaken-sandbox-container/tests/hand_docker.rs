@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::ContainerProvider;
 use awaken_sandbox_container::docker::DockerRuntime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

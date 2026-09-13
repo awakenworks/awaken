@@ -1308,13 +1308,24 @@ pub trait SandboxProvider: Send + Sync {
     ///
     /// This is the provider's creation obligation. It carries no default: a
     /// provider that cannot fence creation must fail to compile rather than
-    /// inherit a body, and [`Self::create`] is the opt-in unfenced escape.
-    async fn create_for_effect(
-        &self,
-        spec: &SandboxSpec,
-        effect_fence: &SandboxEffectFence,
-        authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn Sandbox>, SandboxError>;
+    /// inherit a body.
+    ///
+    /// It is **synchronous** and returns a [`ClaimedEffect`], which is the
+    /// second half of the same discipline. The fence says the effect is
+    /// authorized; the claim says who is on record for it if the caller goes
+    /// away mid-flight. Returning the claim before the first poll is what makes
+    /// "sandbox on the host, no responsibility record" unrepresentable rather
+    /// than merely discouraged: a provider cannot mint the claim afterwards,
+    /// because [`ClaimedEffect::new`] consumes it. Callers still write
+    /// `.claim_for_effect(..).await` — [`std::future::IntoFuture`] makes the
+    /// call site read exactly as it did — but a caller dropped mid-await now
+    /// leaves the claim's retention behind instead of an orphan.
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a SandboxSpec,
+        effect_fence: &'a SandboxEffectFence,
+        authority: &'a dyn crate::CurrentExecutionAuthority,
+    ) -> crate::ClaimedEffect<'a, Box<dyn Sandbox>>;
 
     /// Observe one exact durable handle without renewing, mounting, deleting,
     /// or otherwise adopting it. Out-of-tree providers fail closed until they

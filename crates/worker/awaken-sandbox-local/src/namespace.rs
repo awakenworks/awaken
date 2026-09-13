@@ -363,6 +363,8 @@ pub struct NamespaceProvider {
     /// dispose. The FUSE-preferring mounter degrades to copy automatically off `/dev/fuse`.
     memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     memory_mounts: crate::MemoryMountRegistry,
+    /// Roots named by a creation claim that was dropped before it settled.
+    abandoned: Arc<crate::AbandonedRealizations>,
 }
 
 impl NamespaceProvider {
@@ -387,7 +389,15 @@ impl NamespaceProvider {
             secret_broker: Arc::new(std::sync::RwLock::new(None)),
             memory_mounter: Arc::new(std::sync::RwLock::new(None)),
             memory_mounts: crate::MemoryMountRegistry::default(),
+            abandoned: Arc::default(),
         }
+    }
+
+    /// Every sandbox root a cancelled creation left behind on this provider,
+    /// for the reconciler to read the durable marker of.
+    #[must_use]
+    pub fn abandoned_realizations(&self) -> Arc<crate::AbandonedRealizations> {
+        Arc::clone(&self.abandoned)
     }
 
     /// Select whether an opaque agent child inherits the host stderr.
@@ -636,16 +646,27 @@ impl pc::SandboxProvider for NamespaceProvider {
         }
     }
 
-    async fn create_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(
-            self.create_sandbox_for_effect(spec, effect_fence, None, authority)
-                .await?,
-        ))
+    /// Same shape as the Workdir tier: the realization marker written by this
+    /// creation's synchronous prologue is the durable record, `observe_adoption`
+    /// reads it back, and the retention names the root for the window before
+    /// that write.
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a pc::SandboxSpec,
+        effect_fence: &'a pc::SandboxEffectFence,
+        authority: &'a dyn pc::CurrentExecutionAuthority,
+    ) -> pc::ClaimedEffect<'a, Box<dyn pc::Sandbox>> {
+        let claim = pc::EffectClaim::durable(
+            crate::abandoned_realization::REALIZATION_RECONCILER,
+            self.abandoned
+                .retain(crate::sandbox_dir(&self.base, &spec.scope)),
+        );
+        pc::ClaimedEffect::new(claim, async move {
+            Ok(Box::new(
+                self.create_sandbox_for_effect(spec, effect_fence, None, authority)
+                    .await?,
+            ) as Box<dyn pc::Sandbox>)
+        })
     }
 
     async fn observe(

@@ -161,14 +161,19 @@ mod tests {
             }
         }
 
-        async fn create_for_effect(
-            &self,
-            spec: &SandboxSpec,
-            effect_fence: &crate::SandboxEffectFence,
-            authority: &dyn crate::CurrentExecutionAuthority,
-        ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
-            self.create(spec).await
+        fn claim_for_effect<'a>(
+            &'a self,
+            spec: &'a SandboxSpec,
+            effect_fence: &'a crate::SandboxEffectFence,
+            authority: &'a dyn crate::CurrentExecutionAuthority,
+        ) -> crate::ClaimedEffect<'a, Box<dyn Sandbox>> {
+            let claim = crate::EffectClaim::in_process(
+                crate::test_support::retain_abandoned_effect(spec.scope.clone()),
+            );
+            crate::ClaimedEffect::new(claim, async move {
+                crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+                self.create(spec).await
+            })
         }
         async fn adopt_for_effect(
             &self,
@@ -417,14 +422,19 @@ mod tests {
             }
         }
 
-        async fn create_for_effect(
-            &self,
-            spec: &SandboxSpec,
-            effect_fence: &crate::SandboxEffectFence,
-            authority: &dyn crate::CurrentExecutionAuthority,
-        ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
-            self.create(spec).await
+        fn claim_for_effect<'a>(
+            &'a self,
+            spec: &'a SandboxSpec,
+            effect_fence: &'a crate::SandboxEffectFence,
+            authority: &'a dyn crate::CurrentExecutionAuthority,
+        ) -> crate::ClaimedEffect<'a, Box<dyn Sandbox>> {
+            let claim = crate::EffectClaim::in_process(
+                crate::test_support::retain_abandoned_effect(spec.scope.clone()),
+            );
+            crate::ClaimedEffect::new(claim, async move {
+                crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+                self.create(spec).await
+            })
         }
         async fn adopt_for_effect(
             &self,
@@ -820,7 +830,7 @@ mod tests {
             .expect("fixture effect fence");
         let authority = crate::test_support::EffectAuthority::new(&fence);
         let sandbox = provider
-            .create_for_effect(&spec(), &fence, &authority)
+            .claim_for_effect(&spec(), &fence, &authority)
             .await
             .unwrap();
         let handle = sandbox.handle();
