@@ -391,33 +391,6 @@ impl ManagedState {
         }
     }
 
-    pub(super) fn accepted_coordination_thread(
-        record: &SessionRecord,
-        call_id: &str,
-    ) -> Option<String> {
-        let content = record
-            .events
-            .iter()
-            .filter(|event| !record.event_thread_owners.contains_key(&event.id))
-            .find_map(|event| match &event.kind {
-                OutboundKind::AgentToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } if tool_use_id == call_id && *is_error != Some(true) => Some(content),
-                _ => None,
-            })?;
-        let receipt = serde_json::from_str::<serde_json::Value>(&content_text(content)).ok()?;
-        (receipt.get("accepted").and_then(serde_json::Value::as_bool) == Some(true))
-            .then(|| {
-                receipt
-                    .get("session_thread_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            })
-            .flatten()
-    }
-
     /// Lower accepted parent `send_message` calls into one cross-Thread message.
     /// Spawn calls are bound by the operation id that created the durable link;
     /// follow-ups are bound by the existing Thread id. A failed tool result never
@@ -427,53 +400,95 @@ impl ManagedState {
         record: &mut SessionRecord,
         links: &[CoordinatedThreadLink],
     ) {
-        let calls = record
+        // No link can accept a cross-post yet; its unchanged committed call
+        // remains eligible when a later refresh observes that relationship.
+        if links.is_empty() {
+            return;
+        }
+        let calls = {
+            let wanted = record.events.iter().filter(|event| !record.event_thread_owners.contains_key(&event.id))
+                .filter(|event| matches!(&event.kind, OutboundKind::AgentToolUse { name, .. } if name == SEND_MESSAGE))
+                .map(|event|event.id.as_str()).collect::<std::collections::HashSet<_>>();
+            let receipts = super::coordination_receipts::CoordinationReceipts::for_calls(
+                &record.events,
+                &record.event_thread_owners,
+                &wanted,
+            );
+            let mut links_by_thread =
+                std::collections::HashMap::<&str, Vec<&CoordinatedThreadLink>>::new();
+            for link in links {
+                links_by_thread
+                    .entry(&link.thread_id.0)
+                    .or_default()
+                    .push(link);
+            }
+            record
+                .events
+                .iter()
+                .filter(|event| !record.event_thread_owners.contains_key(&event.id))
+                .filter_map(|event| {
+                    let OutboundKind::AgentToolUse { name, input, .. } = &event.kind else {
+                        return None;
+                    };
+                    if name != SEND_MESSAGE {
+                        return None;
+                    }
+                    let receipt_thread = receipts.get(&event.id)?;
+                    let runtime_call_id = decode_managed_tool_event_id(&event.id)
+                        .map_or(event.id.as_str(), |identity| identity.call_id);
+                    let link =
+                        links_by_thread
+                            .get(receipt_thread)?
+                            .iter()
+                            .copied()
+                            .find(|link| {
+                                if link.thread_id.0 != receipt_thread {
+                                    return false;
+                                }
+                                match (
+                                    input
+                                        .get("agent_id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .filter(|value| !value.trim().is_empty()),
+                                    input
+                                        .get("session_thread_id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .filter(|value| !value.trim().is_empty()),
+                                ) {
+                                    (Some(agent_id), None) => {
+                                        link.target.agent_id() == Some(agent_id)
+                                            && link
+                                                .created_by_operation_id
+                                                .strip_suffix(runtime_call_id)
+                                                .is_some_and(|prefix| prefix.ends_with(':'))
+                                    }
+                                    (None, Some(thread_id)) => link.thread_id.0 == thread_id,
+                                    _ => false,
+                                }
+                            })?;
+                    let message = input
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)?
+                        .to_owned();
+                    Some((event.id.clone(), link.thread_id.0.clone(), message))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        if calls.is_empty() {
+            return;
+        }
+        // These indices exist only for this reduction and are rebuilt from the
+        // same record; they do not become independent cross-refresh receipts.
+        let mut projected_ids = record
             .events
             .iter()
-            .filter(|event| !record.event_thread_owners.contains_key(&event.id))
-            .filter_map(|event| {
-                let OutboundKind::AgentToolUse { name, input, .. } = &event.kind else {
-                    return None;
-                };
-                if name != SEND_MESSAGE {
-                    return None;
-                }
-                let receipt_thread = Self::accepted_coordination_thread(record, &event.id)?;
-                let runtime_call_id = decode_managed_tool_event_id(&event.id)
-                    .map_or(event.id.as_str(), |identity| identity.call_id);
-                let link = links.iter().find(|link| {
-                    if link.thread_id.0 != receipt_thread {
-                        return false;
-                    }
-                    match (
-                        input
-                            .get("agent_id")
-                            .and_then(serde_json::Value::as_str)
-                            .filter(|value| !value.trim().is_empty()),
-                        input
-                            .get("session_thread_id")
-                            .and_then(serde_json::Value::as_str)
-                            .filter(|value| !value.trim().is_empty()),
-                    ) {
-                        (Some(agent_id), None) => {
-                            link.target.agent_id() == Some(agent_id)
-                                && link
-                                    .created_by_operation_id
-                                    .strip_suffix(runtime_call_id)
-                                    .is_some_and(|prefix| prefix.ends_with(':'))
-                        }
-                        (None, Some(thread_id)) => link.thread_id.0 == thread_id,
-                        _ => false,
-                    }
-                })?;
-                let message = input
-                    .get("message")
-                    .and_then(serde_json::Value::as_str)?
-                    .to_owned();
-                Some((event.id.clone(), link.thread_id.0.clone(), message))
-            })
-            .collect::<Vec<_>>();
-
+            .map(|event| event.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut child_positions = std::collections::HashMap::new();
+        for (position, child) in record.child_threads.iter().enumerate() {
+            child_positions.entry(child.id.clone()).or_insert(position);
+        }
         for (call_id, thread_id, message) in calls {
             let sent_event_id = managed_multiagent_event_id(
                 &record.session.id,
@@ -485,16 +500,13 @@ impl ManagedState {
             // Re-reading the same committed call must not require a parallel
             // process-local call-id cursor, while a call whose link was not yet
             // visible remains eligible on a later refresh.
-            if record.events.iter().any(|event| event.id == sent_event_id) {
+            if projected_ids.contains(&sent_event_id) {
                 continue;
             }
-            let Some(child) = record
-                .child_threads
-                .iter_mut()
-                .find(|child| child.id == thread_id)
-            else {
+            let Some(&position) = child_positions.get(&thread_id) else {
                 continue;
             };
+            let child = &mut record.child_threads[position];
             if child.status == SessionThreadStatus::Terminated {
                 continue;
             }
@@ -502,13 +514,15 @@ impl ManagedState {
             if child.status != SessionThreadStatus::Running {
                 child.status = SessionThreadStatus::Running;
                 child.updated_at = LEGACY_UNRECORDED_AT.to_string();
+                let running_id = managed_multiagent_event_id(
+                    &record.session.id,
+                    &thread_id,
+                    "coordination-status-running",
+                    ManagedMultiagentEventProvenance::CoordinationCall { event_id: &call_id },
+                );
+                projected_ids.insert(running_id.clone());
                 record.events.push(Event {
-                    id: managed_multiagent_event_id(
-                        &record.session.id,
-                        &thread_id,
-                        "coordination-status-running",
-                        ManagedMultiagentEventProvenance::CoordinationCall { event_id: &call_id },
-                    ),
+                    id: running_id,
                     kind: OutboundKind::SessionThreadStatusRunning {
                         session_thread_id: thread_id.clone(),
                         agent_name: agent_name.clone(),
@@ -516,6 +530,7 @@ impl ManagedState {
                     processed_at: None,
                 });
             }
+            projected_ids.insert(sent_event_id.clone());
             record.events.push(Event {
                 id: sent_event_id,
                 kind: OutboundKind::AgentThreadMessageSent {
