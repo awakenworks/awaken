@@ -1676,7 +1676,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .with_session_repo(repo.clone())
             .with_resource_registry(catalog.clone());
         restarted.ensure_session(&id).await.expect("rehydrate");
-        let (_, restored) = restarted.list_resources(&id).expect("list restored");
+        let (_, restored) = restarted.list_resources(&id).await.expect("list restored");
         assert_eq!(restored.len(), 1);
         assert!(matches!(
             &restored[0],
@@ -1718,7 +1718,14 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .ensure_session(&id)
             .await
             .expect("rehydrate after delete");
-        assert!(second_restart.list_resources(&id).unwrap().1.is_empty());
+        assert!(
+            second_restart
+                .list_resources(&id)
+                .await
+                .unwrap()
+                .1
+                .is_empty()
+        );
     })
     .await;
 }

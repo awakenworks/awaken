@@ -150,6 +150,8 @@ struct AcceptingFake {
     applied:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
     stall_projection_install: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    recovery_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    reject_recovery_reads: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_apply_remaining: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     published: std::sync::Arc<
@@ -1961,11 +1963,18 @@ impl SessionRuntime for AcceptingFake {
         _thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        // Resource-route fake cause/effect rule: C1 these tests commit no Run;
-        // C2 Managed GET refreshes through the sole atomic recovery port.
-        // R1 C1+C2 => Ok(None), so the durable Resource desired projection is
-        // queryable. Unsupported production ports retain the trait's fail-closed
-        // 503 default; this fake never reconstructs a snapshot from split reads.
+        // C1 these tests commit no Run; C2 Event/Session observations use the
+        // sole recovery port => Ok(None). Resource-only GET must not call it;
+        // the dedicated outage test counts calls and rejects them. Unsupported
+        // production recovery remains fail-closed, never a split-read snapshot.
+        self.recovery_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self
+            .reject_recovery_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::unavailable("injected Runtime history outage"));
+        }
         Ok(None)
     }
 
@@ -3704,7 +3713,7 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
         .await;
     assert!(format!("{result:?}").contains("injected activation failure"));
     assert_eq!(applied.lock().unwrap().len(), 2);
-    let (_, resources) = state.list_resources(&id).unwrap();
+    let (_, resources) = state.list_resources(&id).await.unwrap();
     assert_eq!(resources.len(), 1, "accepted desired resource is queryable");
     assert_eq!(
         serde_json::to_value(&resources[0]).unwrap()["mount_path"],
@@ -6229,4 +6238,128 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
     assert_eq!(recovered["run_id"], "work-unit-43", "R2");
     assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 2, "R2/R6");
     assert_eq!(runtime.activated_runs.lock().unwrap().len(), 2, "R2/R6");
+}
+
+#[tokio::test]
+async fn resource_reads_use_durable_root_without_runtime_history_or_cache_rehydration() {
+    // Causes: C1 a readable durable root owns a desired resource; C2 Runtime
+    // history reads fail; C3 Managed cache is warm/cold; C4 a peer has committed
+    // a newer desired generation; C5 Session/resource identity is absent/wrong.
+    // Effects: E1 resource list/detail and resource ETag come from that root;
+    // E2 zero Runtime recovery reads/effects; E3 no stale cache hides C4;
+    // E4 C5 => 404; E5 Event history still fails through its original health seam.
+    // Rules R1=C1+C2+warm => E1/E2; R2=C1+C2+cold => E1/E2;
+    // R3=R1+C4 => E3; R4=C5 => E4; R5=C2+Events GET => E5.
+    // Same HTTP routes/DTO mapper/Session read-visibility authority in all rows.
+    use std::sync::{Arc, atomic::Ordering};
+    let runtime = AcceptingFake::default();
+    let reads = runtime.recovery_reads.clone();
+    let reject = runtime.reject_recovery_reads.clone();
+    let applied = runtime.applied.clone();
+    let repo = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let warm = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
+    let session = warm
+        .create_session(
+            serde_json::from_value(with_session_environment(json!({"agent":"a"}))).unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let id = session.id;
+    let resource = warm
+        .create_resource(
+            &id,
+            serde_json::from_value(json!({
+                "type":"file", "file_id":"file-first", "mount_path":"/first.txt"
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let expected = serde_json::to_value(resource).unwrap();
+    let resource_id = expected["id"].as_str().unwrap();
+    let cold = Arc::new(ManagedState::new(runtime).with_session_repo(repo.clone()));
+    let warm_app = router(warm.clone());
+    let cold_app = router(cold.clone());
+    reject.store(true, Ordering::SeqCst);
+    reads.store(0, Ordering::SeqCst);
+    let effects = applied.lock().unwrap().len();
+    for (rule, app) in [("R1 warm", &warm_app), ("R2 cold", &cold_app)] {
+        let (headers, body) = call_with_headers(
+            app,
+            "GET",
+            &format!("/v1/sessions/{id}/resources"),
+            None,
+            &[],
+        )
+        .await
+        .expect_for(StatusCode::OK, rule);
+        assert_eq!(body["data"], json!([expected.clone()]), "{rule}");
+        assert_eq!(
+            headers["etag"].to_str().unwrap(),
+            format!("\"{}\"", repo.get(&id).await.unwrap().resources.revision)
+        );
+        let detail = call(
+            app,
+            "GET",
+            &format!("/v1/sessions/{id}/resources/{resource_id}"),
+            None,
+        )
+        .await
+        .expect_for(StatusCode::OK, rule);
+        assert_eq!(detail, expected, "{rule}");
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "{rule}: no history query");
+        assert_eq!(
+            applied.lock().unwrap().len(),
+            effects,
+            "{rule}: read has no effects"
+        );
+    }
+    // Peer command advances durable desired truth while warm's wire record stays
+    // older. Only the existing command owns mutation; the reader never repairs it.
+    reject.store(false, Ordering::SeqCst);
+    cold.create_resource(
+        &id,
+        serde_json::from_value(json!({
+            "type":"file", "file_id":"file-second", "mount_path":"/second.txt"
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    reject.store(true, Ordering::SeqCst);
+    reads.store(0, Ordering::SeqCst);
+    let (headers, body) = call_with_headers(
+        &warm_app,
+        "GET",
+        &format!("/v1/sessions/{id}/resources"),
+        None,
+        &[],
+    )
+    .await
+    .expect_for(StatusCode::OK, "R3 peer generation");
+    assert_eq!(body["data"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        headers["etag"].to_str().unwrap(),
+        format!("\"{}\"", repo.get(&id).await.unwrap().resources.revision)
+    );
+    for uri in [
+        "/v1/sessions/missing/resources".to_string(),
+        format!("/v1/sessions/{id}/resources/foreign:resource:id"),
+    ] {
+        call(&warm_app, "GET", &uri, None)
+            .await
+            .expect_for(StatusCode::NOT_FOUND, "R4 identity");
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), 0, "R3/R4 no history query");
+    call(&warm_app, "GET", &format!("/v1/sessions/{id}/events"), None)
+        .await
+        .expect_for(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "R5 original history health",
+        );
+    assert!(
+        reads.load(Ordering::SeqCst) > 0,
+        "R5 actually exercised the failing dependency"
+    );
 }

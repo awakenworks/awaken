@@ -31,16 +31,13 @@ impl ManagedState {
             .map_err(Self::map_create_replay_error)
     }
 
-    /// Ensure only the base disposable Session record exists.  Runtime-derived
-    /// child links and lifecycle are deliberately absent here: both cold and
-    /// warm callers consume those facts through `refresh_committed_projection`,
-    /// so recovery cannot grow a second projector.
-    pub(super) async fn ensure_session_record(&self, id: &str) -> Result<(), StateError> {
-        if self.sessions.lock().unwrap().contains_key(id) {
-            return Ok(());
-        }
-        // The Session application owns resource reconciliation and realization
-        // ordering. Managed only rebuilds its disposable wire cache afterward.
+    /// Read the existing Session application projection without requiring any
+    /// Runtime transcript or executable publication. Resource metadata and cold
+    /// reconstruction share its visibility/owner/finalization/error rules.
+    pub(super) async fn read_persisted_session_projection(
+        &self,
+        id: &str,
+    ) -> Result<awaken_session_application::RecoveredSessionProjection, StateError> {
         let recovered = self
             .application
             .read_session_projection(id, None)
@@ -56,11 +53,19 @@ impl ManagedState {
                     message,
                 ) => StateError::Run(RunError::unavailable(message)),
             })?;
-        // The repository aggregate is the sole Session-existence and ownership
-        // authority. A committed Thread transcript without that aggregate is an
-        // orphaned projection, not a legacy Session that protocol code may
-        // reconstruct with guessed owner/configuration defaults.
-        let recovered = recovered.ok_or(StateError::NotFound)?;
+        // A Thread without its durable Session root cannot manufacture identity.
+        recovered.ok_or(StateError::NotFound)
+    }
+
+    /// Ensure only the base disposable Session record exists.  Runtime-derived
+    /// child links and lifecycle are deliberately absent here: both cold and
+    /// warm callers consume those facts through `refresh_committed_projection`,
+    /// so recovery cannot grow a second projector.
+    pub(super) async fn ensure_session_record(&self, id: &str) -> Result<(), StateError> {
+        if self.sessions.lock().unwrap().contains_key(id) {
+            return Ok(());
+        }
+        let recovered = self.read_persisted_session_projection(id).await?;
         let owner_scope = recovered.owner_scope;
         let persisted = recovered.session;
         let admission = self
