@@ -228,6 +228,23 @@ pub awaken_provisioning_contract::CheckpointObjectMetadata::generation_id: alloc
 pub awaken_provisioning_contract::CheckpointObjectMetadata::session_id: alloc::string::String
 pub awaken_provisioning_contract::CheckpointObjectMetadata::suspend_effect_id: alloc::string::String
 pub awaken_provisioning_contract::CheckpointObjectMetadata::workspace_id: alloc::string::String
+pub struct awaken_provisioning_contract::ClaimedEffect<'a, T>
+impl<'a, T> awaken_provisioning_contract::ClaimedEffect<'a, T>
+pub fn awaken_provisioning_contract::ClaimedEffect<'a, T>::abandon(self)
+pub fn awaken_provisioning_contract::ClaimedEffect<'a, T>::new(awaken_provisioning_contract::EffectClaim, impl core::future::future::Future<Output = core::result::Result<T, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'a) -> Self
+pub fn awaken_provisioning_contract::ClaimedEffect<'a, T>::reconciler(&self) -> core::option::Option<&'static str>
+impl<'a, T> core::future::into_future::IntoFuture for awaken_provisioning_contract::ClaimedEffect<'a, T>
+pub type awaken_provisioning_contract::ClaimedEffect<'a, T>::IntoFuture = awaken_provisioning_contract::ClaimedEffectInFlight<'a, T>
+pub type awaken_provisioning_contract::ClaimedEffect<'a, T>::Output = core::result::Result<T, awaken_provisioning_contract::SandboxError>
+pub fn awaken_provisioning_contract::ClaimedEffect<'a, T>::into_future(self) -> Self::IntoFuture
+impl<T> core::ops::drop::Drop for awaken_provisioning_contract::ClaimedEffect<'_, T>
+pub fn awaken_provisioning_contract::ClaimedEffect<'_, T>::drop(&mut self)
+pub struct awaken_provisioning_contract::ClaimedEffectInFlight<'a, T>
+impl<T> core::future::future::Future for awaken_provisioning_contract::ClaimedEffectInFlight<'_, T>
+pub type awaken_provisioning_contract::ClaimedEffectInFlight<'_, T>::Output = core::result::Result<T, awaken_provisioning_contract::SandboxError>
+pub fn awaken_provisioning_contract::ClaimedEffectInFlight<'_, T>::poll(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<Self::Output>
+impl<T> core::ops::drop::Drop for awaken_provisioning_contract::ClaimedEffectInFlight<'_, T>
+pub fn awaken_provisioning_contract::ClaimedEffectInFlight<'_, T>::drop(&mut self)
 pub struct awaken_provisioning_contract::Command
 pub awaken_provisioning_contract::Command::argv: alloc::vec::Vec<alloc::string::String>
 pub awaken_provisioning_contract::Command::cwd: alloc::string::String
@@ -249,6 +266,12 @@ pub awaken_provisioning_contract::ContainerSandboxHandleV2::adoption_fingerprint
 pub awaken_provisioning_contract::ContainerSandboxHandleV2::owned_paths: alloc::vec::Vec<alloc::string::String>
 pub awaken_provisioning_contract::ContainerSandboxHandleV2::previous: awaken_provisioning_contract::ContainerSandboxHandleV1
 pub awaken_provisioning_contract::ContainerSandboxHandleV2::realization_fingerprint: awaken_provisioning_contract::SandboxRealizationFingerprint
+pub struct awaken_provisioning_contract::EffectClaim
+impl awaken_provisioning_contract::EffectClaim
+pub fn awaken_provisioning_contract::EffectClaim::durable(&'static str, impl core::ops::function::FnOnce() + core::marker::Send + 'static) -> Self
+pub fn awaken_provisioning_contract::EffectClaim::in_process(impl core::ops::function::FnOnce() + core::marker::Send + 'static) -> Self
+pub fn awaken_provisioning_contract::EffectClaim::reconciler(&self) -> core::option::Option<&'static str>
+pub fn awaken_provisioning_contract::EffectClaim::self_recording(&'static str) -> Self
 pub struct awaken_provisioning_contract::EnvVar
 pub awaken_provisioning_contract::EnvVar::name: alloc::string::String
 pub awaken_provisioning_contract::EnvVar::value: awaken_provisioning_contract::EnvValue
@@ -762,7 +785,7 @@ pub fn awaken_provisioning_contract::SandboxProvider::acquire_restore<'life0, 'l
 pub fn awaken_provisioning_contract::SandboxProvider::adopt_for_effect<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec, &'life2 awaken_provisioning_contract::SandboxHandle, &'life3 awaken_provisioning_contract::SandboxEffectFence, &'life4 dyn awaken_provisioning_contract::CurrentExecutionAuthority) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
 pub fn awaken_provisioning_contract::SandboxProvider::capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities
 pub fn awaken_provisioning_contract::SandboxProvider::checkpoint_formats(&self) -> alloc::vec::Vec<alloc::string::String>
-pub fn awaken_provisioning_contract::SandboxProvider::create_for_effect<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec, &'life2 awaken_provisioning_contract::SandboxEffectFence, &'life3 dyn awaken_provisioning_contract::CurrentExecutionAuthority) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_provisioning_contract::SandboxProvider::claim_for_effect<'a>(&'a self, &'a awaken_provisioning_contract::SandboxSpec, &'a awaken_provisioning_contract::SandboxEffectFence, &'a dyn awaken_provisioning_contract::CurrentExecutionAuthority) -> awaken_provisioning_contract::ClaimedEffect<'a, alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>>
 pub fn awaken_provisioning_contract::SandboxProvider::dispose_restored<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec, &'life2 awaken_provisioning_contract::SandboxRestoreRequest, &'life3 awaken_provisioning_contract::SandboxDisposalAuthorization, &'life4 dyn awaken_provisioning_contract::CurrentExecutionAuthority) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
 pub fn awaken_provisioning_contract::SandboxProvider::observe<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::SandboxObservation, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_provisioning_contract::SandboxProvider::observe_for_effect<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec, &'life2 awaken_provisioning_contract::SandboxHandle, &'life3 awaken_provisioning_contract::SandboxEffectFence) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::SandboxObservation, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
