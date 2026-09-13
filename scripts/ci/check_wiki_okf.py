@@ -28,6 +28,10 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _doc_anchors import mask_code_fences, resolve_link  # noqa: E402
 
+# Input set: the flat wiki page set this checker globs (`WIKI_ROOT.glob("*.md")`),
+# plus the shared anchor resolver used to prove each fact's Owner link resolves.
+INPUT_GLOBS: tuple[str, ...] = ("docs/wiki/*.md", "scripts/ci/_doc_anchors.py")
+
 WIKI_ROOT = Path("docs/wiki")
 REQUIRED_FACT_FIELDS = ("Status", "Owner", "Fact", "Links", "Verification")
 FACT_HEADING = re.compile(r"^##\s+FACT-[A-Z]+-\d{3}:", re.MULTILINE)
@@ -157,10 +161,14 @@ def check_owner_link(path: Path, heading: str, section: str) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    paths = [Path(a) for a in argv] if argv else sorted(WIKI_ROOT.glob("*.md"))
+    # The trigger also covers this checker and the shared anchor resolver, so an
+    # argument list may legitimately carry no wiki page. Re-scan the whole wiki
+    # then: a trigger that fires and checks nothing is the bug, not a feature.
+    paths = [path for path in map(Path, argv) if is_wiki_markdown(path)]
+    paths = paths or sorted(WIKI_ROOT.glob("*.md"))
     errors: list[str] = []
     for path in paths:
-        if is_wiki_markdown(path) and path.is_file():
+        if path.is_file():
             errors.extend(check_file(path))
 
     if errors:

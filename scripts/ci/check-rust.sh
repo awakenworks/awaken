@@ -184,10 +184,11 @@ case "$mode" in
         cargo clippy --workspace --all-targets --features "$workspace_features" "${locked[@]}" -- -D warnings
       step "formal-coverage" "register the harness in scripts/ci/check_formal.sh or fix formal/coverage.json as shown above" \
         python3 scripts/ci/check_formal_coverage.py
-      # A new production module is invisible to the formal-evidence pre-commit
-      # hook, whose glob is the formal inputs themselves; an unclassified
-      # surface therefore reaches main and fails the next commit that does
-      # touch those inputs. The push gate is where that is still cheap.
+      # The formal-evidence pre-commit hook now triggers on every production
+      # Rust file and answers the same question incrementally (--staged), so an
+      # unclassified module is refused at the commit that introduces it. This
+      # whole-tree run stays here because the coverage *ratio* it reports is
+      # global: only a full walk can show a surface that lost its last owner.
       step "formal-surface" "classify the new source in formal/surface-classifications.json (or record an exclusion)" \
         python3 scripts/ci/check_formal_surface.py --require-complete
     fi

@@ -5,6 +5,12 @@ The obligation ledger is claim-oriented.  This complementary inventory is
 source-oriented: it prevents a manually curated claim list from reporting a
 high ratio while whole authorization, state-machine, concurrency, durability,
 or secret-handling modules are absent from the denominator discussion.
+
+Two modes, one predicate.  ``--require-complete`` walks the whole tree because
+the coverage ratio it prints is global.  ``--staged <paths...>`` asks the same
+question -- "does this production source carry a risk signal nobody has
+classified or excluded?" -- about the given paths only, so the pre-commit hook
+can legitimately trigger on ``crates/**/*.rs`` without a whole-repository walk.
 """
 
 from __future__ import annotations
@@ -17,6 +23,20 @@ import sys
 
 import _crate_boundary_workspace
 
+
+# Input set: every production Rust source it inventories, the Cargo manifests
+# that decide which of them a target actually reaches, the four formal/ JSON
+# registries (ledger, features, classifications, exclusions), and the shared
+# Rust projection whose lexer decides what counts as executable vocabulary.
+# `crates/**/*.rs` belongs here because the checker reads every one of them --
+# the earlier hook globbed only formal/*.json, so two new production modules
+# reached main unclassified.
+INPUT_GLOBS: tuple[str, ...] = (
+    "crates/**/*.rs",
+    "crates/**/Cargo.toml",
+    "formal/*.json",
+    "scripts/ci/_crate_boundary_workspace.py",
+)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "formal" / "coverage.json"
@@ -220,8 +240,65 @@ def is_production_source(path: pathlib.Path) -> bool:
     return not any(part in {"tests", "test_support", "fixtures"} for part in parts)
 
 
+# A `mod`/`use`/`extern crate` item states where code lives, not what this file
+# decides.  `crates/contract/awaken-agent-contract/src/audit/mod.rs` is six
+# `pub mod` lines and nothing else, yet it matched the `authorization` signal
+# purely because one declared module is named `permission`.  The head of such an
+# item is therefore blanked before matching.  The optional attribute prefix is
+# consumed too, so `#[cfg(feature = "x")] pub mod permission;` cannot smuggle the
+# same name back in.
+DECLARATION_HEAD = re.compile(
+    r"(?:(?<=\n)|(?<=;)|(?<=\{)|(?<=\})|\A)"
+    r"[ \t]*(?:\#\[[^\]]*\][ \t]*)*"
+    r"((?:pub(?:[ \t]*\([^)]*\))?[ \t]+)?(?:mod|use|extern[ \t]+crate)\b)"
+)
+
+
+def without_declarations(code: str) -> str:
+    """Blank module/import declaration heads, preserving offsets and lines.
+
+    ``use a::{b, c};`` is blanked through its closing ``;`` including the braced
+    group, so a multi-line import cannot leak its names.  An inline ``mod name {``
+    keeps its *body* -- only the declaration head up to the brace is blanked,
+    because the items inside it are this file's executable vocabulary.
+
+    String literals are deliberately left alone: several signal groups exist to
+    catch behaviour that only appears inside a literal (SQL ``INSERT INTO`` is
+    the clearest case), so blanking literals would delete real surfaces.  Line
+    and block comments are already blanked by the shared production projection
+    this runs after.
+    """
+
+    projected = list(code)
+    cursor = 0
+    while (match := DECLARATION_HEAD.search(code, cursor)) is not None:
+        keyword = match.group(1).split()[-1]
+        index = match.end(1)
+        depth = 0
+        end = len(code)
+        while index < len(code):
+            character = code[index]
+            if character == "{":
+                if keyword == "mod" and depth == 0:
+                    end = index
+                    break
+                depth += 1
+            elif character == "}":
+                depth -= 1
+            elif character == ";" and depth == 0:
+                end = index + 1
+                break
+            index += 1
+        span = code[match.start():end]
+        projected[match.start():end] = (
+            character if character in "\r\n" else " " for character in span
+        )
+        cursor = max(end, match.end(1))
+    return "".join(projected)
+
+
 def detect_signals(source: str) -> list[str]:
-    code = _crate_boundary_workspace.production_rust(source)
+    code = without_declarations(_crate_boundary_workspace.production_rust(source))
     return [
         category
         for category, groups in SIGNAL_GROUPS.items()
@@ -314,6 +391,75 @@ def load_classifications(
     return classifications
 
 
+def ledger_sources() -> dict[str, list[dict[str, object]]]:
+    """Production Rust sources an obligation already cites as evidence."""
+
+    ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
+    by_source: dict[str, list[dict[str, object]]] = {}
+    for obligation in ledger["obligations"]:
+        for evidence in obligation.get("evidence", []):
+            if evidence.startswith("crates/") and evidence.endswith(".rs"):
+                by_source.setdefault(evidence, []).append(obligation)
+    return by_source
+
+
+def under_production_root(path: pathlib.Path) -> bool:
+    """Is this path inside one of the roots the whole-tree inventory walks?"""
+
+    return any(root == path or root in path.parents for root in PRODUCTION_ROOTS)
+
+
+def check_staged(paths: list[str]) -> None:
+    """Incremental mode: the whole-tree predicate, restricted to given paths.
+
+    A path is answered when the obligation ledger cites it as evidence, or when
+    ``formal/surface-classifications.json`` or ``formal/surface-exclusions.json``
+    carries a row for it -- the same three ways the whole-tree walk marks a
+    surface covered. Everything else that is a reachable-root production source
+    and still carries a risk signal is refused, by name and with its signals.
+
+    Cost is O(changed): the three registries are read once, and only the given
+    files are lexed. The global coverage *ratio* still needs the whole walk, so
+    ``--require-complete`` keeps that job on the push and release gates.
+    """
+
+    registered = (
+        set(ledger_sources())
+        | set(load_exclusions())
+        | set(load_classifications(
+            {item["id"] for item in json.loads(LEDGER.read_text(encoding="utf-8"))["obligations"]},
+            load_requirement_ids(),
+        ))
+    )
+    unclassified: list[tuple[str, list[str]]] = []
+    for argument in paths:
+        path = pathlib.Path(argument)
+        path = path if path.is_absolute() else ROOT / path
+        if not path.is_file() or path.suffix != ".rs":
+            continue
+        try:
+            relative = path.resolve().relative_to(ROOT).as_posix()
+        except ValueError:
+            continue
+        candidate = ROOT / relative
+        if not under_production_root(candidate) or not is_production_source(candidate):
+            continue
+        if relative in registered:
+            continue
+        signals = detect_signals(candidate.read_text(encoding="utf-8"))
+        if signals:
+            unclassified.append((relative, signals))
+    if unclassified:
+        fail(
+            "staged production sources carry unclassified safety surfaces; add a row to "
+            "formal/surface-classifications.json or formal/surface-exclusions.json:\n"
+            + "\n".join(
+                f"  {relative} [{','.join(signals)}]" for relative, signals in unclassified
+            )
+        )
+    print(f"formal source surface: {len(paths)} staged path(s) checked, 0 unclassified")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -322,19 +468,27 @@ def main() -> None:
         help="fail when a detected production surface has no obligation or exclusion",
     )
     parser.add_argument(
+        "--staged",
+        nargs="*",
+        metavar="PATH",
+        help="check only these paths for an unclassified risk signal (O(changed))",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="emit the complete inventory as JSON",
     )
     args = parser.parse_args()
 
-    ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
-    obligations_by_id = {item["id"]: item for item in ledger["obligations"]}
-    by_source: dict[str, list[dict[str, object]]] = {}
-    for obligation in ledger["obligations"]:
-        for evidence in obligation.get("evidence", []):
-            if evidence.startswith("crates/") and evidence.endswith(".rs"):
-                by_source.setdefault(evidence, []).append(obligation)
+    if args.staged is not None:
+        check_staged(args.staged)
+        return
+
+    obligations_by_id = {
+        item["id"]: item
+        for item in json.loads(LEDGER.read_text(encoding="utf-8"))["obligations"]
+    }
+    by_source = ledger_sources()
 
     exclusions = load_exclusions()
     classifications = load_classifications(

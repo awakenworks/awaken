@@ -13,6 +13,11 @@ import re
 import sys
 from pathlib import Path
 
+# Input set: every Markdown document under docs/ (`DOCS.rglob("*.md")`), which
+# includes the ADR that owns the replacement vocabulary and the historical text
+# this checker deliberately exempts.
+INPUT_GLOBS: tuple[str, ...] = ("docs/**/*.md",)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS = REPO_ROOT / "docs"
 CURRENT_ADR = DOCS / "adr" / (

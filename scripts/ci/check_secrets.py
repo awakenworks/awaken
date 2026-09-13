@@ -9,6 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Input set: `--staged` scans every staged file whose suffix is in TEXT_SUFFIXES.
+# A glob built from that suffix list would silently stop scanning the next file
+# type the list grows, which is the exact drift this declaration exists to
+# prevent, so the input set is the whole staged set.
+INPUT_GLOBS: tuple[str, ...] = ("**/*",)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 ALLOW_MARKER = "awaken-allow: secret"

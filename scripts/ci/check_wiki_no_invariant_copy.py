@@ -30,6 +30,11 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _doc_anchors import mask_code_fences  # noqa: E402
 
+# Input set: both sides of the comparison. The registry supplies the statements
+# and the wiki pages supply the `Fact:` fields; an edit to either side can
+# create the verbatim copy this checker refuses.
+INPUT_GLOBS: tuple[str, ...] = ("docs/INVARIANTS.md", "docs/wiki/*.md")
+
 INVARIANTS = Path("docs/INVARIANTS.md")
 WIKI_ROOT = Path("docs/wiki")
 THRESHOLD = 12  # words; a shared run this long is a copy, not a coincidence.

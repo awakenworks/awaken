@@ -14,33 +14,75 @@
 #
 # Each check is also safe to run standalone over a file list, e.g.
 #   python3 scripts/ci/check_doc_links.py $(find docs -name '*.md' | sort)
+#
+# Trigger globs are NOT written here. A command that runs a scripts/ci checker
+# declaring INPUT_GLOBS carries its `glob:` line between `>>> generated glob`
+# markers, rendered by `python3 scripts/ci/generate_hooks.py` from that
+# declaration; `--check` refuses a stale or hand-edited one. Everything else on
+# this page -- command names, `run:` bodies, these comments, and the globs of
+# commands that run shell or Node tools -- stays human-authored.
 
 pre-commit:
   parallel: true
   commands:
     # 1. Repository-wide hygiene that should never depend on project language.
     repository-hygiene:
+      # >>> generated glob from check_repository_hygiene.py INPUT_GLOBS — do not edit
+      # no glob: check_repository_hygiene.py reads every staged file, so this command
+      # must keep the whole staged set as its trigger.
+      # <<< generated glob
       run: python3 scripts/ci/check_repository_hygiene.py --staged
+
+    # Every `glob:` below that sits between generated markers is rendered from
+    # the INPUT_GLOBS the invoked checker declares. Editing one by hand is
+    # refused by check_test_orchestration.py, because a trigger narrower than
+    # the checker's real input set is a gate that never runs when it matters.
+    hook-globs:
+      # >>> generated glob from generate_hooks.py INPUT_GLOBS — do not edit
+      glob: "{lefthook.yml,scripts/ci/*.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/generate_hooks.py --check
 
     # An evidence link replaces its former standalone source classification.
     # Metadata/checker changes must pass the same strict validators as CI:
     # duplicate ownership or missing coverage rejects the commit; no solver is
-    # started here. The existing formal-surface L4 test owns that decision table.
+    # started here. The ledger also asserts that every path an obligation cites
+    # still exists, and an obligation may cite any repository path, so this
+    # command has no trigger set to narrow and runs on every commit.
+    formal-ledger:
+      # >>> generated glob from check_formal_coverage.py INPUT_GLOBS — do not edit
+      # no glob: check_formal_coverage.py reads every staged file, so this command
+      # must keep the whole staged set as its trigger.
+      # <<< generated glob
+      run: python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
+
+    # Source-surface classification is incremental here: only staged production
+    # Rust is lexed, so the trigger can honestly include every crates/**/*.rs
+    # file the checker reads. The global coverage ratio still needs the whole
+    # walk, which stays on check-rust.sh --push and the formal release group.
+    # The existing formal-surface L4 test owns that decision table.
     formal-evidence:
-      glob: "{lefthook.yml,formal/*.json,scripts/ci/*formal*.py,scripts/ci/check_formal.sh}"
-      run: |
-        set -e
-        python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
-        python3 scripts/ci/check_formal_surface.py --require-complete
+      # >>> generated glob from check_formal_surface.py INPUT_GLOBS — do not edit
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_formal_surface.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_formal_surface.py --staged {staged_files}
 
     # 2. High-signal credential scanner. Generic secret assignments only fail
     #    in source/config files, so design examples can stay readable.
     secrets:
+      # >>> generated glob from check_secrets.py INPUT_GLOBS — do not edit
+      # no glob: check_secrets.py reads every staged file, so this command
+      # must keep the whole staged set as its trigger.
+      # <<< generated glob
       run: python3 scripts/ci/check_secrets.py --staged
 
     # 3. Keep modules and design docs bounded. Tests, generated code, lockfiles,
     #    and build output are excluded by policy.
     file-limits:
+      # >>> generated glob from check_file_limits.py INPUT_GLOBS — do not edit
+      # no glob: check_file_limits.py reads every staged file, so this command
+      # must keep the whole staged set as its trigger.
+      # <<< generated glob
       run: python3 scripts/ci/check_file_limits.py --staged
 
     # 4. Rust checks are active as soon as a Cargo workspace exists.
@@ -90,49 +132,65 @@ pre-commit:
 
     # 6. Every relative Markdown link resolves to a real file and anchor.
     check-doc-links:
-      glob: "docs/**/*.md"
+      # >>> generated glob from check_doc_links.py INPUT_GLOBS — do not edit
+      glob: "{docs/**/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_doc_links.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_doc_links.py {staged_files}
 
     # 7. The OKF wiki keeps its shape: frontmatter `type`, FACT-* records with
     #    Status/Owner/Fact/Links/Verification, owner links that resolve.
     check-wiki-okf:
-      glob: "docs/wiki/**/*.md"
+      # >>> generated glob from check_wiki_okf.py INPUT_GLOBS — do not edit
+      glob: "{docs/wiki/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_wiki_okf.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_wiki_okf.py {staged_files}
 
     # 8. Wiki facts stay thin: a FACT must summarize and cite an invariant id,
     #    not paste the invariant statement verbatim (drift guard).
     check-wiki-no-invariant-copy:
-      glob: "{docs/wiki/**/*.md,docs/INVARIANTS.md}"
+      # >>> generated glob from check_wiki_no_invariant_copy.py INPUT_GLOBS — do not edit
+      glob: "{docs/INVARIANTS.md,docs/wiki/*.md,scripts/ci/check_wiki_no_invariant_copy.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_wiki_no_invariant_copy.py {staged_files}
 
     # 9. Invariant registry is complete (Statement/Source/Enforcer, unique ids)
     #    and every invariant id a wiki fact cites is actually defined.
     check-invariants:
-      glob: "{docs/INVARIANTS.md,docs/design/*.md,docs/wiki/**/*.md}"
+      # >>> generated glob from check_invariants.py INPUT_GLOBS — do not edit
+      glob: "{docs/**/*.md,formal/features.json,scripts/ci/check_invariants.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_invariants.py
 
     # 10. The wiki ownership index lists every design document. Whole-tree scan,
     #    so any added/renamed/removed design doc trips it regardless of glob.
     check-ownership-index:
-      glob: "{docs/design/*.md,docs/wiki/document-ownership.md}"
+      # >>> generated glob from check_ownership_index.py INPUT_GLOBS — do not edit
+      glob: "{docs/adr/*.md,docs/design/*.md,docs/wiki/document-ownership.md,scripts/ci/check_ownership_index.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_ownership_index.py
 
     # 11. Source documents declare whether they own, delegate, or do not need a
     #    role/component catalog; the declared policy must match the document.
     check-role-catalogs:
-      glob: "{docs/README.md,docs/STATUS.md,docs/INVARIANTS.md,docs/requirements-coverage.md,docs/design/*.md}"
+      # >>> generated glob from check_role_catalogs.py INPUT_GLOBS — do not edit
+      glob: "{docs/*.md,docs/adr/*.md,docs/design/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_role_catalogs.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_role_catalogs.py
 
     # 12. ADRs have a stable structure (title/number, Status, required sections,
     #    unique numbers) so the decision-first model (ADR-0001) stays executable.
     check-adr:
-      glob: "docs/adr/*.md"
+      # >>> generated glob from check_adr.py INPUT_GLOBS — do not edit
+      glob: "{docs/adr/*.md,scripts/ci/check_adr.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_adr.py
 
     # 13. Active architecture docs use the ADR-0071 service vocabulary and keep
     #     the retired whole-catalog path historical. Canonical owners are English.
     check-architecture-vocabulary:
+      # >>> generated glob from check_architecture_vocabulary.py INPUT_GLOBS — do not edit
       glob: "{docs/**/*.md,scripts/ci/check_architecture_vocabulary.py}"
+      # <<< generated glob
       run: python3 scripts/ci/check_architecture_vocabulary.py
 
     # 14. Crate dependency direction (layering) fitness function: a lower layer

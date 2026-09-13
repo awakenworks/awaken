@@ -17,6 +17,15 @@ import re
 import sys
 from pathlib import Path
 
+# Input set: the index itself and every document it must list. Adding, renaming
+# or deleting a design doc or an ADR is what makes the index incomplete, so all
+# three directories are triggers, not just the index.
+INPUT_GLOBS: tuple[str, ...] = (
+    "docs/adr/*.md",
+    "docs/design/*.md",
+    "docs/wiki/document-ownership.md",
+)
+
 INDEX = Path("docs/wiki/document-ownership.md")
 DESIGN_DIR = Path("docs/design")
 ADR_DIR = Path("docs/adr")
