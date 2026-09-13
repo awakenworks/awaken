@@ -12,6 +12,15 @@ def main() -> None:
     # roots and OpenSSL; E2 both mount points exist before either shipped binary is
     # copied. Rules: I1 C1+C2+C3 => E1; I2 C1+C4 => E2.
     dockerfile = (Path(__file__).parent / "Dockerfile").read_text()
+    # I8 a cold/repeated build must not resolve a mutable Ubuntu tag into a
+    # different substrate: use the production management image's exact base.
+    # Missing pin or divergent base => fail before paid cluster setup. This
+    # static contract proves identity, not registry availability or TLS health.
+    management = (Path(__file__).parent.parent / "images" / "management" / "Dockerfile").read_text()
+    runtime_base = next(line for line in dockerfile.splitlines() if line.startswith("FROM "))
+    management_base = next(line for line in management.splitlines() if line.startswith("FROM "))
+    assert "@sha256:" in runtime_base
+    assert runtime_base == management_base, "K3D must use the production Ubuntu base"
     install = dockerfile.split("COPY --chmod=0755 awaken-server", 1)[0]
     for package in ("bubblewrap", "ca-certificates", "libssl3", "python3"):
         assert package in install, f"K3D product image is missing runtime package: {package}"
