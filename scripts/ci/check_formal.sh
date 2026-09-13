@@ -571,7 +571,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_recovery_backoff_is_bounded_monotonic_and_saturating \
     --harness terminal_session_never_enters_ordinary_resource_reconciliation \
     --harness dependency_wake_never_postpones_the_single_existing_deadline \
-    --harness external_wake_coalescing_is_bounded_and_never_postpones_recovery
+    --harness external_wake_coalescing_is_bounded_and_never_postpones_recovery \
+    --harness only_an_empty_hint_driven_scan_arms_the_coalescing_window
   run_kani awaken-tenancy \
     --harness successful_scope_resolution_never_widens_authority \
     --harness any_uncovered_selector_fails_closed \
