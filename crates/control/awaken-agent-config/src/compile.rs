@@ -65,6 +65,13 @@ fn compile_with_models(
     candidates: Vec<ResolvedModelCandidate>,
     advisor: Option<ResolvedModelCandidate>,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
+    if config.max_steps == Some(0) {
+        return Err(CompileError::InvalidBinding {
+            agent: config.id.clone(),
+            axis: "max_steps",
+            reason: "max_steps must be positive or absent".into(),
+        });
+    }
     if let Some(configuration) = config.model_binding.acp_configuration()
         && let Err(reason) = configuration.validate_working_directory()
     {

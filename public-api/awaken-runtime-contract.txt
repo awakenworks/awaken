@@ -1371,7 +1371,7 @@ pub awaken_runtime_contract::resolved::ResolvedSpec::catalog_fingerprint: awaken
 pub awaken_runtime_contract::resolved::ResolvedSpec::context_policy: awaken_runtime_contract::resolved::ContextPolicy
 pub awaken_runtime_contract::resolved::ResolvedSpec::delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits
 pub awaken_runtime_contract::resolved::ResolvedSpec::instructions: alloc::string::String
-pub awaken_runtime_contract::resolved::ResolvedSpec::max_steps: usize
+pub awaken_runtime_contract::resolved::ResolvedSpec::max_steps: core::option::Option<usize>
 pub awaken_runtime_contract::resolved::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub awaken_runtime_contract::resolved::ResolvedSpec::model_candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_config: awaken_runtime_contract::agent_bindings::ResolvedConfiguration
@@ -2370,7 +2370,7 @@ pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::dele
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::inference_options(self, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::max_steps(self, usize) -> Self
+pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::max_steps(self, impl core::convert::Into<core::option::Option<usize>>) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::metadata(self, awaken_runtime_contract::snapshot::AgentSnapshotMetadata) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::model(self, awaken_runtime_contract::ModelBinding) -> awaken_runtime_contract::ExecutableAgentSnapshotBuilder<awaken_runtime_contract::snapshot_builder::SelectedModel>
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::model_candidates(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::ModelBinding>) -> Self
@@ -2527,7 +2527,7 @@ pub awaken_runtime_contract::ResolvedSpec::catalog_fingerprint: awaken_runtime_c
 pub awaken_runtime_contract::ResolvedSpec::context_policy: awaken_runtime_contract::resolved::ContextPolicy
 pub awaken_runtime_contract::ResolvedSpec::delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits
 pub awaken_runtime_contract::ResolvedSpec::instructions: alloc::string::String
-pub awaken_runtime_contract::ResolvedSpec::max_steps: usize
+pub awaken_runtime_contract::ResolvedSpec::max_steps: core::option::Option<usize>
 pub awaken_runtime_contract::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub awaken_runtime_contract::ResolvedSpec::model_candidates: alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub awaken_runtime_contract::ResolvedSpec::plugin_config: awaken_runtime_contract::agent_bindings::ResolvedConfiguration
@@ -2744,7 +2744,7 @@ pub struct awaken_runtime_contract::ToolWait
 pub awaken_runtime_contract::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
 pub const awaken_runtime_contract::A2A_RUNTIME_CAPABILITY: &str
-pub const awaken_runtime_contract::DEFAULT_MAX_STEPS: usize
+pub const awaken_runtime_contract::DEFAULT_MAX_STEPS: core::option::Option<usize>
 pub const awaken_runtime_contract::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
@@ -2877,6 +2877,7 @@ pub fn awaken_runtime_contract::candidate_fingerprint(&awaken_runtime_contract::
 pub fn awaken_runtime_contract::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub fn awaken_runtime_contract::content_fingerprint<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub fn awaken_runtime_contract::credential_realization_persistence_decision(core::option::Option<&awaken_runtime_contract::credential::CredentialRealizationReceipt>, &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision
+pub fn awaken_runtime_contract::deserialize_max_steps<'de, D>(D) -> core::result::Result<core::option::Option<usize>, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
 pub fn awaken_runtime_contract::execution_capability(&str) -> alloc::string::String
 pub fn awaken_runtime_contract::freeze_delegation_publications(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>

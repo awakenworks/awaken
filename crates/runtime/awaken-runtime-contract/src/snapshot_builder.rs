@@ -19,13 +19,21 @@ use crate::snapshot::{
     AgentId, AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 
-/// Canonical loop-step ceiling when an Agent does not author an override.
-///
-/// Protocol adapters, the config authoring plane, administrative assistant, and
-/// direct snapshot builder all consume this one value. It is deliberately
-/// large enough for a normal plan + multi-tool + result Step while remaining a
-/// hard runaway backstop.
-pub const DEFAULT_MAX_STEPS: usize = 16;
+/// No additional loop-step ceiling unless the Agent explicitly authors one.
+/// Protocol adapters, config authoring, and direct builders share this default.
+/// Budgets, cancellation, authorization, and backend limits remain independent.
+pub const DEFAULT_MAX_STEPS: Option<usize> = None;
+
+/// Read the existing numeric representation losslessly; null/omission has no
+/// ceiling. Zero is invalid, never an alias for unlimited execution.
+pub fn deserialize_max_steps<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Option::<std::num::NonZeroUsize>::deserialize(deserializer)
+        .map(|limit| limit.map(std::num::NonZeroUsize::get))
+}
 
 impl ExecutableAgentSnapshot {
     /// Start building a config for the agent identified by `id`.
@@ -57,7 +65,7 @@ pub struct SelectedModel(ResolvedModelCandidate);
 pub struct ExecutableAgentSnapshotBuilder<ModelState = MissingModel> {
     id: String,
     instructions: String,
-    max_steps: usize,
+    max_steps: Option<usize>,
     delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits,
     model_binding: ModelState,
     model_candidates: Vec<ResolvedModelCandidate>,
@@ -158,8 +166,13 @@ impl<ModelState> ExecutableAgentSnapshotBuilder<ModelState> {
 
     /// The ceiling on model/tool loop steps for one run.
     #[must_use]
-    pub fn max_steps(mut self, max_steps: usize) -> Self {
-        self.max_steps = max_steps;
+    pub fn max_steps(mut self, max_steps: impl Into<Option<usize>>) -> Self {
+        self.max_steps = max_steps.into();
+        assert_ne!(
+            self.max_steps,
+            Some(0),
+            "max_steps must be positive or absent"
+        );
         self
     }
 
@@ -314,7 +327,7 @@ mod tests {
         assert_eq!(snapshot.fingerprint.0, "assistant");
         assert_eq!(snapshot.resolved_spec.catalog_fingerprint.0, "assistant");
         assert_eq!(snapshot.resolved_spec.instructions, "be concise");
-        assert_eq!(snapshot.resolved_spec.max_steps, 8);
+        assert_eq!(snapshot.resolved_spec.max_steps, Some(8));
     }
 
     #[test]

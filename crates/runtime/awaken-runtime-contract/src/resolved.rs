@@ -226,11 +226,12 @@ pub struct ResolvedSpec {
     /// decision surface (data-only, G3); empty means the run carries no
     /// agent-level system message.
     pub instructions: String,
-    /// The agent's ceiling on model/tool loop steps for one run. The loop ends
-    /// with `EndCause::MaxSteps` if it reaches this without a natural end. Part
-    /// of the resolved decision surface (data-only, G3); the config side owns a
-    /// sensible value, the runtime only honors it.
-    pub max_steps: usize,
+    /// Optional ceiling on model/tool loop steps for one run. None adds no
+    /// step ceiling; a positive value retains the finite MaxSteps behavior.
+    /// Numeric serialization is unchanged for existing publication fingerprints.
+    /// Budgets, cancellation and backend constraints are independent.
+    #[serde(default, deserialize_with = "crate::deserialize_max_steps")]
+    pub max_steps: Option<usize>,
     /// Run-scoped depth, parallelism, and total child limits. The target Agent's
     /// own resolved value applies when that child delegates again.
     #[serde(default, skip_serializing_if = "is_default_delegation_limits")]

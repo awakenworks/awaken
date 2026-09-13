@@ -250,15 +250,20 @@ export default function AgentBuilder({
             />
           </div>
           <div className="row" style={{ alignItems: "flex-start" }}>
-            <TextField
-              label={app.t("Max steps", "最大步数")}
-              mono
-              type="number"
-              min={1}
-              style={{ width: 150 }}
-              value={config.max_steps}
-              onChange={(event) => onPatch({ max_steps: Math.max(1, Number(event.target.value) || 1) })}
-            />
+            <details>
+              <summary>{app.t("Advanced step limit", "高级步数限制")}</summary>
+              <TextField
+                label={app.t("Awaken step limit · optional", "Awaken 步数上限 · 可选")}
+                hint={app.t("Leave blank for no additional step limit. Budgets and interruptions still apply.", "留空表示不额外限制步数；预算和中断仍然生效。")}
+                placeholder={app.t("No additional limit", "不额外限步")}
+                mono
+                type="number"
+                min={1}
+                style={{ width: 150 }}
+                value={config.max_steps ?? ""}
+                onChange={(event) => onPatch({ max_steps: event.target.value === "" ? null : Math.max(1, Math.trunc(Number(event.target.value)) || 1) })}
+              />
+            </details>
             <div className="ui-field" style={{ flex: 1 }}>
               <label>{app.t("Context window policy", "上下文窗口策略")}</label>
               <Segmented

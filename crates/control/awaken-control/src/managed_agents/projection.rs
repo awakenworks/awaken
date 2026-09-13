@@ -163,7 +163,7 @@ pub(super) fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), 
             "skills supports at most 20 entries".into(),
         ));
     }
-    if config.max_steps == 0 {
+    if config.max_steps == Some(0) {
         return Err(ManagedAgentError::Invalid(
             "max_steps must be greater than or equal to 1".into(),
         ));

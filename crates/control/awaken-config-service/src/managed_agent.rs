@@ -256,12 +256,13 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
     let config = AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
-        max_steps: body
-            .get("max_steps")
-            .and_then(Value::as_u64)
-            .map_or(awaken_runtime_contract::DEFAULT_MAX_STEPS, |value| {
-                value as usize
-            }),
+        max_steps: body.get("max_steps").map_or(
+            Ok(awaken_runtime_contract::DEFAULT_MAX_STEPS),
+            |value| {
+                awaken_runtime_contract::deserialize_max_steps(value.clone())
+                    .map_err(|error| format!("invalid max_steps: {error}"))
+            },
+        )?,
         delegation_limits,
         model_binding,
         inference,
@@ -525,6 +526,32 @@ mod tests {
             missing.max_steps,
             awaken_runtime_contract::DEFAULT_MAX_STEPS
         );
+    }
+
+    #[test]
+    fn optional_step_limit_config_boundary_is_strict() {
+        // D1 omitted/null -> shared no-ceiling default; D2 positive -> preserve;
+        // D3 zero/negative/fraction/string -> fail, never silently use default.
+        for body in [json!({}), json!({"max_steps": null})] {
+            let config = agent_config_from_managed("a".into(), &body).unwrap();
+            assert_eq!(config.max_steps, None, "D1");
+            assert!(managed_from_agent_config(&config, false)["max_steps"].is_null());
+        }
+        for value in [json!(1), json!(40)] {
+            let config =
+                agent_config_from_managed("a".into(), &json!({"max_steps": value})).unwrap();
+            assert_eq!(
+                managed_from_agent_config(&config, false)["max_steps"],
+                value,
+                "D2"
+            );
+        }
+        for value in [json!(0), json!(-1), json!(1.5), json!("16")] {
+            assert!(
+                agent_config_from_managed("a".into(), &json!({"max_steps": value})).is_err(),
+                "D3"
+            );
+        }
     }
 
     #[test]

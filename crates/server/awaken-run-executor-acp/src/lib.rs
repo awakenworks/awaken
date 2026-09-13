@@ -884,7 +884,7 @@ impl AcpRunExecutor {
                     resolver as &dyn PermissionResolver
                 });
             let mut config = TurnConfig::new(permission);
-            config.max_turn_requests = Some(activation.snapshot.resolved_spec.max_steps);
+            config.max_turn_requests = activation.snapshot.resolved_spec.max_steps;
             config.mcp_servers = session.mcp_session_servers.clone();
             config.session_id = acp_session_id.take();
             config.session_model = session.session_model.clone();
@@ -1687,7 +1687,7 @@ struct CollectingAppender {
     resumed_call: Option<PermissionResume>,
     remapped_result: Option<(String, PermissionResume)>,
     tool_call_count: usize,
-    max_tool_calls: usize,
+    max_tool_calls: Option<usize>,
 }
 
 impl CollectingAppender {
@@ -1712,12 +1712,12 @@ impl CollectingAppender {
             resumed_call: resumed_call.cloned(),
             remapped_result: None,
             tool_call_count: 0,
-            max_tool_calls: usize::MAX,
+            max_tool_calls: None,
         }
     }
 
-    fn with_tool_call_limit(mut self, max_tool_calls: usize) -> Self {
-        self.max_tool_calls = max_tool_calls;
+    fn with_tool_call_limit(mut self, max_tool_calls: impl Into<Option<usize>>) -> Self {
+        self.max_tool_calls = max_tool_calls.into();
         self
     }
 }
@@ -1811,10 +1811,12 @@ impl RunFactAppender for CollectingAppender {
                         }
                     }
                 }
-                if self.tool_call_count >= self.max_tool_calls {
+                if let Some(limit) = self.max_tool_calls
+                    && self.tool_call_count >= limit
+                {
                     return Err(AppendError::Append(format!(
                         "ACP agent exceeded the Run max_steps budget of {} distinct tool calls inside one opaque prompt",
-                        self.max_tool_calls
+                        limit
                     )));
                 }
                 self.tool_call_count += 1;

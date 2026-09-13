@@ -98,7 +98,7 @@ pub mod worker_http {
                     model_candidates: Vec::new(),
                     catalog_fingerprint: CatalogFingerprint(format!("catalog-{tag}")),
                     instructions: "test Worker boundary".into(),
-                    max_steps: 1,
+                    max_steps: Some(1),
                     delegation_limits: Default::default(),
                     model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                         ModelBinding::new("test", "model", "native"),

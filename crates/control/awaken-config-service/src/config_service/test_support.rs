@@ -36,7 +36,7 @@ pub(crate) fn agent_config(id: &str) -> AgentConfig {
     AgentConfig {
         id: id.to_string(),
         instructions: "be helpful".to_string(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
             .expect("literal coordinates"),

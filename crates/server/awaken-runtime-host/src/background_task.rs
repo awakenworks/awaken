@@ -1318,7 +1318,7 @@ mod tests {
             resolved_spec: awaken_runtime_contract::ResolvedSpec {
                 catalog_fingerprint: CatalogFingerprint("background-catalog".into()),
                 instructions: String::new(),
-                max_steps: 1,
+                max_steps: Some(1),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("provider", "model", "native"),

@@ -1127,7 +1127,7 @@ mod tests {
         let draft = AgentConfig {
             id: "shared-agent".into(),
             instructions: "workspace-isolated resource binding".into(),
-            max_steps: 8,
+            max_steps: Some(8),
             model_binding: ModelSelection::Auto,
             ..Default::default()
         };
@@ -1198,7 +1198,7 @@ mod tests {
         let draft = AgentConfig {
             id: "effect-agent".into(),
             instructions: "resource effect".into(),
-            max_steps: 8,
+            max_steps: Some(8),
             model_binding: ModelSelection::Auto,
             ..Default::default()
         };

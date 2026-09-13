@@ -1833,7 +1833,7 @@ mod tests {
             awaken_runtime_contract::DEFAULT_MAX_STEPS,
             "S1"
         );
-        config.max_steps = 40;
+        config.max_steps = Some(40);
         config.plugin_ids.push("state_machine".into());
         config
             .plugin_config
@@ -1866,7 +1866,7 @@ mod tests {
         assert!(projected.get("state_machine").is_none(), "S2/E2");
         assert_eq!(projected["mcp_servers"].as_array().unwrap().len(), 1, "S3");
         assert_eq!(projected["mcp_servers"][0]["type"], "url", "S3");
-        assert_eq!(config.max_steps, 40, "S2/E3");
+        assert_eq!(config.max_steps, Some(40), "S2/E3");
         assert!(config.plugin_config.contains_key("state_machine"), "S2/E3");
         assert_eq!(config.mcp_servers.len(), 2, "S3/E3");
     }

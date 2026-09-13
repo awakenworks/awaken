@@ -89,7 +89,7 @@ pub fn admin_assistant_config() -> AgentConfig {
     AgentConfig {
         id: ADMIN_ASSISTANT_AGENT_ID.to_string(),
         instructions: ADMIN_ASSISTANT_INSTRUCTIONS.to_string(),
-        max_steps: 12,
+        max_steps: Some(12),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::Auto,
         inference: Default::default(),
@@ -391,7 +391,7 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                         "type": "string",
                         "description": "Pin a model id; omit to auto-bind at publish."
                     },
-                    "max_steps": { "type": "integer", "minimum": 1 },
+                    "max_steps": { "type": ["integer", "null"], "minimum": 1 },
                     "tool_ids": { "type": "array", "items": { "type": "string" } },
                     "tool_patterns": { "type": "array", "items": { "type": "string" } },
                     "tool_overrides": {
@@ -1043,7 +1043,10 @@ struct DraftArgs {
     description: Option<String>,
     #[serde(default)]
     model: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "awaken_runtime_contract::deserialize_max_steps"
+    )]
     max_steps: Option<usize>,
     #[serde(default)]
     tool_ids: Vec<String>,
@@ -1162,7 +1165,7 @@ impl RawTool for DraftAgent {
             instructions: args.instructions,
             max_steps: args
                 .max_steps
-                .unwrap_or(awaken_runtime_contract::DEFAULT_MAX_STEPS),
+                .or(awaken_runtime_contract::DEFAULT_MAX_STEPS),
             delegation_limits: Default::default(),
             model_binding,
             inference: Default::default(),
@@ -1232,8 +1235,8 @@ struct PatchFields {
     description: Option<String>,
     #[serde(default)]
     model: Option<String>,
-    #[serde(default)]
-    max_steps: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_step_limit_patch")]
+    max_steps: Option<Option<usize>>,
     #[serde(default)]
     tool_ids: Option<Vec<String>>,
     #[serde(default)]
@@ -1262,6 +1265,13 @@ struct PatchFields {
     /// when absent, the existing bindings are left untouched.
     #[serde(default)]
     resources: Option<Vec<InputSpec>>,
+}
+
+fn deserialize_step_limit_patch<'de, D>(deserializer: D) -> Result<Option<Option<usize>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    awaken_runtime_contract::deserialize_max_steps(deserializer).map(Some)
 }
 
 struct PatchAgent {

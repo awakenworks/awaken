@@ -20,7 +20,9 @@ semantics.
 ## Run Lifecycle
 
 A Thread owns durable history. A Run is one stable, resumable execution on that
-Thread. A Step is one inference/tool/state cycle inside the Run. Resume continues
+Thread. A Step is one inference/tool/state cycle inside the Run. An optional published
+`max_steps` bounds these cycles; absence adds no step ceiling. Explicit positive
+limits retain `MaxSteps` termination, independently of cancellation and budgets. Resume continues
 the same Run; it does not create a new execution unit. Public protocols may use
 other words at their adapters, but Runtime documentation and contracts use only
 Run, Thread, and Step.

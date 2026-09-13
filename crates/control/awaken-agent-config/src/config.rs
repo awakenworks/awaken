@@ -690,7 +690,11 @@ impl<'de> Deserialize<'de> for MultiagentConfig {
 pub struct AgentConfig {
     pub id: String,
     pub instructions: String,
-    pub max_steps: usize,
+    #[serde(
+        default,
+        deserialize_with = "awaken_runtime_contract::deserialize_max_steps"
+    )]
+    pub max_steps: Option<usize>,
     /// Limits for child Runs initiated through an Agent tool. Defaults preserve
     /// existing configs; non-default values enter the publication fingerprint.
     #[serde(default, skip_serializing_if = "delegation_limits_are_default")]

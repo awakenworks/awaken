@@ -7,6 +7,7 @@ import {
   buildAgentDraftBody,
 } from "./AgentEditorChrome";
 import { starterAgentId } from "./AgentQuickstart";
+import { STARTERS } from "../../lib/agent-starters";
 import type { Capabilities, RuntimeCap } from "../../lib/api/types";
 
 describe("starterAgentId", () => {
@@ -150,4 +151,11 @@ describe("agent editor draft derivation", () => {
     expect(agentModelIsRunnable({ mode: "auto" }, ["ready-model"], runtimes), "R5 ready").toBe(true);
     expect(agentModelIsRunnable({ mode: "auto" }, [], runtimes), "R5 absent").toBe(false);
   });
+});
+
+it("does not seed a hidden step ceiling in blank Agents or Starters", () => {
+  // D1 blank authoring -> explicit no-ceiling value; D2 any Starter -> no
+  // competing default, so selecting a template preserves an authored limit.
+  expect(BLANK_AGENT_CONFIG.max_steps).toBeNull();
+  for (const starter of STARTERS) expect(starter).not.toHaveProperty("maxSteps");
 });

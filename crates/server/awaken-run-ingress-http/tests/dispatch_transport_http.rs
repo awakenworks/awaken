@@ -53,7 +53,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint("fp".into()),
                 instructions: "be helpful".into(),
-                max_steps: 8,
+                max_steps: Some(8),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("prov", "model", "acp:test"),

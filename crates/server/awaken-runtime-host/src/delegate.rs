@@ -786,7 +786,7 @@ mod durable_cancel_tests {
         assert_eq!(parent, unchanged, "P1 parent remains immutable");
         assert_eq!(advisor.root_agent_id.0, INTERNAL_ADVISOR_AGENT_ID, "P1/E1");
         assert_eq!(advisor.resolved_spec.model_binding, candidate, "P1/E1");
-        assert_eq!(advisor.resolved_spec.max_steps, 1, "P1/E1");
+        assert_eq!(advisor.resolved_spec.max_steps, Some(1), "P1/E1");
         assert_eq!(
             advisor.resolved_spec.plugin_config.inference, inference,
             "P1/E1"

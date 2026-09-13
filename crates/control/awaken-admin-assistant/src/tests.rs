@@ -413,7 +413,7 @@ async fn draft_agent_persists_an_unpublished_draft_and_returns_it() {
     assert!(!out.is_error, "{}", out.text());
     let returned = parse_saved(&out.text());
     assert_eq!(returned.id, "support");
-    assert_eq!(returned.max_steps, 5);
+    assert_eq!(returned.max_steps, Some(5));
     assert_eq!(returned.tool_ids, vec!["read".to_string()]);
     // Omitting `model` leaves the draft auto-bound (D5).
     assert!(returned.model_binding.is_auto());
@@ -776,7 +776,7 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
     let mut historical = AgentConfig {
         id: "legacy-existing".into(),
         instructions: "historical".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::Auto,
         inference: Default::default(),
@@ -841,7 +841,7 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
     let mut historical_mcp = AgentConfig {
         id: "mcp-legacy".into(),
         instructions: "historical MCP".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         model_binding: ModelSelection::Auto,
         mcp_servers: vec![
             awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
@@ -947,7 +947,7 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
     let typed_existing = AgentConfig {
         id: "mcp-typed".into(),
         instructions: "typed MCP".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         model_binding: ModelSelection::Auto,
         tool_ids: vec!["read".into(), "write".into()],
         mcp_servers: historical_mcp.mcp_servers.clone(),
@@ -1032,7 +1032,7 @@ async fn audited_replay_uses_durable_outcome_before_later_legacy_state() {
         .seed(&AgentConfig {
             id: "response-loss".into(),
             instructions: "initial".into(),
-            max_steps: 8,
+            max_steps: Some(8),
             model_binding: ModelSelection::Auto,
             tool_ids: vec!["read".into(), "write".into()],
             ..Default::default()
@@ -1216,7 +1216,7 @@ async fn pending_audit_is_recoverable_and_a_concurrent_commit_wins_replay() {
         .seed(&AgentConfig {
             id: "pending-retry".into(),
             instructions: "initial".into(),
-            max_steps: 8,
+            max_steps: Some(8),
             model_binding: ModelSelection::Auto,
             tool_ids: vec!["read".into(), "write".into()],
             ..Default::default()
@@ -1255,7 +1255,7 @@ async fn pending_audit_is_recoverable_and_a_concurrent_commit_wins_replay() {
     let mut legacy = AgentConfig {
         id: "pending-winner".into(),
         instructions: "winner bytes".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         model_binding: ModelSelection::Auto,
         mcp_servers: vec![
             awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
@@ -1434,7 +1434,7 @@ async fn assistant_writes_use_the_revision_that_constructed_the_candidate() {
         .seed(&AgentConfig {
             id: "patch-race".into(),
             instructions: "r1".into(),
-            max_steps: 8,
+            max_steps: Some(8),
             model_binding: ModelSelection::Auto,
             ..Default::default()
         })
@@ -1443,7 +1443,7 @@ async fn assistant_writes_use_the_revision_that_constructed_the_candidate() {
     let concurrent_patch = AgentConfig {
         id: "patch-race".into(),
         instructions: "r2 winner".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         model_binding: ModelSelection::Auto,
         ..Default::default()
     };
@@ -1471,7 +1471,7 @@ async fn assistant_writes_use_the_revision_that_constructed_the_candidate() {
     let concurrent_create = AgentConfig {
         id: "create-race".into(),
         instructions: "created elsewhere".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         model_binding: ModelSelection::Auto,
         ..Default::default()
     };
@@ -1599,7 +1599,7 @@ async fn patch_agent_reads_merges_and_persists_non_permission_plugins() {
 
     let stored = h.store.stored("support").unwrap();
     // Patched field applied.
-    assert_eq!(stored.max_steps, 9);
+    assert_eq!(stored.max_steps, Some(9));
     // Untouched fields preserved.
     assert_eq!(stored.tool_ids, vec!["read".to_string()]);
     // plugin_config merged by key: both ordinary plugin sections survive.
@@ -1688,7 +1688,7 @@ async fn validate_reports_invalid_for_a_saved_draft_with_an_unknown_tool() {
         .seed(&AgentConfig {
             id: "a".into(),
             instructions: "hi".into(),
-            max_steps: 8,
+            max_steps: Some(8),
             delegation_limits: Default::default(),
             model_binding: ModelSelection::Auto,
             inference: Default::default(),
@@ -2295,7 +2295,7 @@ async fn patch_agent_surfaces_a_store_put_failure() {
     seed.seed(&AgentConfig {
         id: "s".into(),
         instructions: "hi".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::Auto,
         inference: Default::default(),
@@ -2358,7 +2358,7 @@ async fn patch_agent_resource_journal_failure_is_atomic() {
     seed.seed(&AgentConfig {
         id: "r".into(),
         instructions: "hi".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::Auto,
         inference: Default::default(),
@@ -2432,4 +2432,38 @@ async fn patch_agent_rechecks_plugin_config_size_after_merge() {
         before,
         "an oversized patch must not overwrite the draft"
     );
+}
+
+#[tokio::test]
+async fn step_limit_patch_distinguishes_omission_clear_and_invalid() {
+    // P1 numeric create -> finite; P2 omitted patch -> preserve; P3 explicit
+    // null -> remove; P4 invalid zero -> reject without changing the draft.
+    let h = Harness::new();
+    let created = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({"id":"limit", "instructions":"work", "max_steps":5}),
+        ))
+        .await
+        .unwrap();
+    assert!(!created.is_error);
+    for (index, (patch, expected, rejected)) in [
+        (
+            serde_json::json!({"instructions":"changed"}),
+            Some(5),
+            false,
+        ),
+        (serde_json::json!({"max_steps":null}), None, false),
+        (serde_json::json!({"max_steps":0}), None, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut operation = call(PATCH_TOOL, serde_json::json!({"id":"limit", "patch":patch}));
+        operation.call_id = format!("step-limit-patch-{index}");
+        let result = h.tool(PATCH_TOOL).invoke(operation).await.unwrap();
+        assert_eq!(result.is_error, rejected);
+        assert_eq!(h.store.stored("limit").unwrap().max_steps, expected);
+    }
 }

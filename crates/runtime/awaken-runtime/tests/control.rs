@@ -173,7 +173,7 @@ fn activation() -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
-                max_steps: 16,
+                max_steps: Some(16),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("p".to_string(), "m".to_string(), "b".to_string()),
@@ -276,7 +276,10 @@ async fn live_cancel_steers_an_in_flight_run() {
     let context = RuntimeRunContext::new().with_cancellation(token);
 
     let driver = DirectAttemptDriver::new(runtime.clone());
-    let handle = tokio::spawn(async move { driver.start(activation(), context).await });
+    // U3 no step ceiling does not disable the existing live cancellation path.
+    let mut input = activation();
+    input.snapshot.resolved_spec.max_steps = None;
+    let handle = tokio::spawn(async move { driver.start(input, context).await });
 
     // Wait until the first inference is in-flight, then cancel via live control.
     tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())

@@ -221,7 +221,7 @@ fn agent_config() -> AgentConfig {
     AgentConfig {
         id: "support-agent".to_string(),
         instructions: "be helpful".to_string(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
             .expect("literal coordinates"),
@@ -770,7 +770,7 @@ fn scoped_agent(id: &str) -> AgentConfig {
     AgentConfig {
         id: id.to_string(),
         instructions: "be helpful".to_string(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("p", "m", "b").expect("literal coordinates"),
         inference: Default::default(),
@@ -898,7 +898,7 @@ fn agent_with(id: &str, instructions: &str) -> AgentConfig {
     AgentConfig {
         id: id.to_string(),
         instructions: instructions.to_string(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("p", "m", "b").expect("literal coordinates"),
         inference: Default::default(),

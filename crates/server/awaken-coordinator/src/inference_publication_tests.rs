@@ -461,7 +461,7 @@ mod tests {
                         .collect(),
                     catalog_fingerprint: CatalogFingerprint("catalog".into()),
                     instructions: String::new(),
-                    max_steps: 2,
+                    max_steps: Some(2),
                     delegation_limits: Default::default(),
                     model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                         ModelBinding::new("anthropic", primary, "genai"),

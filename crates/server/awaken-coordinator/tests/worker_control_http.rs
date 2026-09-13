@@ -214,7 +214,7 @@ fn dispatch_with_capability(run: &str, capability: &str) -> RunDispatch {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint("catalog".to_string()),
                 instructions: String::new(),
-                max_steps: 1,
+                max_steps: Some(1),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("provider", "model", "native"),

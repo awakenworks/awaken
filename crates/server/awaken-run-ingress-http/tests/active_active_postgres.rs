@@ -343,7 +343,7 @@ fn activation(run_id: &RunId, thread_id: &ThreadId) -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint("active-active-catalog".into()),
                 instructions: "active-active protocol acceptance".into(),
-                max_steps: 2,
+                max_steps: Some(2),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("provider", "model", "native"),
