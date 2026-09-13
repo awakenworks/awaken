@@ -192,6 +192,7 @@ impl ManagedState {
             }
         }
         candidate.advance_cache_revision()?;
+        candidate.rebuild_event_page_index();
         install_complete_projection(current, candidate);
         self.broadcast_new_event_ids(session_id, current, previous_event_ids);
         Ok(true)

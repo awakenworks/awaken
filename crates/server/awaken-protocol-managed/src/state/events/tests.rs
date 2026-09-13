@@ -1,4 +1,5 @@
 mod cancelled_model;
+mod pagination;
 mod refresh_failure;
 
 use super::committed_projection::{
@@ -125,19 +126,20 @@ async fn shared_history_page_preserves_filtered_cursor_contract_with_large_paylo
         )
         .await
         .unwrap();
-    {
-        let mut sessions = state.sessions.lock().unwrap();
-        let record = sessions.get_mut(&session.id).unwrap();
-        record.events = (0..12)
-            .map(|i| Event {
-                id: format!("evt-{i}"),
-                processed_at: None,
-                kind: OutboundKind::AgentMessage {
-                    content: vec![ContentBlock::text("x".repeat(64 * 1024))],
-                },
-            })
-            .collect();
-    }
+    state
+        .publish_projection_update(&session.id, |record| {
+            record.events = (0..12)
+                .map(|i| Event {
+                    id: format!("evt-{i}"),
+                    processed_at: None,
+                    kind: OutboundKind::AgentMessage {
+                        content: vec![ContentBlock::text("x".repeat(64 * 1024))],
+                    },
+                })
+                .collect();
+            Ok(())
+        })
+        .unwrap();
     for descending in [false, true] {
         for filtered in [false, true] {
             for limit in [0, 1, 2, 50] {
@@ -4289,6 +4291,8 @@ async fn cross_replica_pagination_never_rejects_a_cursor_using_an_older_prefix()
     // R4 unknown cursor + stable complete refresh -> genuine 400. No read sends
     // a command or changes durable history. Existing full-frame tests own the
     // failure publication invariant; this test exercises both actual HTTP routes.
+    // R1w whitespace around a known cursor follows the same canonical cursor
+    // normalization before the prior-prefix availability check, even under churn.
     for thread in [false, true] {
         let runtime = LifecycleRuntime::default();
         let repository = Arc::new(ephemeral_session_repo());
@@ -4359,8 +4363,15 @@ async fn cross_replica_pagination_never_rejects_a_cursor_using_an_older_prefix()
         let app = crate::router(lagging.clone()).layer(axum::Extension(
             awaken_tenancy::WorkspaceScope(awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string()),
         ));
+        let padded_old_cursor = format!("%20{}%20", old.events[0].id);
         for (rule, cursor, changes, expected) in [
             ("R1", old.events[0].id.as_str(), usize::MAX, StatusCode::OK),
+            (
+                "R1w",
+                padded_old_cursor.as_str(),
+                usize::MAX,
+                StatusCode::OK,
+            ),
             ("R2", newer_cursor.as_str(), 12, StatusCode::OK),
             (
                 "R3",

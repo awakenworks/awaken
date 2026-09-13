@@ -4,6 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use super::*;
 
+mod event_page_index;
+use event_page_index::EventPageIndex;
+
 pub(super) struct ProjectedToolIndex {
     pub(super) all: HashSet<String>,
     /// Exact public tool-use occurrences already settled by a client-provided
@@ -173,6 +176,11 @@ pub(super) struct SessionRecord {
     /// committed-prefix reducer; only `evt_N` entries originate from
     /// [`Self::overlay`].
     pub(super) events: Vec<Event>,
+    /// Derived lookup data for this published vector and its visibility owners.
+    /// Candidate clones share it cheaply; the sole publisher replaces it after
+    /// final ordering and before installing the complete record. It is neither
+    /// durable truth nor an input to the projection-content comparison.
+    pub(super) event_page_index: Arc<EventPageIndex>,
     /// Source coordinates paired with `events`; no separate child/session state
     /// machine or independently synchronized cursor exists.
     pub(super) checkpoint: ManagedProjectionCheckpoint,
@@ -253,31 +261,23 @@ impl SessionRecord {
         Ok(())
     }
 
-    /// Derive the exact tool-use Events named by a primary-visible
-    /// `requires_action` boundary. The append-only Event vector remains the
-    /// only projection truth; this set exists only for one list/live filtering
-    /// pass and is never persisted as a parallel index.
-    pub(super) fn primary_answerable_event_ids(&self) -> HashSet<&str> {
-        self.events
-            .iter()
-            .filter(|event| {
-                self.event_thread_owners
-                    .get(&event.id)
-                    .is_none_or(|owner| owner == &self.session.id)
-            })
-            .filter_map(|event| match &event.kind {
-                OutboundKind::SessionStatusIdle {
-                    stop_reason: StopReason::RequiresAction { event_ids },
-                }
-                | OutboundKind::SessionThreadStatusIdle {
-                    stop_reason: StopReason::RequiresAction { event_ids },
-                    ..
-                } => Some(event_ids.as_slice()),
-                _ => None,
-            })
-            .flatten()
-            .map(String::as_str)
-            .collect()
+    pub(super) fn rebuild_event_page_index(&mut self) {
+        self.event_page_index = Arc::new(EventPageIndex::new(
+            &self.session.id,
+            &self.events,
+            &self.event_thread_owners,
+        ));
+    }
+
+    /// Exact positions in the one published canonical event vector.
+    pub(super) fn event_positions(&self, id: &str) -> Option<&[usize]> {
+        self.event_page_index.positions(id)
+    }
+
+    /// Exact tool-use identities named by primary-visible action boundaries.
+    /// Computed from the same published event/owner pair used for pagination.
+    pub(super) fn primary_answerable_event_ids(&self) -> &HashSet<String> {
+        &self.event_page_index.primary_answerable_ids
     }
 
     /// One owner-aware index over the sole event projection. All tool
@@ -367,6 +367,7 @@ impl SessionRecord {
             },
             ..Default::default()
         };
+        let event_page_index = Arc::new(EventPageIndex::new(&session.id, &events, &HashMap::new()));
         Self {
             cache_revision: 0,
             committed_projection_ready: false,
@@ -374,6 +375,7 @@ impl SessionRecord {
             session,
             resource_state,
             events,
+            event_page_index,
             checkpoint,
             overlay: Default::default(),
             permission_decisions: HashMap::new(),
