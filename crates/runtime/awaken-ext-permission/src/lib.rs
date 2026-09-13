@@ -23,7 +23,10 @@ use async_trait::async_trait;
 use awaken_runtime_contract::agent_bindings::{
     AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
 };
-use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
+use awaken_runtime_contract::permission::{
+    PermissionBasis, PermissionPolicy, PermissionReasonCode, ToolCall, ToolPermissionPolicy,
+    ToolPermissionRuling, ToolPermissionVerdict,
+};
 use awaken_tool_pattern::{
     ArgMatcher, MatchOp, MatchResult, Specificity, ToolMatcher, parse_pattern, pattern_matches,
 };
@@ -99,27 +102,6 @@ pub enum ToolPermissionBehavior {
     Deny,
 }
 
-/// Decide one call against an already-resolved [`ToolExecutionPolicy`].
-///
-/// This is deliberately not a `From` conversion. `Auto` delegates the decision
-/// to an evaluator that must see the call, so a policy alone cannot determine a
-/// behavior; a `From` impl would have to invent one. Taking the call and the
-/// evaluator as parameters keeps the real inputs in the signature.
-fn behavior_for(
-    policy: ToolExecutionPolicy,
-    call: &ToolCall,
-    evaluator: &dyn AutoPermissionEvaluator,
-) -> ToolPermissionBehavior {
-    if !policy.enabled {
-        return ToolPermissionBehavior::Deny;
-    }
-    match policy.permission {
-        ToolPermissionRequirement::AlwaysAllow => ToolPermissionBehavior::Allow,
-        ToolPermissionRequirement::AlwaysAsk => ToolPermissionBehavior::RequireConfirmation,
-        ToolPermissionRequirement::Auto => evaluator.evaluate(call).into_behavior(),
-    }
-}
-
 /// What an [`AutoPermissionEvaluator`] concluded about one call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoDecision {
@@ -142,6 +124,24 @@ impl AutoDecision {
             Self::Deny => ToolPermissionBehavior::Deny,
             Self::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
         }
+    }
+
+    /// The grounds this judgement records in the audit fact (ADR-0030 D4): a
+    /// refusal was judged high-risk, an ask reached no conclusion, and an allow
+    /// carries none.
+    #[must_use]
+    pub const fn reason_code(self) -> Option<PermissionReasonCode> {
+        match self {
+            Self::Allow => None,
+            Self::Deny => Some(PermissionReasonCode::JudgedHighRisk),
+            Self::Indeterminate => Some(PermissionReasonCode::Indeterminate),
+        }
+    }
+
+    /// The complete audit basis of this judgement under the `auto` policy.
+    #[must_use]
+    pub const fn basis(self) -> PermissionBasis {
+        PermissionBasis::auto(self.reason_code())
     }
 }
 
@@ -238,25 +238,31 @@ impl LegacyMode {
     }
 }
 
+/// One rule that matched a call: how specifically, what it grants, and which
+/// authored policy it states. The policy rides through the fold untouched so
+/// the winner names its own origin; it never influences precedence.
+type MatchedRule = (Specificity, ToolPermissionBehavior, PermissionPolicy);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MatchedRuleSelection {
-    Deny,
-    Continue(Option<(Specificity, ToolPermissionBehavior)>),
+    Deny(PermissionPolicy),
+    Continue(Option<MatchedRule>),
 }
 
 /// Fold one matching rule into the current non-deny winner. A deny is an
 /// absorbing result; otherwise only a strictly more-specific candidate may
 /// replace the winner, preserving deterministic first-wins behavior on ties.
 fn select_matched_rule(
-    best: Option<(Specificity, ToolPermissionBehavior)>,
+    best: Option<MatchedRule>,
     specificity: Specificity,
     behavior: ToolPermissionBehavior,
+    policy: PermissionPolicy,
 ) -> MatchedRuleSelection {
     if behavior == ToolPermissionBehavior::Deny {
-        return MatchedRuleSelection::Deny;
+        return MatchedRuleSelection::Deny(policy);
     }
-    if best.is_none_or(|(best_specificity, _)| specificity > best_specificity) {
-        MatchedRuleSelection::Continue(Some((specificity, behavior)))
+    if best.is_none_or(|(best_specificity, _, _)| specificity > best_specificity) {
+        MatchedRuleSelection::Continue(Some((specificity, behavior, policy)))
     } else {
         MatchedRuleSelection::Continue(best)
     }
@@ -266,8 +272,9 @@ fn select_matched_rule(
 ///
 /// This is the complete precedence rule — deny is absolute, otherwise the most
 /// specific match wins, and `None` means no rule spoke for the call — expressed
-/// over nothing but `(Specificity, ToolPermissionBehavior)` pairs. It never sees
-/// a pattern, a tool id, or an argument.
+/// over nothing but `(Specificity, ToolPermissionBehavior, PermissionPolicy)`
+/// triples, where the policy is inert cargo naming the winner's origin. It
+/// never sees a pattern, a tool id, or an argument.
 ///
 /// That separation is what makes the rule provable. Stating the same precedence
 /// inside the matching loop entangled it with heap-allocated patterns and
@@ -279,28 +286,70 @@ fn select_matched_rule(
 /// Returning `Option` is load-bearing too: `None` is the seam the `auto` policy
 /// occupies, between every decision an author stated and the ambient default.
 fn fold_matches(
-    matches: impl Iterator<Item = (Specificity, ToolPermissionBehavior)>,
-) -> Option<ToolPermissionBehavior> {
-    let mut best: Option<(Specificity, ToolPermissionBehavior)> = None;
-    for (specificity, behavior) in matches {
-        match select_matched_rule(best, specificity, behavior) {
-            MatchedRuleSelection::Deny => return Some(ToolPermissionBehavior::Deny),
+    matches: impl Iterator<Item = MatchedRule>,
+) -> Option<(ToolPermissionBehavior, PermissionPolicy)> {
+    let mut best: Option<MatchedRule> = None;
+    for (specificity, behavior, policy) in matches {
+        match select_matched_rule(best, specificity, behavior, policy) {
+            MatchedRuleSelection::Deny(policy) => {
+                return Some((ToolPermissionBehavior::Deny, policy));
+            }
             MatchedRuleSelection::Continue(selected) => best = selected,
         }
     }
-    best.map(|(_, behavior)| behavior)
+    best.map(|(_, behavior, policy)| (behavior, policy))
 }
 
-/// One rule: a pattern and the behavior it grants.
+/// One rule: a pattern, the behavior it grants, and the authored policy it
+/// states — what the audit fact names when this rule decides (ADR-0030 D4).
 #[derive(Debug, Clone)]
 pub struct PermissionRule {
     pub pattern: ToolCallPattern,
     pub behavior: ToolPermissionBehavior,
+    pub policy: PermissionPolicy,
 }
 
 impl PermissionRule {
+    /// An explicit authored rule outside the toolset policy vocabulary.
     pub fn new(pattern: ToolCallPattern, behavior: ToolPermissionBehavior) -> Self {
-        Self { pattern, behavior }
+        Self {
+            pattern,
+            behavior,
+            policy: PermissionPolicy::Rule,
+        }
+    }
+
+    /// The exact rule a fixed toolset requirement compiles into, or `None` for
+    /// an enabled `auto` — a deferral is not a decision and stays out of the
+    /// rule vocabulary. A disabled tool is a fixed deny the toolset authored
+    /// outside the permission vocabulary, so it audits as `rule`.
+    ///
+    /// This is deliberately not a `From` conversion: `Auto` needs the call and
+    /// an evaluator, which a policy alone does not have.
+    #[must_use]
+    pub fn from_fixed_policy(
+        pattern: ToolCallPattern,
+        policy: ToolExecutionPolicy,
+    ) -> Option<Self> {
+        let (behavior, source) = if !policy.enabled {
+            (ToolPermissionBehavior::Deny, PermissionPolicy::Rule)
+        } else {
+            match policy.permission {
+                ToolPermissionRequirement::AlwaysAllow => {
+                    (ToolPermissionBehavior::Allow, PermissionPolicy::AlwaysAllow)
+                }
+                ToolPermissionRequirement::AlwaysAsk => (
+                    ToolPermissionBehavior::RequireConfirmation,
+                    PermissionPolicy::AlwaysAsk,
+                ),
+                ToolPermissionRequirement::Auto => return None,
+            }
+        };
+        Some(Self {
+            pattern,
+            behavior,
+            policy: source,
+        })
     }
 }
 
@@ -331,18 +380,19 @@ impl PermissionRuleset {
         self.decide_with_rule(tool_id, args, None)
     }
 
-    /// The behavior a rule decided for this call, or `None` when none matched.
+    /// The behavior a rule decided for this call and the policy that rule
+    /// states, or `None` when none matched.
     ///
     /// Separating "a rule decided" from "nothing matched" is what lets `auto`
     /// sit exactly where it belongs: after every fixed decision the author
     /// stated, and before the ambient default. Folding the default in here
     /// would hide that seam and let an evaluator overrule an authored rule.
-    fn matched_behavior(
+    fn matched_rule(
         &self,
         tool_id: &str,
         args: &Value,
         exact: Option<&PermissionRule>,
-    ) -> Option<ToolPermissionBehavior> {
+    ) -> Option<(ToolPermissionBehavior, PermissionPolicy)> {
         // Matching and precedence are separated on purpose. This expression owns
         // only "which rules matched, and how specifically"; `fold_matches` owns
         // the entire precedence rule. Keeping them apart is what lets the
@@ -351,7 +401,7 @@ impl PermissionRuleset {
         fold_matches(exact.into_iter().chain(&self.rules).filter_map(|rule| {
             rule.pattern
                 .matches(tool_id, args)
-                .map(|specificity| (specificity, rule.behavior))
+                .map(|specificity| (specificity, rule.behavior, rule.policy))
         }))
     }
 
@@ -361,17 +411,26 @@ impl PermissionRuleset {
         args: &Value,
         exact: Option<&PermissionRule>,
     ) -> ToolPermissionBehavior {
-        self.matched_behavior(tool_id, args, exact)
-            .unwrap_or(self.default_behavior)
+        self.matched_rule(tool_id, args, exact)
+            .map_or(self.default_behavior, |(behavior, _)| behavior)
     }
 }
 
 #[cfg(kani)]
 mod kani_proofs {
     use super::{
-        LegacyMode, MatchedRuleSelection, Specificity, ToolPermissionBehavior, fold_matches,
-        select_matched_rule,
+        LegacyMode, MatchedRule, MatchedRuleSelection, PermissionPolicy, Specificity,
+        ToolPermissionBehavior, fold_matches, select_matched_rule,
     };
+
+    fn arbitrary_policy() -> PermissionPolicy {
+        match kani::any::<u8>() % 4 {
+            0 => PermissionPolicy::AlwaysAllow,
+            1 => PermissionPolicy::AlwaysAsk,
+            2 => PermissionPolicy::Auto,
+            _ => PermissionPolicy::Rule,
+        }
+    }
 
     fn arbitrary_behavior() -> ToolPermissionBehavior {
         match kani::any::<u8>() % 3 {
@@ -425,10 +484,14 @@ mod kani_proofs {
     /// with its own specificity and behavior. Absence models a rule that did
     /// not match, so the empty set — "nobody spoke for this call" — is inside
     /// the explored space rather than a separate case.
-    fn symbolic_matches() -> [Option<(Specificity, ToolPermissionBehavior)>; 3] {
+    fn symbolic_matches() -> [Option<MatchedRule>; 3] {
         let entry = || {
             if kani::any() {
-                Some((arbitrary_specificity(), arbitrary_behavior()))
+                Some((
+                    arbitrary_specificity(),
+                    arbitrary_behavior(),
+                    arbitrary_policy(),
+                ))
             } else {
                 None
             }
@@ -455,12 +518,12 @@ mod kani_proofs {
         // | D2 | F | T | F | Some(allow/ask), never Deny |
         // | D3 | F | F | T | E2 None |
         let matches = symbolic_matches();
-        let decided = fold_matches(matches.iter().copied().flatten());
+        let decided = fold_matches(matches.iter().copied().flatten()).map(|(behavior, _)| behavior);
 
         let any_deny = matches
             .iter()
             .flatten()
-            .any(|(_, behavior)| *behavior == ToolPermissionBehavior::Deny);
+            .any(|(_, behavior, _)| *behavior == ToolPermissionBehavior::Deny);
         let nothing_matched = matches.iter().all(Option::is_none);
 
         if any_deny {
@@ -482,18 +545,20 @@ mod kani_proofs {
     #[kani::unwind(5)]
     fn the_fold_returns_a_behavior_some_matching_rule_actually_carried() {
         // Non-invention, stated directly: whatever the fold returns must be a
-        // behavior one of the matched rules carried. Without this a "most
-        // specific wins" implementation could satisfy the deny law above while
-        // still fabricating a verdict nobody authored.
+        // behavior one of the matched rules carried, together with the policy
+        // that same rule stated. Without this a "most specific wins"
+        // implementation could satisfy the deny law above while still
+        // fabricating a verdict nobody authored, or attributing an authored
+        // verdict to a policy that did not state it.
         let matches = symbolic_matches();
         let decided = fold_matches(matches.iter().copied().flatten());
-        if let Some(behavior) = decided {
+        if let Some((behavior, policy)) = decided {
             assert!(
                 matches
                     .iter()
                     .flatten()
-                    .any(|(_, candidate)| *candidate == behavior),
-                "the decision is one an authored rule carried"
+                    .any(|(_, candidate, origin)| *candidate == behavior && *origin == policy),
+                "the decision and its policy are ones a single authored rule carried"
             );
         }
     }
@@ -501,21 +566,31 @@ mod kani_proofs {
     #[kani::proof]
     fn matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority() {
         let existing = if kani::any() {
-            Some((arbitrary_specificity(), arbitrary_behavior()))
+            Some((
+                arbitrary_specificity(),
+                arbitrary_behavior(),
+                arbitrary_policy(),
+            ))
         } else {
             None
         };
         let candidate_specificity = arbitrary_specificity();
         let candidate_behavior = arbitrary_behavior();
-        let selected = select_matched_rule(existing, candidate_specificity, candidate_behavior);
+        let candidate_policy = arbitrary_policy();
+        let selected = select_matched_rule(
+            existing,
+            candidate_specificity,
+            candidate_behavior,
+            candidate_policy,
+        );
 
         if candidate_behavior == ToolPermissionBehavior::Deny {
-            assert_eq!(selected, MatchedRuleSelection::Deny);
+            assert_eq!(selected, MatchedRuleSelection::Deny(candidate_policy));
             return;
         }
         let expected =
-            if existing.is_none_or(|(specificity, _)| candidate_specificity > specificity) {
-                Some((candidate_specificity, candidate_behavior))
+            if existing.is_none_or(|(specificity, _, _)| candidate_specificity > specificity) {
+                Some((candidate_specificity, candidate_behavior, candidate_policy))
             } else {
                 existing
             };
@@ -612,6 +687,10 @@ impl RuleBasedToolPermissionPolicy {
 #[async_trait]
 impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
     async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+        self.evaluate_with_basis(call).await.verdict
+    }
+
+    async fn evaluate_with_basis(&self, call: &ToolCall) -> ToolPermissionRuling {
         // Resolution order, outermost first: a matching `deny` rule is absolute;
         // otherwise the most specific rule the author wrote decides; only where
         // the author stated no fixed answer does `auto` evaluate; and a call
@@ -621,27 +700,29 @@ impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
         // A fixed requirement becomes an exact rule and joins the scan. `auto`
         // is a deferral rather than a decision, so it stays out of the rule
         // vocabulary and is consulted below instead.
-        let exact = resolved
-            .filter(|policy| {
-                !policy.enabled || policy.permission != ToolPermissionRequirement::Auto
-            })
-            .map(|policy| {
-                PermissionRule::new(
-                    ToolCallPattern(awaken_tool_pattern::ToolCallPattern::tool(&call.tool_id)),
-                    behavior_for(policy, call, self.auto.as_ref()),
-                )
-            });
+        let exact = resolved.and_then(|policy| {
+            PermissionRule::from_fixed_policy(
+                ToolCallPattern(awaken_tool_pattern::ToolCallPattern::tool(&call.tool_id)),
+                policy,
+            )
+        });
         let decided = self
             .ruleset
-            .matched_behavior(&call.tool_id, &call.arguments, exact.as_ref());
-        let behavior = match decided {
-            Some(behavior) => behavior,
+            .matched_rule(&call.tool_id, &call.arguments, exact.as_ref());
+        // Every branch names the policy that decided: the matched rule's own,
+        // the `auto` judgement with its grounds, or the authored default.
+        let (behavior, basis) = match decided {
+            Some((behavior, policy)) => (behavior, PermissionBasis::fixed(policy)),
             None if self.is_auto(&resolved, &call.tool_id) => {
-                self.auto.evaluate(call).into_behavior()
+                let judgement = self.auto.evaluate(call);
+                (judgement.into_behavior(), judgement.basis())
             }
-            None => self.ruleset.default_behavior,
+            None => (
+                self.ruleset.default_behavior,
+                PermissionBasis::fixed(PermissionPolicy::Rule),
+            ),
         };
-        match behavior {
+        let verdict = match behavior {
             ToolPermissionBehavior::Allow => ToolPermissionVerdict::Allow,
             ToolPermissionBehavior::Deny => ToolPermissionVerdict::Deny {
                 reason: format!("tool {} denied by policy", call.tool_id),
@@ -653,6 +734,10 @@ impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
                     correlation_id: format!("perm-{}", call.call_id),
                 }
             }
+        };
+        ToolPermissionRuling {
+            verdict,
+            basis: Some(basis),
         }
     }
 }
@@ -913,7 +998,12 @@ mod tests {
                     let expected = if legacy == ToolPermissionBehavior::Deny {
                         ToolPermissionBehavior::Deny
                     } else {
-                        behavior_for(typed, &call, &ObservingToolEvaluator::default())
+                        PermissionRule::from_fixed_policy(
+                            ToolCallPattern::parse("mcp__context__attest").unwrap(),
+                            typed,
+                        )
+                        .expect("a fixed requirement compiles into a rule")
+                        .behavior
                     };
                     let actual = policy.evaluate(&call).await;
                     match (expected, actual) {

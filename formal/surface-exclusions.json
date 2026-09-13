@@ -385,6 +385,8 @@
       "boundary": "test_support_adapter",
       "reason": "Every state type and repository implementation is compiled only under cfg(any(test, feature = test-support)) and serves tests or scenario fixtures. Production Credential authority remains the neutral repository contract and external durable adapters.",
       "evidence": ["crates/control/awaken-credential-vault/src/repo.rs"]
-    }
+    },
+    {"path":"crates/server/awaken-protocol-managed/src/official_request_witnesses.rs","boundary":"test_only","reason":"Declared `#[cfg(test)] mod official_request_witnesses;`. It owns no production behavior: it loads the generated official request corpus and asserts every witness decodes into the route parameter type the server already uses, so the risk signals it matches are the shapes under test, not a surface this crate ships."},
+    {"path":"crates/contract/awaken-agent-contract/src/audit/mod.rs","boundary":"module_facade","reason":"Six `pub mod` lines and nothing else. It began matching the authorization risk signal only because one of the modules it declares is named `permission`; the vocabulary and its rules live in audit/permission.rs, which is classified against the tool-policy selector obligation."}
   ]
 }

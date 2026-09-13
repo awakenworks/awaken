@@ -174,24 +174,17 @@ fn agent_toolset_permission_rules(
 ) -> AgentToolsetProjection {
     use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
     let mut deferred_members = Vec::new();
-    let fixed_behavior = |policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
-        if !policy.enabled {
-            return Some(ToolPermissionBehavior::Deny);
-        }
-        match policy.permission {
-            ToolPermissionRequirement::AlwaysAllow => Some(ToolPermissionBehavior::Allow),
-            ToolPermissionRequirement::AlwaysAsk => {
-                Some(ToolPermissionBehavior::RequireConfirmation)
-            }
-            ToolPermissionRequirement::Auto => None,
-        }
-    };
-    let rule = |pattern: String, behavior: ToolPermissionBehavior| {
-        PermissionRule::new(
-            ToolCallPattern::parse(&pattern).expect("typed toolset produces a valid pattern"),
-            behavior,
-        )
-    };
+    // A fixed requirement compiles into an exact rule that still names the
+    // requirement it came from, so the audit (and the Managed `evaluation`)
+    // reports `always_allow`/`always_ask` rather than an anonymous rule. An
+    // enabled `auto` compiles into no rule: it is deferred to the evaluator.
+    let fixed_rule =
+        |pattern: &str, policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
+            PermissionRule::from_fixed_policy(
+                ToolCallPattern::parse(pattern).expect("typed toolset produces a valid pattern"),
+                policy,
+            )
+        };
     let mut rules = Vec::new();
     for toolset in toolsets {
         match &toolset.source {
@@ -212,8 +205,8 @@ fn agent_toolset_permission_rules(
                     {
                         policy.permission = ToolPermissionRequirement::AlwaysAsk;
                     }
-                    match fixed_behavior(policy) {
-                        Some(behavior) => rules.push(rule(name.to_string(), behavior)),
+                    match fixed_rule(name, policy) {
+                        Some(rule) => rules.push(rule),
                         None => deferred_members.push(name.to_string()),
                     }
                 }
@@ -222,8 +215,8 @@ fn agent_toolset_permission_rules(
                     .iter()
                     .filter(|entry| !awaken_session_contract::is_agent_toolset_member(&entry.name))
                 {
-                    match fixed_behavior(entry.policy) {
-                        Some(behavior) => rules.push(rule(entry.name.clone(), behavior)),
+                    match fixed_rule(&entry.name, entry.policy) {
+                        Some(rule) => rules.push(rule),
                         None => deferred_members.push(entry.name.clone()),
                     }
                 }

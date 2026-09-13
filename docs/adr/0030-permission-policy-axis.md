@@ -59,9 +59,15 @@ Keeping the enum minimal avoids redundant authorization paths.
 
 ### D4: Audit is a committed event, never a side write
 
-Each gate decision stages a `PermissionDecided` event (tool id, call id, decision)
-into the attempt's checkpoint, committed through the one finish boundary with the
-run's other facts (G1). Authorization is therefore explainable from committed
+Each gate decision stages a `PermissionDecided` event (tool id, call id, decision,
+and — when an authored policy decided — the closed `policy` it came from:
+`always_allow` | `always_ask` | `auto` | `rule`, plus for `auto` the closed
+`reason_code`: `judged_high_risk` on a refusal, `indeterminate` on an ask, none on
+an allow) into the attempt's checkpoint, committed through the one finish boundary
+with the run's other facts (G1). `policy`/`reason_code` are additive: a row a
+narrowing, a plugin gate or a person decided carries neither, and rows written
+before the vocabulary existed still decode. Managed projects them as the SDK's
+per-call `evaluation` beside the flat `evaluated_permission`. Authorization is therefore explainable from committed
 truth, not a durable write outside the commit path. No gate means no protected
 call and no audit.
 

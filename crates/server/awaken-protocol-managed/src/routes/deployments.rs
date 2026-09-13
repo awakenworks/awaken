@@ -612,7 +612,7 @@ async fn retrieve_deployment(
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DeploymentListParams {
+pub(crate) struct DeploymentListParams {
     #[serde(flatten)]
     page: PageQuery,
     #[serde(default, rename = "beta")]
@@ -804,7 +804,7 @@ async fn run_deployment(
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DeploymentRunListParams {
+pub(crate) struct DeploymentRunListParams {
     #[serde(flatten)]
     page: PageQuery,
     #[serde(default, rename = "beta")]

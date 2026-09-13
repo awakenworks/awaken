@@ -19,7 +19,7 @@ pub use skills::skills_router;
 
 mod files;
 pub(crate) mod flavor;
-mod memory_stores;
+pub(crate) mod memory_stores;
 mod repositories;
 mod skills;
 

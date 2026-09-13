@@ -36,6 +36,21 @@ evidence from drifting from the external expectation:
 - `contracts/anthropic-managed/operation-coverage.generated.json` maps every
   current SDK operation and reviewed SDK-absent route to one exact executable
   Rust behavior test and the exact SDK compile fixtures.
+- `crates/server/awaken-protocol-managed/contracts/request-witnesses.generated.json`
+  records, for every current SDK operation, the exact wire request (method,
+  path, query pairs, JSON or multipart body) the official package emits for a
+  required-only invocation, an every-optional invocation, and every union
+  member reachable beneath it. Values come only from the declarations
+  (representative value per declared kind; a field name selects a format only
+  for bare strings such as `*sha256`, `created_at*`, `inference_geo`); the
+  official transform/serialization chain then decides what is path, query,
+  header, or body, and invocations that differ only by transport header
+  collapse onto one wire identity. `cargo test -p awaken-protocol-managed`
+  decodes every witness into the exact axum route parameter type the handler
+  binds (`src/official_request_witnesses.rs`); an operation without a
+  registry row fails by name, so a serde DTO that stops matching the SDK --
+  the memory `precondition` / `expected_content_sha256` regression -- fails a
+  unit test rather than a release qualification.
 - `fixtures/generated/*.ts` compile every discovered operation against every
   pinned SDK anchor. `fixtures/user-profiles-change-point.ts` additionally
   checks the intentional response-type transition at the User Profiles anchor.

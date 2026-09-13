@@ -33,7 +33,7 @@ use crate::types::environment::{
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use awaken_environment_application::{EnvironmentApplication, EnvironmentApplicationError};
-mod work_routes;
+pub(crate) mod work_routes;
 
 /// Control-owned Environment definitions, immutable revision history, policy
 /// versions, and publication application.
@@ -259,7 +259,7 @@ async fn retrieve_env(
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EnvironmentListParams {
+pub(crate) struct EnvironmentListParams {
     #[serde(flatten)]
     page: PageQuery,
     #[serde(default, rename = "beta")]

@@ -13,6 +13,87 @@ use serde::{Deserialize, Serialize};
 use crate::tool::ToolOutput;
 
 pub use crate::llm::ToolCall;
+pub use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionReasonCode};
+
+/// The authored policy a permission verdict came from, with the grounds of an
+/// `auto` judgement (ADR-0030 D4). This is what the audit fact records beside
+/// the decision and what the Managed `evaluation` object is projected from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionBasis {
+    pub policy: PermissionPolicy,
+    /// Present only for an `auto` judgement that did not allow.
+    pub reason_code: Option<PermissionReasonCode>,
+}
+
+impl PermissionBasis {
+    /// A fixed authored answer: the policy stated it, no judgement was made.
+    #[must_use]
+    pub const fn fixed(policy: PermissionPolicy) -> Self {
+        Self {
+            policy,
+            reason_code: None,
+        }
+    }
+
+    /// An `auto` judgement; `reason_code` is `None` exactly when it allowed.
+    #[must_use]
+    pub const fn auto(reason_code: Option<PermissionReasonCode>) -> Self {
+        Self {
+            policy: PermissionPolicy::Auto,
+            reason_code,
+        }
+    }
+}
+
+/// A policy's verdict together with the basis it was reached on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolPermissionRuling {
+    pub verdict: ToolPermissionVerdict,
+    /// `None` when no authored permission policy decided (see
+    /// [`PermissionPolicy`]).
+    pub basis: Option<PermissionBasis>,
+}
+
+impl ToolPermissionRuling {
+    /// A verdict reached outside the authored policy vocabulary.
+    #[must_use]
+    pub const fn without_basis(verdict: ToolPermissionVerdict) -> Self {
+        Self {
+            verdict,
+            basis: None,
+        }
+    }
+
+    /// Project onto the gate exactly once, carrying the basis unchanged.
+    #[must_use]
+    pub fn into_gate_decision(self) -> GateDecision {
+        GateDecision {
+            outcome: self.verdict.into_gate_outcome(),
+            basis: self.basis,
+        }
+    }
+}
+
+/// What the gate chain decided for one call and on what basis. The outcome
+/// alone drives execution; the basis rides into the audit fact.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateDecision {
+    pub outcome: GateOutcome,
+    /// The authored policy that produced `outcome`, when one did.
+    pub basis: Option<PermissionBasis>,
+}
+
+impl GateDecision {
+    /// An outcome reached outside the authored policy vocabulary (a per-Run
+    /// narrowing, a plugin gate, an absent gate).
+    #[must_use]
+    pub const fn without_basis(outcome: GateOutcome) -> Self {
+        Self {
+            outcome,
+            basis: None,
+        }
+    }
+}
 
 /// A policy's verdict for one [`ToolCall`]. This is not the later human
 /// decision: `RequireConfirmation` causes the Run to commit a `ResumeTicket`,
@@ -79,6 +160,17 @@ impl ToolPermissionVerdict {
 #[async_trait]
 pub trait ToolPermissionPolicy: Send + Sync {
     async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict;
+
+    /// The verdict together with the authored policy that produced it.
+    ///
+    /// The default states no basis: a policy that does not decide from the
+    /// authored vocabulary (a per-Run narrowing, a fixed host policy) has none
+    /// to name, and inventing one here would put a policy label on a decision
+    /// nobody authored. A policy that does decide from that vocabulary
+    /// overrides this and must return the verdict `evaluate` would.
+    async fn evaluate_with_basis(&self, call: &ToolCall) -> ToolPermissionRuling {
+        ToolPermissionRuling::without_basis(self.evaluate(call).await)
+    }
 }
 
 /// Serializable, per-Run restriction on the tool authority configured by the
@@ -316,6 +408,15 @@ pub trait ToolGateHook: Send + Sync {
     /// Decide one tool call against the run's read-only state. Most gates ignore
     /// `state`; a state machine gate reads it to enforce a precondition.
     async fn gate(&self, call: &ToolCall, state: &Store) -> GateOutcome;
+
+    /// The outcome together with the authored policy that produced it. The
+    /// default states no basis, which is exact for every gate that is not
+    /// backed by an authored permission policy (a plugin precondition gate
+    /// decides on state, not on policy). The permission-backed gate overrides
+    /// this and must return the outcome `gate` would.
+    async fn gate_with_basis(&self, call: &ToolCall, state: &Store) -> GateDecision {
+        GateDecision::without_basis(self.gate(call, state).await)
+    }
 }
 
 #[cfg(test)]
@@ -377,5 +478,100 @@ mod tests {
             .decision_label(),
             "schedule"
         );
+    }
+
+    #[test]
+    fn a_ruling_carries_its_basis_onto_the_gate_decision_unchanged() {
+        // | Rule | verdict | basis | gate outcome | basis after |
+        // |---|---|---|---|---|
+        // | B1 | Allow | always_allow | Allow | always_allow |
+        // | B2 | Ask | auto/indeterminate | RequireConfirmation | auto/indeterminate |
+        // | B3 | Deny | none | Block | none |
+        let b1 = ToolPermissionRuling {
+            verdict: ToolPermissionVerdict::Allow,
+            basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
+        }
+        .into_gate_decision();
+        assert_eq!(b1.outcome, GateOutcome::Allow, "B1");
+        assert_eq!(
+            b1.basis,
+            Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
+            "B1"
+        );
+
+        let b2 = ToolPermissionRuling {
+            verdict: ToolPermissionVerdict::RequireConfirmation {
+                correlation_id: "perm-1".into(),
+            },
+            basis: Some(PermissionBasis::auto(Some(
+                PermissionReasonCode::Indeterminate,
+            ))),
+        }
+        .into_gate_decision();
+        assert_eq!(
+            b2.outcome,
+            GateOutcome::RequireConfirmation {
+                correlation_id: "perm-1".into()
+            },
+            "B2"
+        );
+        assert_eq!(
+            b2.basis,
+            Some(PermissionBasis {
+                policy: PermissionPolicy::Auto,
+                reason_code: Some(PermissionReasonCode::Indeterminate),
+            }),
+            "B2"
+        );
+
+        let b3 = ToolPermissionRuling::without_basis(ToolPermissionVerdict::Deny {
+            reason: "no".into(),
+        })
+        .into_gate_decision();
+        assert_eq!(
+            b3.outcome,
+            GateOutcome::Block {
+                reason: "no".into()
+            },
+            "B3"
+        );
+        assert_eq!(b3.basis, None, "B3");
+    }
+
+    #[tokio::test]
+    async fn a_policy_that_states_no_basis_still_reaches_the_gate_with_its_verdict() {
+        // The trait defaults are exact, not lossy: a policy or gate that only
+        // implements the verdict surface reports its verdict and no basis.
+        struct FixedDeny;
+        #[async_trait]
+        impl ToolPermissionPolicy for FixedDeny {
+            async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
+                ToolPermissionVerdict::Deny {
+                    reason: "fixed".into(),
+                }
+            }
+        }
+        struct StateGate;
+        #[async_trait]
+        impl ToolGateHook for StateGate {
+            async fn gate(&self, _call: &ToolCall, _state: &Store) -> GateOutcome {
+                GateOutcome::SetResult(ToolOutput::ok("c1", "cached"))
+            }
+        }
+        let call = ToolCall {
+            tool_id: "t".into(),
+            call_id: "c1".into(),
+            arguments: serde_json::json!({}),
+        };
+        let ruling = FixedDeny.evaluate_with_basis(&call).await;
+        assert_eq!(
+            ruling,
+            ToolPermissionRuling::without_basis(ToolPermissionVerdict::Deny {
+                reason: "fixed".into()
+            })
+        );
+        let decision = StateGate.gate_with_basis(&call, &Store::default()).await;
+        assert_eq!(decision.basis, None);
+        assert_eq!(decision.outcome.decision_label(), "set_result");
     }
 }

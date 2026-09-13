@@ -68,12 +68,15 @@ pub(crate) async fn spill_tool_output(
 }
 
 /// Build the audit draft for one gated tool call (ADR-0030). The decision label
-/// is the permission-relevant view of the gate outcome.
-pub(super) fn permission_audit(call: &ToolCall, outcome: &GateOutcome) -> EventDraft {
+/// is the permission-relevant view of the gate outcome; the policy and reason
+/// are whatever basis the deciding gate stated, never inferred from the label.
+pub(super) fn permission_audit(call: &ToolCall, decision: &GateDecision) -> EventDraft {
     RunEvent::PermissionDecided {
         tool_id: call.tool_id.clone(),
         call_id: call.call_id.clone(),
-        decision: outcome.decision_label().to_string(),
+        decision: decision.outcome.decision_label().to_string(),
+        policy: decision.basis.map(|basis| basis.policy),
+        reason_code: decision.basis.and_then(|basis| basis.reason_code),
     }
     .into()
 }
@@ -298,45 +301,59 @@ pub(super) async fn resume_into_messages(
 /// allows it; the first non-`Allow` outcome wins, and the host permission gate is
 /// absolute (a plugin gate can further restrict but never widen it, G21). An
 /// absent host gate allows (used only in tests). Gates read the run's state.
+///
+/// The basis is the deciding gate's own: a non-`Allow` outcome carries the
+/// basis of the gate that produced it, and a final `Allow` carries the basis of
+/// the outermost authored policy that allowed (the per-Run policy if it stated
+/// one, else the host gate's). A later gate can only restrict, so an allow it
+/// merely passed through is still the authored policy's allow.
 pub(crate) async fn gate_decision(
     runtime: &Runtime,
     call: &ToolCall,
     env: &ResolvedExecutionEnv,
     state: &Store,
     context: &RuntimeRunContext,
-) -> GateOutcome {
+) -> GateDecision {
     if context.tool_capability_narrowing
         == awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
     {
-        return GateOutcome::Block {
+        return GateDecision::without_basis(GateOutcome::Block {
             reason: "tools are disabled for this Run".into(),
-        };
+        });
     }
     let ctx = ToolCall {
         tool_id: call.tool_id.clone(),
         call_id: call.call_id.clone(),
         arguments: call.arguments.clone(),
     };
+    let mut allowed_on = None;
     if let Some(narrowing) = &context.tool_permission_policy {
-        let outcome = narrowing.evaluate(&ctx).await.into_gate_outcome();
-        if !matches!(outcome, GateOutcome::Allow) {
-            return outcome;
+        let decision = narrowing
+            .evaluate_with_basis(&ctx)
+            .await
+            .into_gate_decision();
+        if !matches!(decision.outcome, GateOutcome::Allow) {
+            return decision;
         }
+        allowed_on = decision.basis;
     }
-    let host = match runtime.gate() {
-        Some(gate) => gate.gate(&ctx, state).await,
-        None => GateOutcome::Allow,
-    };
-    if !matches!(host, GateOutcome::Allow) {
-        return host;
+    if let Some(gate) = runtime.gate() {
+        let host = gate.gate_with_basis(&ctx, state).await;
+        if !matches!(host.outcome, GateOutcome::Allow) {
+            return host;
+        }
+        allowed_on = allowed_on.or(host.basis);
     }
     for gate in env.tool_gates() {
-        let outcome = gate.gate(&ctx, state).await;
-        if !matches!(outcome, GateOutcome::Allow) {
-            return outcome;
+        let decision = gate.gate_with_basis(&ctx, state).await;
+        if !matches!(decision.outcome, GateOutcome::Allow) {
+            return decision;
         }
     }
-    GateOutcome::Allow
+    GateDecision {
+        outcome: GateOutcome::Allow,
+        basis: allowed_on,
+    }
 }
 
 /// Fold a resumed tool result into `(messages, state)` off a throwaway store copy

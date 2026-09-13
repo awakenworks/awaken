@@ -343,6 +343,9 @@ impl Transcoder for ManagedEncoder {
                         mcp_server_name: mcp_server_name(name),
                         input: input.clone(),
                         evaluated_permission,
+                        // Which policy asked is not in the transcript either;
+                        // the recorded gate decision fills it in.
+                        evaluation: None,
                         session_thread_id: None,
                     },
                 )]
@@ -364,6 +367,7 @@ impl Transcoder for ManagedEncoder {
                             name: name.clone(),
                             input: input.clone(),
                             evaluated_permission: awaited_permission(disposition),
+                            evaluation: None,
                             session_thread_id: None,
                         }
                     }

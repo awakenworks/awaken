@@ -10,17 +10,17 @@ use crate::state::{RunError, StateError};
 use crate::types::Session;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionCursorDirection {
+pub(crate) enum SessionCursorDirection {
     After,
     Before,
 }
 
 #[derive(Debug, Clone)]
-struct SessionCursor {
-    order: SessionListOrder,
-    direction: SessionCursorDirection,
-    created_at: String,
-    id: String,
+pub(crate) struct SessionCursor {
+    pub(crate) order: SessionListOrder,
+    pub(crate) direction: SessionCursorDirection,
+    pub(crate) created_at: String,
+    pub(crate) id: String,
 }
 
 impl SessionCursor {
@@ -37,7 +37,7 @@ impl SessionCursor {
         }
     }
 
-    fn encode(&self) -> String {
+    pub(crate) fn encode(&self) -> String {
         let direction = match self.direction {
             SessionCursorDirection::After => "after",
             SessionCursorDirection::Before => "before",
@@ -108,7 +108,7 @@ fn invalid_session_cursor() -> WireErr {
 }
 
 #[derive(Debug)]
-pub(super) struct SessionListParams {
+pub(crate) struct SessionListParams {
     limit: usize,
     page: Option<SessionCursor>,
     order: SessionListOrder,
@@ -124,7 +124,7 @@ pub(super) struct SessionListParams {
     statuses: HashSet<String>,
 }
 
-pub(super) fn parse_session_list(raw: Option<&str>) -> Result<SessionListParams, WireErr> {
+pub(crate) fn parse_session_list(raw: Option<&str>) -> Result<SessionListParams, WireErr> {
     let mut params = SessionListParams {
         limit: awaken_agent_contract::page::DEFAULT_PAGE_LIMIT,
         page: None,
