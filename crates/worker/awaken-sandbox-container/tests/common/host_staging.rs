@@ -1,5 +1,8 @@
 //! One ordinary host-bind lifetime/recovery oracle for Docker and Podman.
 use awaken_provisioning_contract as pc;
+// The creation and terminal ports are trait obligations, so the trait has to
+// be in scope for this oracle to reach them.
+use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::{
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerProvider,
     ContainerRuntime, ContainerState,
