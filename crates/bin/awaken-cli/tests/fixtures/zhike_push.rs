@@ -573,11 +573,18 @@ async fn scenario(
     let state = provider.state.lock().unwrap();
     assert_eq!(state.dialled, 1);
     if let Some(case) = customer {
-        let verdict = customers::evaluate(case, &state);
+        let mut verdict = customers::evaluate(case, &state);
+        let voices = state.voices.clone();
         drop(state);
         if let Some(driver) = customer_driver {
             driver.await.unwrap();
         }
+        match customers::check_grounding(&app, model_name, &voices).await {
+            Ok(grade) if grade.decision == awaken_ext_goal::outcome::GradeDecision::Satisfied => {}
+            Ok(grade) => verdict.push(format!("product_grounding: {}", grade.explanation)),
+            Err(error) => verdict.push(format!("grounding_evaluation_unavailable: {error}")),
+        }
+        eprintln!("ZHike overall {:?}: {}", case, json!({"failures":verdict}));
         server.abort();
         assert!(verdict.is_empty(), "{case:?}: {}", verdict.join("; "));
         return;
@@ -657,16 +664,8 @@ async fn mcp_pushed_customer_inputs_produce_delivered_voice_replies() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires explicit DeepSeek credential and network"]
 async fn live_deepseek_mcp_pushed_customer_inputs() {
-    let key = std::env::var("DEEPSEEK_API_KEY").expect("explicit DeepSeek configuration required");
-    let model = std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
-    let executor = awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint(
-        "deepseek",
-        awaken_provider_genai::AdapterKind::OpenAI,
-        "https://api.deepseek.com/v1",
-        key,
-    )
-    .unwrap();
-    scenario(Arc::new(executor), &model, None, None).await;
+    let (executor, model) = deepseek_executor();
+    scenario(executor, &model, None, None).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

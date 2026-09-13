@@ -229,6 +229,13 @@ Run id from their payload. Connection ownership fixes the destination, while an
 explicit cancellation rule can name only the response derived from an event of
 another configured input method on that same server and Session.
 
+An input subscription can outlive a same-owner lease extension. Delivery reads
+the current Active projection and rechecks current root liveness; only a
+monotonically extended expiry may differ from its bound generation reference.
+Changed Session, attachment, content/version, owner incarnation, epoch, or a
+regressed expiry remains a refusal. This reuses the canonical realization
+renewal rule and does not reopen credentials or create another subscription.
+
 Configuration lives under the exact dynamic plugin id, which must also be
 selected in `plugins` so its executable configuration is publication-frozen:
 
@@ -336,6 +343,19 @@ from permission to continue calling. Unknown values remain unknown. Actual Flow
 human assignment and persistent outreach suppression still need their own
 owner-backed integration; recording booleans in a Mock assessment does not prove
 either platform effect occurred.
+
+Product factuality is a separate acceptance dimension. `zhike_grounding.rs`
+creates an ordinary tool-free Judge Agent through Control/Session and reuses
+`awaken-ext-goal`'s default Judge instructions and strict `parse_grade` contract.
+Its only capability evidence is a fixed product card, and the deliverable is
+actual Provider-recorded speech, not the sales Agent's own summary. Supported
+high-level capabilities and explicitly unknown implementation details have a
+positive live control; invented automatic task/reminder/no-miss claims have a
+negative live control. A complete qualification object cannot compensate for a
+`needs_revision` factuality result. Judge errors remain evaluation-unavailable,
+not successful grading. This separate Session can still share a model's blind
+spots; it is a calibrated diagnostic, not a substitute for independent human
+review or real Provider/audio qualification.
 
 - **Steer / redirect works for every locally reachable execution path** —
   direct-native, locally hosted durable-native, and locally hosted external-CLI —
