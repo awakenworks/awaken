@@ -416,6 +416,21 @@ pub awaken_agent_contract::audit::model_request::TokenUsage::completion_tokens: 
 pub awaken_agent_contract::audit::model_request::TokenUsage::prompt_tokens: u64
 impl awaken_agent_contract::audit::model_request::TokenUsage
 pub fn awaken_agent_contract::audit::model_request::TokenUsage::saturating_add(self, Self) -> Self
+pub mod awaken_agent_contract::audit::permission
+pub enum awaken_agent_contract::audit::permission::PermissionPolicy
+pub awaken_agent_contract::audit::permission::PermissionPolicy::AlwaysAllow
+pub awaken_agent_contract::audit::permission::PermissionPolicy::AlwaysAsk
+pub awaken_agent_contract::audit::permission::PermissionPolicy::Auto
+pub awaken_agent_contract::audit::permission::PermissionPolicy::Rule
+impl awaken_agent_contract::audit::permission::PermissionPolicy
+pub const fn awaken_agent_contract::audit::permission::PermissionPolicy::as_str(self) -> &'static str
+impl core::convert::From<awaken_agent_contract::toolset::ToolPermissionRequirement> for awaken_agent_contract::audit::permission::PermissionPolicy
+pub fn awaken_agent_contract::audit::permission::PermissionPolicy::from(awaken_agent_contract::toolset::ToolPermissionRequirement) -> Self
+pub enum awaken_agent_contract::audit::permission::PermissionReasonCode
+pub awaken_agent_contract::audit::permission::PermissionReasonCode::Indeterminate
+pub awaken_agent_contract::audit::permission::PermissionReasonCode::JudgedHighRisk
+impl awaken_agent_contract::audit::permission::PermissionReasonCode
+pub const fn awaken_agent_contract::audit::permission::PermissionReasonCode::as_str(self) -> &'static str
 pub mod awaken_agent_contract::audit::record
 pub struct awaken_agent_contract::audit::record::Record
 pub awaken_agent_contract::audit::record::Record::kind: awaken_agent_contract::audit::kind::Kind
@@ -430,6 +445,8 @@ pub awaken_agent_contract::audit::run_event::RunEvent::ModelRequestCompleted(awa
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::call_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::decision: alloc::string::String
+pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::policy: core::option::Option<awaken_agent_contract::audit::permission::PermissionPolicy>
+pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::reason_code: core::option::Option<awaken_agent_contract::audit::permission::PermissionReasonCode>
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::tool_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::ResumeApplied
 pub awaken_agent_contract::audit::run_event::RunEvent::ResumeApplied::correlation_id: alloc::string::String
@@ -1116,6 +1133,8 @@ pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAsk
 pub awaken_agent_contract::toolset::ToolPermissionRequirement::Auto
 impl awaken_agent_contract::toolset::ToolPermissionRequirement
 pub const fn awaken_agent_contract::toolset::ToolPermissionRequirement::granted_autonomy(self) -> awaken_agent_contract::toolset::GrantedAutonomy
+impl core::convert::From<awaken_agent_contract::toolset::ToolPermissionRequirement> for awaken_agent_contract::audit::permission::PermissionPolicy
+pub fn awaken_agent_contract::audit::permission::PermissionPolicy::from(awaken_agent_contract::toolset::ToolPermissionRequirement) -> Self
 pub enum awaken_agent_contract::toolset::ToolsetSource
 pub awaken_agent_contract::toolset::ToolsetSource::Agent
 pub awaken_agent_contract::toolset::ToolsetSource::Mcp
@@ -1219,6 +1238,8 @@ pub awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk
 pub awaken_agent_contract::ToolPermissionRequirement::Auto
 impl awaken_agent_contract::toolset::ToolPermissionRequirement
 pub const fn awaken_agent_contract::toolset::ToolPermissionRequirement::granted_autonomy(self) -> awaken_agent_contract::toolset::GrantedAutonomy
+impl core::convert::From<awaken_agent_contract::toolset::ToolPermissionRequirement> for awaken_agent_contract::audit::permission::PermissionPolicy
+pub fn awaken_agent_contract::audit::permission::PermissionPolicy::from(awaken_agent_contract::toolset::ToolPermissionRequirement) -> Self
 pub enum awaken_agent_contract::ToolsetSource
 pub awaken_agent_contract::ToolsetSource::Agent
 pub awaken_agent_contract::ToolsetSource::Mcp

@@ -62,6 +62,7 @@ impl awaken_credential_contract::material_resolution::CredentialMaterialResolver
 pub fn awaken_worker::WorkerCredentialFileResolver::material_capabilities(&self) -> alloc::collections::btree::set::BTreeSet<awaken_credential_contract::material_resolution::CredentialMaterialCapability>
 pub fn awaken_worker::WorkerCredentialFileResolver::resolve_exact<'life0, 'life1, 'async_trait>(&'life0 self, awaken_credential_contract::material_resolution::CredentialMaterialRequest<'life1>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::material_resolution::ResolvedCredentialMaterial, awaken_credential_contract::material_resolution::CredentialMaterialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_worker::WorkerDaemonConfig
+pub awaken_worker::WorkerDaemonConfig::observability: awaken_observability::config::ObservabilityConfig
 pub awaken_worker::WorkerDaemonConfig::worker: awaken_worker::WorkerBootstrap
 impl awaken_worker::WorkerDaemonConfig
 pub async fn awaken_worker::WorkerDaemonConfig::build(&self) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>

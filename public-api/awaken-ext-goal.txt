@@ -44,7 +44,7 @@ pub fn awaken_ext_goal::grader::AgentGrader<'a>::new(&'a dyn awaken_runtime_cont
 impl awaken_ext_goal::outcome::Grader for awaken_ext_goal::grader::AgentGrader<'_>
 pub fn awaken_ext_goal::grader::AgentGrader<'_>::grade<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &'life2 awaken_ext_goal::outcome::GradingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub const awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS: &str
-pub fn awaken_ext_goal::grader::default_judge_agent(&str, &str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+pub fn awaken_ext_goal::grader::default_judge_agent(&str, &str, &str) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolved::model_binding::InvalidModelBinding>
 pub fn awaken_ext_goal::grader::default_judge_agent_from_worker(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub fn awaken_ext_goal::grader::grading_prompt(&awaken_ext_goal::outcome::GradingInput) -> core::result::Result<alloc::string::String, awaken_ext_goal::outcome::GraderError>
 pub mod awaken_ext_goal::outcome
