@@ -275,6 +275,11 @@ pub enum Error {
     /// absorbing Session failure.
     #[error("Session resolution is not ready: {0}")]
     ResolutionNotReady(String),
+    /// The Run already committed terminal truth, but its exact Session
+    /// settlement projection is not yet observable. Retry only this Dispatch;
+    /// this is not evidence that the shared store or Worker pool is unhealthy.
+    #[error("Session settlement observation is not ready: {0}")]
+    SettlementObservationPending(String),
 }
 
 impl Error {
@@ -286,6 +291,11 @@ impl Error {
     #[must_use]
     pub fn is_resolution_not_ready(&self) -> bool {
         matches!(self, Self::ResolutionNotReady(_))
+    }
+
+    #[must_use]
+    pub fn is_settlement_observation_pending(&self) -> bool {
+        matches!(self, Self::SettlementObservationPending(_))
     }
 }
 

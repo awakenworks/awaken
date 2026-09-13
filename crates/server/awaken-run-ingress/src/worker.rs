@@ -1424,9 +1424,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         claimed.cancellation_requested,
                     )
                     .await;
-                observed.map_err(|error| {
-                    Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
-                })?;
+                observed.map_err(|error| Error::SettlementObservationPending(error.to_string()))?;
                 coordinated_committed_state = Some(committed);
                 false
             }

@@ -1133,6 +1133,19 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     };
     let settled = match settled {
         Ok(settled) => settled,
+        Err(error) if error.is_settlement_observation_pending() => {
+            // The Run has already committed terminal truth. Only this
+            // Dispatch's Session projection is not yet observable, so give it
+            // a request-local retry deadline and let unrelated claims proceed.
+            // Re-entry remains fenced by committed truth and the physical slot.
+            defer_after_resolution_failure(
+                store.as_ref(),
+                &claim,
+                RESOLUTION_RETRY_DELAY.as_millis() as u64,
+            )
+            .await?;
+            return Err(ClaimAndDriveFailure::ResolutionDeferred(error));
+        }
         Err(error) => {
             // Cause/effect decision table: C1 this exact mutation claim failed
             // before/after a physical attempt; C2 an opaque physical slot still
