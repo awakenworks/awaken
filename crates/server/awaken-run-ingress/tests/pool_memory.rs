@@ -3102,18 +3102,18 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
 #[tokio::test]
 async fn pool_renews_claim_while_worker_resolution_is_blocked() {
     struct SlowResolver {
-        worker: Arc<MemWorker>,
+        worker: Arc<FlakyWorker>,
         entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Semaphore>,
     }
 
     #[async_trait]
-    impl WorkerResolver<MemoryDispatchStore> for SlowResolver {
+    impl WorkerResolver<FlakyDispatchStore> for SlowResolver {
         async fn worker_for(
             &self,
             _thread_id: &ThreadId,
             _agent_id: Option<&str>,
-        ) -> Result<Arc<MemWorker>, Error> {
+        ) -> Result<Arc<FlakyWorker>, Error> {
             self.entered.notify_one();
             self.release
                 .acquire()
@@ -3124,16 +3124,22 @@ async fn pool_renews_claim_while_worker_resolution_is_blocked() {
         }
     }
 
-    let store = Arc::new(MemoryDispatchStore::new());
+    // The lease clock is manual so the base lease expires by decree, not by
+    // waiting. The renewal guard still schedules itself on wall time
+    // (renew every lease/3, give up after lease - lease/3 without a proof),
+    // so the lease is long enough that a loaded machine cannot starve the
+    // guard past its proof window; the test itself waits on the renewal
+    // write, never on a sleep that assumes the guard has already run.
+    let store = Arc::new(FlakyDispatchStore::new(0));
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let lease_ms = 90;
+    let lease_ms = 1_500;
     let worker = Arc::new(
         DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "pool")
             .with_lease_ms(lease_ms),
     );
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let clock = Arc::new(SystemClock);
+    let clock = Arc::new(ManualClock::new(0));
     let pool = DispatchPool::spawn(
         store.clone(),
         clock.clone(),
@@ -3152,10 +3158,24 @@ async fn pool_renews_claim_while_worker_resolution_is_blocked() {
     );
 
     pool.submit(activation("slow-resolution")).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(1), entered.notified())
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
         .await
-        .expect("resolver entered");
-    tokio::time::sleep(Duration::from_millis(lease_ms * 3)).await;
+        .expect("timed out waiting for the resolver to enter");
+    // Expire the base lease outright, then wait for the first renewal written
+    // against the advanced clock. The single-threaded runtime cannot run the
+    // guard between reading the attempt count and moving the clock, and the
+    // store counts an attempt in the same poll that applies it, so one more
+    // attempt is one renewal stamped at or after the advanced instant.
+    let renewals_before_expiry = store.renewal_attempts();
+    clock.set(lease_ms * 3);
+    let renewal_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while store.renewal_attempts() == renewals_before_expiry {
+        assert!(
+            tokio::time::Instant::now() < renewal_deadline,
+            "timed out waiting for the blocked resolution to renew its claim"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     assert!(
         store
             .claim("thief", lease_ms, clock.now_ms(), &Default::default())

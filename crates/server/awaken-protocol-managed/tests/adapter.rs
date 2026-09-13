@@ -2830,6 +2830,15 @@ async fn hitl_await_confirm_resume() {
     // H8: a committed resumed terminal Run + its exact activity epoch closes
     // one interval; duplicate observer delivery is a no-op. Assert root truth
     // as well as the HTTP suffix so a cache-only repair cannot pass this case.
+    // Deliver the boundary exactly as the Host's observer does: `settle`, then
+    // the post-Dispatch `finalize` that closes a primary Run still retained by
+    // its user.message batch. Whether the racing confirmation callers left the
+    // Session already idle or still Running at this point depends on their
+    // interleaving; the two-step delivery settles both, so this test never
+    // assumes the inline drive got there first. `finalize` reports the
+    // committed boundary as not yet visible only while the lifecycle feed lags;
+    // that is the one condition polled, bounded and named, never slept over.
+    let finalize_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     for _ in 0..2 {
         awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
             application.as_ref(),
@@ -2837,6 +2846,25 @@ async fn hitl_await_confirm_resume() {
         )
         .await
         .unwrap();
+        loop {
+            match awaken_session_contract::SessionAgentCoordination::finalize_session_agent_boundary(
+                application.as_ref(),
+                boundary.clone(),
+            )
+            .await
+            {
+                Ok(()) => break,
+                Err(error)
+                    if error.kind == awaken_session_contract::RunErrorKind::Unavailable
+                        && tokio::time::Instant::now() < finalize_deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Err(error) => panic!(
+                    "timed out or failed waiting for the resumed Run's boundary to finalize: {error}"
+                ),
+            }
+        }
     }
     let settled = application.session(&id).await.unwrap();
     assert_eq!(settled.execution, SessionExecutionState::Idle, "H8");

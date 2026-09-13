@@ -686,6 +686,16 @@ def test_deadline_errors(config_text: str, rust_gate: str) -> list[str]:
             f"above the {MAX_TEST_DEADLINE_SECONDS:.0f}s bound; bound the wait "
             "inside the test instead of widening the runner"
         )
+    # The gate filters nextest's stream through grep, so a failure seen only
+    # under the full run has no panic text unless the final summary reprints
+    # it. "immediate-final" is the only setting that both shows it live and
+    # keeps it after the run; "immediate" alone loses it to the filter.
+    if default.get("failure-output") != "immediate-final":
+        errors.append(
+            f"{NEXTEST_CONFIG} [profile.default] must set failure-output = "
+            '"immediate-final" so a failing test\'s captured output is '
+            "reprinted at the end of the run"
+        )
     for name, profile in (profiles.items() if isinstance(profiles, dict) else ()):
         for index, override in enumerate(profile.get("overrides", []) or []):
             if "slow-timeout" not in override:
@@ -933,16 +943,18 @@ def self_test() -> None:
     # Per-test deadline decision table. C1 the default profile terminates a
     # test; C2 the deadline is within the bound; C3 no override removes it;
     # C4 the Rust gate runs the suite under nextest; C5 the gate runs no
-    # unbounded workspace suite; C6 the gate fails closed without nextest.
+    # unbounded workspace suite; C6 the gate fails closed without nextest;
+    # C7 the default profile reprints a failure's output in the final summary.
     #
-    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
-    # | D1   | T  | T  | T  | T  | T  | T  | accept |
-    # | D2   | F  | *  | *  | T  | T  | T  | reject reporting-only timeout |
-    # | D3   | T  | F  | *  | T  | T  | T  | reject widened deadline |
-    # | D4   | T  | T  | F  | T  | T  | T  | reject relaxing override |
-    # | D5   | T  | T  | T  | F  | T  | T  | reject suite off the bounded runner |
-    # | D6   | T  | T  | T  | T  | F  | T  | reject unbounded workspace run |
-    # | D7   | T  | T  | T  | T  | T  | F  | reject silent fallback |
+    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | Effect |
+    # | D1   | T  | T  | T  | T  | T  | T  | T  | accept |
+    # | D2   | F  | *  | *  | T  | T  | T  | T  | reject reporting-only timeout |
+    # | D3   | T  | F  | *  | T  | T  | T  | T  | reject widened deadline |
+    # | D4   | T  | T  | F  | T  | T  | T  | T  | reject relaxing override |
+    # | D5   | T  | T  | T  | F  | T  | T  | T  | reject suite off the bounded runner |
+    # | D6   | T  | T  | T  | T  | F  | T  | T  | reject unbounded workspace run |
+    # | D7   | T  | T  | T  | T  | T  | F  | T  | reject silent fallback |
+    # | D8   | T  | T  | T  | T  | T  | T  | F  | reject a failure whose output the filter eats |
     # A doctest line names the same binary but cannot hang a workspace suite
     # the way an async integration test can, so C5 exempts it by name.
     deadline_config = (ROOT / NEXTEST_CONFIG).read_text(encoding="utf-8")
@@ -972,6 +984,12 @@ def self_test() -> None:
     assert not test_deadline_errors(
         deadline_config, deadline_gate + "\n      cargo test --workspace --doc\n"
     ), "D1 doctest line is not an unbounded suite"
+    assert 'failure-output = "immediate-final"' in deadline_config, "D8 fixture"
+    for lost in ('failure-output = "immediate"', 'failure-output = "final"', ""):
+        assert test_deadline_errors(
+            deadline_config.replace('failure-output = "immediate-final"', lost),
+            deadline_gate,
+        ), f"D8 failure output {lost!r} does not survive the gate filter"
     # Unbounded-wait ratchet. W1 the tree is at the baseline -> accept;
     # W2 one more test waits without a deadline -> reject; W3 one fewer ->
     # reject until the baseline is lowered with it; W4 a wait the test bounds

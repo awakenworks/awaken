@@ -24,6 +24,13 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 # the first test would make the gate say less than it used to, and the whole
 # suite is under three minutes.
 fail-fast = false
+# A failure that only reproduces under the full workspace run is worth nothing
+# if its panic text is lost. The gate pipes nextest through a noise filter, so
+# the one place a failing test's captured stderr is guaranteed to survive is
+# the final summary: reprint it there. Passing tests stay silent so the
+# summary is the failures and nothing else.
+failure-output = "immediate-final"
+success-output = "never"
 
 # Kept deliberately empty. An override raises the deadline for the tests it
 # matches, which is the one way this guarantee can be quietly undone, so each
