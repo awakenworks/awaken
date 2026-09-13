@@ -35,6 +35,7 @@ export default defineConfig({
   globalTeardown: "./e2e/global-teardown.ts",
   use: {
     baseURL: webUrl,
+    launchOptions: process.env.AWAKEN_ORCA_LOG ? { args: ["--force-renderer-accessibility", "--ozone-platform=x11"] } : undefined,
     trace: process.env.AWAKEN_UIUX_LIVE === "1" ? "off" : "retain-on-failure",
   },
   // UI/UX acceptance opts into all installed engines; default CI remains the
@@ -69,7 +70,9 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
-      command: `AWAKEN_HTTP_URL=${backendUrl} pnpm exec vite --host 127.0.0.1 --port ${webPort}`,
+      // Preview reuses Vite's same API proxy and serves the built release assets.
+      // Acceptance callers build first; ordinary development tests keep HMR.
+      command: `AWAKEN_HTTP_URL=${backendUrl} pnpm exec vite ${process.env.AWAKEN_UIUX_PREVIEW === "1" ? "preview " : ""}--host 127.0.0.1 --port ${webPort}`,
       url: webUrl,
       timeout: 60_000,
       reuseExistingServer: false,

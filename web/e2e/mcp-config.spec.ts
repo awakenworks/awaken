@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
+import { readFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import { randomBytes } from "node:crypto";
 import { MANAGED_HEADERS } from "./betas";
@@ -78,10 +79,14 @@ test("MCP catalog config selects an exact account and runs through the real UI",
   await expect(page.getByLabel("Credential account")).toHaveValue(credentialB);
   await page.getByRole("button", { name: "Test with an Agent" }).click();
   await page.getByLabel("Model", { exact: true }).selectOption(model);
+  // Live SSE must be admitted with the same beta as ordinary API calls;
+  // a successful poll cannot conceal a permanently rejected subscription.
+  const streaming = page.waitForResponse((response) => /\/events\/stream$/.test(new URL(response.url()).pathname));
   await page.getByRole("button", { name: "Start debug session" }).click();
   await expect(page.getByRole("link", { name: "Open full Session" })).toBeVisible();
   await page.getByRole("textbox", { name: "Message to agent" }).fill("Call read_source once and return its exact account and marker.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
+  expect((await streaming).status()).toBe(200);
   await expect(page.getByRole("button", { name: "Allow", exact: true })).toBeVisible({ timeout: 90_000 });
   const before = mcp.state.calls.length;
   await page.getByRole("button", { name: "Allow", exact: true }).click();
@@ -158,6 +163,10 @@ test("UX form keeps transport drafts, validates inputs, traps focus and confirms
   await add.click(); const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
   await dialog.getByLabel("Server ID").fill("bad space"); await dialog.getByLabel("Display name").fill("Form UX");
+  // Validate ID independently: an invalid URL must not mask a broken pattern
+  // attribute (Chromium applies Unicode-v character-class syntax).
+  await dialog.getByLabel("MCP URL").fill("https://fixture.test/mcp");
+  expect(await dialog.getByLabel("Server ID").evaluate((input: HTMLInputElement) => input.validity.patternMismatch)).toBe(true);
   await dialog.getByLabel("MCP URL").fill("invalid");
   await dialog.getByRole("button", { name: "Save server" }).click();
   expect(await dialog.locator("form").evaluate((f: HTMLFormElement) => f.checkValidity())).toBe(false);
@@ -475,3 +484,69 @@ for (const auth of ["mcp_oauth", "environment_variable"] as const) {
     await expect(modal).not.toBeVisible(); expect(await page.locator("body").textContent()).not.toContain(tokenB);
   });
 }
+
+
+function readerLog() { return readFileSync(process.env.AWAKEN_ORCA_LOG!, "utf8"); }
+async function heardAfter(cursor: number, expected: string) {
+  // The oracle consumes actual Orca utterances, not DOM/AX text or an injected
+  // speech mock. A per-action cursor excludes earlier successful utterances.
+  await expect.poll(() => readerLog().slice(cursor).split("\n")
+    .filter((line) => line.includes("SPEECH OUTPUT:")).join("\n"), { timeout: 15000 }).toContain(expected);
+}
+
+test.describe("Orca acceptance", () => {
+  test.skip(!process.env.AWAKEN_ORCA_LOG, "requires the isolated real-reader runner");
+  test("account, keyboard action and asynchronous result are spoken", async ({ page, request }) => {
+    // O1 focused account -> name/value spoken; O2 keyboard Enter invokes real
+    // MCP -> live status spoken; O3 HTTP error -> alert spoken without focus.
+    const server = await configured(request); await openServer(page, server); await page.bringToFront();
+    const account = page.getByLabel("Credential account"); await account.selectOption(credentialB);
+    let cursor = readerLog().length; await page.getByLabel("Search MCP servers").focus(); await heardAfter(cursor, "Search MCP servers");
+    cursor = readerLog().length; await account.focus(); await heardAfter(cursor, "Credential account"); await heardAfter(cursor, "Personal Notion");
+    cursor = readerLog().length; await page.getByRole("button", { name: "Save default credential" }).focus();
+    await heardAfter(cursor, "adding this server to an Agent");
+    const check = page.getByRole("button", { name: "Check connection", exact: true });
+    cursor = readerLog().length; await check.focus(); await heardAfter(cursor, "Check connection");
+    cursor = readerLog().length; await page.keyboard.press("Enter"); await heardAfter(cursor, "valid");
+    expect(await page.getByLabel("Connection test result").textContent()).toContain("Personal Notion");
+    await page.route("**/mcp-servers/*/inspect", (route) => route.fulfill({ status: 504, json: { error: { message: "Connection timed out" } } }));
+    cursor = readerLog().length; await check.click(); await heardAfter(cursor, "Connection timed out");
+    await page.screenshot({ path: test.info().outputPath("orca-account-error.png"), fullPage: true });
+  });
+  test("Agent shared-account choice and Session Vault choice have spoken context", async ({ page, request }) => {
+    // I1 Agent-wide pin vs Session-only Vault are different decisions; focusing
+    // each native control must expose its label and explanatory scope to Orca.
+    const server = await configured(request); let data = await (await request.get(server.endpoint)).json();
+    await request.put(`${server.endpoint}/${server.key}/default-credential`, { data: { expected_revision: data.revision, credential_id: credentialB } });
+    await page.goto(`/w/default/agents/new?mcp=${encodeURIComponent(server.key)}`); await page.bringToFront();
+    const pin = page.getByRole("checkbox", { name: "Pin this shared account to the Agent for all future Sessions" });
+    let cursor = readerLog().length; await pin.focus(); await heardAfter(cursor, "all future Sessions");
+    const vault = page.getByRole("checkbox", { name: new RegExp(`Personal UI Vault.*${vaultB}`) });
+    cursor = readerLog().length; await vault.focus(); await heardAfter(cursor, "Personal UI Vault");
+    await heardAfter(cursor, "this Session");
+    await page.screenshot({ path: test.info().outputPath("orca-agent-vault.png"), fullPage: true });
+  });
+  test("Chinese document language, required form controls and secret masking", async ({ page }) => {
+    // C1 app language -> document lang (voice selection); C2 required field ->
+    // localized name/requirement spoken; C3 password input never speaks its value.
+    await page.goto("/w/default/mcp"); await page.bringToFront();
+    await page.getByRole("button", { name: "Switch language" }).click();
+    await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hans");
+    await page.getByRole("button", { name: "添加 MCP 服务器", exact: true }).click();
+    const dialog = page.getByRole("dialog"); let cursor = readerLog().length;
+    await dialog.getByLabel("服务器 ID", { exact: true }).focus(); await heardAfter(cursor, "服务器 ID"); await heardAfter(cursor, "required");
+    await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+    await page.getByRole("button", { name: "切换语言" }).click();
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    const { modal } = await credentialEntry(page, `Reader secret ${runId}`);
+    await modal.getByRole("button", { name: /MCP bearer token/ }).click();
+    await modal.getByLabel("MCP server URL").fill("https://reader.example.test/mcp");
+    const secret = modal.getByLabel("Secret (write-only)", { exact: true });
+    cursor = readerLog().length; await secret.focus(); await heardAfter(cursor, "Secret");
+    const marker = "synthetic-reader-hidden-value";
+    await secret.fill(marker); await page.keyboard.press("Tab");
+    await heardAfter(cursor, "Save");
+    const spoken = readerLog().slice(cursor).split("\n").filter((line) => line.includes("SPEECH OUTPUT:"));
+    expect(spoken.join("\n")).not.toContain(marker);
+  });
+});

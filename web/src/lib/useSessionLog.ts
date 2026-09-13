@@ -1,7 +1,7 @@
 // The live Session-log application hook: one committed history projection,
 // generated-catalog SSE subscription, and official input mutation seam.
 
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MANAGED_SESSION_EVENT_TYPES,
@@ -18,7 +18,7 @@ import {
   type ManagedSessionStatus,
   type ManagedStreamEvent,
 } from "@awaken/managed-session-projection";
-import { api, IdempotencyScope, streamUrl } from "./api/client";
+import { api, IdempotencyScope, openManagedEventSource } from "./api/client";
 import type {
   InboundEvent,
   ListEventsResponse,
@@ -199,6 +199,7 @@ export function useSessionLog(
   const projectionErrorKey = sessionProjectionErrorKey(queryKey);
   const projectionHealth = useQuery<Error | null>({
     queryKey: projectionErrorKey,
+    queryFn: skipToken,
     enabled: false,
     initialData: null,
   });
@@ -230,7 +231,7 @@ export function useSessionLog(
 
   useEffect(() => {
     if (!subscribe) return;
-    const source = new EventSource(streamUrl(`${base}/events/stream`));
+    const source = openManagedEventSource(`${base}/events/stream`);
     const onAny = (raw: MessageEvent) => {
       let frame: ManagedStreamEvent;
       try {

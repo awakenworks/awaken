@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 // Agents integration table: legacy explicit preference -> prepaint migration;
 // refresh -> same canonical preference; selecting system -> OS updates remain live.
 // Pointer density comes from the family owner at every viewport.
+// Language changes also update the document language used by assistive technology.
 // Chinese + narrow chrome -> visible operable appearance control with bounded layout.
 test("Agents migrates appearance and keeps the Chinese mobile chrome usable", async ({ page }) => {
   await page.addInitScript(() => {
@@ -16,6 +17,7 @@ test("Agents migrates appearance and keeps the Chinese mobile chrome usable", as
   await page.goto("/overview");
   const appearance = page.getByRole("combobox", { name: "外观" });
   await expect(appearance).toHaveValue("dark");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hans");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   expect(await page.evaluate(() => localStorage.getItem("awaken.console.theme"))).toBeNull();
   await appearance.selectOption("light");
@@ -42,8 +44,10 @@ test("Agents appearance remains usable when browser storage is blocked", async (
   await page.goto("/overview");
   const appearance = page.getByRole("combobox", { name: "Appearance" });
   await expect(appearance).toHaveValue("system");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await appearance.selectOption("light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.getByRole("button", { name: "Switch language" }).click();
   await expect(page.getByRole("combobox", { name: "外观" })).toHaveValue("light");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hans");
 });
