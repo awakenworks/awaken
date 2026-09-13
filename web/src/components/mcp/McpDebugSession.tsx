@@ -45,14 +45,16 @@ export default function McpDebugSession({ prepare }: { prepare: () => Promise<Mc
     enabled: Boolean(session), refetchInterval: session ? 2000 : false,
   });
   const stop = useMutation({ mutationFn: () => api.post(ws(`/v1/sessions/${session!.id}/events`), { events: [{ type: "user.interrupt" }] }) });
-  return <Card className="stack">
+  return <Card className="ui-stack">
     <strong>{app.t("Live MCP test", "真实 MCP 试运行")}</strong>
     {!session ? <>
-      <label className="ui-field"><span>{app.t("Model", "模型")}</span><select className="ui-input" aria-label={app.t("Model", "模型")} value={model || models.ready[0] || ""} onChange={(e) => setModel(e.target.value)}>
+      {models.error && <div role="alert" className="err">{models.error.message}<Button onClick={models.retry}>{app.t("Retry models", "重试模型加载")}</Button></div>}
+      {!models.loading && !models.ready.length && <Link to={`/w/${app.workspaceId}/models`}>{app.t("Configure a model", "配置模型")}</Link>}
+      <label className="ui-field"><span>{app.t("Model", "模型")}</span><select className="ui-input" aria-label={app.t("Model", "模型")} disabled={start.isPending} value={model || models.ready[0] || ""} onChange={(e) => setModel(e.target.value)}>
         {!models.ready.length && <option value="">{app.t("No runnable model", "暂无可运行模型")}</option>}
         {models.ready.map((id) => <option key={id} value={id}>{id}</option>)}
       </select></label>
-      <label className="ui-field"><span>{app.t("Debug environment", "调试环境")}</span><select className="ui-input" aria-label={app.t("Debug environment", "调试环境")} value={environment} onChange={(e) => setEnvironment(e.target.value)}>
+      <label className="ui-field"><span>{app.t("Debug environment", "调试环境")}</span><select className="ui-input" aria-label={app.t("Debug environment", "调试环境")} disabled={start.isPending} value={environment} onChange={(e) => setEnvironment(e.target.value)}>
         <option value={BUILTIN_LOCAL_ENVIRONMENT_ID}>{app.t("Local · built-in", "本地 · 内置")}</option>
         {environments.data?.data.filter((env) => env.id !== BUILTIN_LOCAL_ENVIRONMENT_ID && !env.archived_at).map((env) => <option key={env.id} value={env.id}>{env.name || env.id}</option>)}
       </select></label>
@@ -64,6 +66,7 @@ export default function McpDebugSession({ prepare }: { prepare: () => Promise<Mc
       {stop.isSuccess && <p className="hint">{app.t("Interrupt submitted. Follow the Session events for settlement.", "中断已提交，请通过会话事件确认停止结果。")}</p>}
       <Transcript sessionStatus={activeSession.data?.status ?? session.status} base={ws(`/v1/sessions/${session.id}`)} queryKey={["session-events", app.workspaceId, session.id]} placeholder={app.t("Describe the MCP operation to test…", "描述要测试的 MCP 操作…")} />
     </>}
-    {(start.error || stop.error) instanceof Error && <div className="err">{(start.error || stop.error)?.message}</div>}
+    {activeSession.error instanceof Error && <div role="alert" className="err">{activeSession.error.message}<Button onClick={() => void activeSession.refetch()}>{app.t("Retry Session status", "重试会话状态")}</Button></div>}
+    {(start.error || stop.error) instanceof Error && <div role="alert" className="err">{(start.error || stop.error)?.message}</div>}
   </Card>;
 }

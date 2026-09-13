@@ -300,7 +300,7 @@ a {
   font-family: var(--font-mono);
   font-size: 10px;
   background: var(--soft);
-  color: var(--fg3);
+  color: var(--fg2);
   border-radius: var(--ui-radius-control);
   padding: 2px 5px;
 }
@@ -547,7 +547,7 @@ a {
   border-left: 2px solid var(--accent);
   background: var(--soft);
 }
-.page-purpose aside small { color: var(--fg3); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.page-purpose aside small { color: var(--fg2); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .page-purpose aside strong { font-size: 12px; line-height: 1.45; }
 .page-intro h1,
 .readiness-head h2 {
@@ -1810,3 +1810,13 @@ a {
 .local-setup-page input {
   width: 100%;
 }
+
+/* MCP definitions and discovery metadata are unbounded user-facing strings.
+   Contain long URLs/schemas within their component at narrow widths. */
+.mcp-config, .mcp-detail, .mcp-fields { min-width: 0; }
+.mcp-config .template-card, .mcp-detail, .mcp-config code { overflow-wrap: anywhere; }
+.mcp-config .ui-input, .mcp-detail .ui-input { min-width: 0; max-width: 100%; }
+.mcp-fields { border: 0; padding: 0; margin: 0; }
+.mcp-detail pre { max-width: 100%; }
+
+.mcp-detail .mut a { text-decoration: underline; text-underline-offset: 2px; }

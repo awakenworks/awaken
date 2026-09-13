@@ -1,4 +1,4 @@
-import { ClipboardCheck, TriangleAlert, X } from "@awaken/ui/icons";
+import { ClipboardCheck, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, ChatApproval, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard as SharedToolCallCard } from "@awaken/ui";
 // The session transcript: a pure view over one SessionLog owner, with inline
 // HITL and a composer. The default export is the thin standalone owner used by
@@ -349,11 +349,13 @@ export function TranscriptView({
             return null;
           case "session.status_idle": {
             const sr = ("stop_reason" in ev ? ev.stop_reason : { type: "?" }) as { type: string };
-            if (sr.type === "end_turn") return null;
+            // Approval cards own pending actions. A historical requires_action
+            // frame must not remain as a warning after that action is resolved.
+            if (sr.type === "end_turn" || sr.type === "requires_action") return null;
             return (
               <InlineNotice
                 key={ev.id}
-                tone={sr.type === "retries_exhausted" ? "warning" : "neutral"} icon={sr.type === "requires_action" ? <TriangleAlert /> : <X />}
+                tone={sr.type === "retries_exhausted" ? "warning" : "neutral"} icon={<X />}
               >
                 <span className="mono" style={{ fontSize: 11.5 }}>
                   {sr.type}
@@ -383,11 +385,9 @@ export function TranscriptView({
           case "agent.mcp_tool_result":
             return null; // folded into its tool card
           default:
-            return (
-              <div key={ev.id} className="mut mono" style={{ fontSize: 11 }}>
-                [{ev.type}]
-              </div>
-            );
+            // Usage, internal spans and lifecycle receipts stay in the complete
+            // Session log/Trace. They are not conversation messages.
+            return null;
         }
         })}
         {pendingMessage && !log.some((event) => event.type === "user.message" && textOf("content" in event ? (event.content as ContentBlock[]) : undefined).endsWith(pendingMessage)) && (
