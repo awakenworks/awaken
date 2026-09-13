@@ -5,6 +5,7 @@
 //! identities and persists the resulting state transitions.
 
 use async_trait::async_trait;
+use awaken_runtime_contract::llm::TokenUsage;
 use awaken_runtime_contract::{
     ExecutableAgentSnapshot, Message, RunId, TranscriptRange, TranscriptSnapshotRef,
 };
@@ -83,6 +84,13 @@ pub enum GradeDecision {
 pub struct Grade {
     pub decision: GradeDecision,
     pub explanation: String,
+    /// What the Judge Run itself cost, read from its own committed Thread usage
+    /// cell — the same recorded truth a Session's usage is projected from.
+    /// `None` means the Judge Thread committed no usage at all (a deterministic
+    /// or non-reporting backend), which is not the same fact as a provider that
+    /// reported zero. Absent in Grades committed before grading was observed.
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
 }
 
 /// Immutable evidence that one Worker result was graded. The message range is
@@ -183,6 +191,9 @@ pub fn parse_grade(reply: &str) -> Result<Grade, GraderError> {
     Ok(Grade {
         decision: wire.result,
         explanation: wire.explanation,
+        // The Judge reports a verdict, never its own cost. The Grader attaches
+        // the observed usage after the Run it just executed has committed.
+        usage: None,
     })
 }
 
@@ -620,6 +631,7 @@ mod tests {
         Grade {
             decision,
             explanation: "because".into(),
+            usage: None,
         }
     }
 

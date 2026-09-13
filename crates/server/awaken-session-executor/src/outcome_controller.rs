@@ -262,6 +262,7 @@ pub(crate) fn project_report(report: awaken_ext_goal::controller::Report) -> Hos
                 iteration: iteration.iteration,
                 result: iteration.result.token().into(),
                 explanation: iteration.explanation,
+                usage: iteration.usage,
             })
             .collect(),
     }

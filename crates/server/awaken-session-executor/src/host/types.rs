@@ -209,6 +209,9 @@ pub struct HostOutcomeIteration {
     pub iteration: u32,
     pub result: String,
     pub explanation: String,
+    /// What grading this round cost, observed on the Judge Run's own Thread;
+    /// `None` where the round was never graded or the backend recorded none.
+    pub usage: Option<awaken_agent_contract::audit::model_request::TokenUsage>,
 }
 
 /// The neutral outcome report: the ordered evaluation rounds.

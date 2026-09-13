@@ -459,6 +459,22 @@ pub struct SpanModelUsage {
     pub speed: Option<String>,
 }
 
+impl From<awaken_agent_contract::audit::model_request::TokenUsage> for SpanModelUsage {
+    /// The single projection of the runtime's neutral counters onto this wire
+    /// shape. Every span that reports a request's cost goes through here, so
+    /// the four-way field renaming is written once. `speed` is not a token
+    /// counter and no recorded observation carries it.
+    fn from(usage: awaken_agent_contract::audit::model_request::TokenUsage) -> Self {
+        Self {
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+            cache_read_input_tokens: usage.cache_read_tokens,
+            cache_creation_input_tokens: usage.cache_creation_tokens,
+            speed: None,
+        }
+    }
+}
+
 /// `BetaManagedAgentsSession` response (minimal but SDK-parseable).
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -939,9 +955,9 @@ pub enum OutboundKind {
     /// (`span.outcome_evaluation_ongoing`), between the start and end spans.
     #[serde(rename = "span.outcome_evaluation_ongoing")]
     SpanOutcomeEvaluationOngoing { outcome_id: String, iteration: u32 },
-    /// `BetaManagedAgentsSpanOutcomeEvaluationEndEvent`, less its `usage`: the
-    /// grading model's token usage is not observed by the outcome controller
-    /// yet, and an invented zero would be a lie the wire cannot take back.
+    /// `BetaManagedAgentsSpanOutcomeEvaluationEndEvent`. `usage` is what the
+    /// Judge Run for this round actually cost, read from its own committed
+    /// Thread usage cell — the same recorded truth `session.usage` projects.
     #[serde(rename = "span.outcome_evaluation_end")]
     SpanOutcomeEvaluationEnd {
         outcome_id: String,
@@ -950,6 +966,11 @@ pub enum OutboundKind {
         iteration: u32,
         result: String,
         explanation: String,
+        /// The SDK declares this required, so it is always emitted. Zeroes here
+        /// mean the grading backend recorded no counters, which is what a zero
+        /// `TokenUsage` means everywhere else in this repository; they are not
+        /// a claim that grading was free of an unobserved cost.
+        usage: SpanModelUsage,
     },
 }
 
