@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import _arch_fitness
+import _cancel_safety_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
 import _execution_ownership_fitness
@@ -1756,6 +1757,7 @@ def main() -> int:
     _managed_protocol_boundary.selftest()
     _provider_env_fitness.selftest()
     _wire_closure_fitness.selftest()
+    _cancel_safety_fitness.selftest()
     selftest_builtin_tool_ownership()
     selftest_no_direct_transport_dependency()
     selftest_tenancy_is_required()
@@ -1784,6 +1786,7 @@ def main() -> int:
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _wire_closure_fitness.check_all(REPO_ROOT, CRATES)
+        + _cancel_safety_fitness.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
         + _arch_fitness.check_all(architecture_fitness_specs())
         + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)

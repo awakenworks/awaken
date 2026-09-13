@@ -159,8 +159,11 @@ pre-push:
     documentation:
       run: scripts/ci/check-docs.sh
 
+    # --push is --quick plus workspace clippy (-D warnings) and the formal
+    # coverage ledger check: the two ways main has gone red after a green
+    # pre-commit, refused here before the push instead of at the full gate.
     rust-quick:
-      run: scripts/ci/check-rust.sh --quick
+      run: scripts/ci/check-rust.sh --push
 
     frontend-quick:
       run: scripts/ci/check-frontend.sh --quick
