@@ -6,7 +6,7 @@
 # Both binaries are built ON THE HOST (rustc 1.96) and copied in — a fast copy, no
 # in-container Rust toolchain. ubuntu:24.04 matches the host glibc 2.39 and provides
 # libssl3 the server binary links; `sh` for the hand's bash tool.
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bubblewrap ca-certificates libssl3 python3 \
