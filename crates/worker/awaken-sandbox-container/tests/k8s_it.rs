@@ -158,6 +158,95 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         ContainerState::Running
     ));
     let terminal_fence = effect_fence(&scope, "terminal", "lifecycle-owner", 2);
+    // K1d deployment enables PVC after this exact no-claim V2 Pod was created.
+    // Recovery must still reject drift. Only fenced terminal observation may
+    // recover its historical configuration; preparation/disposal reuse the
+    // original handle and existing participant/UID/fence validation. No Create
+    // call is made on the replacement provider, so no replacement PVC is owned.
+    let replacement_runtime = Arc::new(live_runtime().await.unwrap().with_continuation_volume(
+        K8sContinuationVolume {
+            storage_class_name: Some("local-path".into()),
+            size: "1Gi".into(),
+        },
+    ));
+    let replacement = ContainerProvider::new(replacement_runtime, fixture_image());
+    let mut observation =
+        awaken_sandbox_container::ContainerEnvironmentAdoption::new(&desired, &first_handle);
+    assert!(
+        matches!(
+            replacement
+                .observe_environment_for_effect(observation, &terminal_fence)
+                .await
+                .unwrap(),
+            pc::SandboxObservation::Incompatible { .. }
+        ),
+        "K1d ordinary recovery cannot consume historical policy"
+    );
+    observation.observation_purpose =
+        awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup;
+    // K1e matching historical configuration is not physical identity or fence
+    // authority. Corrupt only the Pod UID, then only the owner at the original
+    // epoch; both observations must reject and leave the real Pod unchanged.
+    let mut foreign_handle = serde_json::to_value(&first_handle).unwrap();
+    let uid = foreign_handle
+        .pointer_mut("/payload/previous/runtime_handle/pod_uid")
+        .expect("V2 fixture owns an explicit Pod UID");
+    *uid = serde_json::json!("not-the-created-pod");
+    let foreign_handle: pc::SandboxHandle = serde_json::from_value(foreign_handle).unwrap();
+    let mut foreign_observation = observation;
+    foreign_observation.handle = &foreign_handle;
+    assert!(
+        matches!(
+            replacement
+                .observe_environment_for_effect(foreign_observation, &terminal_fence)
+                .await
+                .unwrap(),
+            pc::SandboxObservation::Incompatible { .. }
+        ),
+        "K1e foreign UID rejected"
+    );
+    let foreign_fence = effect_fence(&scope, "terminal", "foreign-owner", 1);
+    assert!(
+        matches!(
+            replacement
+                .observe_environment_for_effect(observation, &foreign_fence)
+                .await
+                .unwrap(),
+            pc::SandboxObservation::Incompatible { .. }
+        ),
+        "K1e foreign same-epoch owner rejected"
+    );
+    assert_eq!(
+        runtime.inspect(&id).await.unwrap(),
+        ContainerState::Running,
+        "K1e no destructive observation"
+    );
+    assert!(
+        matches!(
+            replacement
+                .observe_environment_for_effect(observation, &terminal_fence)
+                .await
+                .unwrap(),
+            pc::SandboxObservation::Ready | pc::SandboxObservation::Terminal { .. }
+        ),
+        "K1d terminal observation retains exact instance"
+    );
+    let retried = replacement
+        .prepare_terminal_environment_for_effect(
+            &desired,
+            Some(&first_handle),
+            Some(&create_fence),
+            &terminal_fence,
+            &EffectAuthority::new(&terminal_fence),
+        )
+        .await
+        .unwrap()
+        .expect("K1d old instance remains for cleanup");
+    assert_eq!(
+        retried.handle(),
+        first_handle,
+        "K1d no rewritten historical binding"
+    );
     retried
         .prepare_disposal_for_effect(
             &terminal_fence,

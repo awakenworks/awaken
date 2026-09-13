@@ -970,8 +970,28 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             fence.validate_identity()?;
         }
         if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
-            let (_, expected) = self.adoption_plan(adoption.spec)?;
-            if stored != &expected {
+            let (plan, expected) = self.adoption_plan(adoption.spec)?;
+            let historical_match = if stored != &expected
+                && purpose == ContainerObservationPurpose::TerminalCleanup
+                && effect_fence.is_some()
+            {
+                self.runtime
+                    .historical_terminal_configuration(
+                        adoption.handle.container_payload()?.runtime_handle.as_ref(),
+                    )
+                    .map_err(err)?
+                    .is_some_and(|configuration| {
+                        container_adoption_fingerprint(
+                            adoption.spec,
+                            &plan,
+                            self.resident_hand.as_ref(),
+                            &configuration,
+                        ) == *stored
+                    })
+            } else {
+                false
+            };
+            if stored != &expected && !historical_match {
                 return Ok(pc::SandboxObservation::Incompatible {
                     reason: format!(
                         "container provider-effective adoption configuration differs from its durable handle (expected={expected}, stored={stored})"

@@ -226,11 +226,29 @@ ObserveAttemptReturn ==
     /\ returnObserved' = TRUE
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, deletedFactPending, revision, processUp, reconstructed, prepared, removedTargets>>
 
-RecoverParticipant(participant) ==
+\* Configuration equality only admits an observation; the physical adapter
+\* still owns exact instance evidence. Historical fallback is terminal+fenced,
+\* never an ordinary recovery grant. Booleans abstract trusted provider facts,
+\* not arbitrary client assertions or a proof of Kubernetes API correctness.
+ConfigurationAllowsObservation(current, historical, terminal, fenced) ==
+    current \/ (historical /\ terminal /\ fenced)
+
+RecoverParticipantObserved(participant, current, historical, terminal, fenced, exactInstance) ==
     /\ processUp /\ cleanupPhase = "requested"
+    /\ ConfigurationAllowsObservation(current, historical, terminal, fenced)
+    /\ exactInstance
     /\ participant \in Participants \ reconstructed
     /\ reconstructed' = reconstructed \cup {participant}
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, deletedFactPending, revision, processUp, physicalActive, returnObserved, prepared, removedTargets>>
+
+RecoverParticipant(participant) ==
+    \E current, historical, terminal, fenced, exactInstance \in BOOLEAN:
+        RecoverParticipantObserved(participant, current, historical, terminal, fenced, exactInstance)
+
+HistoricalObservationSafety ==
+    [][\A p \in Participants, current, historical, terminal, fenced, exactInstance \in BOOLEAN:
+        RecoverParticipantObserved(p, current, historical, terminal, fenced, exactInstance)
+        => (exactInstance /\ (current \/ (historical /\ terminal /\ fenced)))]_vars
 
 PrepareParticipant(participant, effect) ==
     /\ processUp /\ cleanupPhase = "requested"
