@@ -9,6 +9,8 @@
 mod agent_inputs;
 mod compile;
 mod config;
+/// Reusable MCP authoring definitions; execution remains Agent/Session-owned.
+pub mod mcp_config;
 mod store;
 
 pub use agent_inputs::{AgentEnvironmentBinding, AgentInputConfig};

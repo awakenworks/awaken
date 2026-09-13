@@ -12,16 +12,19 @@ export const isTemplateWrite = (name) => WRITE.has(name);
 
 export async function startTemplateMcp(scenario, options = {}) {
   const token = randomBytes(24).toString('hex');
-  const state = { calls: [], effects: [], replays: 0, unauthorized: 0, lostResponses: 0 };
+  const accounts = options.accounts ?? { [token]: "default" };
+  const state = { authentications: [], calls: [], effects: [], replays: 0, unauthorized: 0, lostResponses: 0 };
   const byKey = new Map();
   const transports = new Set();
   const server = http.createServer(async (req, res) => {
-    if (req.headers.authorization !== `Bearer ${token}`) {
+    const account = accounts[req.headers.authorization?.replace(/^Bearer /, "") ?? ""];
+    if (!account) {
       state.unauthorized++;
       res.writeHead(401, { 'www-authenticate': 'Bearer', 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
     }
+    state.authentications.push(account);
     const connector = req.url?.split('?')[0]?.split('/').at(-1);
     const names = scenario.tools[connector];
     if (!names) { res.writeHead(404).end(); return; }
@@ -38,7 +41,7 @@ export async function startTemplateMcp(scenario, options = {}) {
         inputSchema,
         annotations: { readOnlyHint: !write, destructiveHint: false, idempotentHint: write },
       }, async (input) => {
-        state.calls.push({ connector, name, input: structuredClone(input) });
+        state.calls.push({ connector, name, account, input: structuredClone(input) });
         let value;
         if (write) {
           const key = `${connector}:${input.external_id}`;
@@ -67,6 +70,7 @@ export async function startTemplateMcp(scenario, options = {}) {
           else value = records.length === 1 ? records[0] : records;
           if (value === undefined) return { isError: true, content: [{ type: 'text', text: 'record_not_found' }] };
         }
+        if (options.accounts && !write) value = { result: value, credential_account: account };
         return { content: [{ type: 'text', text: JSON.stringify(value) }] };
       });
     }

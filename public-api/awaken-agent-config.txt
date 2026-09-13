@@ -5,6 +5,52 @@ pub use awaken_agent_config::ExecutableAgentSnapshot
 pub use awaken_agent_config::ExecutableAgentSnapshotBuilder
 pub use awaken_agent_config::ModelTarget
 pub use awaken_agent_config::ScopeId
+pub mod awaken_agent_config::mcp_config
+pub enum awaken_agent_config::mcp_config::McpConfigError
+pub awaken_agent_config::mcp_config::McpConfigError::Conflict
+pub awaken_agent_config::mcp_config::McpConfigError::Invalid(alloc::string::String)
+pub awaken_agent_config::mcp_config::McpConfigError::Storage(alloc::string::String)
+pub struct awaken_agent_config::mcp_config::McpCatalogSnapshot
+pub awaken_agent_config::mcp_config::McpCatalogSnapshot::revision: u64
+pub awaken_agent_config::mcp_config::McpCatalogSnapshot::schema_version: u32
+pub awaken_agent_config::mcp_config::McpCatalogSnapshot::servers: alloc::vec::Vec<awaken_agent_config::mcp_config::McpServerDefinition>
+impl awaken_agent_config::mcp_config::McpCatalogSnapshot
+pub fn awaken_agent_config::mcp_config::McpCatalogSnapshot::digest(&self) -> core::result::Result<alloc::string::String, awaken_agent_config::mcp_config::McpConfigError>
+pub fn awaken_agent_config::mcp_config::McpCatalogSnapshot::validate(&self) -> core::result::Result<(), awaken_agent_config::mcp_config::McpConfigError>
+pub struct awaken_agent_config::mcp_config::McpConfiguration
+pub awaken_agent_config::mcp_config::McpConfiguration::catalog: awaken_agent_config::mcp_config::McpCatalogSnapshot
+pub awaken_agent_config::mcp_config::McpConfiguration::catalog_source: core::option::Option<alloc::string::String>
+pub awaken_agent_config::mcp_config::McpConfiguration::catalog_url: core::option::Option<alloc::string::String>
+pub awaken_agent_config::mcp_config::McpConfiguration::defaults: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_agent_config::mcp_config::McpCredentialPreference>
+pub awaken_agent_config::mcp_config::McpConfiguration::local: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_agent_config::mcp_config::McpServerDefinition>
+pub awaken_agent_config::mcp_config::McpConfiguration::revision: u64
+pub awaken_agent_config::mcp_config::McpConfiguration::workspace_id: alloc::string::String
+impl awaken_agent_config::mcp_config::McpConfiguration
+pub fn awaken_agent_config::mcp_config::McpConfiguration::advance(&mut self, u64) -> core::result::Result<(), awaken_agent_config::mcp_config::McpConfigError>
+pub fn awaken_agent_config::mcp_config::McpConfiguration::apply_catalog(&mut self, awaken_agent_config::mcp_config::McpCatalogSnapshot) -> core::result::Result<bool, awaken_agent_config::mcp_config::McpConfigError>
+pub fn awaken_agent_config::mcp_config::McpConfiguration::new(alloc::string::String, awaken_agent_config::mcp_config::McpCatalogSnapshot) -> Self
+pub fn awaken_agent_config::mcp_config::McpConfiguration::put_local(&mut self, awaken_agent_config::mcp_config::McpServerDefinition) -> core::result::Result<(), awaken_agent_config::mcp_config::McpConfigError>
+pub fn awaken_agent_config::mcp_config::McpConfiguration::remove_local(&mut self, &str)
+pub fn awaken_agent_config::mcp_config::McpConfiguration::server(&self, &str) -> core::option::Option<&awaken_agent_config::mcp_config::McpServerDefinition>
+pub fn awaken_agent_config::mcp_config::McpConfiguration::validate(&self) -> core::result::Result<(), awaken_agent_config::mcp_config::McpConfigError>
+pub struct awaken_agent_config::mcp_config::McpCredentialPreference
+pub awaken_agent_config::mcp_config::McpCredentialPreference::target_fingerprint: alloc::string::String
+pub awaken_agent_config::mcp_config::McpCredentialPreference::vault_credential_id: alloc::string::String
+pub struct awaken_agent_config::mcp_config::McpServerDefinition
+pub awaken_agent_config::mcp_config::McpServerDefinition::description: alloc::string::String
+pub awaken_agent_config::mcp_config::McpServerDefinition::icon: core::option::Option<alloc::string::String>
+pub awaken_agent_config::mcp_config::McpServerDefinition::id: alloc::string::String
+pub awaken_agent_config::mcp_config::McpServerDefinition::name: alloc::string::String
+pub awaken_agent_config::mcp_config::McpServerDefinition::prompts_as_skills: bool
+pub awaken_agent_config::mcp_config::McpServerDefinition::transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding
+impl awaken_agent_config::mcp_config::McpServerDefinition
+pub fn awaken_agent_config::mcp_config::McpServerDefinition::target_fingerprint(&self) -> core::result::Result<alloc::string::String, awaken_agent_config::mcp_config::McpConfigError>
+pub fn awaken_agent_config::mcp_config::McpServerDefinition::validate(&self) -> core::result::Result<(), awaken_agent_config::mcp_config::McpConfigError>
+pub trait awaken_agent_config::mcp_config::McpConfigurationRepository: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_config::mcp_config::McpConfigurationRepository::get_mcp_configuration(&self, &str) -> core::result::Result<core::option::Option<awaken_agent_config::mcp_config::McpConfiguration>, awaken_agent_config::mcp_config::McpConfigError>
+pub fn awaken_agent_config::mcp_config::McpConfigurationRepository::mcp_configuration_workspaces(&self) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_agent_config::mcp_config::McpConfigError>
+pub fn awaken_agent_config::mcp_config::McpConfigurationRepository::put_mcp_configuration(&self, u64, &awaken_agent_config::mcp_config::McpConfiguration) -> core::result::Result<(), awaken_agent_config::mcp_config::McpConfigError>
+pub fn awaken_agent_config::mcp_config::validate_mcp_configuration_write(u64, &awaken_agent_config::mcp_config::McpConfiguration) -> core::result::Result<(), awaken_agent_config::mcp_config::McpConfigError>
 #[non_exhaustive] pub enum awaken_agent_config::AgentKind
 pub awaken_agent_config::AgentKind::A2a(awaken_runtime_contract::resolved::A2aBackend)
 pub awaken_agent_config::AgentKind::Acp(awaken_runtime_contract::resolved::AcpBackend)

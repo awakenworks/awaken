@@ -49,7 +49,7 @@ export default function SettingsSurface() {
         {managedRuntime && <Card>
           <h2>{app.t("Connections & access", "连接与访问")}</h2>
           {link(app.t("API & protocols", "API 与协议"), `${base}/protocols`, app.t("Choose the client, credential type, endpoint, and runnable example", "选择客户端、凭据类型、端点与可运行示例"))}
-          {link(app.t("MCP overview", "MCP 概览"), `${base}/mcp`, app.t("Inspect Agent-owned MCP integrations and ToolSet policy", "检查 Agent 管理的 MCP 集成与 ToolSet 策略"))}
+          {link(app.t("MCP servers", "MCP 服务器"), `${base}/mcp`, app.t("Configure servers, choose credentials, and test with an Agent", "配置服务器、选择凭证并使用 Agent 测试"))}
           {link(app.t("Webhooks", "Webhooks"), `${base}/webhooks`, app.t("Send signed lifecycle events and monitor delivery failures", "发送已签名生命周期事件并监控投递失败"))}
           {link(app.t("A2A federation", "A2A 联邦"), `${base}/a2a-servers`, app.t("Inspect the public Agent Card and federated message endpoints", "检查公开 Agent Card 与联邦消息端点"))}
           {accessManagement && link(app.t("Service API keys", "Service API Key"), `${base}/access`, app.t("Create scoped credentials for trusted backends", "为可信后端创建限定范围的凭据"))}

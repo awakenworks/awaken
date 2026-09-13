@@ -95,27 +95,37 @@ Environment inspection may produce a secret-free UI proposal only. The runtime s
 ### Credential source — the stored row (secret-free)
 
 ```rust
-struct CredentialSource {                     // supersedes this page's earlier `CredentialRecord`
-    id, workspace_id,
-    kind: CredentialKind,                     // Vault | Oauth (`Env` decodes legacy rows but cannot execute)
-    descriptor: Option<CredentialDescriptor>, // canonical provider + material + exact target/usage declarations
-    provider_id: Option<String>,               // legacy-only; forbidden when descriptor is present
-    protocol_endpoint_id: Option<String>,     // optional exact endpoint proof/scope
-    adapter_registration_id: Option<String>,
-    auth: CredentialAuth,                     // neutral; ACL maps the managed wire tags
-    material_ref: Option<SecretRef>,          // → SecretStore; None for OAuth helpers
-    status, max_concurrency,
-    account_id: Option<CredentialAccountId>,  // shared upstream-account quota bucket
-    version,
+struct CredentialSource {                     // secret-free internal source
+    id, workspace_id, version,
+    kind: CredentialKind,                     // storage/materialization origin
+    descriptor: Option<CredentialDescriptor>, // provider, purpose, audience, usage
+    provider_id: Option<String>,              // legacy provider scope; exclusive with descriptor
+    protocol_endpoint_id: Option<String>,    // optional exact model endpoint scope
+    env_key: Option<String>,
+    material_ref: Option<SecretRef>,          // SecretStore locator, NOT a Managed Vault ID
+    auxiliary_material_refs,
+    oauth_command, worker_local_binding,
+    status, replacement_of,
 }
-enum CredentialAuth {                         // one Vault holds BOTH LLM and MCP credentials
-    ApiKey { env_key: Option<String> },       // LLM inference key
-    Bearer { mcp_server_url },                 // MCP static bearer
-    OAuth  { /* refresh material */ },         // MCP OAuth (auto-refresh)
-    EnvVar { secret_name, networking },        // generic egress secret
+struct ManagedVaultCredential {
+    id, workspace_id, vault_id, source_id,
+    auth: ManagedCredentialAuth,
+    revision, lifecycle, display_name, metadata,
 }
-enum Networking { Unrestricted, Limited { allowed_hosts: Vec<String> } }
+enum ManagedCredentialAuth {                 // official Managed Vault child shapes
+    StaticBearer { mcp_server_url },
+    McpOauth { mcp_server_url, expires_at, refresh },
+    EnvironmentVariable { secret_name, networking, injection_location },
+}
 ```
+
+The internal credential subsystem serves model, MCP, Repository and other typed
+purposes. The public Managed Vault is a narrower container: its `type` is always
+`vault`, while each child declares its `auth.type`. LLM Provider credentials do
+not require a Managed Vault child and Session `vault_ids` do not select the main
+model's API key. MCP candidate selection reads the existing child-to-source
+relationship and validates the source's canonical MCP target/usage; container
+names and UI categories never grant eligibility.
 
 ### Selection — binding + pool
 
@@ -920,3 +930,61 @@ position, preserving route revision and custody. An unavailable authority fails
 publication rather than replacing that candidate with another supply source.
 See [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)
 and [ADR-0061](../adr/0061-selectable-identity-and-platform-managed-resource-scopes.md).
+
+## MCP Configuration, Defaults, And Online Inspection
+
+Control owns `awaken-agent-config::mcp_config::McpConfiguration`: one bounded
+Workspace authoring aggregate for local server definitions, the last accepted
+cloud catalog snapshot, and default Credential IDs pinned to target fingerprints.
+SQLite and PostgreSQL implement its repository port in the existing Admin store;
+the converged migration stream adds `admin_mcp_configuration`. The retired
+independent Agent-MCP tables remain retired. Credentials stay in their existing
+Vault/Source/SecretStore; no Server-Credential eligibility table is persisted.
+
+A definition contains name, description, optional HTTPS icon, an explicit HTTP
+or Sandbox stdio transport, and optional Prompt exposure. The config HTTP codec
+is strict even though retained Agent HTTP bindings have a permissive legacy
+shape. `local:` and `catalog:` keys cannot overwrite each other. A Workspace CAS
+protects every local edit/default/source update; cloud snapshots are validated
+as a complete version before replacement, reject rollback and conflicting
+same-version content, and preserve local definitions and account defaults. A new
+configured source starts its own revision sequence. Startup and five-minute
+refresh use the same application operation as manual sync; failed downloads
+leave the last accepted snapshot available offline. The bundled JSON is an
+initial publication in that same format, not a frontend catalog. Its endpoints
+follow the service owners' documentation: [Notion](https://developers.notion.com/guides/mcp/get-started-with-mcp),
+[Slack](https://docs.slack.dev/ai/slack-mcp-server/), [Linear](https://linear.app/docs/mcp),
+[GitHub](https://github.com/github/github-mcp-server), and [Sentry](https://mcp.sentry.dev/).
+A preset is connection metadata, not a pre-authorized SaaS account. OAuth grant
+creation remains the service's flow; this page accepts existing Vault credentials.
+
+The MCP page and Vault service grouping query existing active matching
+credentials. Exact URL normalization, Workspace, credential lifecycle and
+`CredentialSource::validate_access_target` determine eligibility. API-key read /
+write policies protect selection and inspection; availability is not permission.
+Vault names no longer determine available credential types.
+
+Selecting a server instantiates its existing Agent binding and ToolSet policy.
+The optional default Vault is supplied to the first Session only, in explicit
+order; pinning a shared account to the Agent is a separate opt-in. An existing
+published credential wins over Session Vault selection. Debug prepares an exact
+credential revision for an isolated ordinary Agent publication, then creates a
+normal Managed Session; it does not add a debug execution engine. The shared
+Transcript renders native, MCP and custom tool calls through the same approval
+and result projection. Actual Session status owns message admission.
+
+HTTP inspection reuses the existing MCP client for anonymous/Bearer/OAuth
+initialization and tool discovery. The public OAuth validation operation delegates
+to the same inspection implementation while retaining its wire shape. Reports
+identify the Control execution location and time; they do not certify a different
+Worker network. Metadata that echoes the supplied token is redacted. Sandbox
+stdio is tested in a real Session, never launched by Control; uploaded scripts
+use their explicit `/mnt/session/uploads/...` path. This authoring transport has
+no secret-environment binding: selecting a Vault is not permission to export its
+secrets into stdio arguments or environment variables. Such delivery requires an
+explicit environment binding beyond this configuration surface.
+
+Cause-effect tables live with domain, repository, HTTP, browser and SDK E2E tests.
+They cover account ambiguity, target/Workspace mismatch, retirement without
+fallback, exact publication pins, denied effects, CAS races, cloud replay and
+corruption, offline restart, mixed Vault auth types and real Namespace stdio.

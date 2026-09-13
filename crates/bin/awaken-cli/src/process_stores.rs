@@ -24,6 +24,7 @@ pub(super) struct ControlStores {
     pub(super) catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     pub(super) credentials: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
     pub(super) secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    pub(super) mcp_config: Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>,
     pub(super) profiles: Arc<dyn awaken_config_resolver::InferenceProfileStore>,
     pub(super) resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>,
     /// Authored webhook endpoints are an id-addressed config resource beside
@@ -37,6 +38,62 @@ pub(super) struct ControlStores {
     pub(super) erasure_jobs: Arc<dyn awaken_data_subject_application::ErasureJobRepo>,
     pub(super) environments: Arc<dyn awaken_environment_contract::EnvRegistry>,
     pub(super) sandbox_policies: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
+}
+
+/// Port views over one admin aggregate; no independently opened MCP database.
+pub(super) struct AdminStoreViews {
+    pub(super) mcp: Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>,
+    pub(super) profiles: Arc<dyn awaken_config_resolver::InferenceProfileStore>,
+    pub(super) resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>,
+    pub(super) webhooks: Arc<dyn awaken_config_resolver::WebhookStore>,
+}
+impl AdminStoreViews {
+    fn from_store<T>(store: T) -> Self
+    where
+        T: awaken_agent_config::mcp_config::McpConfigurationRepository
+            + awaken_config_resolver::InferenceProfileStore
+            + awaken_config_resolver::AgentInputBindingRepository
+            + awaken_config_resolver::WebhookStore
+            + 'static,
+    {
+        let store = Arc::new(store);
+        Self {
+            mcp: store.clone(),
+            profiles: store.clone(),
+            resources: store.clone(),
+            webhooks: store,
+        }
+    }
+}
+pub(super) async fn open_admin_store_views(
+    backend: &awaken_control::StoreBackend,
+    mode: PostgresSchemaMode,
+) -> Result<AdminStoreViews, String> {
+    ensure_store_parent(backend)?;
+    match backend {
+        awaken_control::StoreBackend::Sqlite(path) => {
+            let store = awaken_admin_config_api::SqliteAdminStore::open(&path.to_string_lossy())
+                .map_err(|error| format!("open admin SQLite {}: {error}", path.display()))?;
+            Ok(AdminStoreViews::from_store(store))
+        }
+        awaken_control::StoreBackend::Postgres(url) => {
+            // This store owns a blocking client/runtime; never nest it on the
+            // async startup worker. Schema mode remains deployment authority.
+            let url = url.clone();
+            let store = tokio::task::spawn_blocking(move || match mode {
+                PostgresSchemaMode::Migrate => {
+                    awaken_admin_config_api::PostgresAdminStore::connect(&url)
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_admin_config_api::PostgresAdminStore::connect_existing(&url)
+                }
+            })
+            .await
+            .map_err(|error| format!("join admin Postgres connection: {error}"))?
+            .map_err(|error| format!("connect admin Postgres: {error}"))?;
+            Ok(AdminStoreViews::from_store(store))
+        }
+    }
 }
 
 pub(super) struct CoordinatorStores {

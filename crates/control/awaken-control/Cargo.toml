@@ -19,6 +19,7 @@ authority = "control"
 [dependencies]
 awaken-authorization-contract.workspace = true
 awaken-service-lifecycle.workspace = true
+awaken-outbound-http.workspace = true
 awaken-acp-contract.workspace = true
 awaken-deployment-contract.workspace = true
 # The config-authoring plane (config service + routers + resolver + tool catalog).
@@ -72,6 +73,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"
 url.workspace = true
+schemars = { version = "1", optional = true }
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
@@ -94,3 +96,10 @@ tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true
+
+[features]
+schema = ["dep:schemars", "awaken-agent-config/schema", "awaken-protocol-managed/schema"]
+
+[[example]]
+name = "export_mcp_schemas"
+required-features = ["schema"]

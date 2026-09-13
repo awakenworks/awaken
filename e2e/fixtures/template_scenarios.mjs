@@ -86,7 +86,7 @@ export function templateScenario(id, nonce) {
       records: { intercom: [source('CONV-7', { problem: 'The checkout total crashes when the optional cart is missing. The supplied repro.py is the affected minimal program.' })] },
       tools: { intercom: ['get_conversation', 'add_note'], atlassian: ['create_issue'], slack: ['post_message'] },
       files: { 'repro.py': 'def total(cart):\n    return sum(cart)\n\nprint(total(None))\n' },
-      task: `Read Intercom CONV-7. Run the mounted repro.py using bash/python3 and save its observed error to repro.log. Do not change the program. Create one Jira issue (external_id=CONV-7, source_id=CONV-7) with concrete reproduction steps and the actual error. Then add an Intercom internal note and Slack message linking the returned Jira URL (external_id=CONV-7-note and CONV-7-status). ${jsonInstruction} Fields: reproduced (boolean), error_type, ticket_id, note_id, status_id.`,
+      task: `Read Intercom CONV-7. Run the mounted repro.py using bash/python3 and save its observed error to repro.log. Do not change the program. Create one Jira issue (external_id=CONV-7, source_id=CONV-7) with concrete reproduction steps and the actual error. Then add an Intercom internal note and Slack message linking the returned Jira URL (external_id=CONV-7-note and CONV-7-status). ${jsonInstruction} Fields: reproduced (boolean), error_type (exception class name only, without the message), ticket_id, note_id, status_id.`,
       artifacts: ['result.json', 'repro.log'],
     },
     'data-analyst': {

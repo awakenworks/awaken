@@ -74,6 +74,7 @@ pub struct ControlDependencies {
     pub catalog: Arc<dyn CatalogRepo>,
     pub credentials: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
     pub secrets: Arc<dyn SecretStore>,
+    pub mcp_config: Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>,
     pub profiles: Arc<dyn InferenceProfileStore>,
     pub webhook_store: Arc<dyn WebhookStore>,
     pub resource_store: Arc<dyn AgentInputBindingRepository>,
@@ -159,6 +160,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         credentials,
         secrets,
         profiles,
+        mcp_config,
         webhook_store,
         resource_store,
         config_store,
@@ -207,6 +209,9 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         vault_state = vault_state.with_material_delivery(delivery);
     }
     let vault_state = Arc::new(vault_state);
+    let mcp_catalog =
+        crate::mcp_catalog::McpCatalogService::new(mcp_config.clone(), vault_state.clone());
+    mcp_catalog.supervise(&service_lifecycle);
 
     recover_and_supervise_credentials(
         secrets.clone(),
@@ -339,6 +344,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         credentials,
         secrets,
         profiles,
+        mcp_catalog,
         webhook_store,
         resource_store,
         probe: credential_probe,

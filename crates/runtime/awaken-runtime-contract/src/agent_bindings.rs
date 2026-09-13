@@ -124,12 +124,12 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentHttpMcpTransport {
     pub url: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentSandboxStdioMcpTransport {
     #[serde(rename = "type")]
     pub kind: AgentSandboxStdioMcpTransportKind,
@@ -138,7 +138,7 @@ pub struct AgentSandboxStdioMcpTransport {
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum AgentSandboxStdioMcpTransportKind {
     #[serde(rename = "sandbox_stdio")]
     SandboxStdio,
@@ -147,7 +147,7 @@ pub enum AgentSandboxStdioMcpTransportKind {
 /// Authoring transport for an Agent-owned MCP binding. HTTP retains its legacy
 /// `{url}` shape; `sandbox_stdio` is explicit and can only be realized inside a
 /// Session Environment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum AgentMcpTransportBinding {
     SandboxStdio(AgentSandboxStdioMcpTransport),
@@ -182,7 +182,7 @@ impl AgentMcpTransportBinding {
 }
 
 /// One MCP server inherited by Sessions of the published Agent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentMcpServerBinding {
     #[serde(alias = "id")]
     pub name: String,
@@ -191,7 +191,8 @@ pub struct AgentMcpServerBinding {
     /// Exact secret-free credential revision frozen into the publication.
     ///
     /// Runtime may materialize this revision but must never select a different
-    /// credential. `None` denotes an intentionally unauthenticated server.
+    /// credential. `None` leaves identity selection to Session Vaults; the
+    /// connection is anonymous only when no Session credential matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<crate::credential::CredentialRef>,
     /// Explicitly project this server's MCP prompts into the Agent's unified

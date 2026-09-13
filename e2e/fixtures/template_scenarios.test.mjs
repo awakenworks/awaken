@@ -61,6 +61,23 @@ test('contract oracle rejects ambiguous receipt shape, wrong dates and partial q
   assert.throws(() => verify(result, { ...state, effects: state.effects.map((e) => ({ ...e, body: 'Cedar' })) }));
 });
 
+test('escalation oracle distinguishes exception class from message and requires linked receipts', () => {
+  // E1 observed repro + class-only field + three linked effects -> pass;
+  // E2 full message or wrong class, E3 unlinked note -> reject. The prompt
+  // names the class-only contract; the oracle is never relaxed to accept prose.
+  const scenario = templateScenario('support-to-eng-escalator', 'unit');
+  const state = { calls: [{ connector: 'intercom', name: 'get_conversation' }], effects: [
+    { connector: 'atlassian', id: 'ticket', source_id: 'CONV-7', url: 'https://fixture.test/ticket', body: 'Observed TypeError in repro.py' },
+    { connector: 'intercom', id: 'note', body: 'https://fixture.test/ticket' },
+    { connector: 'slack', id: 'status', body: 'https://fixture.test/ticket' },
+  ] };
+  const result = { source_version: scenario.version, reproduced: true, error_type: 'TypeError', ticket_id: 'ticket', note_id: 'note', status_id: 'status' };
+  const verify = (value, evidence = state) => assertTemplateResult(scenario, evidence, { 'result.json': Buffer.from(JSON.stringify(value)), 'repro.log': Buffer.from("TypeError: 'NoneType' object is not iterable") });
+  verify(result);
+  for (const error_type of ["TypeError: 'NoneType' object is not iterable", 'ValueError']) assert.throws(() => verify({ ...result, error_type }));
+  assert.throws(() => verify(result, { ...state, effects: state.effects.map((e) => e.connector === 'intercom' ? { ...e, body: 'unlinked' } : e) }));
+});
+
 async function connected(fixture, name, token = fixture.token) {
   const client = new Client({ name: 'template-fixture-test', version: '1.0.0' });
   try {

@@ -1,3 +1,4 @@
+import McpAgentPicker from "../components/mcp/McpAgentPicker";
 import { Tabs, TabPanel } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -90,6 +91,7 @@ export default function AgentEditorSurface() {
   );
   const [showSandbox, setShowSandbox] = useState(false);
   const [showPublish, setShowPublish] = useState(false);
+  const [firstRunVaultIds, setFirstRunVaultIds] = useState<string[]>([]);
   const [quickRunIntent, setQuickRunIntent] = useState<QuickRunIntent>();
   const [rawValid, setRawValid] = useState(true);
   const [integrationsValid, setIntegrationsValid] = useState(true);
@@ -204,6 +206,7 @@ export default function AgentEditorSurface() {
   useEffect(() => {
     if (previousRouteId.current === id) return;
     previousRouteId.current = id;
+    setFirstRunVaultIds([]);
     setStage(stageForQuery(searchParams.get("stage")));
     setBuilderSection(builderSectionForQuery(searchParams.get("section")));
     setAdvancedSection(advancedSectionForQuery(searchParams.get("section")));
@@ -442,6 +445,7 @@ export default function AgentEditorSurface() {
           agentId: targetId(),
           sourceRevision: publication.source_revision,
           environmentId: intent.environmentId,
+          vaultIds: intent.vaultIds,
           task: intent.task,
           outcome: intent.outcome,
           title: app.t("Quickstart first run", "Quickstart 首次运行"),
@@ -506,6 +510,10 @@ export default function AgentEditorSurface() {
         onBack={() => nav(`/w/${wsId}/agents/${parentAgentId}?stage=advanced&section=orchestration`)}
       />
       <ReadinessPanel compact />
+      <details open={Boolean(searchParams.get("mcp"))}><summary>{app.t("MCP server catalog", "MCP 服务目录")}</summary>
+        <McpAgentPicker key={`${wsId}:${id}`} config={cfg} toolsets={caps.data?.toolsets} initialKey={isNew ? searchParams.get("mcp") ?? undefined : undefined} onPatch={patch}
+          onVault={(vaultId) => setFirstRunVaultIds((ids) => [...new Set([...ids, vaultId])])} />
+      </details>
 
       <Tabs value={stage} onValueChange={(value) => setStage(value as AuthorStage)}>
       <AgentEditorStageNavigation
@@ -531,6 +539,7 @@ export default function AgentEditorSurface() {
           onRefreshRuntimes={() => void caps.refetch()}
           runtimeUpdatedAt={caps.dataUpdatedAt}
           initialTemplateId={starterId}
+          vaultIds={firstRunVaultIds} onVaultIdsChange={setFirstRunVaultIds}
           onReviewRun={(intent) => { quickRun.reset(); setQuickRunIntent(intent); }}
           onBuilderSectionChange={setBuilderSection} onAdvancedSectionChange={setAdvancedSection}
           onResourcesChange={(inputs) => {

@@ -72,3 +72,12 @@ describe("starter outcome proposals", () => {
     expect(starterOutcomeDraft(starter, (en) => en)).toBeUndefined();
   });
 });
+
+it("first-run Vaults retain explicit order and do not change the published Agent", () => {
+  // V1 default account selections -> ordered Session vault_ids; V2 absent ->
+  // unchanged ordinary request; V3 publication identity always stays pinned.
+  const request = quickRunSessionRequest({ ...base, vaultIds: ["vault-b", "vault-a"] });
+  expect(request.vault_ids).toEqual(["vault-b", "vault-a"]);
+  expect(request.agent).toEqual({ type: "agent", id: base.agentId, version: base.sourceRevision });
+  expect(quickRunSessionRequest(base)).not.toHaveProperty("vault_ids");
+});

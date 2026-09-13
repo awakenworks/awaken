@@ -33,6 +33,11 @@ export type InputResourceId =
     };
 /**
  * This interface was referenced by the generated JSON Schema
+ * via the `definition` "AgentSandboxStdioMcpTransportKind".
+ */
+export type AgentSandboxStdioMcpTransportKind = "sandbox_stdio";
+/**
+ * This interface was referenced by the generated JSON Schema
  * via the `definition` "CloudLoginState".
  */
 export type CloudLoginState = "sign_in_required" | "authorizing" | "authenticated" | "failed";
@@ -304,6 +309,52 @@ export type CredentialBinding =
       [k: string]: unknown;
     };
 /**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpTransportConfig".
+ */
+export type McpTransportConfig =
+  | {
+      type: "url";
+      url: string;
+    }
+  | {
+      args?: string[];
+      command: string;
+      type: "sandbox_stdio";
+    };
+/**
+ * One MCP server inherited by Sessions of the published Agent.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "AgentMcpServerBinding".
+ */
+export type AgentMcpServerBinding = AgentMcpTransportBinding & {
+  /**
+   * Exact secret-free credential revision frozen into the publication.
+   *
+   * Runtime may materialize this revision but must never select a different
+   * credential. `None` leaves identity selection to Session Vaults; the
+   * connection is anonymous only when no Session credential matches.
+   */
+  credential?: CredentialRef | null;
+  name: string;
+  /**
+   * Explicitly project this server's MCP prompts into the Agent's unified
+   * Skill catalog. Off by default: ordinary MCP prompts remain prompts.
+   */
+  prompts_as_skills?: boolean;
+  [k: string]: unknown;
+};
+/**
+ * Authoring transport for an Agent-owned MCP binding. HTTP retains its legacy
+ * `{url}` shape; `sandbox_stdio` is explicit and can only be realized inside a
+ * Session Environment.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "AgentMcpTransportBinding".
+ */
+export type AgentMcpTransportBinding = AgentSandboxStdioMcpTransport | AgentHttpMcpTransport;
+/**
  * Authority behind one published model-attribute value.
  *
  * This interface was referenced by the generated JSON Schema
@@ -457,6 +508,24 @@ export interface InputBinding {
   instructions?: string | null;
   mount_path: string;
   target: InputResourceId;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "AgentHttpMcpTransport".
+ */
+export interface AgentHttpMcpTransport {
+  url: string;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "AgentSandboxStdioMcpTransport".
+ */
+export interface AgentSandboxStdioMcpTransport {
+  args?: string[];
+  command: string;
+  type: AgentSandboxStdioMcpTransportKind;
   [k: string]: unknown;
 }
 /**
@@ -622,6 +691,80 @@ export interface ModelTarget {
 export interface ProfileCandidate {
   credential_binding: CredentialBinding;
   target: ModelTarget;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpCatalogView".
+ */
+export interface McpCatalogView {
+  active_source_url?: string | null;
+  digest: string;
+  revision: number;
+  source_url?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpCredentialPreference".
+ */
+export interface McpCredentialPreference {
+  /**
+   * A default for an old endpoint cannot silently authorize a replacement.
+   */
+  target_fingerprint: string;
+  vault_credential_id: string;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpServerDefinition".
+ */
+export interface McpServerDefinition {
+  description: string;
+  icon?: string | null;
+  id: string;
+  name: string;
+  prompts_as_skills?: boolean;
+  transport: McpTransportConfig;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpServerView".
+ */
+export interface McpServerView {
+  default_credential?: McpCredentialPreference | null;
+  default_matches_target: boolean;
+  definition: McpServerDefinition;
+  key: string;
+  origin: string;
+  target_fingerprint: string;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpCredentialChoice".
+ */
+export interface McpCredentialChoice {
+  auth_type: string;
+  display_name: string;
+  id: string;
+  mcp_server_url: string;
+  source: CredentialRef;
+  target_fingerprint: string;
+  vault_id: string;
+  vault_name: string;
+  [k: string]: unknown;
+}
+/**
+ * Ephemeral discovery evidence, never another persisted tool catalog.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpProbeTool".
+ */
+export interface McpProbeTool {
+  description?: string | null;
+  input_schema: unknown;
+  name: string;
   [k: string]: unknown;
 }
 /**
@@ -1095,6 +1238,70 @@ export interface InferenceProfile {
    * value represents an unstamped domain value and is never treated as owned.
    */
   workspace_id?: string;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpConfigurationView".
+ */
+export interface McpConfigurationView {
+  catalog: McpCatalogView;
+  revision: number;
+  servers: McpServerView[];
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpInspectionView".
+ */
+export interface McpInspectionView {
+  checked_at: string;
+  credential?: McpCredentialChoice | null;
+  http_status?: number | null;
+  location: string;
+  status: string;
+  tools: McpProbeTool[];
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpPreparedBinding".
+ */
+export interface McpPreparedBinding {
+  binding: AgentMcpServerBinding;
+  credential?: McpCredentialChoice | null;
+  revision: number;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpPutServer".
+ */
+export interface McpPutServer {
+  definition: McpServerDefinition;
+  expected_revision: number;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpRevision".
+ */
+export interface McpRevision {
+  expected_revision: number;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpSelection".
+ */
+export interface McpSelection {
+  credential_id?: string | null;
+  expected_revision: number;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpSource".
+ */
+export interface McpSource {
+  expected_revision: number;
+  url?: string | null;
 }
 /**
  * Which members of a pool are selectable right now — `selection_order` with cooled

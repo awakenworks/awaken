@@ -218,3 +218,20 @@ Repository 是可变资源，只 pin 它们的配置版本，不 pin 内部内�
 - `docs/adr/0062-published-inference-access-and-runtime-credential-injection.md`
 - `docs/adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md`
 - `docs/design/resources-memory-files-skills.md`
+
+## MCP Server Configuration And Vault Views
+
+`/w/:ws/mcp` manages backend-owned MCP definitions and default account selections.
+Cloud presets and local HTTP/Sandbox-stdio definitions share one catalog view;
+the frontend has no default-address registry. The existing Agent inventory is a
+read-only usage view, preserving separate Agent/account bindings instead of
+collapsing them by display name and URL. HTTP connection checks display the
+actual account, location, timestamp and discovered tools. Model-based debugging
+uses an isolated ordinary Agent publication and the shared Session transcript,
+including MCP approval and cancellation. It has no separate pending state owner.
+
+Vault pages offer container and MCP-target grouping over the same records.
+`Vault.type` remains the official resource discriminator; credential auth types
+and source purposes carry extensibility. Names cannot filter allowed auth types.
+Agent catalog selection reuses ToolSet reconciliation, keeps shared account
+pinning opt-in, and passes default Vaults to the reviewed first-run request.

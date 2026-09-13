@@ -24,7 +24,7 @@
           "InputBinding": {
             "properties": {
               "access": {
-                "$ref": "#/$defs/ResourceAccess"
+                "$ref": "#/components/schemas/AgentInputConfig/$defs/ResourceAccess"
               },
               "binding_id": {
                 "type": "string"
@@ -39,7 +39,7 @@
                 "type": "string"
               },
               "target": {
-                "$ref": "#/$defs/InputResourceId"
+                "$ref": "#/components/schemas/AgentInputConfig/$defs/InputResourceId"
               }
             },
             "required": [
@@ -120,7 +120,7 @@
           "environment": {
             "anyOf": [
               {
-                "$ref": "#/$defs/AgentEnvironmentBinding"
+                "$ref": "#/components/schemas/AgentInputConfig/$defs/AgentEnvironmentBinding"
               },
               {
                 "type": "null"
@@ -129,7 +129,7 @@
           },
           "inputs": {
             "items": {
-              "$ref": "#/$defs/InputBinding"
+              "$ref": "#/components/schemas/AgentInputConfig/$defs/InputBinding"
             },
             "type": "array"
           },
@@ -145,6 +145,59 @@
         ],
         "title": "AgentInputConfig",
         "type": "object"
+      },
+      "AgentMcpTransportBinding": {
+        "$defs": {
+          "AgentHttpMcpTransport": {
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "AgentSandboxStdioMcpTransport": {
+            "properties": {
+              "args": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "command": {
+                "type": "string"
+              },
+              "type": {
+                "$ref": "#/components/schemas/AgentMcpTransportBinding/$defs/AgentSandboxStdioMcpTransportKind"
+              }
+            },
+            "required": [
+              "type",
+              "command"
+            ],
+            "type": "object"
+          },
+          "AgentSandboxStdioMcpTransportKind": {
+            "enum": [
+              "sandbox_stdio"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AgentMcpTransportBinding/$defs/AgentSandboxStdioMcpTransport"
+          },
+          {
+            "$ref": "#/components/schemas/AgentMcpTransportBinding/$defs/AgentHttpMcpTransport"
+          }
+        ],
+        "description": "Authoring transport for an Agent-owned MCP binding. HTTP retains its legacy\n`{url}` shape; `sandbox_stdio` is explicit and can only be realized inside a\nSession Environment.",
+        "title": "AgentMcpTransportBinding"
       },
       "ApiDialect": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -377,7 +430,7 @@
             ]
           },
           "state": {
-            "$ref": "#/$defs/CloudLoginState"
+            "$ref": "#/components/schemas/CloudLoginStatusView/$defs/CloudLoginState"
           }
         },
         "required": [
@@ -451,13 +504,13 @@
         "description": "Stable frontend/SDK feature discovery; callers never infer deployment\nposture from a failed Cloud request.",
         "properties": {
           "identity": {
-            "$ref": "#/$defs/IdentityCapabilityView"
+            "$ref": "#/components/schemas/ConfigCapabilitiesView/$defs/IdentityCapabilityView"
           },
           "models": {
-            "$ref": "#/$defs/ModelSupplyCapabilityView"
+            "$ref": "#/components/schemas/ConfigCapabilitiesView/$defs/ModelSupplyCapabilityView"
           },
           "surfaces": {
-            "$ref": "#/$defs/ProductSurfaceCapabilityView"
+            "$ref": "#/components/schemas/ConfigCapabilitiesView/$defs/ProductSurfaceCapabilityView"
           }
         },
         "required": [
@@ -535,7 +588,7 @@
             "description": "Use exactly one source.",
             "properties": {
               "credential_source_id": {
-                "$ref": "#/$defs/CredentialSourceId"
+                "$ref": "#/components/schemas/CredentialBinding/$defs/CredentialSourceId"
               },
               "type": {
                 "const": "exact",
@@ -552,7 +605,7 @@
             "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
             "properties": {
               "credential_pool_id": {
-                "$ref": "#/$defs/CredentialPoolId"
+                "$ref": "#/components/schemas/CredentialBinding/$defs/CredentialPoolId"
               },
               "type": {
                 "const": "one_of_credential_pool",
@@ -605,7 +658,7 @@
             "description": "One source's membership in a pool. `ordinal` is the default selection order\n(ascending); a disabled member is skipped. `selection_weight` is reserved for a\nfuture weighted policy and does not affect the default ordinal order.",
             "properties": {
               "credential_source_id": {
-                "$ref": "#/$defs/CredentialSourceId"
+                "$ref": "#/components/schemas/CredentialPool/$defs/CredentialSourceId"
               },
               "enabled": {
                 "type": "boolean"
@@ -658,16 +711,16 @@
         "description": "A pool of interchangeable credential sources for one provider principal\n(oversight-next account grouping). The resolver picks one eligible member per\nrun; members are tried in policy order so a disabled/exhausted member fails\nover to the next rather than failing the run (fail-closed only when none work).",
         "properties": {
           "id": {
-            "$ref": "#/$defs/CredentialPoolId"
+            "$ref": "#/components/schemas/CredentialPool/$defs/CredentialPoolId"
           },
           "members": {
             "items": {
-              "$ref": "#/$defs/CredentialPoolMember"
+              "$ref": "#/components/schemas/CredentialPool/$defs/CredentialPoolMember"
             },
             "type": "array"
           },
           "policy": {
-            "$ref": "#/$defs/SelectionPolicy",
+            "$ref": "#/components/schemas/CredentialPool/$defs/SelectionPolicy",
             "default": "first_healthy",
             "description": "How the selector picks among eligible members. `#[serde(default)]` keeps\nexisting pool rows (persisted as JSON) loadable as [`FirstHealthy`], the\nhistorical behavior.\n\n[`FirstHealthy`]: SelectionPolicy::FirstHealthy"
           },
@@ -700,7 +753,7 @@
         "description": "One source's membership in a pool. `ordinal` is the default selection order\n(ascending); a disabled member is skipped. `selection_weight` is reserved for a\nfuture weighted policy and does not affect the default ordinal order.",
         "properties": {
           "credential_source_id": {
-            "$ref": "#/$defs/CredentialSourceId"
+            "$ref": "#/components/schemas/CredentialPoolMember/$defs/CredentialSourceId"
           },
           "enabled": {
             "type": "boolean"
@@ -744,22 +797,22 @@
                 ]
               },
               "material": {
-                "$ref": "#/$defs/CredentialMaterialDescriptor"
+                "$ref": "#/components/schemas/CredentialSource/$defs/CredentialMaterialDescriptor"
               },
               "permissions": {
                 "items": {
-                  "$ref": "#/$defs/CredentialPermissionRef"
+                  "$ref": "#/components/schemas/CredentialSource/$defs/CredentialPermissionRef"
                 },
                 "type": "array",
                 "uniqueItems": true
               },
               "provider": {
-                "$ref": "#/$defs/CredentialProviderRef"
+                "$ref": "#/components/schemas/CredentialSource/$defs/CredentialProviderRef"
               },
               "subject": {
                 "anyOf": [
                   {
-                    "$ref": "#/$defs/CredentialSubjectRef"
+                    "$ref": "#/components/schemas/CredentialSource/$defs/CredentialSubjectRef"
                   },
                   {
                     "type": "null"
@@ -769,7 +822,7 @@
               "targets": {
                 "description": "Exact authorized target/usage contracts. Separate sets are deliberately\nforbidden because their Cartesian product would invent undeclared uses.",
                 "items": {
-                  "$ref": "#/$defs/CredentialTargetContract"
+                  "$ref": "#/components/schemas/CredentialSource/$defs/CredentialTargetContract"
                 },
                 "type": "array"
               }
@@ -817,7 +870,7 @@
                     "type": "string"
                   },
                   "type_id": {
-                    "$ref": "#/$defs/CredentialMaterialTypeId"
+                    "$ref": "#/components/schemas/CredentialSource/$defs/CredentialMaterialTypeId"
                   }
                 },
                 "required": [
@@ -841,7 +894,7 @@
                     "type": "string"
                   },
                   "type_id": {
-                    "$ref": "#/$defs/CredentialMaterialTypeId"
+                    "$ref": "#/components/schemas/CredentialSource/$defs/CredentialMaterialTypeId"
                   }
                 },
                 "required": [
@@ -1015,10 +1068,10 @@
             "description": "Exact purpose/audience identity frozen into executable access. Usage remains\nthe existing independent field on `CredentialAccess`, so executable payloads\ncannot serialize two copies of the same usage truth.",
             "properties": {
               "audience": {
-                "$ref": "#/$defs/CredentialAudienceRef"
+                "$ref": "#/components/schemas/CredentialSource/$defs/CredentialAudienceRef"
               },
               "purpose": {
-                "$ref": "#/$defs/CredentialPurpose"
+                "$ref": "#/components/schemas/CredentialSource/$defs/CredentialPurpose"
               }
             },
             "required": [
@@ -1032,10 +1085,10 @@
             "description": "One source-declared authorization contract. The target identity and its\nallowed material usage are indivisible here, while executable access carries\nthat target identity plus its existing single `usage` field.",
             "properties": {
               "target": {
-                "$ref": "#/$defs/CredentialTarget"
+                "$ref": "#/components/schemas/CredentialSource/$defs/CredentialTarget"
               },
               "usage": {
-                "$ref": "#/$defs/CredentialUsage"
+                "$ref": "#/components/schemas/CredentialSource/$defs/CredentialUsage"
               }
             },
             "required": [
@@ -1140,7 +1193,7 @@
                   "fields": {
                     "additionalProperties": {
                       "items": {
-                        "$ref": "#/$defs/HttpEffectPlacement"
+                        "$ref": "#/components/schemas/CredentialSource/$defs/HttpEffectPlacement"
                       },
                       "type": "array",
                       "uniqueItems": true
@@ -1164,7 +1217,7 @@
                   "fields": {
                     "additionalProperties": {
                       "items": {
-                        "$ref": "#/$defs/SignatureVerificationAlgorithm"
+                        "$ref": "#/components/schemas/CredentialSource/$defs/SignatureVerificationAlgorithm"
                       },
                       "type": "array",
                       "uniqueItems": true
@@ -1278,7 +1331,7 @@
           "descriptor": {
             "anyOf": [
               {
-                "$ref": "#/$defs/CredentialDescriptor"
+                "$ref": "#/components/schemas/CredentialSource/$defs/CredentialDescriptor"
               },
               {
                 "type": "null"
@@ -1292,15 +1345,15 @@
             ]
           },
           "id": {
-            "$ref": "#/$defs/CredentialSourceId"
+            "$ref": "#/components/schemas/CredentialSource/$defs/CredentialSourceId"
           },
           "kind": {
-            "$ref": "#/$defs/CredentialKind"
+            "$ref": "#/components/schemas/CredentialSource/$defs/CredentialKind"
           },
           "oauth_helper": {
             "anyOf": [
               {
-                "$ref": "#/$defs/OAuthHelper"
+                "$ref": "#/components/schemas/CredentialSource/$defs/OAuthHelper"
               },
               {
                 "type": "null"
@@ -1322,7 +1375,7 @@
           "replacement_of": {
             "anyOf": [
               {
-                "$ref": "#/$defs/CredentialRef"
+                "$ref": "#/components/schemas/CredentialSource/$defs/CredentialRef"
               },
               {
                 "type": "null"
@@ -1330,7 +1383,7 @@
             ]
           },
           "status": {
-            "$ref": "#/$defs/CredentialStatus"
+            "$ref": "#/components/schemas/CredentialSource/$defs/CredentialStatus"
           },
           "version": {
             "format": "int64",
@@ -1388,7 +1441,7 @@
             ]
           },
           "status": {
-            "$ref": "#/$defs/ProbeStatus"
+            "$ref": "#/components/schemas/CredentialValidation/$defs/ProbeStatus"
           }
         },
         "required": [
@@ -1417,22 +1470,22 @@
                 ]
               },
               "material": {
-                "$ref": "#/$defs/CredentialMaterialDescriptor"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialMaterialDescriptor"
               },
               "permissions": {
                 "items": {
-                  "$ref": "#/$defs/CredentialPermissionRef"
+                  "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialPermissionRef"
                 },
                 "type": "array",
                 "uniqueItems": true
               },
               "provider": {
-                "$ref": "#/$defs/CredentialProviderRef"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialProviderRef"
               },
               "subject": {
                 "anyOf": [
                   {
-                    "$ref": "#/$defs/CredentialSubjectRef"
+                    "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialSubjectRef"
                   },
                   {
                     "type": "null"
@@ -1442,7 +1495,7 @@
               "targets": {
                 "description": "Exact authorized target/usage contracts. Separate sets are deliberately\nforbidden because their Cartesian product would invent undeclared uses.",
                 "items": {
-                  "$ref": "#/$defs/CredentialTargetContract"
+                  "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialTargetContract"
                 },
                 "type": "array"
               }
@@ -1490,7 +1543,7 @@
                     "type": "string"
                   },
                   "type_id": {
-                    "$ref": "#/$defs/CredentialMaterialTypeId"
+                    "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialMaterialTypeId"
                   }
                 },
                 "required": [
@@ -1514,7 +1567,7 @@
                     "type": "string"
                   },
                   "type_id": {
-                    "$ref": "#/$defs/CredentialMaterialTypeId"
+                    "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialMaterialTypeId"
                   }
                 },
                 "required": [
@@ -1696,10 +1749,10 @@
             "description": "Exact purpose/audience identity frozen into executable access. Usage remains\nthe existing independent field on `CredentialAccess`, so executable payloads\ncannot serialize two copies of the same usage truth.",
             "properties": {
               "audience": {
-                "$ref": "#/$defs/CredentialAudienceRef"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialAudienceRef"
               },
               "purpose": {
-                "$ref": "#/$defs/CredentialPurpose"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialPurpose"
               }
             },
             "required": [
@@ -1713,10 +1766,10 @@
             "description": "One source-declared authorization contract. The target identity and its\nallowed material usage are indivisible here, while executable access carries\nthat target identity plus its existing single `usage` field.",
             "properties": {
               "target": {
-                "$ref": "#/$defs/CredentialTarget"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialTarget"
               },
               "usage": {
-                "$ref": "#/$defs/CredentialUsage"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialUsage"
               }
             },
             "required": [
@@ -1821,7 +1874,7 @@
                   "fields": {
                     "additionalProperties": {
                       "items": {
-                        "$ref": "#/$defs/HttpEffectPlacement"
+                        "$ref": "#/components/schemas/EnterCredentialRequest/$defs/HttpEffectPlacement"
                       },
                       "type": "array",
                       "uniqueItems": true
@@ -1845,7 +1898,7 @@
                   "fields": {
                     "additionalProperties": {
                       "items": {
-                        "$ref": "#/$defs/SignatureVerificationAlgorithm"
+                        "$ref": "#/components/schemas/EnterCredentialRequest/$defs/SignatureVerificationAlgorithm"
                       },
                       "type": "array",
                       "uniqueItems": true
@@ -1960,7 +2013,7 @@
           "descriptor": {
             "anyOf": [
               {
-                "$ref": "#/$defs/CredentialDescriptor"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialDescriptor"
               },
               {
                 "type": "null"
@@ -1982,12 +2035,12 @@
             ]
           },
           "kind": {
-            "$ref": "#/$defs/CredentialKind"
+            "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialKind"
           },
           "material": {
             "anyOf": [
               {
-                "$ref": "#/$defs/CredentialMaterialInput"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialMaterialInput"
               },
               {
                 "type": "null"
@@ -1998,7 +2051,7 @@
           "oauth_helper": {
             "anyOf": [
               {
-                "$ref": "#/$defs/OAuthHelper"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/OAuthHelper"
               },
               {
                 "type": "null"
@@ -2015,7 +2068,7 @@
           "replacement_of": {
             "anyOf": [
               {
-                "$ref": "#/$defs/CredentialRef"
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialRef"
               },
               {
                 "type": "null"
@@ -2072,7 +2125,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "access_kind": {
-            "$ref": "#/$defs/ProviderAccessKind"
+            "$ref": "#/components/schemas/ExecutableModelOption/$defs/ProviderAccessKind"
           },
           "backend_ref": {
             "type": "string"
@@ -2090,7 +2143,7 @@
             "type": "string"
           },
           "readiness": {
-            "$ref": "#/$defs/ExecutableModelReadiness"
+            "$ref": "#/components/schemas/ExecutableModelOption/$defs/ExecutableModelReadiness"
           }
         },
         "required": [
@@ -2152,7 +2205,7 @@
                 "description": "Use exactly one source.",
                 "properties": {
                   "credential_source_id": {
-                    "$ref": "#/$defs/CredentialSourceId"
+                    "$ref": "#/components/schemas/InferenceProfile/$defs/CredentialSourceId"
                   },
                   "type": {
                     "const": "exact",
@@ -2169,7 +2222,7 @@
                 "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
                 "properties": {
                   "credential_pool_id": {
-                    "$ref": "#/$defs/CredentialPoolId"
+                    "$ref": "#/components/schemas/InferenceProfile/$defs/CredentialPoolId"
                   },
                   "type": {
                     "const": "one_of_credential_pool",
@@ -2234,10 +2287,10 @@
             "description": "One explicit step in a profile's failover chain. Binding credentials per\ntarget allows a BYOK primary and Cloud fallback (or the reverse) without ever\nguessing which identity may authenticate which provider.",
             "properties": {
               "credential_binding": {
-                "$ref": "#/$defs/CredentialBinding"
+                "$ref": "#/components/schemas/InferenceProfile/$defs/CredentialBinding"
               },
               "target": {
-                "$ref": "#/$defs/ModelTarget"
+                "$ref": "#/components/schemas/InferenceProfile/$defs/ModelTarget"
               }
             },
             "required": [
@@ -2262,12 +2315,12 @@
             "default": [],
             "description": "Explicit alternates, tried in authored order. The resolver never appends an\nimplicit Cloud, BYOK, or local fallback.",
             "items": {
-              "$ref": "#/$defs/ProfileCandidate"
+              "$ref": "#/components/schemas/InferenceProfile/$defs/ProfileCandidate"
             },
             "type": "array"
           },
           "primary": {
-            "$ref": "#/$defs/ProfileCandidate",
+            "$ref": "#/components/schemas/InferenceProfile/$defs/ProfileCandidate",
             "description": "Exact preferred offering. Provider and endpoint qualifiers prevent a model\nid shared by BYOK and Cloud sources from becoming ambiguous at runtime."
           },
           "workspace_id": {
@@ -2282,6 +2335,925 @@
         "title": "InferenceProfile",
         "type": "object"
       },
+      "McpConfigurationView": {
+        "$defs": {
+          "McpCatalogView": {
+            "properties": {
+              "active_source_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "digest": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "source_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "revision",
+              "digest"
+            ],
+            "type": "object"
+          },
+          "McpCredentialPreference": {
+            "additionalProperties": false,
+            "properties": {
+              "target_fingerprint": {
+                "description": "A default for an old endpoint cannot silently authorize a replacement.",
+                "type": "string"
+              },
+              "vault_credential_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "vault_credential_id",
+              "target_fingerprint"
+            ],
+            "type": "object"
+          },
+          "McpServerDefinition": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "icon": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "prompts_as_skills": {
+                "default": false,
+                "type": "boolean"
+              },
+              "transport": {
+                "$ref": "#/components/schemas/McpConfigurationView/$defs/McpTransportConfig"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "transport"
+            ],
+            "type": "object"
+          },
+          "McpServerView": {
+            "properties": {
+              "default_credential": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/McpConfigurationView/$defs/McpCredentialPreference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "default_matches_target": {
+                "type": "boolean"
+              },
+              "definition": {
+                "$ref": "#/components/schemas/McpConfigurationView/$defs/McpServerDefinition"
+              },
+              "key": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "target_fingerprint": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "origin",
+              "definition",
+              "target_fingerprint",
+              "default_matches_target"
+            ],
+            "type": "object"
+          },
+          "McpTransportConfig": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "url",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "args": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "sandbox_stdio",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "command"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "catalog": {
+            "$ref": "#/components/schemas/McpConfigurationView/$defs/McpCatalogView"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "servers": {
+            "items": {
+              "$ref": "#/components/schemas/McpConfigurationView/$defs/McpServerView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "servers",
+          "catalog"
+        ],
+        "title": "McpConfigurationView",
+        "type": "object"
+      },
+      "McpCredentialChoice": {
+        "$defs": {
+          "CredentialRef": {
+            "description": "A stable reference to one credential source revision.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "auth_type": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "mcp_server_url": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/McpCredentialChoice/$defs/CredentialRef"
+          },
+          "target_fingerprint": {
+            "type": "string"
+          },
+          "vault_id": {
+            "type": "string"
+          },
+          "vault_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "vault_id",
+          "vault_name",
+          "display_name",
+          "auth_type",
+          "source",
+          "mcp_server_url",
+          "target_fingerprint"
+        ],
+        "title": "McpCredentialChoice",
+        "type": "object"
+      },
+      "McpInspectionView": {
+        "$defs": {
+          "CredentialRef": {
+            "description": "A stable reference to one credential source revision.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "McpCredentialChoice": {
+            "properties": {
+              "auth_type": {
+                "type": "string"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "mcp_server_url": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/McpInspectionView/$defs/CredentialRef"
+              },
+              "target_fingerprint": {
+                "type": "string"
+              },
+              "vault_id": {
+                "type": "string"
+              },
+              "vault_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "vault_id",
+              "vault_name",
+              "display_name",
+              "auth_type",
+              "source",
+              "mcp_server_url",
+              "target_fingerprint"
+            ],
+            "type": "object"
+          },
+          "McpProbeTool": {
+            "description": "Ephemeral discovery evidence, never another persisted tool catalog.",
+            "properties": {
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "input_schema": true,
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "input_schema"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "checked_at": {
+            "type": "string"
+          },
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpInspectionView/$defs/McpCredentialChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "http_status": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "location": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/McpInspectionView/$defs/McpProbeTool"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "tools",
+          "location",
+          "checked_at"
+        ],
+        "title": "McpInspectionView",
+        "type": "object"
+      },
+      "McpPreparedBinding": {
+        "$defs": {
+          "AgentHttpMcpTransport": {
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "AgentMcpServerBinding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpPreparedBinding/$defs/AgentSandboxStdioMcpTransport"
+              },
+              {
+                "$ref": "#/components/schemas/McpPreparedBinding/$defs/AgentHttpMcpTransport"
+              }
+            ],
+            "description": "One MCP server inherited by Sessions of the published Agent.",
+            "properties": {
+              "credential": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/McpPreparedBinding/$defs/CredentialRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact secret-free credential revision frozen into the publication.\n\nRuntime may materialize this revision but must never select a different\ncredential. `None` leaves identity selection to Session Vaults; the\nconnection is anonymous only when no Session credential matches."
+              },
+              "name": {
+                "type": "string"
+              },
+              "prompts_as_skills": {
+                "description": "Explicitly project this server's MCP prompts into the Agent's unified\nSkill catalog. Off by default: ordinary MCP prompts remain prompts.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "AgentSandboxStdioMcpTransport": {
+            "properties": {
+              "args": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "command": {
+                "type": "string"
+              },
+              "type": {
+                "$ref": "#/components/schemas/McpPreparedBinding/$defs/AgentSandboxStdioMcpTransportKind"
+              }
+            },
+            "required": [
+              "type",
+              "command"
+            ],
+            "type": "object"
+          },
+          "AgentSandboxStdioMcpTransportKind": {
+            "enum": [
+              "sandbox_stdio"
+            ],
+            "type": "string"
+          },
+          "CredentialRef": {
+            "description": "A stable reference to one credential source revision.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "McpCredentialChoice": {
+            "properties": {
+              "auth_type": {
+                "type": "string"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "mcp_server_url": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/McpPreparedBinding/$defs/CredentialRef"
+              },
+              "target_fingerprint": {
+                "type": "string"
+              },
+              "vault_id": {
+                "type": "string"
+              },
+              "vault_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "vault_id",
+              "vault_name",
+              "display_name",
+              "auth_type",
+              "source",
+              "mcp_server_url",
+              "target_fingerprint"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/McpPreparedBinding/$defs/AgentMcpServerBinding"
+          },
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpPreparedBinding/$defs/McpCredentialChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "binding",
+          "revision"
+        ],
+        "title": "McpPreparedBinding",
+        "type": "object"
+      },
+      "McpPutServer": {
+        "$defs": {
+          "McpServerDefinition": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "icon": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "prompts_as_skills": {
+                "default": false,
+                "type": "boolean"
+              },
+              "transport": {
+                "$ref": "#/components/schemas/McpPutServer/$defs/McpTransportConfig"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "transport"
+            ],
+            "type": "object"
+          },
+          "McpTransportConfig": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "url",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "args": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "sandbox_stdio",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "command"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/McpPutServer/$defs/McpServerDefinition"
+          },
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "definition"
+        ],
+        "title": "McpPutServer",
+        "type": "object"
+      },
+      "McpRevision": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "McpRevision",
+        "type": "object"
+      },
+      "McpSelection": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "credential_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "McpSelection",
+        "type": "object"
+      },
+      "McpServerDefinition": {
+        "$defs": {
+          "McpTransportConfig": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "url",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "args": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "sandbox_stdio",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "command"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "icon": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompts_as_skills": {
+            "default": false,
+            "type": "boolean"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/McpServerDefinition/$defs/McpTransportConfig"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "transport"
+        ],
+        "title": "McpServerDefinition",
+        "type": "object"
+      },
+      "McpServerView": {
+        "$defs": {
+          "McpCredentialPreference": {
+            "additionalProperties": false,
+            "properties": {
+              "target_fingerprint": {
+                "description": "A default for an old endpoint cannot silently authorize a replacement.",
+                "type": "string"
+              },
+              "vault_credential_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "vault_credential_id",
+              "target_fingerprint"
+            ],
+            "type": "object"
+          },
+          "McpServerDefinition": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "icon": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "prompts_as_skills": {
+                "default": false,
+                "type": "boolean"
+              },
+              "transport": {
+                "$ref": "#/components/schemas/McpServerView/$defs/McpTransportConfig"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "transport"
+            ],
+            "type": "object"
+          },
+          "McpTransportConfig": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "url",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "args": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "sandbox_stdio",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "command"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "default_credential": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpServerView/$defs/McpCredentialPreference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default_matches_target": {
+            "type": "boolean"
+          },
+          "definition": {
+            "$ref": "#/components/schemas/McpServerView/$defs/McpServerDefinition"
+          },
+          "key": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "target_fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "origin",
+          "definition",
+          "target_fingerprint",
+          "default_matches_target"
+        ],
+        "title": "McpServerView",
+        "type": "object"
+      },
+      "McpSource": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "McpSource",
+        "type": "object"
+      },
       "ModelAttributes": {
         "$defs": {
           "ModelAttributeProvenance": {
@@ -2293,7 +3265,7 @@
                 "type": "integer"
               },
               "source": {
-                "$ref": "#/$defs/ModelAttributeSource"
+                "$ref": "#/components/schemas/ModelAttributes/$defs/ModelAttributeSource"
               }
             },
             "required": [
@@ -2336,7 +3308,7 @@
           },
           "provenance": {
             "additionalProperties": {
-              "$ref": "#/$defs/ModelAttributeProvenance"
+              "$ref": "#/components/schemas/ModelAttributes/$defs/ModelAttributeProvenance"
             },
             "description": "Field-level origin. Values stay flat and convenient for runtime consumers;\nmanagement surfaces use this map to explain whether each fact was authored,\nobserved from a provider API, or supplied by Awaken's curated registry.",
             "type": "object"
@@ -2451,7 +3423,7 @@
                 "type": "string"
               },
               "configuration": {
-                "$ref": "#/$defs/AcpSessionConfiguration",
+                "$ref": "#/components/schemas/ModelSelection/$defs/AcpSessionConfiguration",
                 "default": {}
               },
               "mode": {
@@ -2459,7 +3431,7 @@
                 "type": "string"
               },
               "target": {
-                "$ref": "#/$defs/ModelTarget"
+                "$ref": "#/components/schemas/ModelSelection/$defs/ModelTarget"
               }
             },
             "required": [
@@ -2476,7 +3448,7 @@
                 "type": "string"
               },
               "configuration": {
-                "$ref": "#/$defs/AcpSessionConfiguration",
+                "$ref": "#/components/schemas/ModelSelection/$defs/AcpSessionConfiguration",
                 "default": {}
               },
               "mode": {
@@ -2497,7 +3469,7 @@
                 "type": "string"
               },
               "configuration": {
-                "$ref": "#/$defs/AcpSessionConfiguration",
+                "$ref": "#/components/schemas/ModelSelection/$defs/AcpSessionConfiguration",
                 "default": {}
               },
               "mode": {
@@ -2656,7 +3628,7 @@
         "description": "A model reachable on a protocol surface. `model_id` references the catalog's\n[`ModelAttributes`] (the intrinsic model attributes the control plane publishes).",
         "properties": {
           "dialect": {
-            "$ref": "#/$defs/ApiDialect"
+            "$ref": "#/components/schemas/Offering/$defs/ApiDialect"
           },
           "last_seen_at_unix_ms": {
             "description": "Unix timestamp (milliseconds) of the most recent complete provider listing\nthat contained this route. Manual offerings never carry this observation.\nWhen a later complete listing omits the model, the timestamp is retained so\noperators can distinguish \"last seen then\" from \"never observed\".",
@@ -2672,17 +3644,17 @@
             "type": "string"
           },
           "protocol_endpoint_id": {
-            "$ref": "#/$defs/ProtocolEndpointId"
+            "$ref": "#/components/schemas/Offering/$defs/ProtocolEndpointId"
           },
           "provider_id": {
-            "$ref": "#/$defs/ProviderId"
+            "$ref": "#/components/schemas/Offering/$defs/ProviderId"
           },
           "source": {
-            "$ref": "#/$defs/OfferingSource",
+            "$ref": "#/components/schemas/Offering/$defs/OfferingSource",
             "description": "Who owns the catalog fact. Manually authored rows are never demoted by a\nprovider refresh; provider-discovered rows follow the provider's latest\ncomplete listing."
           },
           "status": {
-            "$ref": "#/$defs/OfferingStatus",
+            "$ref": "#/components/schemas/Offering/$defs/OfferingStatus",
             "description": "Whether this route may be selected for a new publication. Provider sync is\nnon-destructive: a missing discovered model becomes unavailable instead of\nbeing deleted, so existing immutable publications remain explainable."
           },
           "upstream_model": {
@@ -2778,16 +3750,16 @@
             ]
           },
           "dialect": {
-            "$ref": "#/$defs/ApiDialect"
+            "$ref": "#/components/schemas/ProtocolEndpoint/$defs/ApiDialect"
           },
           "display_name": {
             "type": "string"
           },
           "id": {
-            "$ref": "#/$defs/ProtocolEndpointId"
+            "$ref": "#/components/schemas/ProtocolEndpoint/$defs/ProtocolEndpointId"
           },
           "provider_id": {
-            "$ref": "#/$defs/ProviderId"
+            "$ref": "#/components/schemas/ProtocolEndpoint/$defs/ProviderId"
           },
           "timeout_secs": {
             "description": "Request timeout in seconds.",
@@ -2832,7 +3804,7 @@
             "type": "string"
           },
           "id": {
-            "$ref": "#/$defs/ProviderId"
+            "$ref": "#/components/schemas/Provider/$defs/ProviderId"
           },
           "slug": {
             "description": "URL-safe vendor slug, unique in the catalog.",
@@ -2894,7 +3866,7 @@
                 "type": "integer"
               },
               "source": {
-                "$ref": "#/$defs/ModelAttributeSource"
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/ModelAttributeSource"
               }
             },
             "required": [
@@ -2936,7 +3908,7 @@
               },
               "provenance": {
                 "additionalProperties": {
-                  "$ref": "#/$defs/ModelAttributeProvenance"
+                  "$ref": "#/components/schemas/ProviderCatalog/$defs/ModelAttributeProvenance"
                 },
                 "description": "Field-level origin. Values stay flat and convenient for runtime consumers;\nmanagement surfaces use this map to explain whether each fact was authored,\nobserved from a provider API, or supplied by Awaken's curated registry.",
                 "type": "object"
@@ -2948,7 +3920,7 @@
             "description": "A model reachable on a protocol surface. `model_id` references the catalog's\n[`ModelAttributes`] (the intrinsic model attributes the control plane publishes).",
             "properties": {
               "dialect": {
-                "$ref": "#/$defs/ApiDialect"
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/ApiDialect"
               },
               "last_seen_at_unix_ms": {
                 "description": "Unix timestamp (milliseconds) of the most recent complete provider listing\nthat contained this route. Manual offerings never carry this observation.\nWhen a later complete listing omits the model, the timestamp is retained so\noperators can distinguish \"last seen then\" from \"never observed\".",
@@ -2964,17 +3936,17 @@
                 "type": "string"
               },
               "protocol_endpoint_id": {
-                "$ref": "#/$defs/ProtocolEndpointId"
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/ProtocolEndpointId"
               },
               "provider_id": {
-                "$ref": "#/$defs/ProviderId"
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/ProviderId"
               },
               "source": {
-                "$ref": "#/$defs/OfferingSource",
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/OfferingSource",
                 "description": "Who owns the catalog fact. Manually authored rows are never demoted by a\nprovider refresh; provider-discovered rows follow the provider's latest\ncomplete listing."
               },
               "status": {
-                "$ref": "#/$defs/OfferingStatus",
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/OfferingStatus",
                 "description": "Whether this route may be selected for a new publication. Provider sync is\nnon-destructive: a missing discovered model becomes unavailable instead of\nbeing deleted, so existing immutable publications remain explainable."
               },
               "upstream_model": {
@@ -3032,16 +4004,16 @@
                 ]
               },
               "dialect": {
-                "$ref": "#/$defs/ApiDialect"
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/ApiDialect"
               },
               "display_name": {
                 "type": "string"
               },
               "id": {
-                "$ref": "#/$defs/ProtocolEndpointId"
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/ProtocolEndpointId"
               },
               "provider_id": {
-                "$ref": "#/$defs/ProviderId"
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/ProviderId"
               },
               "timeout_secs": {
                 "description": "Request timeout in seconds.",
@@ -3082,7 +4054,7 @@
                 "type": "string"
               },
               "id": {
-                "$ref": "#/$defs/ProviderId"
+                "$ref": "#/components/schemas/ProviderCatalog/$defs/ProviderId"
               },
               "slug": {
                 "description": "URL-safe vendor slug, unique in the catalog.",
@@ -3112,26 +4084,26 @@
         "properties": {
           "endpoints": {
             "additionalProperties": {
-              "$ref": "#/$defs/ProtocolEndpoint"
+              "$ref": "#/components/schemas/ProviderCatalog/$defs/ProtocolEndpoint"
             },
             "type": "object"
           },
           "model_attributes": {
             "additionalProperties": {
-              "$ref": "#/$defs/ModelAttributes"
+              "$ref": "#/components/schemas/ProviderCatalog/$defs/ModelAttributes"
             },
             "description": "The published attributes of the models the offerings reference, keyed by\n`model_id`. Absent for a model whose attributes aren't published (the consumer\nthen falls back — e.g. compaction stays message-count based).",
             "type": "object"
           },
           "offerings": {
             "items": {
-              "$ref": "#/$defs/Offering"
+              "$ref": "#/components/schemas/ProviderCatalog/$defs/Offering"
             },
             "type": "array"
           },
           "providers": {
             "additionalProperties": {
-              "$ref": "#/$defs/Provider"
+              "$ref": "#/components/schemas/ProviderCatalog/$defs/Provider"
             },
             "type": "object"
           }
@@ -3191,7 +4163,7 @@
             "type": "string"
           },
           "status": {
-            "$ref": "#/$defs/ProviderConnectionStatus"
+            "$ref": "#/components/schemas/ProviderConnectionSummary/$defs/ProviderConnectionStatus"
           },
           "unavailable_models": {
             "format": "uint",
@@ -3293,22 +4265,22 @@
                 ]
               },
               "material": {
-                "$ref": "#/$defs/CredentialMaterialDescriptor"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialMaterialDescriptor"
               },
               "permissions": {
                 "items": {
-                  "$ref": "#/$defs/CredentialPermissionRef"
+                  "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialPermissionRef"
                 },
                 "type": "array",
                 "uniqueItems": true
               },
               "provider": {
-                "$ref": "#/$defs/CredentialProviderRef"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialProviderRef"
               },
               "subject": {
                 "anyOf": [
                   {
-                    "$ref": "#/$defs/CredentialSubjectRef"
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialSubjectRef"
                   },
                   {
                     "type": "null"
@@ -3318,7 +4290,7 @@
               "targets": {
                 "description": "Exact authorized target/usage contracts. Separate sets are deliberately\nforbidden because their Cartesian product would invent undeclared uses.",
                 "items": {
-                  "$ref": "#/$defs/CredentialTargetContract"
+                  "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialTargetContract"
                 },
                 "type": "array"
               }
@@ -3366,7 +4338,7 @@
                     "type": "string"
                   },
                   "type_id": {
-                    "$ref": "#/$defs/CredentialMaterialTypeId"
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialMaterialTypeId"
                   }
                 },
                 "required": [
@@ -3390,7 +4362,7 @@
                     "type": "string"
                   },
                   "type_id": {
-                    "$ref": "#/$defs/CredentialMaterialTypeId"
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialMaterialTypeId"
                   }
                 },
                 "required": [
@@ -3552,7 +4524,7 @@
               "descriptor": {
                 "anyOf": [
                   {
-                    "$ref": "#/$defs/CredentialDescriptor"
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialDescriptor"
                   },
                   {
                     "type": "null"
@@ -3566,15 +4538,15 @@
                 ]
               },
               "id": {
-                "$ref": "#/$defs/CredentialSourceId"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialSourceId"
               },
               "kind": {
-                "$ref": "#/$defs/CredentialKind"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialKind"
               },
               "oauth_helper": {
                 "anyOf": [
                   {
-                    "$ref": "#/$defs/OAuthHelper"
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/OAuthHelper"
                   },
                   {
                     "type": "null"
@@ -3596,7 +4568,7 @@
               "replacement_of": {
                 "anyOf": [
                   {
-                    "$ref": "#/$defs/CredentialRef"
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialRef"
                   },
                   {
                     "type": "null"
@@ -3604,7 +4576,7 @@
                 ]
               },
               "status": {
-                "$ref": "#/$defs/CredentialStatus"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialStatus"
               },
               "version": {
                 "format": "int64",
@@ -3641,10 +4613,10 @@
             "description": "Exact purpose/audience identity frozen into executable access. Usage remains\nthe existing independent field on `CredentialAccess`, so executable payloads\ncannot serialize two copies of the same usage truth.",
             "properties": {
               "audience": {
-                "$ref": "#/$defs/CredentialAudienceRef"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialAudienceRef"
               },
               "purpose": {
-                "$ref": "#/$defs/CredentialPurpose"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialPurpose"
               }
             },
             "required": [
@@ -3658,10 +4630,10 @@
             "description": "One source-declared authorization contract. The target identity and its\nallowed material usage are indivisible here, while executable access carries\nthat target identity plus its existing single `usage` field.",
             "properties": {
               "target": {
-                "$ref": "#/$defs/CredentialTarget"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialTarget"
               },
               "usage": {
-                "$ref": "#/$defs/CredentialUsage"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialUsage"
               }
             },
             "required": [
@@ -3766,7 +4738,7 @@
                   "fields": {
                     "additionalProperties": {
                       "items": {
-                        "$ref": "#/$defs/HttpEffectPlacement"
+                        "$ref": "#/components/schemas/ProviderConnectionView/$defs/HttpEffectPlacement"
                       },
                       "type": "array",
                       "uniqueItems": true
@@ -3790,7 +4762,7 @@
                   "fields": {
                     "additionalProperties": {
                       "items": {
-                        "$ref": "#/$defs/SignatureVerificationAlgorithm"
+                        "$ref": "#/components/schemas/ProviderConnectionView/$defs/SignatureVerificationAlgorithm"
                       },
                       "type": "array",
                       "uniqueItems": true
@@ -3899,16 +4871,16 @@
                 ]
               },
               "dialect": {
-                "$ref": "#/$defs/ApiDialect"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/ApiDialect"
               },
               "display_name": {
                 "type": "string"
               },
               "id": {
-                "$ref": "#/$defs/ProtocolEndpointId"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/ProtocolEndpointId"
               },
               "provider_id": {
-                "$ref": "#/$defs/ProviderId"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/ProviderId"
               },
               "timeout_secs": {
                 "description": "Request timeout in seconds.",
@@ -3949,7 +4921,7 @@
                 "type": "string"
               },
               "id": {
-                "$ref": "#/$defs/ProviderId"
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/ProviderId"
               },
               "slug": {
                 "description": "URL-safe vendor slug, unique in the catalog.",
@@ -3986,16 +4958,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "credential": {
-            "$ref": "#/$defs/CredentialSourceView"
+            "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialSourceView"
           },
           "endpoint": {
-            "$ref": "#/$defs/ProtocolEndpoint"
+            "$ref": "#/components/schemas/ProviderConnectionView/$defs/ProtocolEndpoint"
           },
           "provider": {
-            "$ref": "#/$defs/Provider"
+            "$ref": "#/components/schemas/ProviderConnectionView/$defs/Provider"
           },
           "sync": {
-            "$ref": "#/$defs/CatalogSyncResult"
+            "$ref": "#/components/schemas/ProviderConnectionView/$defs/CatalogSyncResult"
           }
         },
         "required": [
@@ -4045,7 +5017,7 @@
                 "type": "string"
               },
               "dialect": {
-                "$ref": "#/$defs/ApiDialect"
+                "$ref": "#/components/schemas/ProviderDriverDescriptor/$defs/ApiDialect"
               },
               "model_discovery_base_url": {
                 "description": "Optional provider-owned model-directory base when discovery is exposed\nseparately from the inference protocol surface.",
@@ -4085,7 +5057,7 @@
                 "type": "string"
               },
               "kind": {
-                "$ref": "#/$defs/ProviderFieldKind"
+                "$ref": "#/components/schemas/ProviderDriverDescriptor/$defs/ProviderFieldKind"
               },
               "label": {
                 "type": "string"
@@ -4124,19 +5096,19 @@
         "properties": {
           "auth_methods": {
             "items": {
-              "$ref": "#/$defs/ProviderAuthMethod"
+              "$ref": "#/components/schemas/ProviderDriverDescriptor/$defs/ProviderAuthMethod"
             },
             "type": "array"
           },
           "configuration_fields": {
             "items": {
-              "$ref": "#/$defs/ProviderConfigurationField"
+              "$ref": "#/components/schemas/ProviderDriverDescriptor/$defs/ProviderConfigurationField"
             },
             "type": "array"
           },
           "default_endpoints": {
             "items": {
-              "$ref": "#/$defs/DefaultProtocolEndpoint"
+              "$ref": "#/components/schemas/ProviderDriverDescriptor/$defs/DefaultProtocolEndpoint"
             },
             "type": "array"
           },
@@ -4154,7 +5126,7 @@
           },
           "supported_dialects": {
             "items": {
-              "$ref": "#/$defs/ApiDialect"
+              "$ref": "#/components/schemas/ProviderDriverDescriptor/$defs/ApiDialect"
             },
             "type": "array"
           },
@@ -4250,7 +5222,7 @@
                 "description": "Use exactly one source.",
                 "properties": {
                   "credential_source_id": {
-                    "$ref": "#/$defs/CredentialSourceId"
+                    "$ref": "#/components/schemas/ResolveRequest/$defs/CredentialSourceId"
                   },
                   "type": {
                     "const": "exact",
@@ -4267,7 +5239,7 @@
                 "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
                 "properties": {
                   "credential_pool_id": {
-                    "$ref": "#/$defs/CredentialPoolId"
+                    "$ref": "#/components/schemas/ResolveRequest/$defs/CredentialPoolId"
                   },
                   "type": {
                     "const": "one_of_credential_pool",
@@ -4334,10 +5306,10 @@
         "description": "A dry-run resolve request. An unqualified target is valid when the model id\nidentifies exactly one active offering; callers always use the same target shape.",
         "properties": {
           "binding": {
-            "$ref": "#/$defs/CredentialBinding"
+            "$ref": "#/components/schemas/ResolveRequest/$defs/CredentialBinding"
           },
           "target": {
-            "$ref": "#/$defs/ModelTarget"
+            "$ref": "#/components/schemas/ResolveRequest/$defs/ModelTarget"
           },
           "workspace_id": {
             "type": "string"
@@ -4394,7 +5366,7 @@
         "properties": {
           "candidates": {
             "items": {
-              "$ref": "#/$defs/ResolvedInferenceView"
+              "$ref": "#/components/schemas/ResolvedCandidatesView/$defs/ResolvedInferenceView"
             },
             "type": "array"
           }
@@ -4461,22 +5433,22 @@
                 ]
               },
               "material": {
-                "$ref": "#/$defs/CredentialMaterialDescriptor"
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialMaterialDescriptor"
               },
               "permissions": {
                 "items": {
-                  "$ref": "#/$defs/CredentialPermissionRef"
+                  "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialPermissionRef"
                 },
                 "type": "array",
                 "uniqueItems": true
               },
               "provider": {
-                "$ref": "#/$defs/CredentialProviderRef"
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialProviderRef"
               },
               "subject": {
                 "anyOf": [
                   {
-                    "$ref": "#/$defs/CredentialSubjectRef"
+                    "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialSubjectRef"
                   },
                   {
                     "type": "null"
@@ -4486,7 +5458,7 @@
               "targets": {
                 "description": "Exact authorized target/usage contracts. Separate sets are deliberately\nforbidden because their Cartesian product would invent undeclared uses.",
                 "items": {
-                  "$ref": "#/$defs/CredentialTargetContract"
+                  "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialTargetContract"
                 },
                 "type": "array"
               }
@@ -4509,7 +5481,7 @@
                     "type": "string"
                   },
                   "type_id": {
-                    "$ref": "#/$defs/CredentialMaterialTypeId"
+                    "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialMaterialTypeId"
                   }
                 },
                 "required": [
@@ -4533,7 +5505,7 @@
                     "type": "string"
                   },
                   "type_id": {
-                    "$ref": "#/$defs/CredentialMaterialTypeId"
+                    "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialMaterialTypeId"
                   }
                 },
                 "required": [
@@ -4697,10 +5669,10 @@
             "description": "Exact purpose/audience identity frozen into executable access. Usage remains\nthe existing independent field on `CredentialAccess`, so executable payloads\ncannot serialize two copies of the same usage truth.",
             "properties": {
               "audience": {
-                "$ref": "#/$defs/CredentialAudienceRef"
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialAudienceRef"
               },
               "purpose": {
-                "$ref": "#/$defs/CredentialPurpose"
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialPurpose"
               }
             },
             "required": [
@@ -4714,10 +5686,10 @@
             "description": "One source-declared authorization contract. The target identity and its\nallowed material usage are indivisible here, while executable access carries\nthat target identity plus its existing single `usage` field.",
             "properties": {
               "target": {
-                "$ref": "#/$defs/CredentialTarget"
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialTarget"
               },
               "usage": {
-                "$ref": "#/$defs/CredentialUsage"
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialUsage"
               }
             },
             "required": [
@@ -4822,7 +5794,7 @@
                   "fields": {
                     "additionalProperties": {
                       "items": {
-                        "$ref": "#/$defs/HttpEffectPlacement"
+                        "$ref": "#/components/schemas/RotateCredentialRequest/$defs/HttpEffectPlacement"
                       },
                       "type": "array",
                       "uniqueItems": true
@@ -4846,7 +5818,7 @@
                   "fields": {
                     "additionalProperties": {
                       "items": {
-                        "$ref": "#/$defs/SignatureVerificationAlgorithm"
+                        "$ref": "#/components/schemas/RotateCredentialRequest/$defs/SignatureVerificationAlgorithm"
                       },
                       "type": "array",
                       "uniqueItems": true
@@ -4951,7 +5923,7 @@
           "descriptor": {
             "anyOf": [
               {
-                "$ref": "#/$defs/CredentialDescriptor"
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialDescriptor"
               },
               {
                 "type": "null"
@@ -4967,7 +5939,7 @@
           "material": {
             "anyOf": [
               {
-                "$ref": "#/$defs/CredentialMaterialInput"
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialMaterialInput"
               },
               {
                 "type": "null"
@@ -5064,7 +6036,7 @@
           "credential_source_id": {
             "anyOf": [
               {
-                "$ref": "#/$defs/CredentialSourceId"
+                "$ref": "#/components/schemas/SaveProviderConnectionRequest/$defs/CredentialSourceId"
               },
               {
                 "type": "null"
@@ -5074,7 +6046,7 @@
             "description": "Reuse one active Workspace credential instead of creating a duplicate."
           },
           "dialect": {
-            "$ref": "#/$defs/ApiDialect"
+            "$ref": "#/components/schemas/SaveProviderConnectionRequest/$defs/ApiDialect"
           },
           "display_name": {
             "type": "string"
@@ -5092,7 +6064,7 @@
           "oauth_helper": {
             "anyOf": [
               {
-                "$ref": "#/$defs/OAuthHelper"
+                "$ref": "#/components/schemas/SaveProviderConnectionRequest/$defs/OAuthHelper"
               },
               {
                 "type": "null"
@@ -6260,6 +7232,366 @@
         "summary": "Dry-run resolve a model + credential binding against the catalog (secret-free view)",
         "tags": [
           "inference"
+        ]
+      }
+    },
+    "/v1/config/mcp-catalog/source": {
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpSource"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfigurationView"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-catalog/sync": {
+      "post": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfigurationView"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfigurationView"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpPutServer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfigurationView"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers/credential-inventory": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/McpCredentialChoice"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers/credentials": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "url",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/McpCredentialChoice"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers/{key}/credentials": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/McpCredentialChoice"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers/{key}/default-credential": {
+      "put": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfigurationView"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers/{key}/inspect": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpInspectionView"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers/{key}/prepare": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpPreparedBinding"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers/{key}/remove": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpRevision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfigurationView"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "tags": [
+          "MCP configuration"
         ]
       }
     },

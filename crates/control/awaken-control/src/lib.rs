@@ -18,6 +18,12 @@
 
 pub mod admin_assistant;
 mod application_mcp_credentials;
+mod mcp_catalog;
+pub use mcp_catalog::McpCatalogService;
+#[cfg(feature = "schema")]
+pub use mcp_catalog::{
+    contract_paths as mcp_contract_paths, contract_schemas as mcp_contract_schemas,
+};
 pub mod authz;
 mod component;
 pub mod control_stores;
@@ -313,6 +319,8 @@ pub struct ControlRouterInput {
     pub credentials: Arc<dyn CredentialRepo>,
     /// The sealed-secret store the admin + vault surfaces + webhook sealing use.
     pub secrets: Arc<dyn SecretStore>,
+    /// Workspace MCP configuration and inspection over the same Vault owner.
+    pub mcp_catalog: mcp_catalog::McpCatalogService,
     /// Authored inference profiles (admin aggregate).
     pub profiles: Arc<dyn InferenceProfileStore>,
     /// Authored webhook endpoints (admin aggregate).
@@ -419,6 +427,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         credentials,
         secrets,
         profiles,
+        mcp_catalog,
         webhook_store,
         resource_store,
         probe,
@@ -493,6 +502,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         awaken_webhook_managed::webhook_config_router(webhook_store, secrets.clone());
     let admin = admin.merge(webhook_crud);
     let application_mcp_credentials = application_mcp_credentials_router(vault_state.clone());
+    let mcp = mcp_catalog::router(mcp_catalog);
     let vaults = vault_router(vault_state);
     let presentation_org = data_subject_org.clone();
     let user_profiles = user_profiles_router(data_subject_application, data_subject_org);
@@ -568,6 +578,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // are merged before the layer so the guard authenticates them first.
     let mut mgmt = admin
         .merge(application_mcp_credentials)
+        .merge(mcp)
         .merge(vaults)
         .merge(user_profiles)
         .merge(agents)

@@ -146,6 +146,59 @@
       "title": "AgentInputConfig",
       "type": "object"
     },
+    "AgentMcpTransportBinding": {
+      "$defs": {
+        "AgentHttpMcpTransport": {
+          "properties": {
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        },
+        "AgentSandboxStdioMcpTransport": {
+          "properties": {
+            "args": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "command": {
+              "type": "string"
+            },
+            "type": {
+              "$ref": "#/$defs/AgentSandboxStdioMcpTransportKind"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "type": "object"
+        },
+        "AgentSandboxStdioMcpTransportKind": {
+          "enum": [
+            "sandbox_stdio"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentSandboxStdioMcpTransport"
+        },
+        {
+          "$ref": "#/$defs/AgentHttpMcpTransport"
+        }
+      ],
+      "description": "Authoring transport for an Agent-owned MCP binding. HTTP retains its legacy\n`{url}` shape; `sandbox_stdio` is explicit and can only be realized inside a\nSession Environment.",
+      "title": "AgentMcpTransportBinding"
+    },
     "ApiDialect": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this dialect (ADR-0043).",
@@ -2280,6 +2333,925 @@
         "primary"
       ],
       "title": "InferenceProfile",
+      "type": "object"
+    },
+    "McpConfigurationView": {
+      "$defs": {
+        "McpCatalogView": {
+          "properties": {
+            "active_source_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "digest": {
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "source_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "revision",
+            "digest"
+          ],
+          "type": "object"
+        },
+        "McpCredentialPreference": {
+          "additionalProperties": false,
+          "properties": {
+            "target_fingerprint": {
+              "description": "A default for an old endpoint cannot silently authorize a replacement.",
+              "type": "string"
+            },
+            "vault_credential_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "vault_credential_id",
+            "target_fingerprint"
+          ],
+          "type": "object"
+        },
+        "McpServerDefinition": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "icon": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "prompts_as_skills": {
+              "default": false,
+              "type": "boolean"
+            },
+            "transport": {
+              "$ref": "#/$defs/McpTransportConfig"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "description",
+            "transport"
+          ],
+          "type": "object"
+        },
+        "McpServerView": {
+          "properties": {
+            "default_credential": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/McpCredentialPreference"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default_matches_target": {
+              "type": "boolean"
+            },
+            "definition": {
+              "$ref": "#/$defs/McpServerDefinition"
+            },
+            "key": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "target_fingerprint": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "origin",
+            "definition",
+            "target_fingerprint",
+            "default_matches_target"
+          ],
+          "type": "object"
+        },
+        "McpTransportConfig": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "url",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "args": {
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "sandbox_stdio",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "command"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "catalog": {
+          "$ref": "#/$defs/McpCatalogView"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "servers": {
+          "items": {
+            "$ref": "#/$defs/McpServerView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "revision",
+        "servers",
+        "catalog"
+      ],
+      "title": "McpConfigurationView",
+      "type": "object"
+    },
+    "McpCredentialChoice": {
+      "$defs": {
+        "CredentialRef": {
+          "description": "A stable reference to one credential source revision.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "revision"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "auth_type": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "mcp_server_url": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CredentialRef"
+        },
+        "target_fingerprint": {
+          "type": "string"
+        },
+        "vault_id": {
+          "type": "string"
+        },
+        "vault_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "vault_id",
+        "vault_name",
+        "display_name",
+        "auth_type",
+        "source",
+        "mcp_server_url",
+        "target_fingerprint"
+      ],
+      "title": "McpCredentialChoice",
+      "type": "object"
+    },
+    "McpInspectionView": {
+      "$defs": {
+        "CredentialRef": {
+          "description": "A stable reference to one credential source revision.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "revision"
+          ],
+          "type": "object"
+        },
+        "McpCredentialChoice": {
+          "properties": {
+            "auth_type": {
+              "type": "string"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "mcp_server_url": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/CredentialRef"
+            },
+            "target_fingerprint": {
+              "type": "string"
+            },
+            "vault_id": {
+              "type": "string"
+            },
+            "vault_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "vault_id",
+            "vault_name",
+            "display_name",
+            "auth_type",
+            "source",
+            "mcp_server_url",
+            "target_fingerprint"
+          ],
+          "type": "object"
+        },
+        "McpProbeTool": {
+          "description": "Ephemeral discovery evidence, never another persisted tool catalog.",
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "input_schema"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "checked_at": {
+          "type": "string"
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpCredentialChoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "http_status": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "location": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/McpProbeTool"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "tools",
+        "location",
+        "checked_at"
+      ],
+      "title": "McpInspectionView",
+      "type": "object"
+    },
+    "McpPreparedBinding": {
+      "$defs": {
+        "AgentHttpMcpTransport": {
+          "properties": {
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        },
+        "AgentMcpServerBinding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSandboxStdioMcpTransport"
+            },
+            {
+              "$ref": "#/$defs/AgentHttpMcpTransport"
+            }
+          ],
+          "description": "One MCP server inherited by Sessions of the published Agent.",
+          "properties": {
+            "credential": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialRef"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact secret-free credential revision frozen into the publication.\n\nRuntime may materialize this revision but must never select a different\ncredential. `None` leaves identity selection to Session Vaults; the\nconnection is anonymous only when no Session credential matches."
+            },
+            "name": {
+              "type": "string"
+            },
+            "prompts_as_skills": {
+              "description": "Explicitly project this server's MCP prompts into the Agent's unified\nSkill catalog. Off by default: ordinary MCP prompts remain prompts.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "AgentSandboxStdioMcpTransport": {
+          "properties": {
+            "args": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "command": {
+              "type": "string"
+            },
+            "type": {
+              "$ref": "#/$defs/AgentSandboxStdioMcpTransportKind"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "type": "object"
+        },
+        "AgentSandboxStdioMcpTransportKind": {
+          "enum": [
+            "sandbox_stdio"
+          ],
+          "type": "string"
+        },
+        "CredentialRef": {
+          "description": "A stable reference to one credential source revision.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "revision"
+          ],
+          "type": "object"
+        },
+        "McpCredentialChoice": {
+          "properties": {
+            "auth_type": {
+              "type": "string"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "mcp_server_url": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/CredentialRef"
+            },
+            "target_fingerprint": {
+              "type": "string"
+            },
+            "vault_id": {
+              "type": "string"
+            },
+            "vault_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "vault_id",
+            "vault_name",
+            "display_name",
+            "auth_type",
+            "source",
+            "mcp_server_url",
+            "target_fingerprint"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/AgentMcpServerBinding"
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpCredentialChoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "binding",
+        "revision"
+      ],
+      "title": "McpPreparedBinding",
+      "type": "object"
+    },
+    "McpPutServer": {
+      "$defs": {
+        "McpServerDefinition": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "icon": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "prompts_as_skills": {
+              "default": false,
+              "type": "boolean"
+            },
+            "transport": {
+              "$ref": "#/$defs/McpTransportConfig"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "description",
+            "transport"
+          ],
+          "type": "object"
+        },
+        "McpTransportConfig": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "url",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "args": {
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "sandbox_stdio",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "command"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/McpServerDefinition"
+        },
+        "expected_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "expected_revision",
+        "definition"
+      ],
+      "title": "McpPutServer",
+      "type": "object"
+    },
+    "McpRevision": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "expected_revision"
+      ],
+      "title": "McpRevision",
+      "type": "object"
+    },
+    "McpSelection": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "credential_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "expected_revision"
+      ],
+      "title": "McpSelection",
+      "type": "object"
+    },
+    "McpServerDefinition": {
+      "$defs": {
+        "McpTransportConfig": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "url",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "args": {
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "sandbox_stdio",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "command"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "icon": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "prompts_as_skills": {
+          "default": false,
+          "type": "boolean"
+        },
+        "transport": {
+          "$ref": "#/$defs/McpTransportConfig"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "transport"
+      ],
+      "title": "McpServerDefinition",
+      "type": "object"
+    },
+    "McpServerView": {
+      "$defs": {
+        "McpCredentialPreference": {
+          "additionalProperties": false,
+          "properties": {
+            "target_fingerprint": {
+              "description": "A default for an old endpoint cannot silently authorize a replacement.",
+              "type": "string"
+            },
+            "vault_credential_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "vault_credential_id",
+            "target_fingerprint"
+          ],
+          "type": "object"
+        },
+        "McpServerDefinition": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "icon": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "prompts_as_skills": {
+              "default": false,
+              "type": "boolean"
+            },
+            "transport": {
+              "$ref": "#/$defs/McpTransportConfig"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "description",
+            "transport"
+          ],
+          "type": "object"
+        },
+        "McpTransportConfig": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "url",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "args": {
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "sandbox_stdio",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "command"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "default_credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpCredentialPreference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_matches_target": {
+          "type": "boolean"
+        },
+        "definition": {
+          "$ref": "#/$defs/McpServerDefinition"
+        },
+        "key": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "target_fingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "origin",
+        "definition",
+        "target_fingerprint",
+        "default_matches_target"
+      ],
+      "title": "McpServerView",
+      "type": "object"
+    },
+    "McpSource": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "expected_revision"
+      ],
+      "title": "McpSource",
       "type": "object"
     },
     "ModelAttributes": {

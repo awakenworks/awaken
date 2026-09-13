@@ -77,7 +77,7 @@ describe("console information architecture", () => {
     expect(navPath(artifacts, "workspace-a")).toBe("/w/workspace-a/artifacts");
     expect(titleForPath("/w/workspace-a/mcp")).toEqual({
       scope: "workspace-a",
-      title: "MCP overview",
+      title: "MCP servers",
     });
   });
 

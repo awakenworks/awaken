@@ -211,6 +211,9 @@ fn create_injection_location(
 
 /// The vault surface's state: the neutral credential domain stores plus the
 /// durable, secret-free Managed projection.
+mod mcp_inspection;
+pub use mcp_inspection::{McpCredentialChoice, McpInspectionView};
+
 pub struct VaultState {
     secrets: Arc<dyn SecretStore>,
     repository: Arc<dyn ManagedCredentialRepository>,
@@ -1846,7 +1849,7 @@ async fn validate_credential(
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<CredentialValidation>, WireError> {
-    let (source_id, mcp_server_url, has_refresh_token) = {
+    let (mcp_server_url, has_refresh_token) = {
         let record = state
             .repository
             .get_vault_credential(&workspace_id, &id)
@@ -1862,7 +1865,7 @@ async fn validate_credential(
             } => (Some(mcp_server_url.clone()), refresh.is_some()),
             _ => (None, false),
         };
-        (record.source_id, url, has_refresh)
+        (url, has_refresh)
     };
     // Live probe: only an `mcp_oauth` credential (it names an MCP server to
     // handshake with) and only when the process startup wired an `McpProbe`.
@@ -1873,24 +1876,18 @@ async fn validate_credential(
     // secret-free by construction (a handshake flag or an HTTP status).
     let mut status = CredentialValidationStatus::Unknown;
     let mut mcp_probe = None;
-    if let (Some(probe), Some(url)) = (&state.probe, &mcp_server_url) {
-        let bearer = match state.repository.get(&source_id).await {
-            Ok(row) => awaken_credential_vault::materialize(&row, &*state.secrets)
-                .await
-                .ok(),
-            Err(_) => None,
-        };
-        if let Some(bearer) = bearer {
-            match probe.probe(url, &bearer).await {
-                McpProbeStatus::Valid => {
+    if let Some(url) = &mcp_server_url {
+        if let Ok(result) = state.inspect_mcp(&workspace_id, url, Some(&id)).await {
+            match result.status {
+                "valid" => {
                     status = CredentialValidationStatus::Valid;
                     mcp_probe = Some(McpProbeResult::ok());
                 }
-                McpProbeStatus::Invalid { http_status } => {
+                "invalid" => {
                     status = CredentialValidationStatus::Invalid;
-                    mcp_probe = Some(McpProbeResult::invalid(http_status));
+                    mcp_probe = result.http_status.map(McpProbeResult::invalid);
                 }
-                McpProbeStatus::Unknown => {}
+                _ => {}
             }
         }
     }

@@ -1,5 +1,5 @@
 import { ArrowRight, ExternalLink, Info, Plus, X } from "@awaken/ui/icons";
-import { InlineNotice, CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+import { InlineNotice, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 
 // Workspace · Sessions: the scoped session list (GET /v1/sessions,
 // tenant-scoped via ws()). Human titles stay primary; technical ids remain
@@ -13,6 +13,7 @@ import {
 } from "@awaken/managed-session-projection";
 import { useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import VaultPicker from "../components/session/VaultPicker";
 import Drawer from "../components/ui/Drawer";
 import { Modal, Pill, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
 import {
@@ -29,7 +30,6 @@ import type {
   ListSessionsResponse,
   Page,
   Session,
-  Vault,
 } from "../lib/api/types";
 import { entityDisplayName, identifierLabel, sessionDisplayTitle } from "../lib/presentation";
 import { useApp } from "../lib/app-state";
@@ -81,10 +81,6 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   const envs = useQuery({
     queryKey: ["environments", wsId],
     queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
-  });
-  const vaults = useQuery({
-    queryKey: ["vaults", wsId],
-    queryFn: () => api.get<Page<Vault>>(ws("/v1/vaults")),
   });
   const create = useMutation({
     mutationFn: (body: CreateSessionRequest) =>
@@ -156,20 +152,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
         <details>
           <summary>{app.t("Advanced runtime overrides", "高级运行覆盖")}</summary>
           <p className="mut">{app.t("Usually leave these empty. The Agent's published MCP and resource configuration is included automatically.", "通常无需设置。Agent 已发布的 MCP 与资源配置会自动包含。")}</p>
-          <div className="ui-field">
-            <label>{app.t("Runtime Secret Vaults for this Session", "本次会话使用的运行时凭证 Vault")}</label>
-            <span className="mut">{app.t("Select only Vaults whose tools or processes are needed for this run.", "只选择本次运行所需工具或进程对应的 Vault。")}</span>
-            <CheckPicker
-              selected={vaultIds}
-              onChange={setVaultIds}
-              options={(vaults.data?.data ?? []).filter((vault) => !vault.archived_at).map((vault) => ({
-                id: vault.id,
-                label: vault.display_name || app.t("Unnamed Vault", "未命名 Vault"),
-                description: <small className="mono mut">{vault.id}</small>,
-              }))}
-              empty={vaults.isLoading ? null : app.t("No Runtime Secret Vaults are available.", "没有可用的运行时凭证 Vault。")}
-            />
-          </div>
+          <VaultPicker selected={vaultIds} onChange={setVaultIds} />
           <div className="ui-field">
           <label>{app.t("Temporary MCP servers for this Session", "仅用于本次会话的临时 MCP 服务器")}</label>
           {mcp.map((m, i) => (

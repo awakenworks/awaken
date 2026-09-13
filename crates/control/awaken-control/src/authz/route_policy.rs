@@ -91,6 +91,20 @@ pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     ),
     RoutePolicyDescriptor::control(
+        "/v1/config/mcp-servers",
+        RouteFamilyPolicy::Scoped {
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/mcp-catalog",
+        RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
         "/v1/config/application-mcp-credentials",
         RouteFamilyPolicy::Scoped {
             read: APIKEY_READ,
@@ -277,3 +291,43 @@ pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_configuration_routes_keep_catalog_and_credential_permissions_separate() {
+        // A1 definition/candidate/probe/default/pin-preview -> existing credential
+        // authority; A2 cloud source management -> Workspace configuration authority.
+        // No new unauthenticated route or model-supply privilege is implied.
+        use axum::http::Method;
+        assert!(matches!(
+            action_for(&Method::GET, "/v1/config/mcp-servers"),
+            Some(RouteAuthz::Scoped {
+                action: APIKEY_READ,
+                ..
+            })
+        ));
+        for path in [
+            "/v1/config/mcp-servers/local:x/inspect",
+            "/v1/config/mcp-servers/local:x/prepare",
+            "/v1/config/mcp-servers/local:x/default-credential",
+        ] {
+            assert!(matches!(
+                action_for(&Method::POST, path),
+                Some(RouteAuthz::Scoped {
+                    action: APIKEY_WRITE,
+                    ..
+                })
+            ));
+        }
+        assert!(matches!(
+            action_for(&Method::PUT, "/v1/config/mcp-catalog/source"),
+            Some(RouteAuthz::Scoped {
+                action: WORKSPACE_WRITE,
+                ..
+            })
+        ));
+    }
+}

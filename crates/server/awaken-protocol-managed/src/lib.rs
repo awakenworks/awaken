@@ -89,7 +89,7 @@ pub use routes::environments::{
     EnvironmentAuthoringState, environment_authoring_router, environment_work_router,
 };
 pub use routes::user_profiles::user_profiles_router;
-pub use routes::vaults::{VaultState, vault_router};
+pub use routes::vaults::{McpCredentialChoice, McpInspectionView, VaultState, vault_router};
 pub use routes::{
     close_event_admission, create_profiled_session, enforce_managed_beta,
     get_session_execution_evidence, release_profiled_session, replace_resource_manifest, router,

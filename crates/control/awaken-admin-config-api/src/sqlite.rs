@@ -22,6 +22,8 @@ use awaken_config_resolver::{
 
 use crate::schema::{BUNDLE_ID, converged_admin_bundle, selected_admin_bundle};
 
+mod mcp;
+
 /// The admin component's table namespace (its bundle prefix).
 pub(crate) const NS: &str = "admin";
 

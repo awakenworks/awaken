@@ -7,6 +7,11 @@ import type { ContentBlock, SessionEvent } from "./api/types";
 import { pairToolResults } from "@awaken/managed-session-projection";
 export { pairToolResults };
 
+/** Shared tool-call family used by chat, callbacks and diagnostics. */
+export function isToolUseEvent(event: { type: string }): boolean {
+  return event.type === "agent.tool_use" || event.type === "agent.mcp_tool_use" || event.type === "agent.custom_tool_use";
+}
+
 /** Flatten a content-block array to display text (non-text blocks show a tag). */
 export function textOf(content: ContentBlock[] | undefined): string {
   return (content ?? [])
@@ -53,13 +58,12 @@ export interface ToolDiagnostic {
 }
 
 function spanKind(type: string): SpanKind {
+  if (isToolUseEvent({ type })) return "tool";
   switch (type) {
     case "agent.message":
       return "inference";
-    case "agent.tool_use":
-    case "agent.custom_tool_use":
-      return "tool";
     case "agent.tool_result":
+    case "agent.mcp_tool_result":
       return "tool_result";
     case "session.status_running":
     case "session.status_rescheduled":
@@ -121,7 +125,7 @@ export function toolDiagnostics(log: SessionEvent[]): ToolDiagnostic[] {
   const results = pairToolResults(log);
   const rows = new Map<string, { calls: number; completed: number; failures: number; durations: number[] }>();
   for (const event of log) {
-    if (event.type !== "agent.tool_use" && event.type !== "agent.custom_tool_use") continue;
+    if (!isToolUseEvent(event)) continue;
     const name = "name" in event && typeof event.name === "string" && event.name.trim()
       ? event.name
       : "unknown tool";
