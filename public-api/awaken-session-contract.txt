@@ -574,6 +574,7 @@ pub awaken_session_contract::SessionEventBatchAdmissionPlan::ReplayClosed
 impl awaken_session_contract::SessionEventBatchAdmissionPlan
 pub const fn awaken_session_contract::SessionEventBatchAdmissionPlan::appends(self) -> bool
 pub enum awaken_session_contract::SessionEventBatchError
+pub awaken_session_contract::SessionEventBatchError::DuplicateToolReply
 pub awaken_session_contract::SessionEventBatchError::EmptyBatch
 pub awaken_session_contract::SessionEventBatchError::EmptyBatchId
 pub awaken_session_contract::SessionEventBatchError::EmptyMessageContent
@@ -620,6 +621,7 @@ pub awaken_session_contract::SessionEventDispatchSettlementEffect::Applied
 pub awaken_session_contract::SessionEventDispatchSettlementEffect::Applied::fully_settled: bool
 pub awaken_session_contract::SessionEventDispatchSettlementEffect::NotEvent
 pub awaken_session_contract::SessionEventDispatchSettlementEffect::Replayed
+pub awaken_session_contract::SessionEventDispatchSettlementEffect::Replayed::fully_settled: bool
 pub enum awaken_session_contract::SessionEventDispatchSettlementPlan
 pub awaken_session_contract::SessionEventDispatchSettlementPlan::Apply
 pub awaken_session_contract::SessionEventDispatchSettlementPlan::Reject
@@ -874,6 +876,13 @@ pub awaken_session_contract::SessionThreadToolReply::Result::content: alloc::vec
 pub awaken_session_contract::SessionThreadToolReply::Result::is_error: bool
 impl awaken_session_contract::SessionThreadToolReply
 pub fn awaken_session_contract::SessionThreadToolReply::client_executed(&self) -> bool
+pub enum awaken_session_contract::SessionThreadToolReplyActivity
+pub awaken_session_contract::SessionThreadToolReplyActivity::Session
+pub awaken_session_contract::SessionThreadToolReplyActivity::Session::prior_epoch: core::option::Option<u64>
+pub awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension
+impl awaken_session_contract::SessionThreadToolReplyActivity
+pub fn awaken_session_contract::SessionThreadToolReplyActivity::from_dispatch(&awaken_agent_contract::agent::thread::Id, core::option::Option<&awaken_agent_contract::agent::thread::Id>, core::option::Option<u64>, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<Self>
+pub fn awaken_session_contract::SessionThreadToolReplyActivity::prior_epoch(&self) -> core::option::Option<u64>
 pub enum awaken_session_contract::SuspendPhase
 pub awaken_session_contract::SuspendPhase::Disposing
 pub awaken_session_contract::SuspendPhase::Quiescing
@@ -1374,7 +1383,7 @@ pub fn awaken_session_contract::PersistedSession::record_terminal_cleanup_dispos
 pub fn awaken_session_contract::PersistedSession::record_terminal_cleanup_preparation(&mut self, &str, &awaken_session_contract::SessionRealizationLease, awaken_session_contract::SessionCleanupPreparation, core::option::Option<awaken_session_contract::SessionCleanupRepositoryPreparation>) -> core::result::Result<bool, awaken_session_contract::SessionCleanupError>
 pub fn awaken_session_contract::PersistedSession::request_delete(&mut self, &str, i64) -> core::result::Result<core::option::Option<awaken_session_contract::ManagedLifecycleFact>, awaken_session_contract::SessionCleanupError>
 pub fn awaken_session_contract::PersistedSession::settle_activity_epoch(&mut self, u64) -> core::option::Option<bool>
-pub fn awaken_session_contract::PersistedSession::settle_user_event_dispatch(&mut self, &awaken_agent_contract::agent::run::Id, u64, awaken_session_contract::SessionEventProjectionAnchor, u64) -> core::result::Result<awaken_session_contract::SessionEventDispatchSettlementEffect, awaken_session_contract::SessionEventBatchError>
+pub fn awaken_session_contract::PersistedSession::settle_user_event_dispatch(&mut self, &awaken_agent_contract::agent::run::Id, awaken_session_contract::SessionAgentRunBoundary, u64, awaken_session_contract::SessionEventProjectionAnchor, u64) -> core::result::Result<awaken_session_contract::SessionEventDispatchSettlementEffect, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::PersistedSession::source_release_disposal(&self) -> core::result::Result<awaken_session_contract::SourceReleaseDisposal, awaken_session_contract::SessionEnvironmentReceiptError>
 pub fn awaken_session_contract::PersistedSession::source_release_preparation_effect(&self) -> core::result::Result<awaken_session_contract::SourceReleasePreparationEffect, awaken_session_contract::SessionEnvironmentReceiptError>
 pub fn awaken_session_contract::PersistedSession::terminal_cleanup_work_action(&self) -> core::result::Result<core::option::Option<awaken_session_contract::SessionTerminalCleanupAction>, awaken_session_contract::SessionCleanupError>
@@ -1687,6 +1696,7 @@ pub fn awaken_session_contract::SessionEventBatch::operation_ids(&self) -> alloc
 pub fn awaken_session_contract::SessionEventBatch::require_accepted(&self) -> core::result::Result<(), awaken_session_contract::RunError>
 pub fn awaken_session_contract::SessionEventBatch::resolve_terminally(&mut self, core::option::Option<awaken_session_contract::SessionEventProjectionAnchor>, u64) -> usize
 pub fn awaken_session_contract::SessionEventBatch::user_run_operation_id(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<core::option::Option<&str>, awaken_session_contract::SessionEventBatchError>
+pub fn awaken_session_contract::SessionEventBatch::validate_tool_reply_occupancy(&self, &[Self]) -> core::result::Result<(), awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::verify_admission(&self) -> core::result::Result<(), awaken_session_contract::SessionEventBatchError>
 impl awaken_session_contract::SessionEventBatch
 pub fn awaken_session_contract::SessionEventBatch::record_user_run_dispatch_settlement(&mut self, &str, &awaken_agent_contract::agent::run::Id, bool, awaken_session_contract::SessionEventDispatchSettlementReceipt, u64) -> core::result::Result<awaken_session_contract::SessionEventDispatchSettlementPlan, awaken_session_contract::SessionEventBatchError>
@@ -1719,6 +1729,7 @@ pub awaken_session_contract::SessionEventToolReply::runtime_tool_use_id: alloc::
 pub awaken_session_contract::SessionEventToolReply::target: awaken_session_contract::SessionThreadTarget
 pub awaken_session_contract::SessionEventToolReply::tool_request_event_id: alloc::string::String
 impl awaken_session_contract::SessionEventToolReply
+pub fn awaken_session_contract::SessionEventToolReply::answers_same_pending_call(&self, &Self) -> bool
 pub fn awaken_session_contract::SessionEventToolReply::delivery_command(&self, &str, core::option::Option<awaken_session_contract::SessionUserRunSystemInput>) -> awaken_session_contract::SessionThreadToolReplyCommand
 pub struct awaken_session_contract::SessionExecutionStateError(pub alloc::string::String)
 pub struct awaken_session_contract::SessionExecutionTransitionError
@@ -2071,10 +2082,10 @@ pub fn awaken_session_contract::SessionThreadToolReplyCommand::delivery_operatio
 pub struct awaken_session_contract::SessionThreadToolReplyDelivery
 pub awaken_session_contract::SessionThreadToolReplyDelivery::command: awaken_session_contract::SessionThreadToolReplyCommand
 pub awaken_session_contract::SessionThreadToolReplyDelivery::fence: awaken_session_contract::SessionThreadToolReplyFence
-pub awaken_session_contract::SessionThreadToolReplyDelivery::session_activity_epoch: u64
+pub awaken_session_contract::SessionThreadToolReplyDelivery::session_activity_epoch: core::option::Option<u64>
 pub struct awaken_session_contract::SessionThreadToolReplyFence
+pub awaken_session_contract::SessionThreadToolReplyFence::activity: awaken_session_contract::SessionThreadToolReplyActivity
 pub awaken_session_contract::SessionThreadToolReplyFence::already_applied: bool
-pub awaken_session_contract::SessionThreadToolReplyFence::prior_session_activity_epoch: core::option::Option<u64>
 pub struct awaken_session_contract::SessionTombstone
 pub awaken_session_contract::SessionTombstone::deleted_at: alloc::string::String
 pub awaken_session_contract::SessionTombstone::deleted_revision: awaken_session_contract::SessionRevision
