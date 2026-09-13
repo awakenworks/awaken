@@ -1440,7 +1440,7 @@ mod tests {
         assert_eq!(timeouts.len(), 2, "T6 timeout then expiry");
         for (event, expected) in timeouts
             .iter()
-            .zip([("100", "300", "100"), ("80", "400", "0")])
+            .zip([("100", "300", "100"), ("100", "400", "0")])
         {
             assert_eq!(event["probe_elapsed_ms"], expected.0);
             assert_eq!(event["proof_age_ms"], expected.1);

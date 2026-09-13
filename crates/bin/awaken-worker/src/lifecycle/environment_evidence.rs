@@ -116,7 +116,13 @@ pub(super) async fn monitor<Probe, ProbeFuture, Error>(
                     request_budget_ms = timing.request_timeout().as_millis(),
                     "worker sandbox evidence probe timed out; retrying within existing proof"
                 );
-                next_attempt = tokio::time::Instant::now() + timing.retry_delay();
+                // The timed-out probe already consumed the retry pacing budget.
+                // Sleeping again can skip the remaining proof window entirely
+                // under scheduler load, turning one unknown Kubernetes read
+                // into irreversible Worker authority loss. Retry immediately;
+                // timeout_at still caps this attempt at the original deadline
+                // and no successful response can extend that deadline.
+                next_attempt = tokio::time::Instant::now();
             }
             EvidenceAction::CloseExpired => {
                 awaken_observability::record_worker_authority_loss("environment_evidence_expired");
