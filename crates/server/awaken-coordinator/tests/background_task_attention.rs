@@ -26,8 +26,32 @@ use tower::ServiceExt;
 
 const AGENT_ID: &str = "background-attention-agent";
 const OBSERVED: &str = "BACKGROUND_COMPLETION_OBSERVED";
+/// A woken inference that carried no result at all: the Host promised delivery
+/// and the extension projected nothing.
+const RESULT_UNDELIVERED: &str = "BACKGROUND_RESULT_UNDELIVERED";
+/// A delivered result missing the task's own output or terminal state.
+const RESULT_INCOMPLETE: &str = "BACKGROUND_RESULT_INCOMPLETE";
+/// A result projected without the control wake that authorizes the Run.
+const WAKE_MISSING: &str = "BACKGROUND_WAKE_MISSING";
+/// The exact bytes the background command prints, so delivery is proved by the
+/// task's own output rather than by the notification envelope alone.
+const RESULT_MARKER: &str = "BACKGROUND_E2E_RESULT";
 
-fn task_id_from_attention(request: &ChatRequest) -> Option<String> {
+/// The extension's source-labelled result projection, which the same StepStart
+/// appends beside the wake. This is what makes a second query unnecessary.
+fn delivered_result(request: &ChatRequest) -> Option<String> {
+    request
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .map(|message| extract_text(&message.content))
+        .find(|text| text.contains(r#""source":"background_task""#))
+}
+
+/// The Host's minimal control wake: it names the task and says a terminal
+/// candidate exists, and (per ADR-0076's 2026-09-13 amendment) deliberately
+/// does not instruct the Agent to query for the result.
+fn attention_wake(request: &ChatRequest) -> Option<String> {
     request
         .messages
         .iter()
@@ -70,18 +94,31 @@ impl LlmExecutor for DeterministicBackgroundAttentionModel {
             "configured target stays internal"
         );
         let last_role = request.messages.last().map(|message| message.role);
-        let attention_task = task_id_from_attention(&request);
-        let output = match (attention_task, last_role) {
-            (Some(task_id), Some(Role::System)) => {
-                AssistantOutput::from_tool_calls(vec![ToolCall {
-                    call_id: "inspect-background-completion".into(),
-                    tool_id: "get_background_task".into(),
-                    arguments: json!({"task_id": task_id}),
-                }])
+        let output = match (attention_wake(&request), delivered_result(&request)) {
+            // The wake arrived with the task's terminal result beside it, so the
+            // Agent answers from what it was given. The distinct markers below
+            // fail the test loudly instead of letting a missing delivery read as
+            // success.
+            (Some(task_id), Some(delivered)) => {
+                assert!(
+                    delivered.contains(&task_id),
+                    "the delivered result belongs to the woken task: {delivered}"
+                );
+                if delivered.contains(RESULT_MARKER) && delivered.contains(r#""state":"completed""#)
+                {
+                    AssistantOutput::text(OBSERVED)
+                } else {
+                    AssistantOutput::text(RESULT_INCOMPLETE)
+                }
             }
-            (Some(_), Some(Role::Tool)) => AssistantOutput::text(OBSERVED),
-            (None, Some(Role::Tool)) => AssistantOutput::text("BACKGROUND_STARTED"),
-            (None, _) => AssistantOutput::from_tool_calls(vec![ToolCall {
+            // A wake with nothing delivered is the regression this test exists
+            // to catch: the Agent would have to query for what it was promised.
+            (Some(_), None) => AssistantOutput::text(RESULT_UNDELIVERED),
+            (None, Some(_)) => AssistantOutput::text(WAKE_MISSING),
+            (None, None) if last_role == Some(Role::Tool) => {
+                AssistantOutput::text("BACKGROUND_STARTED")
+            }
+            (None, None) => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "start-background-bash".into(),
                 tool_id: "run_in_background".into(),
                 arguments: json!({
@@ -89,7 +126,6 @@ impl LlmExecutor for DeterministicBackgroundAttentionModel {
                     "arguments": {"command": "printf 'BACKGROUND_E2E_RESULT\\n'"}
                 }),
             }]),
-            (Some(_), _) => AssistantOutput::text(OBSERVED),
         };
         Ok(ChatResponse {
             output,
@@ -116,9 +152,10 @@ fn background_snapshot(model_ref: &str) -> ExecutableAgentSnapshot {
         .instructions(
             "For the first user request, call run_in_background exactly once with the requested \
              bash command, then end that Run. When a System message reports a terminal background \
-             completion candidate, call get_background_task with its task_id exactly once. After \
-             reading the tool result, reply with BACKGROUND_COMPLETION_OBSERVED. Never call bash \
-             directly and never invent a task result.",
+             completion candidate, the result is supplied beside it as a source-labelled \
+             message: answer from that result and reply with BACKGROUND_COMPLETION_OBSERVED \
+             without calling get_background_task. Never call bash directly and never invent a \
+             task result.",
         )
         .model(ModelBinding::new("background-e2e", model_ref, "default"))
         .tools(ordinary_tools)
@@ -290,17 +327,23 @@ fn assert_completion_chain(events: &Value) {
         .collect::<Vec<_>>();
     assert_eq!(
         tool_names,
-        ["run_in_background", "get_background_task"],
-        "the Agent starts once and inspects only after the system wake"
+        ["run_in_background"],
+        "the Agent starts the task once and never queries for a result it was given"
     );
-    let results = events
+    let replies = events
         .iter()
-        .filter(|event| event["type"] == "agent.tool_result")
+        .filter(|event| event["type"] == "agent.message")
         .map(event_text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(results.contains("\"state\":\"completed\""), "{results}");
-    assert!(results.contains("BACKGROUND_E2E_RESULT"), "{results}");
+    // The scripted Agent says OBSERVED only when the woken inference carried the
+    // woken task's own terminal output and completed state, so this one
+    // assertion covers delivery, ownership and completeness; each other marker
+    // names which half was missing.
+    for absent in [RESULT_UNDELIVERED, RESULT_INCOMPLETE, WAKE_MISSING] {
+        assert!(!replies.contains(absent), "{absent}: {replies}");
+    }
+    assert!(replies.contains(OBSERVED), "{replies}");
 }
 
 #[tokio::test]
@@ -308,11 +351,14 @@ async fn background_completion_folds_before_inference_and_commits_before_next_ef
     // Cause/effect decision table:
     // R1 foreground committed Running task -> post-commit target executes once;
     // R2 fenced process completion -> deterministic System attention Run enters
-    // the same Session; R3 StepStart sees the matching completion -> folds Ended
-    // into the inference view, then the Requested get_background_task batch
-    // commits that state before its tool effect; R4 attention settles -> Session
-    // returns to Idle. A text-only attention response would commit at its normal
-    // terminal boundary; no notification table or test-only commit path exists.
+    // the same Session; R3 StepStart reconciles the task, then appends BOTH the
+    // Host's minimal wake and the extension's source-labelled terminal result,
+    // so the woken inference can answer without a second query (ADR-0076,
+    // 2026-09-13 amendment: the wake "must not instruct the Agent to query a
+    // result that the extension can already provide"); R4 attention settles ->
+    // Session returns to Idle. A text-only attention response commits at its
+    // normal terminal boundary; no notification table or test-only commit path
+    // exists.
     let events = exercise_background_attention(
         Arc::new(DeterministicBackgroundAttentionModel),
         "background-scripted",
