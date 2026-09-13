@@ -81,6 +81,55 @@ fn session_repository_error(error: awaken_session_contract::SessionRepositoryErr
 struct SessionRecoveryCandidate {
     workspace_id: String,
     session_id: String,
+    interests: SessionRecoveryInterests,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SessionRecoveryInterests {
+    event_batches: bool,
+    environment_continuation: bool,
+    local_realization: bool,
+}
+
+impl Default for SessionRecoveryInterests {
+    fn default() -> Self {
+        Self {
+            event_batches: true,
+            environment_continuation: true,
+            local_realization: true,
+        }
+    }
+}
+
+impl SessionRecoveryInterests {
+    /// Read-only scheduling hints from the repository's atomic scan prefix.
+    /// A true hint still requires the phase's ordinary fresh root read before
+    /// any effect. A concurrent transition after this prefix retains its wake
+    /// permit and is reconsidered by the next cycle.
+    fn from_session(session: &PersistedSession) -> Self {
+        let environment_continuation = !session.is_terminal()
+            && (matches!(
+                session.environment,
+                awaken_session_contract::SessionEnvironmentState::Suspending { .. }
+            ) || (session.execution == awaken_session_contract::SessionExecutionState::Idle
+                && matches!(
+                    session.environment,
+                    awaken_session_contract::SessionEnvironmentState::Resident {
+                        idle_since_unix_ms: Some(_),
+                        ..
+                    }
+                )));
+        let local_realization = !session.is_terminal()
+            && realization::environment_admits_realization_effects(&session.environment)
+            && session.frozen_baseline().is_none_or(|baseline| {
+                !environment_requires_external_owner(baseline.runtime_placement)
+            });
+        Self {
+            event_batches: session.needs_event_reconciliation(),
+            environment_continuation,
+            local_realization,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -95,9 +144,13 @@ impl From<SessionRecoveryScan> for SessionRecoveryCandidates {
             sessions: scan
                 .sessions
                 .into_iter()
-                .map(|scoped| SessionRecoveryCandidate {
-                    workspace_id: scoped.workspace_id,
-                    session_id: scoped.session.session_id,
+                .map(|scoped| {
+                    let interests = SessionRecoveryInterests::from_session(&scoped.session);
+                    SessionRecoveryCandidate {
+                        workspace_id: scoped.workspace_id,
+                        session_id: scoped.session.session_id,
+                        interests,
+                    }
                 })
                 .collect(),
             quarantined: scan.quarantined,

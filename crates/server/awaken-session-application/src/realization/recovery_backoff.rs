@@ -18,6 +18,20 @@ pub(super) enum SessionRecoveryTrigger {
     ExternalWake,
 }
 
+pub(super) const EXTERNAL_WAKE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Coalesce a burst of committed dependency hints without delaying the existing
+/// scheduled recovery deadline. Hints received while a full scan runs retain
+/// one Tokio Notify permit; this bounded delay lets the rest of that commit
+/// burst join the same next scan instead of turning every arrival into another
+/// scan of all Sessions.
+pub(super) fn external_wake_coalescing_delay(
+    scheduled_remaining: std::time::Duration,
+    cooldown_remaining: std::time::Duration,
+) -> std::time::Duration {
+    scheduled_remaining.min(cooldown_remaining.min(EXTERNAL_WAKE_COOLDOWN))
+}
+
 /// Select the next delay without allowing an early dependency hint to postpone
 /// an already-scheduled retry. The caller supplies the remaining duration from
 /// the existing single deadline; this function creates no second timer.
@@ -35,7 +49,10 @@ pub(super) fn next_session_recovery_delay(
 
 #[cfg(kani)]
 mod proofs {
-    use super::{SessionRecoveryTrigger, next_session_recovery_delay, session_recovery_delay};
+    use super::{
+        EXTERNAL_WAKE_COOLDOWN, SessionRecoveryTrigger, external_wake_coalescing_delay,
+        next_session_recovery_delay, session_recovery_delay,
+    };
     use std::time::Duration;
 
     #[kani::proof]
@@ -77,11 +94,34 @@ mod proofs {
             proposed,
         );
     }
+
+    #[kani::proof]
+    fn external_wake_coalescing_is_bounded_and_never_postpones_recovery() {
+        let seconds: u64 = kani::any();
+        let nanos: u32 = kani::any();
+        kani::assume(nanos < 1_000_000_000);
+        let cooldown_seconds: u64 = kani::any();
+        let cooldown_nanos: u32 = kani::any();
+        kani::assume(cooldown_nanos < 1_000_000_000);
+        let scheduled = Duration::new(seconds, nanos);
+        let cooldown = Duration::new(cooldown_seconds, cooldown_nanos);
+        let delay = external_wake_coalescing_delay(scheduled, cooldown);
+        assert!(delay <= scheduled);
+        assert!(delay <= cooldown);
+        assert!(delay <= EXTERNAL_WAKE_COOLDOWN);
+        assert_eq!(
+            external_wake_coalescing_delay(Duration::MAX, Duration::ZERO),
+            Duration::ZERO
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionRecoveryTrigger, next_session_recovery_delay, session_recovery_delay};
+    use super::{
+        SessionRecoveryTrigger, external_wake_coalescing_delay, next_session_recovery_delay,
+        session_recovery_delay,
+    };
 
     #[test]
     fn retry_backoff_follows_the_failure_streak_decision_table() {
@@ -130,5 +170,38 @@ mod tests {
             Duration::from_secs(30),
             "S3/E3",
         );
+    }
+
+    #[test]
+    fn external_wake_bursts_share_one_bounded_coalescing_window() {
+        /* Cause/effect graph: C1 the scheduled deadline is due/near/later;
+         * C2 the post-scan cooldown is expired/active; C3 one or many external
+         * hints arrive. Effects: E1 a due deadline remains immediate; E2 an
+         * expired cooldown makes the first quiet-period hint immediate; E3 a
+         * nearer scheduled deadline wins; E4 an active tail is bounded by one
+         * second; E5 C3 cardinality cannot extend any bound. Decision table:
+         * W1=(due,active)=>0; W2=(later,expired)=>0;
+         * W3=(100ms,active)=>100ms; W4=(30s,active)=>1s. */
+        use std::time::Duration;
+
+        for (scheduled, cooldown, expected) in [
+            (Duration::ZERO, Duration::from_secs(1), Duration::ZERO),
+            (Duration::from_secs(30), Duration::ZERO, Duration::ZERO),
+            (
+                Duration::from_millis(100),
+                Duration::from_secs(1),
+                Duration::from_millis(100),
+            ),
+            (
+                Duration::from_secs(30),
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+            ),
+        ] {
+            assert_eq!(
+                external_wake_coalescing_delay(scheduled, cooldown),
+                expected
+            );
+        }
     }
 }
