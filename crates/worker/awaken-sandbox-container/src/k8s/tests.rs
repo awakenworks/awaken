@@ -1059,7 +1059,16 @@ async fn exec_admission_and_argv_materialization_cover_all_command_boundaries() 
     });
     let inline = materialized(inline).await;
     let inline = k8s_exec_argv("inline", inline).unwrap();
-    assert_eq!(inline.pid_file, "/tmp/inline.pid");
+    // The enumerable directory, not a bare `/tmp` name: the reaper finds an
+    // attempt by listing this path, so the wrapper must write into it.
+    assert_eq!(inline.pid_file, "/tmp/awaken-exec/inline.pid");
+    assert!(
+        inline
+            .argv
+            .iter()
+            .any(|value| value.contains("mkdir -p /tmp/awaken-exec")),
+        "the wrapper creates the directory it writes its record into"
+    );
     assert!(inline.argv.iter().any(|value| value == "MODE=test"));
     assert!(inline.argv.iter().any(|value| value == "/workspace"));
     assert!(inline.secret_stdin.is_empty());

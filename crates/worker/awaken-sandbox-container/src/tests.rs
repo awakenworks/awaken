@@ -4190,7 +4190,7 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                 }
                 let mut pending = Box::pin(async {
                     if port == "neutral" {
-                        pc::SandboxProvider::create_for_effect(
+                        pc::SandboxProvider::claim_for_effect(
                             provider.as_ref(),
                             &requested,
                             &fence,

@@ -107,6 +107,17 @@ impl<'a> ProviderCreationGuard<'a> {
             Ok(())
         })
     }
+    /// State that this creation's compensation could not finish, so the root
+    /// it left is retained deliberately rather than abandoned silently. The
+    /// fenced guard already says this with its own preserved marker phase; the
+    /// unfenced one has only its creation record to say it with.
+    pub(crate) fn retain_failed_compensation(&self) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Current { .. } => Ok(()),
+            Self::Legacy(guard) => guard.retain_failed_compensation(),
+        }
+    }
+
     pub(crate) fn abort_creation(self) -> Result<(), pc::SandboxError> {
         match self {
             Self::Current { guard, authority } => pc::with_current_sandbox_effect(

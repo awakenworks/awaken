@@ -82,19 +82,21 @@ EFFECT_METHODS: dict[str, str] = {
 # despite matching none of the three shapes — name the owner that survives the
 # caller, so a later reader can retire the entry when the code changes.
 CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
-    # A detached `tokio::spawn` body: the caller's cancellation cannot reach it,
-    # and the task registers `InFlightCreate` (Drop at pool.rs:88) as its first
-    # act, which `WarmContainerPool::shutdown` drains before returning. The rule
-    # attributes the await to the lexically enclosing fn, which is not the task.
-    "crates/worker/awaken-sandbox-container/src/pool.rs::spawn_replenish": (
-        "detached task; InFlightCreate's Drop and WarmContainerPool::shutdown's drain own it"
-    ),
     # Also a detached task. The Staging projection is inserted into the host
     # before the spawn, and McpStagingActivityGuard (Drop at session_slot.rs:190)
     # is held inside the task, so a lost task still leaves the Session in a state
     # the next attachment fails closed on.
     "crates/server/awaken-session-executor/src/managed_host_mcp_attachment.rs::stage_mcp_attachment": (
         "detached task; the Staging projection plus McpStagingActivityGuard's Drop own it"
+    ),
+    # One-line trait wrappers over a callee that now mints the claim. The rule
+    # attributes the await to the lexically enclosing fn, so a claimed leaf is
+    # still reported at every level that forwards to it.
+    "crates/worker/awaken-sandbox-container/src/lib.rs::spawn_agent_process": (
+        "delegates to ContainerSandbox::spawn_agent, which claims the exec attempt"
+    ),
+    "crates/worker/awaken-sandbox-container/src/pool.rs::prewarm_to": (
+        "delegates to WarmContainerPool::prewarm, which claims the warm scope"
     ),
     # Matches on the name only. The callee is a control-plane domain command
     # (`CreateEnvironmentCommand` keyed by `command_id`), preceded by a durable
@@ -114,7 +116,7 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
 # pure predicates were admitting five real Kubernetes creations — the Sandbox
 # Pod among them — and the podman backend had no registered leaf at all. A
 # number that falls because the rule stopped looking is not progress.
-CANCEL_SAFETY_BASELINE = 71
+CANCEL_SAFETY_BASELINE = 64
 
 FN_HEAD = re.compile(r"\bfn\s+([A-Za-z_]\w*)\s*")
 IMPL_HEAD = re.compile(r"\bimpl\b")
@@ -156,6 +158,13 @@ RESPONSIBILITY_RECORD = re.compile(
     r"\b(?:" + "|".join(re.escape(name) for name in RESPONSIBILITY_RECORDERS) + r")\s*\("
 )
 DROP_IMPL = re.compile(r"\bimpl(?:<[^>]*>)?\s+Drop\s+for\s+([A-Za-z_]\w*)")
+# (d) the effect is wrapped in a `ClaimedEffect`, whose claim is taken by value
+# before the future exists and whose `Drop` runs the retention on an unsettled
+# drop. This is the shape the other three are migrating towards: it is the only
+# one where the guarantee is the type's rather than the call site's, and the
+# Kani harness `claim_retention_runs_once_only_for_an_unsettled_drop` proves it
+# once for every site instead of per site.
+MINTED_CLAIM = re.compile(r"\bEffectClaim\s*::\s*(?:self_recording|durable|in_process)\s*\(")
 
 
 def _bracket_end(source: str, open_index: int, opener: str, closer: str) -> int:
@@ -274,6 +283,8 @@ def unowned_effects(sources: dict[Path, str], repo_root: Path) -> list[tuple[str
                 continue  # (a) the future is owned by a `pending`/`in_flight` slot
             if RESPONSIBILITY_RECORD.search(before):
                 continue  # (b) a registered recorder wrote its record first
+            if MINTED_CLAIM.search(before):
+                continue  # (d) the effect carries a claim minted before its future
             owner = _enclosing(impls, function["start"])
             if owner is not None and owner["type"] in crate_drops:
                 continue  # (c) the owning type retains on Drop
@@ -287,7 +298,8 @@ def unowned_effects(sources: dict[Path, str], repo_root: Path) -> list[tuple[str
                     f"{EFFECT_METHODS[effect]} — with the in-flight future held only in a "
                     "local. A caller dropped mid-await leaves the resource on the host with "
                     "no responsibility record. Store the future into a `pending`/`in_flight` "
-                    "slot before polling it, call one of RESPONSIBILITY_RECORDERS before the "
+                    "slot before polling it, hand the effect to a `ClaimedEffect` whose "
+                    "`EffectClaim` is minted first, call one of RESPONSIBILITY_RECORDERS before the "
                     "effect, give the owning type a `Drop` that retains, or record the "
                     "surviving owner in CANCEL_SAFETY_EXEMPTIONS",
                 )
@@ -382,6 +394,7 @@ def selftest() -> None:
     | T5   | T  | F  | F  | F  | T  | F  | E2     |
     | T6   | T  | F  | F  | F  | F  | T  | E1     |
     | T7   | T  | F  | *  | F  | F  | F  | E1     |
+    | T8   | T  | F  | F  | F  | F  | F  | E2 when an EffectClaim is minted first |
 
     T7 is C3 spelled like a recorder but not registered: a name shape cannot
     tell a record from a predicate. `continuation::claim_name` and
@@ -452,6 +465,12 @@ def selftest() -> None:
     assert scan(unregistered) == ["crates/worker/example/src/lib.rs::build"], "T1 reported"
     assert scan(pending_first) == [], "T2 pending registered before the await is admitted"
     assert scan(retain_first) == [], "T3 a registered recorder before the await is admitted"
+    claimed = unregistered.replace(
+        "        let handle = m.mount(",
+        "        let claim = EffectClaim::in_process(move || record.retain());\n"
+        "        let handle = m.mount(",
+    )
+    assert scan(claimed) == [], "T8 an EffectClaim minted before the effect is admitted"
     assert scan(claim_shaped) == ["crates/worker/example/src/lib.rs::build"], (
         "T7 a claim_-shaped pure function is not a responsibility record"
     )
