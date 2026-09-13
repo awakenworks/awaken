@@ -329,8 +329,10 @@ impl ManagedState {
     }
 
     /// Session and Thread endpoints share filtering, ordering, cursor errors,
-    /// and materialization. The temporary index borrows unchanged payloads;
-    /// only the selected page crosses the owned response boundary.
+    /// and materialization. The published index resolves only candidate cursor
+    /// positions; visibility and caller filtering still precede cursor admission.
+    /// Only one page plus a matching lookahead is projected from its suffix.
+    /// `include` must be a stable per-event predicate, as the wire filters are.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn project_event_page(
         record: &SessionRecord,
@@ -341,11 +343,11 @@ impl ManagedState {
         descending: bool,
         include: impl Fn(&Event) -> bool,
     ) -> Result<ListEventsResponse, StateError> {
+        let (cursor, limit) =
+            awaken_agent_contract::page::normalize_history_page_request(cursor, limit);
         let answerable = record.primary_answerable_event_ids();
-        let mut events = record
-            .events
-            .iter()
-            .filter_map(|event| {
+        let project_at = |position| {
+            record.events.get(position).and_then(|event| {
                 Self::project_event_for_thread_cow(
                     session_id,
                     thread_id,
@@ -357,12 +359,52 @@ impl ManagedState {
                     answerable.contains(event.id.as_str()),
                 )
             })
+        };
+        let cursor_position = cursor
+            .map(|cursor| {
+                let positions = record
+                    .event_positions(cursor)
+                    .ok_or_else(|| RunError::bad_request("unknown pagination cursor"))?;
+                (0..positions.len())
+                    .map(|offset| {
+                        positions[if descending {
+                            positions.len() - 1 - offset
+                        } else {
+                            offset
+                        }]
+                    })
+                    .find(|&position| {
+                        project_at(position)
+                            .is_some_and(|event| event.id == cursor && include(&event))
+                    })
+                    .ok_or_else(|| RunError::bad_request("unknown pagination cursor"))
+            })
+            .transpose()?;
+        let boundary = if descending {
+            cursor_position.unwrap_or(record.events.len())
+        } else {
+            cursor_position.map_or(0, |position| position + 1)
+        };
+        let scan = if descending {
+            0..boundary
+        } else {
+            boundary..record.events.len()
+        };
+        let events = scan
+            .map(|position| {
+                if descending {
+                    boundary - 1 - position
+                } else {
+                    position
+                }
+            })
+            .filter_map(project_at)
             .filter(|event| include(event))
+            .take(limit + 1)
             .collect::<Vec<_>>();
-        if descending {
-            events.reverse();
-        }
-        let page = paginate_by_id(&events, cursor, limit, |event| event.id.as_str())
+        // The canonical paginator still owns continuation construction and the
+        // bounded page size. Cursor resolution already selected this suffix.
+        let page = paginate_by_id(&events, None, Some(limit), |event| event.id.as_str())
             .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;
         Ok(ListEventsResponse {
             data: page

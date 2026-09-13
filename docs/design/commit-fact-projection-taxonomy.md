@@ -103,6 +103,20 @@ mandatory before a Managed candidate may publish. The read-cut test derives its
 44 failure rules from both complete actual traces, including competing writers;
 removing the redundant query removes only its now-unreachable failure cuts.
 
+Event pagination uses derived ID positions and primary action references owned
+by the published `SessionRecord`. The constructor creates its initial index;
+the sole successful cache publisher rebuilds it from final Event order and
+visibility owners before installing the entire record. Candidate clones share
+the immutable prior index cheaply, and failed, stale or unchanged candidates
+cannot replace it. This is separate from the canonicalizer's temporary joins
+over the still-unordered candidate, and stores no second Event payload.
+The existing Thread perspective/filter kernel validates an indexed cursor before
+scanning its suffix in the requested direction. One page plus one matching
+lookahead feeds the existing paginator; hidden/filtered cursors still fail.
+The shared normalization policy also governs the prior-prefix observation check.
+This removes repeated whole-history pagination scans, while the preceding
+committed-source refresh retains its existing independent consistency work.
+
 Session inbound visibility and processing completion are distinct observations
 of the same retained command. While a User Run is Running, the Session application
 may anchor its exact committed input Message under the existing root CAS. This

@@ -17,6 +17,7 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         session,
         resource_state,
         events,
+        event_page_index,
         checkpoint,
         overlay,
         deferred_session_stop_reason,
@@ -26,6 +27,10 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         permission_decisions,
     } = actual;
     assert_eq!(*cache_revision, expected.cache_revision, "frame: cache CAS");
+    assert!(
+        Arc::ptr_eq(event_page_index, &expected.event_page_index),
+        "frame: published event index"
+    );
     // The recorded gate decisions change what the wire reports for a tool call,
     // so they are projected content and belong in the frame oracle.
     assert_eq!(

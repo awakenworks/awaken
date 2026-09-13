@@ -775,6 +775,7 @@ pub awaken_agent_contract::page::HistoryPage::next_page: core::option::Option<al
 pub struct awaken_agent_contract::page::UnknownCursor
 pub const awaken_agent_contract::page::DEFAULT_PAGE_LIMIT: usize
 pub const awaken_agent_contract::page::MAX_PAGE_LIMIT: usize
+pub fn awaken_agent_contract::page::normalize_history_page_request(core::option::Option<&str>, core::option::Option<usize>) -> (core::option::Option<&str>, usize)
 pub fn awaken_agent_contract::page::paginate_by_id<'a, T>(&'a [T], core::option::Option<&str>, core::option::Option<usize>, impl core::ops::function::Fn(&T) -> &str) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, T>, awaken_agent_contract::page::UnknownCursor>
 pub fn awaken_agent_contract::page::paginate_by_key<'a, T>(&'a [T], core::option::Option<&str>, core::option::Option<usize>, impl core::ops::function::Fn(&T) -> alloc::string::String) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, T>, awaken_agent_contract::page::UnknownCursor>
 pub mod awaken_agent_contract::secret

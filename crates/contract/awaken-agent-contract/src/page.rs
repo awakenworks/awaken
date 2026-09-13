@@ -58,6 +58,19 @@ pub struct HistoryPage<'a, T> {
 #[error("unknown pagination cursor")]
 pub struct UnknownCursor;
 
+/// Normalize the shared history cursor/limit policy before either indexed or
+/// sequential lookup. Cursor visibility is still checked by the caller's
+/// projected collection; normalization never admits a hidden cursor.
+pub fn normalize_history_page_request(
+    cursor: Option<&str>,
+    limit: Option<usize>,
+) -> (Option<&str>, usize) {
+    (
+        cursor.map(str::trim).filter(|cursor| !cursor.is_empty()),
+        limit.unwrap_or(DEFAULT_PAGE_LIMIT).clamp(1, MAX_PAGE_LIMIT),
+    )
+}
+
 /// Page `items` (oldest-first) after `cursor`, returning at most `limit`, keyed on
 /// each item's identity via `id_of`. A `None`/empty cursor starts at the
 /// beginning; `limit` defaults to [`DEFAULT_PAGE_LIMIT`] and is clamped to
@@ -80,7 +93,8 @@ pub fn paginate_by_key<'a, T>(
     key_of: impl Fn(&T) -> String,
 ) -> Result<HistoryPage<'a, T>, UnknownCursor> {
     let total = items.len();
-    let start = match cursor.map(str::trim).filter(|c| !c.is_empty()) {
+    let (cursor, limit) = normalize_history_page_request(cursor, limit);
+    let start = match cursor {
         None => 0,
         Some(c) => items
             .iter()
@@ -88,7 +102,6 @@ pub fn paginate_by_key<'a, T>(
             .map(|pos| pos + 1)
             .ok_or(UnknownCursor)?,
     };
-    let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT).clamp(1, MAX_PAGE_LIMIT);
     // `start` can equal `total` when the cursor names the last item.
     let start = start.min(total);
     let end = (start + limit).min(total);
@@ -117,6 +130,39 @@ mod tests {
     #[allow(clippy::ptr_arg)]
     fn id(s: &String) -> &str {
         s.as_str()
+    }
+
+    #[test]
+    fn request_normalization_preserves_cursor_whitespace_and_limit_bounds() {
+        // N1 missing/empty/Unicode-blank cursor => first page; N2 surrounding
+        // whitespace => borrowed exact id; N3 absent/zero/ordinary/oversized
+        // limit => 50/1/requested/500. Cross both independent input dimensions;
+        // index lookup and the slice path must consume this same policy.
+        for (cursor, expected_cursor) in [
+            (None, None),
+            (Some(""), None),
+            (Some(" \t\u{2003}"), None),
+            (Some(" event-id "), Some("event-id")),
+        ] {
+            for (limit, expected_limit) in [
+                (None, 50),
+                (Some(0), 1),
+                (Some(2), 2),
+                (Some(usize::MAX), 500),
+            ] {
+                assert_eq!(
+                    normalize_history_page_request(cursor, limit),
+                    (expected_cursor, expected_limit)
+                );
+            }
+        }
+        let source = String::from(" id ");
+        let (cursor, _) = normalize_history_page_request(Some(&source), None);
+        assert_eq!(
+            cursor.unwrap().as_ptr(),
+            source[1..].as_ptr(),
+            "N2 no copied cursor"
+        );
     }
 
     #[test]
