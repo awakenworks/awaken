@@ -2954,6 +2954,8 @@ struct FakeState {
     observation: Option<pc::SandboxObservation>,
     prove_unmaterialized_absence: bool,
     unmaterialized_absence_checks: usize,
+    configuration: Option<std::collections::BTreeMap<String, String>>,
+    historical_configuration: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Default)]
@@ -3179,6 +3181,29 @@ impl FakeRuntime {
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
+    fn realization_configuration(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
+        Ok(self
+            .st
+            .lock()
+            .unwrap()
+            .configuration
+            .clone()
+            .unwrap_or_else(|| {
+                std::collections::BTreeMap::from([(
+                    "adapter_type".into(),
+                    std::any::type_name::<Self>().into(),
+                )])
+            }))
+    }
+
+    fn historical_terminal_configuration(
+        &self,
+        _: Option<&pc::ContainerContinuationHandle>,
+    ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
+        Ok(self.st.lock().unwrap().historical_configuration.clone())
+    }
     async fn prove_unmaterialized_absence(
         &self,
         _scope: &str,
@@ -5200,6 +5225,117 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         1,
         "A6 disposal replay has no extra effect"
     );
+}
+
+#[tokio::test]
+async fn observation_purpose_reaches_runtime_without_granting_cleanup() {
+    // O1 ordinary constructor => Recovery. O2 explicit terminal observation
+    // => TerminalCleanup through the same fenced/unfenced observer. O3 both
+    // purposes remain subject to exact adoption configuration; drift => no I/O.
+    // All rows are read-only: zero removals and no cleanup authorization minted.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = provider(runtime.clone());
+    let exact = spec("purpose-propagation");
+    let sandbox = provider.create_container(&exact).await.unwrap();
+    let handle = pc::Sandbox::handle(&sandbox);
+    let fence = ContainerEffectFence::new("observe", "owner", "runtime", 1, u64::MAX).unwrap();
+    for purpose in [
+        ContainerObservationPurpose::Recovery,
+        ContainerObservationPurpose::TerminalCleanup,
+    ] {
+        for fenced in [false, true] {
+            let mut adoption = ContainerEnvironmentAdoption::new(&exact, &handle);
+            assert_eq!(
+                adoption.observation_purpose,
+                ContainerObservationPurpose::Recovery
+            );
+            adoption.observation_purpose = purpose;
+            if fenced {
+                ContainerEnvironmentProvider::observe_environment_for_effect(
+                    &provider, adoption, &fence,
+                )
+                .await
+                .unwrap();
+            } else {
+                ContainerEnvironmentProvider::observe_environment(&provider, adoption)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                runtime.st.lock().unwrap().observation_purposes.last(),
+                Some(&purpose)
+            );
+            let mut drifted = exact.clone();
+            drifted.outputs_path = "/different".into();
+            adoption.spec = &drifted;
+            let before = runtime.st.lock().unwrap().observations;
+            let observation = ContainerEnvironmentProvider::observe_environment_for_effect(
+                &provider, adoption, &fence,
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                observation,
+                pc::SandboxObservation::Incompatible { .. }
+            ));
+            assert_eq!(runtime.st.lock().unwrap().observations, before);
+            assert!(runtime.st.lock().unwrap().removals.is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn historical_configuration_is_only_an_exact_fenced_terminal_candidate() {
+    // HC1 current mismatch + exact historical candidate + terminal + fence =>
+    // existing runtime observer decides, not this comparison. HC2 any missing
+    // condition => Incompatible before I/O; HC3 drift in immutable spec remains
+    // rejected even with a historical runtime candidate. No deletion/activation.
+    let runtime = Arc::new(FakeRuntime::default());
+    let original = runtime.realization_configuration().unwrap();
+    let provider = provider(runtime.clone());
+    let spec = spec("historical-configuration");
+    let created = provider.create_container(&spec).await.unwrap();
+    let handle = pc::Sandbox::handle(&created);
+    let mut changed = original.clone();
+    changed.insert("storage".into(), "new".into());
+    runtime.st.lock().unwrap().configuration = Some(changed);
+    let fence = ContainerEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX).unwrap();
+    for candidate in [false, true] {
+        runtime.st.lock().unwrap().historical_configuration = candidate.then(|| original.clone());
+        for terminal in [false, true] {
+            for fenced in [false, true] {
+                for drift in [false, true] {
+                    let mut requested = spec.clone();
+                    if drift {
+                        requested.outputs_path = "/other".into();
+                    }
+                    let mut adoption = ContainerEnvironmentAdoption::new(&requested, &handle);
+                    if terminal {
+                        adoption.observation_purpose = ContainerObservationPurpose::TerminalCleanup;
+                    }
+                    let before = runtime.st.lock().unwrap().observations;
+                    let result = if fenced {
+                        ContainerEnvironmentProvider::observe_environment_for_effect(
+                            &provider, adoption, &fence,
+                        )
+                        .await
+                        .unwrap()
+                    } else {
+                        ContainerEnvironmentProvider::observe_environment(&provider, adoption)
+                            .await
+                            .unwrap()
+                    };
+                    let admitted = candidate && terminal && fenced && !drift;
+                    assert_eq!(matches!(result, pc::SandboxObservation::Ready), admitted);
+                    assert_eq!(
+                        runtime.st.lock().unwrap().observations,
+                        before + u32::from(admitted)
+                    );
+                    assert!(runtime.st.lock().unwrap().removals.is_empty());
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]

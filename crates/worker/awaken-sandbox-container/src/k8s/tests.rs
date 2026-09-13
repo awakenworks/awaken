@@ -365,6 +365,53 @@ async fn realization_configuration_covers_every_immutable_kubernetes_input() {
     }
 }
 
+#[tokio::test]
+async fn historical_terminal_configuration_requires_explicit_no_claim_evidence() {
+    // HC4 exact V2 Pod identity + explicitly absent claim => historical none;
+    // HC5 legacy/missing/blank identity or retained PVC => no guessed history.
+    // The returned candidate changes only storage policy. Backend observation
+    // must still match actual Pod/PVC UIDs and fingerprints before any effect.
+    let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap()).with_continuation_volume(
+        crate::K8sContinuationVolume {
+            storage_class_name: Some("local-path".into()),
+            size: "1Gi".into(),
+        },
+    );
+    let handle = pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        pod_uid: "exact-pod".into(),
+        claim_uid: None,
+    };
+    let mut expected = runtime.realization_configuration().unwrap();
+    expected.insert("continuation_volume".into(), "none".into());
+    assert_eq!(
+        runtime
+            .historical_terminal_configuration(Some(&handle))
+            .unwrap(),
+        Some(expected)
+    );
+    for invalid in [
+        None,
+        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid: "".into(),
+            claim_uid: None,
+        }),
+        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid: "exact-pod".into(),
+            claim_uid: Some("claim".into()),
+        }),
+        Some(pc::ContainerContinuationHandle::KubernetesContinuation {
+            claim_uid: "claim".into(),
+        }),
+    ] {
+        assert!(
+            runtime
+                .historical_terminal_configuration(invalid.as_ref())
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
 #[test]
 fn projected_cleanup_requires_attempt_owner_and_object_cas() {
     /* Projected-cleanup cause/effect decision table.

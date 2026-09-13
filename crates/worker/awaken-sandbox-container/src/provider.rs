@@ -970,8 +970,28 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             fence.validate_identity()?;
         }
         if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
-            let (_, expected) = self.adoption_plan(adoption.spec)?;
-            if stored != &expected {
+            let (plan, expected) = self.adoption_plan(adoption.spec)?;
+            let historical_match = if stored != &expected
+                && purpose == ContainerObservationPurpose::TerminalCleanup
+                && effect_fence.is_some()
+            {
+                self.runtime
+                    .historical_terminal_configuration(
+                        adoption.handle.container_payload()?.runtime_handle.as_ref(),
+                    )
+                    .map_err(err)?
+                    .is_some_and(|configuration| {
+                        container_adoption_fingerprint(
+                            adoption.spec,
+                            &plan,
+                            self.resident_hand.as_ref(),
+                            &configuration,
+                        ) == *stored
+                    })
+            } else {
+                false
+            };
+            if stored != &expected && !historical_match {
                 return Ok(pc::SandboxObservation::Incompatible {
                     reason: format!(
                         "container provider-effective adoption configuration differs from its durable handle (expected={expected}, stored={stored})"
@@ -1146,7 +1166,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(adoption, None, ContainerObservationPurpose::Recovery)
+        self.observe_container_adoption(adoption, None, adoption.observation_purpose)
             .await
     }
 
@@ -1155,12 +1175,8 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         adoption: ContainerEnvironmentAdoption<'_>,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(
-            adoption,
-            Some(effect_fence),
-            ContainerObservationPurpose::Recovery,
-        )
-        .await
+        self.observe_container_adoption(adoption, Some(effect_fence), adoption.observation_purpose)
+            .await
     }
 
     async fn adopt_environment(

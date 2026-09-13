@@ -87,6 +87,23 @@ do not disable the check or rewrite the historical handle. The other retained
 Sessions `334d9589d3cb3a8b` and `bea88c8a5c7f995a` separately wait for physical
 quiescence; this fingerprint mismatch must not be attributed to them.
 
+The terminal-observation path now permits a Kubernetes V2 handle with an exact
+Pod UID and explicitly absent claim UID to supply the historical `none` storage
+configuration. The full adoption fingerprint must still match; ordinary
+recovery and unfenced observation retain the strict current-configuration rule.
+This does not infer prior PVC class/size, change stored identity, create storage,
+or authorize deletion. The existing runtime still checks Pod/PVC identity and
+effect fencing, and the original participant preparation/disposal path owns all
+effects. The real `k8s_pod_lifecycle_against_a_real_cluster` test passed in the
+isolated `awaken-storage-drift-0913` cluster, including wrong Pod UID and foreign
+same-epoch fence rejection followed by exact cleanup. This fixture result is not
+evidence that the retained Classroom Session above has already been cleaned up.
+The extended `SessionDeletion` composition checked 3,515 reachable states and
+its temporal properties; four historical-observation mutants were rejected and
+one legal historical-recovery witness was reached alongside the existing
+lifecycle mutants. Provider facts are abstract booleans in this bounded model:
+this is not Rust/SQL refinement or a proof of Kubernetes termination semantics.
+
 The same overlay selects the existing `k8s_continuation_volume` policy. A
 retained Session therefore owns one UID-bound `local-path` PVC mounted at its
 active filesystem. Pod loss may replace only the Pod incarnation; rebuild must

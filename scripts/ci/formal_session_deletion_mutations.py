@@ -77,7 +77,27 @@ def check_session_deletion_model_mutants(tlc_jar: Path) -> None:
     witness = source.replace("\n=============================================================================", "\n" + operator + "=============================================================================")
     witnesses.append((witness, config.replace("INVARIANTS DeleteSafety", f"INVARIANTS {name}"), name))
     check_tlc_model_mutations(tlc_jar, "SessionDeletion", source, config, witnesses, dependencies=("SessionCleanupKernel",))
-    print("Session deletion: 9 semantic mutants and 4 positive witnesses qualified")
+    # H1-H4 historical equality cannot omit terminal/fence/exact-instance facts.
+    # The same RecoverParticipant action is used by restart/failure/deletion;
+    # no second lifecycle model. A positive historical witness prevents a
+    # blanket-reject implementation from satisfying this boundary vacuously.
+    guard = "    current \\/ (historical /\\ terminal /\\ fenced)\n"
+    assert source.count(guard) == 1
+    historical_config = config + "PROPERTIES HistoricalObservationSafety\n"
+    historical_mutants = [
+        (source.replace(guard, "    " + replacement + "\n", 1), historical_config, "action:HistoricalObservationSafety")
+        for replacement in ["current \\/ (historical /\\ fenced)", "current \\/ (historical /\\ terminal)", "current \\/ (terminal /\\ fenced)"]
+    ]
+    historical_mutants.append((source.replace("    /\\ exactInstance\n", "    /\\ TRUE\n", 1),
+                               historical_config, "action:HistoricalObservationSafety"))
+    check_tlc_model_mutations(tlc_jar, "SessionDeletion", source, historical_config,
+                             historical_mutants, dependencies=("SessionCleanupKernel",))
+    name = "NoHistoricalRecovery"
+    operator = '\nNoHistoricalRecovery == [][~(\\E p \\in Participants: RecoverParticipantObserved(p, FALSE, TRUE, TRUE, TRUE, TRUE))]_vars\n'
+    witness = source.replace("\n=============================================================================", operator + "=============================================================================")
+    check_tlc_model_mutations(tlc_jar, "SessionDeletion", source, config,
+        [(witness, config + f"PROPERTIES {name}\n", "action:" + name)], dependencies=("SessionCleanupKernel",))
+    print("Session deletion: 9 lifecycle mutants and 4 lifecycle witnesses; 4 historical-observation mutants and 1 historical witness qualified")
 
 
 def check_deletion_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:

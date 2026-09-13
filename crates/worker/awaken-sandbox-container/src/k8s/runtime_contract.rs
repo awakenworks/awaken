@@ -82,6 +82,23 @@ impl ContainerRuntime for K8sRuntime {
             .await
     }
 
+    fn historical_terminal_configuration(
+        &self,
+        handle: Option<&pc::ContainerContinuationHandle>,
+    ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
+        // A typed V2 absence is not legacy missing evidence. Do not infer an
+        // old PVC's storage class/size from its UID or today's deployment.
+        if !matches!(handle, Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid, claim_uid: None,
+        }) if !pod_uid.trim().is_empty())
+        {
+            return Ok(None);
+        }
+        let mut configuration = self.realization_configuration()?;
+        configuration.insert("continuation_volume".into(), "none".into());
+        Ok(Some(configuration))
+    }
+
     fn realization_configuration(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
