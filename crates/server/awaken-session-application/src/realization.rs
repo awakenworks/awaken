@@ -42,7 +42,9 @@ use authority::{
     exact_generation_key, generation_set_authorizes, verify_lease,
 };
 use control::RefreshedSessionRealizationControl;
-use recovery_backoff::{SessionRecoveryTrigger, next_session_recovery_delay};
+use recovery_backoff::{
+    SessionRecoveryTrigger, external_wake_coalescing_delay, next_session_recovery_delay,
+};
 
 /// One timing policy for every realization owned by the co-located Runtime.
 /// Terminal cleanup uses the same lease horizon but renews at one third of it
@@ -445,7 +447,17 @@ impl SessionApplication {
         loop {
             let recovery_trigger = tokio::select! {
                 () = cancellation.cancelled() => break,
-                _ = self.lifecycle_wakeup.notified() => Some(SessionRecoveryTrigger::ExternalWake),
+                _ = self.lifecycle_wakeup.notified() => {
+                    let delay = external_wake_coalescing_delay(
+                        next_recovery.saturating_duration_since(tokio::time::Instant::now()),
+                    );
+                    tokio::select! {
+                        biased;
+                        () = cancellation.cancelled() => break,
+                        () = tokio::time::sleep(delay) => {}
+                    }
+                    Some(SessionRecoveryTrigger::ExternalWake)
+                },
                 _ = tokio::time::sleep_until(next_recovery) => Some(SessionRecoveryTrigger::Scheduled),
                 _ = interval.tick() => {
                     if let Err(error) = self

@@ -18,6 +18,19 @@ pub(super) enum SessionRecoveryTrigger {
     ExternalWake,
 }
 
+const EXTERNAL_WAKE_COALESCE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Coalesce a burst of committed dependency hints without delaying the existing
+/// scheduled recovery deadline. Hints received while a full scan runs retain
+/// one Tokio Notify permit; this bounded delay lets the rest of that commit
+/// burst join the same next scan instead of turning every arrival into another
+/// scan of all Sessions.
+pub(super) fn external_wake_coalescing_delay(
+    existing_remaining: std::time::Duration,
+) -> std::time::Duration {
+    existing_remaining.min(EXTERNAL_WAKE_COALESCE)
+}
+
 /// Select the next delay without allowing an early dependency hint to postpone
 /// an already-scheduled retry. The caller supplies the remaining duration from
 /// the existing single deadline; this function creates no second timer.
@@ -35,7 +48,10 @@ pub(super) fn next_session_recovery_delay(
 
 #[cfg(kani)]
 mod proofs {
-    use super::{SessionRecoveryTrigger, next_session_recovery_delay, session_recovery_delay};
+    use super::{
+        EXTERNAL_WAKE_COALESCE, SessionRecoveryTrigger, external_wake_coalescing_delay,
+        next_session_recovery_delay, session_recovery_delay,
+    };
     use std::time::Duration;
 
     #[kani::proof]
@@ -77,11 +93,29 @@ mod proofs {
             proposed,
         );
     }
+
+    #[kani::proof]
+    fn external_wake_coalescing_is_bounded_and_never_postpones_recovery() {
+        let seconds: u64 = kani::any();
+        let nanos: u32 = kani::any();
+        kani::assume(nanos < 1_000_000_000);
+        let remaining = Duration::new(seconds, nanos);
+        let delay = external_wake_coalescing_delay(remaining);
+        assert!(delay <= remaining);
+        assert!(delay <= EXTERNAL_WAKE_COALESCE);
+        assert_eq!(
+            external_wake_coalescing_delay(Duration::ZERO),
+            Duration::ZERO
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionRecoveryTrigger, next_session_recovery_delay, session_recovery_delay};
+    use super::{
+        SessionRecoveryTrigger, external_wake_coalescing_delay, next_session_recovery_delay,
+        session_recovery_delay,
+    };
 
     #[test]
     fn retry_backoff_follows_the_failure_streak_decision_table() {
@@ -130,5 +164,27 @@ mod tests {
             Duration::from_secs(30),
             "S3/E3",
         );
+    }
+
+    #[test]
+    fn external_wake_bursts_share_one_bounded_coalescing_window() {
+        /* Cause/effect graph: C1 the scheduled deadline is due/in 100ms/in
+         * 30s; C2 one or many external hints arrive before the next scan.
+         * Effects: E1 due remains immediate; E2 a nearer deadline stays 100ms;
+         * E3 a later deadline admits at most the 500ms coalescing bound; E4 C2
+         * cardinality is absent from the decision and therefore cannot extend
+         * the bound. Decision table: W1=due=>0; W2=100ms=>100ms;
+         * W3=30s=>500ms. The supervisor integration consumes one Notify permit
+         * before this decision; retained hints during the scan select W1-W3
+         * once on the next loop. */
+        use std::time::Duration;
+
+        for (remaining, expected) in [
+            (Duration::ZERO, Duration::ZERO),
+            (Duration::from_millis(100), Duration::from_millis(100)),
+            (Duration::from_secs(30), Duration::from_millis(500)),
+        ] {
+            assert_eq!(external_wake_coalescing_delay(remaining), expected);
+        }
     }
 }
