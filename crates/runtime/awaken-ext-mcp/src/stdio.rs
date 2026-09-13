@@ -236,6 +236,14 @@ impl StdioTransport {
 
 #[async_trait]
 impl McpToolTransport for StdioTransport {
+    fn set_notification_handler(
+        &self,
+        methods: Vec<String>,
+        handler: Option<Arc<dyn crate::notification::McpNotificationHandler>>,
+    ) -> Result<(), McpTransportError> {
+        self.sinks.install_application(methods, handler)
+    }
+
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
         let result = self
             .peer

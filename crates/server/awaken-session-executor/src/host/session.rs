@@ -477,6 +477,12 @@ impl SharedHost {
                 .as_deref()
                 .map(awaken_runtime_contract::resolved::Backend::from_ref)
                 .unwrap_or(awaken_runtime_contract::resolved::Backend::Native);
+            if let Some(snapshot) = &installed {
+                self.validate_mcp_input_placement(
+                    snapshot.resolved_spec.plugin_config.plugins(),
+                    execution_backend.is_acp(),
+                )?;
+            }
             // BackgroundTask completion is a process-local fenced projection. Reject
             // unsupported execution placement immediately after resolving the frozen
             // publication and before Environment, MCP, tool, or commit realization.
@@ -1843,6 +1849,10 @@ impl SharedHost {
                 outcome: tokio::sync::Mutex::new(()),
                 command: tokio::sync::Mutex::new(()),
             });
+            self.install_mcp_input_handlers(
+                &active_mcp,
+                ctx.config.resolved_spec.plugin_config.plugins(),
+            )?;
             self.session_slots
                 .update(thread, |slot| slot.runtime = Some(ctx.clone()));
             // A prior process may have crashed after atomically ending the parent

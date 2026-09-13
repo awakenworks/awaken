@@ -130,6 +130,60 @@ struct RevocableMcpTransport {
     fence: McpCallFence,
 }
 
+struct FencedNotificationHandler {
+    fence: McpCallFence,
+    handler: Arc<dyn crate::notification::McpNotificationHandler>,
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+
+    struct Counter(AtomicUsize);
+    #[async_trait]
+    impl crate::notification::McpNotificationHandler for Counter {
+        async fn receive(&self, _method: &str, _params: Value) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn draining_a_generation_also_closes_notification_delivery() {
+        // F1 open generation -> callback; F2 close acknowledged -> all later
+        // incoming effects refused, including an already-cloned handler.
+        use crate::notification::McpNotificationHandler as _;
+        let counter = Arc::new(Counter(AtomicUsize::new(0)));
+        let fence = McpCallFence::open();
+        let handler = FencedNotificationHandler {
+            fence: fence.clone(),
+            handler: counter.clone(),
+        };
+        handler
+            .receive("notifications/phone/input", Value::Null)
+            .await;
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+        fence.close_and_wait().await;
+        handler
+            .receive("notifications/phone/input", Value::Null)
+            .await;
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[async_trait]
+impl crate::notification::McpNotificationHandler for FencedNotificationHandler {
+    async fn receive(&self, method: &str, params: Value) {
+        let Some(permit) = self.fence.try_enter() else {
+            return;
+        };
+        tokio::select! {
+            biased;
+            _ = permit.cancelled() => {},
+            () = self.handler.receive(method, params) => {},
+        }
+    }
+}
+
 impl RevocableMcpTransport {
     async fn run<T, F>(&self, future: F) -> Result<T, McpTransportError>
     where
@@ -183,6 +237,17 @@ pub enum ListChangedKind {
 /// them.
 #[async_trait]
 pub trait McpToolTransport: Send + Sync {
+    /// Install the one connection-owner application notification consumer.
+    /// Omitted support is a hard refusal, never a silently inert configuration.
+    fn set_notification_handler(
+        &self,
+        _methods: Vec<String>,
+        _handler: Option<Arc<dyn crate::notification::McpNotificationHandler>>,
+    ) -> Result<(), McpTransportError> {
+        Err(McpTransportError::NotSupported(
+            "application notifications".into(),
+        ))
+    }
     /// Discover the server's tools (`tools/list`).
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError>;
 
@@ -285,6 +350,21 @@ pub trait McpToolTransport: Send + Sync {
 
 #[async_trait]
 impl McpToolTransport for RevocableMcpTransport {
+    fn set_notification_handler(
+        &self,
+        methods: Vec<String>,
+        handler: Option<Arc<dyn crate::notification::McpNotificationHandler>>,
+    ) -> Result<(), McpTransportError> {
+        self.inner.set_notification_handler(
+            methods,
+            handler.map(|handler| {
+                Arc::new(FencedNotificationHandler {
+                    fence: self.fence.clone(),
+                    handler,
+                }) as Arc<dyn crate::notification::McpNotificationHandler>
+            }),
+        )
+    }
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
         self.run(self.inner.list_tools()).await
     }
