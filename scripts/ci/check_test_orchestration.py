@@ -598,8 +598,22 @@ def shared_conformance_errors(
 # the formal coverage ledger (a Kani harness registered in formal/coverage.json
 # but not selected by check_formal.sh fails the formal group hours later; the
 # ledger check proves selection in seconds).
+# Static scans the Rust gate owns: each must run exactly once, from the gate
+# rather than from a hook of its own, and must not become a successful skip when
+# Cargo is absent. The hook that delegates to the gate must also trigger on the
+# checker's own source, or editing the checker never re-runs it.
+GATE_OWNED_CHECKERS = (
+    "check_dependency_sources.py",
+    "check_crate_boundaries.py",
+    "check_feature_matrix.py",
+)
+
 PUSH_GATE_COMMANDS = (
     "cargo clippy --workspace --all-targets",
+    # The maximal feature graph: every optional feature the workspace declares
+    # must compile before a commit leaves the machine. Without it a tier behind
+    # a feature wall rots unseen, and the crate that fails first hides the rest.
+    "cargo check --workspace --all-features --all-targets",
     "python3 scripts/ci/check_formal_coverage.py",
     "python3 scripts/ci/check_formal_surface.py --require-complete",
 )
@@ -637,7 +651,7 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     if "-D warnings" not in push_body:
         errors.append("check-rust.sh --push clippy must deny warnings")
     cargo_gate = gate.find("if ! command -v cargo")
-    for checker in ("check_dependency_sources.py", "check_crate_boundaries.py"):
+    for checker in GATE_OWNED_CHECKERS:
         command = f"python3 scripts/ci/{checker}"
         if command in pre_commit:
             errors.append(f"Rust pre-commit duplicates {checker}")
@@ -1099,7 +1113,7 @@ def self_test() -> None:
     assert not generated_hook_glob_errors(
         hooks, generate_hooks.declared_input_globs(ROOT / "scripts/ci")
     ), "N1 live"
-    for checker in ("check_dependency_sources.py", "check_crate_boundaries.py"):
+    for checker in GATE_OWNED_CHECKERS:
         command = f"python3 scripts/ci/{checker}"
         duplicate = hooks.replace("pre-commit:", f"pre-commit:\n    duplicate:\n      run: {command}", 1)
         assert rust_hook_errors(duplicate, gate), f"H2 direct {checker}"
