@@ -83,6 +83,8 @@ run static "dependency-sources self-test" python3 scripts/ci/check_dependency_so
 run static "authority-arithmetic self-test" python3 scripts/ci/check_authority_arithmetic.py --self-test
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
+run static "managed-wire-naming self-test" python3 scripts/ci/check_managed_wire_naming.py --self-test
+run static "managed-wire-naming" python3 scripts/ci/check_managed_wire_naming.py
 run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --selftest
 run static "dependency-gates" python3 scripts/ci/check_dependency_gates.py
 run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_defaults.py --selftest

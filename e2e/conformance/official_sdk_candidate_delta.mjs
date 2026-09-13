@@ -127,9 +127,67 @@ export function qualifyOfficialSdkCandidateDelta(delta, qualifications) {
     || new Set(requiredBehaviorOwners).size !== requiredBehaviorOwners.length) {
     throw new Error(`candidate ${delta.candidateVersion} qualification has invalid behavior owners`);
   }
+  const witnesses = declarationWitnesses(delta.candidateVersion, qualification);
   return Object.freeze({
     requiredBehaviorOwners: Object.freeze(requiredBehaviorOwners),
+    witnesses: Object.freeze(witnesses),
   });
+}
+
+// A behavior owner may claim a changed declaration file only by naming what it
+// read there: a regular expression over that file's new content. Without it a
+// changed `.d.ts` can be "owned" by a proof that never opens the file, which is
+// how an added event field went unreviewed. Runtime coordinates are owned by
+// executing the code; declarations are owned by reading it.
+export function declarationWitnesses(candidateVersion, qualification) {
+  const witnesses = [];
+  for (const group of qualification.evidence_groups) {
+    const declared = group.witnesses ?? {};
+    for (const coordinate of group.coordinates) {
+      if (!coordinate.startsWith('declarations:')) continue;
+      const pattern = declared[coordinate];
+      if (typeof pattern !== 'string' || pattern.length === 0) {
+        throw new Error(
+          `candidate ${candidateVersion}: ${group.owner} owns ${coordinate} without a witness pattern`,
+        );
+      }
+      let regexp;
+      try {
+        regexp = new RegExp(pattern, 'u');
+      } catch (error) {
+        throw new Error(`candidate ${candidateVersion}: ${coordinate} witness is not a regular expression: ${error.message}`);
+      }
+      witnesses.push(Object.freeze({ owner: group.owner, coordinate, regexp }));
+    }
+    for (const coordinate of Object.keys(declared)) {
+      if (!group.coordinates.includes(coordinate)) {
+        throw new Error(`candidate ${candidateVersion}: ${group.owner} witnesses ${coordinate} it does not own`);
+      }
+    }
+  }
+  return witnesses;
+}
+
+// Resolve a declaration coordinate to the file it names inside a package root,
+// the inverse of the scoped path the type fingerprint assigns.
+export function declarationCoordinatePath(coordinate) {
+  const scoped = coordinate.replace(/^declarations:(?:added|changed|removed):/u, '');
+  const [prefix, ...rest] = scoped.split('/');
+  if (prefix === 'beta') return ['resources', 'beta', ...rest].join('/');
+  if (prefix === 'ga') return ['resources', ...rest].join('/');
+  if (prefix === 'managed') return rest.join('/');
+  throw new Error(`${coordinate} is not a scoped declaration coordinate`);
+}
+
+// Every witness must match the candidate's actual file, or the review named a
+// change that is not there.
+export function assertDeclarationWitnesses(witnesses, readCandidateFile) {
+  for (const { owner, coordinate, regexp } of witnesses) {
+    const content = readCandidateFile(declarationCoordinatePath(coordinate));
+    if (!regexp.test(content)) {
+      throw new Error(`${owner}: witness ${regexp} for ${coordinate} does not match the candidate declaration`);
+    }
+  }
 }
 
 // The qualification catalog also retains regression obligations after promotion.

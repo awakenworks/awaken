@@ -1,0 +1,393 @@
+{
+  "$comment": "Managed wire types that cite no SDK counterpart yet. A ratchet: remove entries as docs are annotated; never add.",
+  "unannotated": [
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "AgentMcpServer"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "AgentSkill"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "MultiagentRosterEntry"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "AdvisorRosterEntry"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "AdvisorRosterEntryKind"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "AgentRosterReference"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "AgentRosterReferenceKind"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "SelfRosterReference"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "SelfRosterReferenceKind"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "MultiagentConfig"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/agent.rs",
+      "name": "ModelInput"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/deployment.rs",
+      "name": "PausedReasonError"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "AllowedHost"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "PackageSpec"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "EnvironmentConfigParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "CloudNetworkingParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "PackagesKind"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "EnvironmentConfigUpdateParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "CloudNetworkingUpdateParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "PackagesUpdateParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "EnvironmentScope"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "WorkData"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "WorkObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "WorkQueueStatsObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "WorkHeartbeatObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/environment.rs",
+      "name": "RequiredNullable"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/file.rs",
+      "name": "FileObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/file.rs",
+      "name": "DeletedFileObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/file.rs",
+      "name": "FileScopeObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/file.rs",
+      "name": "BetaFileCursorListParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/file.rs",
+      "name": "BetaFileListParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/file.rs",
+      "name": "BetaFileCursorMetadata"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/file.rs",
+      "name": "FileExpirySeconds"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/initial_event.rs",
+      "name": "InitialEventClass"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/initial_event.rs",
+      "name": "InitialEventPolicy"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/memory.rs",
+      "name": "MemoryVersionObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/memory.rs",
+      "name": "AuthenticatedMemoryActor"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/page.rs",
+      "name": "PageCursor"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/page.rs",
+      "name": "Page"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/page.rs",
+      "name": "IdPageError"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/page.rs",
+      "name": "PageQuery"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "RepositoryAuthorizationToken"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "ResourceAccess"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "ResourceInput"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "RepositoryCheckout"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "FileResourceKind"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "ResourceManifestReplaceParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "ResourceManifestPhase"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "SessionResourceManifest"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/resource.rs",
+      "name": "DeletedSessionResource"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session/agent_ref.rs",
+      "name": "ModelOverride"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session/agent_ref.rs",
+      "name": "AgentRefObject"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session/model_config.rs",
+      "name": "ModelInferenceGeo"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session/model_config.rs",
+      "name": "ModelSpeed"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session/model_config.rs",
+      "name": "ModelEffort"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session/model_config.rs",
+      "name": "ModelEffortInput"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session/model_config.rs",
+      "name": "ModelEffortLevel"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "MonetaryAmount"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "Currency"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "SessionMultiagentRosterEntry"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "SessionThreadAgentValue"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "OutcomeEvaluation"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "ConfirmResult"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "EvaluatedPermission"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "OutcomeRubric"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "InboundEvent"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "SendEventsRequest"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "SendEventsResponse"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "StopReason"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "OutboundKind"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "Event"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "PreviewFrame"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "PreviewTarget"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "PreviewDelta"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "PreviewContent"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "StreamFrame"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/session.rs",
+      "name": "ListEventsResponse"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/skill.rs",
+      "name": "SkillObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/skill.rs",
+      "name": "SkillVersionObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/skill.rs",
+      "name": "DeletedSkillObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/skill.rs",
+      "name": "DeletedSkillVersionObjectType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/skill.rs",
+      "name": "SkillWire"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/skill.rs",
+      "name": "SkillVersionWire"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/tunnel.rs",
+      "name": "TunnelListQuery"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/user_profile.rs",
+      "name": "Relationship"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/user_profile.rs",
+      "name": "AccessType"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/user_profile.rs",
+      "name": "TrustGrant"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/user_profile.rs",
+      "name": "TrustGrantStatus"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "CredentialNetworking"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "CredentialInjectionLocationParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "TokenEndpointAuthParams"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "TokenEndpointAuthResponse"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "CredentialAuth"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "CredentialCreateWire"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "CredentialUpdateAuth"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "TokenEndpointAuthUpdate"
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
+      "name": "McpProbeResult"
+    }
+  ]
+}

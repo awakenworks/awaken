@@ -42,6 +42,7 @@ import {
 } from '../harness.mjs';
 import { officialBetaResourceProjection } from './official_sdk_resource_projection.mjs';
 import {
+  assertDeclarationWitnesses,
   officialSdkCandidateDelta,
   assertRetainedOfficialSdkBehaviorOwners,
   qualifyOfficialSdkCandidateDelta,
@@ -75,9 +76,15 @@ const qualificationCatalog = JSON.parse(readFileSync(
   resolve(HERE, 'official_sdk_candidate_qualifications.json'),
   'utf8',
 ));
-qualifyOfficialSdkCandidateDelta(
+const { witnesses: declarationWitnessesToVerify } = qualifyOfficialSdkCandidateDelta(
   candidateDelta,
   qualificationCatalog.qualifications,
+);
+// A declaration coordinate is owned by reading the file, so every witness the
+// reviewed qualification names must match the candidate's actual declaration.
+assertDeclarationWitnesses(
+  declarationWitnessesToVerify,
+  (relative) => readFileSync(resolve(packageRoot, relative), 'utf8'),
 );
 const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
 auditRequestTypesFromPackageRoot(

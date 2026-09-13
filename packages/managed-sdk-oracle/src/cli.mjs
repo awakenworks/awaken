@@ -13,7 +13,11 @@ import {
   officialRequestWitnesses,
   serializedRequestWitnesses,
 } from './official-request-witnesses.mjs';
-import { managedTypeFingerprint, managedWireContract } from './extract-types.mjs';
+import {
+  managedDeclaredTypes,
+  managedTypeFingerprint,
+  managedWireContract,
+} from './extract-types.mjs';
 import { managedRuntimeFingerprint } from './extract-runtime.mjs';
 import { managedExportFingerprint } from './extract-exports.mjs';
 import { stableJson } from './normalize.mjs';
@@ -83,6 +87,7 @@ async function generated() {
     'E2E @anthropic-ai/sdk must be an exact executable mirror of the current oracle anchor',
   );
   const currentWireContract = managedWireContract(currentOracle.module);
+  const currentDeclaredTypes = managedDeclaredTypes(currentOracle.module, scope);
   const currentRoot = resolveSdkPackage(currentOracle.module).root;
   const requestWitnesses = await officialRequestWitnesses({
     packageRoot: currentRoot,
@@ -119,7 +124,11 @@ async function generated() {
   return {
     oracle: stableJson({
       schema_version: 1,
-      current: { ...currentOracle, wire_contract: currentWireContract },
+      current: {
+        ...currentOracle,
+        wire_contract: currentWireContract,
+        declared_types: currentDeclaredTypes,
+      },
       anchors: summaries,
       documented_routes: scope.documented_routes,
     }),

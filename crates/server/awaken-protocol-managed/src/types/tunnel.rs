@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+/// `BetaTunnel`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tunnel {
     pub id: String,
@@ -13,6 +14,7 @@ pub struct Tunnel {
     pub domain: String,
 }
 
+/// `BetaTunnelToken`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TunnelToken {
     pub id: String,
@@ -21,6 +23,7 @@ pub struct TunnelToken {
     pub tunnel_token: String,
 }
 
+/// `BetaTunnelCertificate`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TunnelCertificate {
     pub id: String,
@@ -33,6 +36,7 @@ pub struct TunnelCertificate {
     pub tunnel_id: String,
 }
 
+/// `TunnelCreateParams`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunnelCreateParams {
@@ -40,6 +44,7 @@ pub struct TunnelCreateParams {
     pub display_name: Option<String>,
 }
 
+/// `TunnelRotateTokenParams`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunnelRotateTokenParams {
@@ -47,6 +52,7 @@ pub struct TunnelRotateTokenParams {
     pub reason: Option<String>,
 }
 
+/// `CertificateCreateParams`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CertificateCreateParams {

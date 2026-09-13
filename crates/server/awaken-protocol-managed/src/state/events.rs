@@ -455,6 +455,15 @@ fn append_durable_outcome_projections(
         match &projection.terminal {
             CommittedOutcomeProjection::Completed(report) => {
                 for iteration in &report.iterations {
+                    let start_id = managed_multiagent_event_id(
+                        &record.session.id,
+                        &record.session.id,
+                        "outcome-evaluation-start",
+                        ManagedMultiagentEventProvenance::OutcomeEvaluation {
+                            outcome_id: &projection.outcome_id,
+                            iteration: iteration.iteration,
+                        },
+                    );
                     for (role, kind) in [
                         (
                             "outcome-evaluation-start",
@@ -474,6 +483,7 @@ fn append_durable_outcome_projections(
                             "outcome-evaluation-end",
                             OutboundKind::SpanOutcomeEvaluationEnd {
                                 outcome_id: projection.outcome_id.clone(),
+                                outcome_evaluation_start_id: start_id.clone(),
                                 iteration: iteration.iteration,
                                 result: iteration.result.clone(),
                                 explanation: iteration.explanation.clone(),

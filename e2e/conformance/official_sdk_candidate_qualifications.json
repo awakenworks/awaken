@@ -255,14 +255,26 @@
             "declarations:changed:beta/sessions/index.d.ts",
             "declarations:changed:beta/sessions/sessions.d.ts",
             "declarations:changed:beta/user-profiles.d.ts"
-          ]
+          ],
+          "witnesses": {
+            "declarations:changed:beta/agents/agents.d.ts": "export interface BetaManagedAgentsAutoPolicy",
+            "declarations:changed:beta/agents/index.d.ts": "type BetaManagedAgentsAutoPolicy",
+            "declarations:changed:beta/environments/environments.d.ts": "API organizations support only 'organization'",
+            "declarations:changed:beta/sessions/events.d.ts": "export type BetaManagedAgentsAgentToolEvaluation = [\\s\\S]*evaluation\\?: BetaManagedAgentsAgentToolEvaluation;",
+            "declarations:changed:beta/sessions/index.d.ts": "type BetaManagedAgentsAgentToolEvaluation,",
+            "declarations:changed:beta/sessions/sessions.d.ts": "authorization_token\\?: string;",
+            "declarations:changed:beta/user-profiles.d.ts": "export interface BetaUserProfileExternalUserDetails "
+          }
         },
         {
           "owner": "candidate.environment-worker-secret-token",
           "coordinates": [
             "declarations:changed:managed/lib/environments/worker.d.ts",
             "runtime:changed:lib/environments/worker.mjs"
-          ]
+          ],
+          "witnesses": {
+            "declarations:changed:managed/lib/environments/worker.d.ts": "needs a key only when the work"
+          }
         },
         {
           "owner": "candidate.core-transport",

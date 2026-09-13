@@ -7,6 +7,8 @@ import {
   officialSdkCandidateDeltaCoordinates,
   officialSdkCandidateDeltaFingerprint,
   qualifyOfficialSdkCandidateDelta,
+  assertDeclarationWitnesses,
+  declarationCoordinatePath,
 } from './official_sdk_candidate_delta.mjs';
 
 const empty = () => ({ added: [], removed: [], changed: [] });
@@ -121,16 +123,19 @@ test('candidate qualification binds exact content coordinates to executable beha
     exports: empty(),
   };
   const coordinates = officialSdkCandidateDeltaCoordinates(delta);
+  const witnesses = { 'declarations:changed:beta/files.d.ts': 'expires_at\\?: string' };
   const qualification = {
     baseline_version: '1.0.0',
     candidate_version: '1.1.0',
     delta_fingerprint: officialSdkCandidateDeltaFingerprint(delta),
-    evidence_groups: [{ owner: 'candidate.exact-runtime', coordinates }],
+    evidence_groups: [{ owner: 'candidate.exact-runtime', coordinates, witnesses }],
   };
+  const qualified = qualifyOfficialSdkCandidateDelta(delta, [qualification]);
+  assert.deepEqual(qualified.requiredBehaviorOwners, ['candidate.exact-runtime'], 'C1/E1');
   assert.deepEqual(
-    qualifyOfficialSdkCandidateDelta(delta, [qualification]),
-    { requiredBehaviorOwners: ['candidate.exact-runtime'] },
-    'C1/E1',
+    qualified.witnesses.map(({ owner, coordinate, regexp }) => [owner, coordinate, regexp.source]),
+    [['candidate.exact-runtime', 'declarations:changed:beta/files.d.ts', 'expires_at\\?: string']],
+    'C1/E1 a changed declaration is owned by what was read in it',
   );
 
   const samePathMutation = structuredClone(delta);
@@ -172,6 +177,81 @@ test('candidate qualification binds exact content coordinates to executable beha
     /invalid evidence groups/u,
     'C3/E3 malformed group',
   );
+});
+
+test('a changed declaration is owned only by a witness that matches what changed', () => {
+  // Fault-injection graph: C1 an owner claims a changed `.d.ts` coordinate;
+  // C2 it names no witness; C3 it names a witness the candidate file does not
+  // contain; C4 it witnesses a coordinate it does not own. Effects: E1 a
+  // witnessed claim resolves to the file and matches; E2/E3/E4 the claim is
+  // rejected before the owner's proof can be credited. This is the gap that
+  // let 0.125's `evaluation` field arrive unreviewed: the events declaration
+  // was claimed by an owner whose proof read a different file.
+  const delta = {
+    currentVersion: '1.0.0',
+    candidateVersion: '1.1.0',
+    operations: empty(),
+    declarations: {
+      ...empty(),
+      changed: [{
+        path: 'beta/sessions/events.d.ts',
+        before: { fingerprint: 'a' },
+        after: { fingerprint: 'b' },
+      }],
+    },
+    runtime: empty(),
+    exports: empty(),
+  };
+  const coordinates = officialSdkCandidateDeltaCoordinates(delta);
+  const base = {
+    baseline_version: '1.0.0',
+    candidate_version: '1.1.0',
+    delta_fingerprint: officialSdkCandidateDeltaFingerprint(delta),
+  };
+  const witnessed = {
+    ...base,
+    evidence_groups: [{
+      owner: 'candidate.events',
+      coordinates,
+      witnesses: { [coordinates[0]]: 'evaluation\\?: BetaManagedAgentsAgentToolEvaluation' },
+    }],
+  };
+  const { witnesses } = qualifyOfficialSdkCandidateDelta(delta, [witnessed]);
+  const files = {
+    'resources/beta/sessions/events.d.ts': 'export interface X { evaluation?: BetaManagedAgentsAgentToolEvaluation; }',
+  };
+  assert.equal(declarationCoordinatePath(coordinates[0]), 'resources/beta/sessions/events.d.ts', 'C1/E1');
+  assertDeclarationWitnesses(witnesses, (relative) => files[relative]);
+  assert.throws(
+    () => assertDeclarationWitnesses(witnesses, () => 'export interface X { name: string }'),
+    /does not match the candidate declaration/u,
+    'C3/E3',
+  );
+  assert.throws(
+    () => qualifyOfficialSdkCandidateDelta(delta, [{
+      ...base,
+      evidence_groups: [{ owner: 'candidate.events', coordinates }],
+    }]),
+    /without a witness pattern/u,
+    'C2/E2',
+  );
+  assert.throws(
+    () => qualifyOfficialSdkCandidateDelta(delta, [{
+      ...base,
+      evidence_groups: [{
+        owner: 'candidate.events',
+        coordinates,
+        witnesses: {
+          [coordinates[0]]: 'evaluation',
+          'declarations:changed:beta/agents/agents.d.ts': 'AutoPolicy',
+        },
+      }],
+    }]),
+    /witnesses .* it does not own/u,
+    'C4/E4',
+  );
+  assert.equal(declarationCoordinatePath('declarations:changed:managed/lib/environments/worker.d.ts'), 'lib/environments/worker.d.ts');
+  assert.equal(declarationCoordinatePath('declarations:changed:ga/files.d.ts'), 'resources/files.d.ts');
 });
 
 test('same-version candidate evidence must be byte-equivalent to the current anchor', () => {
