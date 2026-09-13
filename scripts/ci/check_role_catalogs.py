@@ -27,6 +27,16 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _doc_anchors import mask_code_fences, resolve_link  # noqa: E402
 
+# Input set: the classification table in docs/STATUS.md plus every source
+# document it classifies -- `docs/*.md`, `docs/design/*.md` and `docs/adr/0*.md`
+# -- and the shared anchor resolver that proves a Delegated link resolves.
+INPUT_GLOBS: tuple[str, ...] = (
+    "docs/*.md",
+    "docs/adr/*.md",
+    "docs/design/*.md",
+    "scripts/ci/_doc_anchors.py",
+)
+
 STATUS = Path("docs/STATUS.md")
 DESIGN_DIR = Path("docs/design")
 ADR_DIR = Path("docs/adr")

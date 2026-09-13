@@ -10,6 +10,7 @@
 use crate::agent::message::Message;
 use crate::agent::state::Command as StateCommand;
 use crate::agent::thread::Id as ThreadId;
+use crate::audit::draft::Draft;
 use crate::thread::commit::coordinator::{Coordinator, Error};
 use crate::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 
@@ -31,6 +32,21 @@ pub async fn commit_run(
     messages: Vec<Message>,
     state: Vec<StateCommand>,
 ) -> Result<CommitRecord, Error> {
+    commit_run_with_events(coordinator, thread_id, run, messages, state, Vec::new()).await
+}
+
+/// [`commit_run`] with the audit facts the executor decided since its last
+/// commit — a permission decision and the policy that made it. They ride the
+/// same commit as the step they govern, so a decision is never durable without
+/// the step it governed, nor the step without it.
+pub async fn commit_run_with_events(
+    coordinator: &dyn Coordinator,
+    thread_id: &ThreadId,
+    run: RunDisposition,
+    messages: Vec<Message>,
+    state: Vec<StateCommand>,
+    events: Vec<Draft>,
+) -> Result<CommitRecord, Error> {
     // A projected Run always transitions state (it ended or is awaiting), so it emits
     // `RunStateChanged` like the native loop — one assembler, one fact trail.
     coordinator
@@ -40,7 +56,7 @@ pub async fn commit_run(
             true,
             messages,
             state,
-            Vec::new(),
+            events,
         ))
         .await
 }

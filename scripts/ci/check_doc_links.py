@@ -25,6 +25,11 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _doc_anchors import FENCE, resolve_link  # noqa: E402
 
+# Input set: the Markdown corpus under docs/, plus the shared anchor resolver
+# that decides whether a `#fragment` exists. Link *targets* may live anywhere,
+# but a target is only read after a docs Markdown file cites it.
+INPUT_GLOBS: tuple[str, ...] = ("docs/**/*.md", "scripts/ci/_doc_anchors.py")
+
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
@@ -33,10 +38,14 @@ def is_external(target: str) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    # The trigger also covers this checker and the shared anchor resolver, so an
+    # argument list may legitimately carry no Markdown. Re-scan the docs corpus
+    # then: a trigger that fires and checks nothing is the bug, not a feature.
+    paths = [Path(arg) for arg in argv if Path(arg).suffix == ".md"]
+    paths = paths or sorted(Path("docs").rglob("*.md"))
     errors: list[str] = []
-    for arg in argv:
-        path = Path(arg)
-        if path.suffix != ".md" or not path.is_file():
+    for path in paths:
+        if not path.is_file():
             continue
         try:
             text = path.read_text(encoding="utf-8")

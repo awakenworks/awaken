@@ -61,7 +61,9 @@ use awaken_runtime_contract::execution::{
     verify_attempt_ownership,
 };
 use awaken_runtime_contract::llm::{ThreadUsage, ThreadUsageKey, TokenUsage};
-use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
+use awaken_runtime_contract::permission::{
+    ToolCall, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
+};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{
     PermissionDecision, ResumeCommand, ResumeResult, validate_resume,
@@ -187,7 +189,9 @@ pub struct AcpRunExecutor {
     /// sandbox is the enforcement boundary); a host wires a neutral `ToolPermissionPolicy`
     /// via [`with_permission_policy`](Self::with_permission_policy) to apply org
     /// policy / HITL uniformly across native and ACP runs.
-    permission: Arc<dyn PermissionResolver>,
+    /// The configured neutral authority, or `None` for the executor's default
+    /// allow — which consults no policy and therefore records no decision.
+    permission: Option<Arc<NeutralPermissionResolver>>,
     permission_grant_observer: Option<Arc<dyn PermissionGrantObserver>>,
     owned_tool_continuation:
         Option<Arc<dyn awaken_runtime_contract::resume::OwnedToolContinuation>>,
@@ -215,7 +219,7 @@ impl AcpRunExecutor {
             source,
             policy: SupervisePolicy::default(),
             observer: None,
-            permission: Arc::new(AllowAll),
+            permission: None,
             permission_grant_observer: None,
             owned_tool_continuation: None,
             session_home: Arc::new(NoSessionHome),
@@ -239,10 +243,11 @@ impl AcpRunExecutor {
     /// own allow/reject option.
     #[must_use]
     pub fn with_permission_policy(mut self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
-        self.permission = Arc::new(NeutralPermissionResolver {
+        self.permission = Some(Arc::new(NeutralPermissionResolver {
             policy,
             grant_observer: self.permission_grant_observer.clone(),
-        });
+            audit: None,
+        }));
         self
     }
 
@@ -321,10 +326,11 @@ impl AcpRunExecutor {
             source: self.source.clone(),
             policy: self.policy,
             observer: self.observer.clone(),
-            permission: Arc::new(NeutralPermissionResolver {
+            permission: Some(Arc::new(NeutralPermissionResolver {
                 policy,
                 grant_observer: grant_observer.clone(),
-            }),
+                audit: None,
+            })),
             permission_grant_observer: grant_observer,
             owned_tool_continuation: None,
             session_home: self.session_home.clone(),
@@ -785,17 +791,25 @@ impl AcpRunExecutor {
             .iter()
             .map(|server| server.name.clone())
             .collect::<Vec<_>>();
+        // Every permission decision this attempt makes is committed with the
+        // step it governed, exactly as the native gate records its own.
+        let audit = Arc::new(PermissionAudit::default());
+        let attempt_permission: Box<dyn PermissionResolver> = match &self.permission {
+            Some(neutral) => Box::new(neutral.recording_into(audit.clone())),
+            None => Box::new(AllowAll),
+        };
         let narrowed_permission =
             context
                 .tool_permission_policy
                 .as_deref()
                 .map(|narrowing| NarrowedPermissionResolver {
-                    base: self.permission.as_ref(),
+                    base: attempt_permission.as_ref(),
                     narrowing,
+                    audit: &audit,
                 });
         let configured_permission = narrowed_permission
             .as_ref()
-            .map_or(self.permission.as_ref(), |resolver| {
+            .map_or(attempt_permission.as_ref(), |resolver| {
                 resolver as &dyn PermissionResolver
             });
         let owned_permission = self.owned_tool_continuation.as_ref().map(|continuation| {
@@ -1038,6 +1052,7 @@ impl AcpRunExecutor {
                     let state = disposition.state();
                     commit(
                         context,
+                        audit.drain(),
                         resumed_permission
                             .as_ref()
                             .and_then(ResumedPermissionResolver::unconsumed_decision),
@@ -1073,6 +1088,7 @@ impl AcpRunExecutor {
                     let state = disposition.state();
                     commit(
                         context,
+                        audit.drain(),
                         resumed_permission
                             .as_ref()
                             .and_then(ResumedPermissionResolver::unconsumed_decision),
@@ -1113,6 +1129,7 @@ impl AcpRunExecutor {
                 let state = disposition.state();
                 commit(
                     context,
+                    audit.drain(),
                     resumed_permission
                         .as_ref()
                         .and_then(ResumedPermissionResolver::unconsumed_decision),
@@ -1152,6 +1169,7 @@ impl AcpRunExecutor {
                 let state = disposition.state();
                 commit(
                     context,
+                    audit.drain(),
                     resumed_permission
                         .as_ref()
                         .and_then(ResumedPermissionResolver::unconsumed_decision),
@@ -1199,6 +1217,7 @@ impl AcpRunExecutor {
                             let state = disposition.state();
                             commit(
                                 context,
+                                audit.drain(),
                                 resumed_permission
                                     .as_ref()
                                     .and_then(ResumedPermissionResolver::unconsumed_decision),
@@ -1232,6 +1251,7 @@ impl AcpRunExecutor {
                     let state = disposition.state();
                     commit(
                         context,
+                        audit.drain(),
                         resumed_permission
                             .as_ref()
                             .and_then(ResumedPermissionResolver::unconsumed_decision),
@@ -1256,6 +1276,7 @@ impl AcpRunExecutor {
                     let state = disposition.state();
                     commit(
                         context,
+                        audit.drain(),
                         resumed_permission
                             .as_ref()
                             .and_then(ResumedPermissionResolver::unconsumed_decision),
@@ -1446,220 +1467,6 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: PauseReason)
             .as_ref()
             .map(|subject| subject.0.clone()),
     )
-}
-
-/// Bridges the ACP driver's [`PermissionResolver`] port onto the single neutral
-/// [`ToolPermissionPolicy`] authority (G21). It projects the wire ask into a neutral
-/// [`ToolCall`], asks the policy, and maps the decision back to a wire
-/// verdict — so an external CLI's tool requests are decided by the same policy that
-/// governs native tools. `Ask` closes the current process at a durable permission
-/// boundary; the Managed resume path relaunches the ACP session and supplies the
-/// exact call's one-shot decision. Immediate `Allow`/`Deny` pass straight through.
-struct NeutralPermissionResolver {
-    policy: Arc<dyn ToolPermissionPolicy>,
-    grant_observer: Option<Arc<dyn PermissionGrantObserver>>,
-}
-
-/// A notification-only port. It cannot grant authority; it only observes the
-/// final allow verdict produced by Awaken's permission resolver.
-pub trait PermissionGrantObserver: Send + Sync {
-    fn on_allow(&self, call: &ToolCall);
-}
-
-/// Per-Run narrowing in front of the Session's configured ACP authority. Only
-/// when the narrowing allows does the base resolver get a chance to decide.
-struct NarrowedPermissionResolver<'a> {
-    base: &'a dyn PermissionResolver,
-    narrowing: &'a dyn ToolPermissionPolicy,
-}
-
-/// Some ACP adapters report an MCP server's protocol-advertised name instead
-/// of the alias supplied in `session/new`. The Session aliases remain the only
-/// policy namespaces. This adapter evaluates a drifted name against those
-/// existing namespaces and combines their verdicts conservatively; it neither
-/// owns nor widens policy.
-struct AliasedMcpPermissionResolver<'a> {
-    base: &'a dyn PermissionResolver,
-    mcp_server_names: &'a [String],
-}
-
-/// The in-Session MCP server through which Awaken bridges its own builtin
-/// tools. A call on it is the builtin tool, not an external MCP tool.
-const AWAKEN_SESSION_MCP_SERVER: &str = "awaken_session";
-
-/// Project whatever spelling an ACP agent reported onto the one canonical tool
-/// identity, so a permission decision, a committed ToolUse and a resume match
-/// all compare the same string.
-///
-/// Both spellings are decomposed by the owning type: this function used to
-/// build `mcp__{server}__{name}` from an unsanitized ACP-reported server and
-/// split the dotted form on its *first* dot, so `mcp.a.b.c` on server `a.b`
-/// produced `mcp__a__b.c` — an id belonging to no configured namespace, which
-/// therefore matched no policy.
-fn canonical_permission_tool_id(tool: &str) -> String {
-    let Some(id) = McpToolId::parse(tool).or_else(|| McpToolId::from_dotted(tool)) else {
-        return tool.to_string();
-    };
-    if id.is_served_by(AWAKEN_SESSION_MCP_SERVER) {
-        return id.tool_name();
-    }
-    id.as_str().to_string()
-}
-
-#[async_trait]
-impl PermissionResolver for NarrowedPermissionResolver<'_> {
-    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        let call = ToolCall {
-            tool_id: canonical_permission_tool_id(&ask.tool),
-            call_id: ask.call_id.clone(),
-            arguments: ask.arguments.clone(),
-        };
-        match self.narrowing.evaluate(&call).await {
-            ToolPermissionVerdict::Allow => self.base.resolve(ask).await,
-            ToolPermissionVerdict::Deny { .. } => PermissionVerdict::Deny,
-            ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
-                PermissionVerdict::Await { correlation_id }
-            }
-        }
-    }
-}
-
-#[async_trait]
-impl PermissionResolver for AliasedMcpPermissionResolver<'_> {
-    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        let Some(reported) = McpToolId::from_dotted(&ask.tool) else {
-            return self.base.resolve(ask).await;
-        };
-        let tool_name = reported.tool_name();
-        if self.mcp_server_names.is_empty()
-            || self
-                .mcp_server_names
-                .iter()
-                .any(|name| reported.is_served_by(name))
-        {
-            return self.base.resolve(ask).await;
-        }
-
-        let mut consensus = PermissionConsensus::Allow;
-        let mut confirmation = None;
-        for server_name in self.mcp_server_names {
-            let candidate = PermissionAsk {
-                tool: McpToolId::dotted(server_name, &tool_name),
-                call_id: ask.call_id.clone(),
-                arguments: ask.arguments.clone(),
-            };
-            let verdict = self.base.resolve(&candidate).await;
-            consensus =
-                combine_permission_consensus(consensus, permission_consensus_class(&verdict));
-            match verdict {
-                PermissionVerdict::Deny => return PermissionVerdict::Deny,
-                PermissionVerdict::Await { correlation_id } => {
-                    confirmation.get_or_insert(correlation_id);
-                }
-                PermissionVerdict::Allow => {}
-            }
-        }
-        match consensus {
-            PermissionConsensus::Allow => PermissionVerdict::Allow,
-            PermissionConsensus::Await => PermissionVerdict::Await {
-                correlation_id: confirmation
-                    .expect("await consensus retains the first correlation id"),
-            },
-            PermissionConsensus::Deny => PermissionVerdict::Deny,
-        }
-    }
-}
-
-#[async_trait]
-impl PermissionResolver for NeutralPermissionResolver {
-    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        resolve_neutral_permission(self.policy.as_ref(), self.grant_observer.as_deref(), ask).await
-    }
-}
-
-async fn resolve_neutral_permission(
-    policy: &dyn ToolPermissionPolicy,
-    grant_observer: Option<&dyn PermissionGrantObserver>,
-    ask: &PermissionAsk,
-) -> PermissionVerdict {
-    let ctx = ToolCall {
-        tool_id: canonical_permission_tool_id(&ask.tool),
-        call_id: ask.call_id.clone(),
-        arguments: ask.arguments.clone(),
-    };
-    match policy.evaluate(&ctx).await {
-        ToolPermissionVerdict::Allow => {
-            if let Some(observer) = grant_observer {
-                observer.on_allow(&ctx);
-            }
-            PermissionVerdict::Allow
-        }
-        ToolPermissionVerdict::Deny { .. } => PermissionVerdict::Deny,
-        ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
-            PermissionVerdict::Await { correlation_id }
-        }
-    }
-}
-
-/// One resumed durable decision, scoped to the exact ACP tool and arguments held
-/// by the committed ticket. A replacement ACP process may assign a new wire call
-/// id when it reconstructs the interrupted request, so the immutable semantic
-/// identity is authoritative; the decision is still consumed at most once. Any
-/// different or later request goes through current policy.
-struct ResumedPermissionResolver<'a> {
-    base: &'a dyn PermissionResolver,
-    decision: &'a PermissionResume,
-    consumed: std::sync::atomic::AtomicBool,
-    grant_observer: Option<&'a dyn PermissionGrantObserver>,
-}
-
-impl<'a> ResumedPermissionResolver<'a> {
-    /// Absence of consumption means the guarded original request never received
-    /// execution authority in this continuation. A changed request can obtain
-    /// its own decision, but it cannot consume or complete this one.
-    fn unconsumed_decision(&self) -> Option<&PermissionResume> {
-        (!self.consumed.load(std::sync::atomic::Ordering::Acquire)).then_some(self.decision)
-    }
-
-    fn new(
-        base: &'a dyn PermissionResolver,
-        decision: &'a PermissionResume,
-        grant_observer: Option<&'a dyn PermissionGrantObserver>,
-    ) -> Self {
-        Self {
-            base,
-            decision,
-            consumed: std::sync::atomic::AtomicBool::new(false),
-            grant_observer,
-        }
-    }
-}
-
-#[async_trait]
-impl PermissionResolver for ResumedPermissionResolver<'_> {
-    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        if canonical_permission_tool_id(&ask.tool)
-            == canonical_permission_tool_id(&self.decision.tool_id)
-            && ask.arguments == self.decision.arguments
-            && !self
-                .consumed
-                .swap(true, std::sync::atomic::Ordering::AcqRel)
-        {
-            return if self.decision.allow {
-                if let Some(observer) = self.grant_observer {
-                    observer.on_allow(&ToolCall {
-                        tool_id: canonical_permission_tool_id(&ask.tool),
-                        call_id: ask.call_id.clone(),
-                        arguments: ask.arguments.clone(),
-                    });
-                }
-                PermissionVerdict::Allow
-            } else {
-                PermissionVerdict::Deny
-            };
-        }
-        self.base.resolve(ask).await
-    }
 }
 
 /// A [`RunFactAppender`] that projects an ACP Step's facts into committable neutral
@@ -1947,7 +1754,13 @@ fn ensure_pending_tool_use(
 
 mod acp_cli;
 mod commit;
+mod permission;
 use commit::{commit, finish_failure};
+pub use permission::PermissionGrantObserver;
+use permission::{
+    AliasedMcpPermissionResolver, NarrowedPermissionResolver, NeutralPermissionResolver,
+    PermissionAudit, ResumedPermissionResolver, canonical_permission_tool_id,
+};
 mod config_home;
 mod discovery_spec;
 mod session_home;

@@ -72,6 +72,7 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
                 expected: expected.into(),
             }),
             grant_observer: None,
+            audit: None,
         };
         assert_eq!(
             resolver
@@ -114,6 +115,7 @@ async fn owned_client_result_uses_the_shared_tool_batch_before_reopening_acp() {
     );
     super::commit::commit(
         &RuntimeRunContext::new().with_commit(committed.clone()),
+        Vec::new(),
         None,
         &activation.thread_id,
         RunDisposition::awaiting(ticket.clone()),
@@ -208,6 +210,7 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
         let base = NeutralPermissionResolver {
             policy: Arc::new(AliasPolicy { pilot, browser }),
             grant_observer: None,
+            audit: None,
         };
         AliasedMcpPermissionResolver {
             base: &base,
@@ -346,6 +349,7 @@ async fn managed_acp_terminal_cannot_escape_without_commit_capability() {
     // (severity 10, occurrence 4, detection 8), so Managed ACP fails closed.
     let error = commit(
         &RuntimeRunContext::new(),
+        Vec::new(),
         None,
         &ThreadId("thread-no-commit".into()),
         RunDisposition::ended(RunId("run-no-commit".into()), EndCause::NaturalEnd),
@@ -1051,6 +1055,7 @@ async fn unreissued_permission_is_settled_with_the_continuation_commit() {
                 .with_commit(recorded.clone());
             commit(
                 &context,
+                Vec::new(),
                 None,
                 &active.thread_id,
                 RunDisposition::awaiting(ticket.clone()),
@@ -1188,6 +1193,7 @@ async fn permission_settlement_preserves_an_observed_result_and_an_unknown_outco
         );
         commit(
             &RuntimeRunContext::new().with_commit(recorded.clone()),
+            Vec::new(),
             resolver.unconsumed_decision(),
             &ThreadId("thread-1".into()),
             disposition,
@@ -2957,9 +2963,188 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
         let resolver = NeutralPermissionResolver {
             policy: Arc::new(FixedPolicy(decision)),
             grant_observer: None,
+            audit: None,
         };
         assert_eq!(resolver.resolve(&ask).await, want);
     }
+}
+
+#[tokio::test]
+async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it() {
+    // Cause/effect graph: C1 the neutral policy decides an ACP tool request and
+    // names the authored policy that decided (a fixed one, or `auto` with its
+    // grounds); C2 a per-Run narrowing refuses one before the session policy is
+    // consulted; C3 an allowing narrowing lets the session policy answer.
+    // Effects: E1 one `PermissionDecided` fact per decided call, carrying the
+    // gate label and that policy; E2 the narrowing's own refusal is recorded
+    // once, by the narrowing; E3 an allowing narrowing records nothing of its
+    // own — the session policy's record is the answer.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | L1 | always_allow → allow | F | F | E1 allow + always_allow |
+    // | L2 | auto → ask(indeterminate) | F | F | E1 ask + auto + indeterminate |
+    // | L3 | — | T (deny) | F | E2 one deny, no session record |
+    // | L4 | always_allow → allow | F | T | E3 exactly one record, the session's |
+    //
+    // Without this ledger an ACP session commits no decision at all, and the
+    // Managed projection — having nothing to read — reports every such call as
+    // permitted. That is the fail-open this closes for the ACP backend.
+    use awaken_agent_contract::audit::kind::Kind;
+    use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionReasonCode};
+    use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
+    use awaken_runtime_contract::permission::{
+        PermissionBasis, ToolCall, ToolPermissionPolicy, ToolPermissionRuling,
+        ToolPermissionVerdict,
+    };
+
+    struct RulingPolicy(ToolPermissionRuling);
+    #[async_trait]
+    impl ToolPermissionPolicy for RulingPolicy {
+        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
+            self.0.verdict.clone()
+        }
+        async fn evaluate_with_basis(&self, _call: &ToolCall) -> ToolPermissionRuling {
+            ToolPermissionRuling {
+                verdict: self.0.verdict.clone(),
+                basis: self.0.basis,
+            }
+        }
+    }
+
+    fn ask(call_id: &str) -> PermissionAsk {
+        PermissionAsk {
+            tool: "bash".into(),
+            call_id: call_id.into(),
+            arguments: serde_json::json!({"cmd": "ls"}),
+        }
+    }
+    fn facts(audit: &PermissionAudit) -> Vec<(String, String, Option<String>, Option<String>)> {
+        audit
+            .drain()
+            .into_iter()
+            .filter(|draft| draft.kind == Kind::PermissionDecided)
+            .map(|draft| {
+                let text = |key: &str| {
+                    draft.payload[key]
+                        .as_str()
+                        .map(std::string::ToString::to_string)
+                };
+                (
+                    draft.payload["call_id"].as_str().unwrap_or_default().into(),
+                    draft.payload["decision"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .into(),
+                    text("policy"),
+                    text("reason_code"),
+                )
+            })
+            .collect()
+    }
+
+    let allowing = RulingPolicy(ToolPermissionRuling {
+        verdict: ToolPermissionVerdict::Allow,
+        basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
+    });
+    let judged = RulingPolicy(ToolPermissionRuling {
+        verdict: ToolPermissionVerdict::RequireConfirmation {
+            correlation_id: "tk".into(),
+        },
+        basis: Some(PermissionBasis::auto(Some(
+            PermissionReasonCode::Indeterminate,
+        ))),
+    });
+
+    // L1 / L2: the session policy decides and its record names the policy.
+    for (rule, policy, call_id, decision, expected_policy, expected_reason) in [
+        (
+            "L1",
+            &allowing,
+            "c1",
+            "allow",
+            PermissionPolicy::AlwaysAllow,
+            None,
+        ),
+        (
+            "L2",
+            &judged,
+            "c2",
+            "ask",
+            PermissionPolicy::Auto,
+            Some(PermissionReasonCode::Indeterminate),
+        ),
+    ] {
+        let audit = Arc::new(PermissionAudit::default());
+        let resolver = NeutralPermissionResolver {
+            policy: Arc::new(RulingPolicy(ToolPermissionRuling {
+                verdict: policy.0.verdict.clone(),
+                basis: policy.0.basis,
+            })),
+            grant_observer: None,
+            audit: None,
+        }
+        .recording_into(audit.clone());
+        resolver.resolve(&ask(call_id)).await;
+        assert_eq!(
+            facts(&audit),
+            vec![(
+                call_id.to_string(),
+                decision.to_string(),
+                Some(expected_policy.as_str().to_string()),
+                expected_reason.map(|code: PermissionReasonCode| code.as_str().to_string()),
+            )],
+            "{rule}/E1"
+        );
+    }
+
+    // L3: a narrowing that refuses is the decision, recorded by the narrowing.
+    let audit = Arc::new(PermissionAudit::default());
+    let session_policy = NeutralPermissionResolver {
+        policy: Arc::new(RulingPolicy(ToolPermissionRuling {
+            verdict: ToolPermissionVerdict::Allow,
+            basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
+        })),
+        grant_observer: None,
+        audit: None,
+    }
+    .recording_into(audit.clone());
+    let deny_all = awaken_runtime_contract::permission::DenyAllTools::new("restricted Run");
+    let narrowed = NarrowedPermissionResolver {
+        base: &session_policy,
+        narrowing: &deny_all,
+        audit: &audit,
+    };
+    assert_eq!(narrowed.resolve(&ask("c3")).await, PermissionVerdict::Deny);
+    let recorded = facts(&audit);
+    assert_eq!(recorded.len(), 1, "L3/E2 one record, not two");
+    assert_eq!(
+        (recorded[0].1.as_str(), recorded[0].2.as_deref()),
+        ("deny", None),
+        "L3/E2 a per-Run narrowing names no authored policy"
+    );
+
+    // L4: an allowing narrowing defers, and only the session policy's record stands.
+    let narrowing_allow = RulingPolicy(ToolPermissionRuling {
+        verdict: ToolPermissionVerdict::Allow,
+        basis: None,
+    });
+    let narrowed = NarrowedPermissionResolver {
+        base: &session_policy,
+        narrowing: &narrowing_allow,
+        audit: &audit,
+    };
+    assert_eq!(narrowed.resolve(&ask("c4")).await, PermissionVerdict::Allow);
+    assert_eq!(
+        facts(&audit),
+        vec![(
+            "c4".to_string(),
+            "allow".to_string(),
+            Some(PermissionPolicy::AlwaysAllow.as_str().to_string()),
+            None,
+        )],
+        "L4/E3"
+    );
 }
 
 #[tokio::test]
@@ -2995,15 +3180,18 @@ async fn per_run_permission_is_an_intersection_with_acp_authority() {
     let base_deny = FixedResolver(PermissionVerdict::Deny);
     let deny_all = DenyAllTools::new("restricted Run");
 
+    let audit = PermissionAudit::default();
     let narrowed = NarrowedPermissionResolver {
         base: &base_allow,
         narrowing: &deny_all,
+        audit: &audit,
     };
     assert_eq!(narrowed.resolve(&ask).await, PermissionVerdict::Deny);
 
     let cannot_widen = NarrowedPermissionResolver {
         base: &base_deny,
         narrowing: &narrowing_allow,
+        audit: &audit,
     };
     assert_eq!(cannot_widen.resolve(&ask).await, PermissionVerdict::Deny);
 }
@@ -5317,6 +5505,7 @@ async fn owned_permission_uses_the_host_port_before_opening_an_acp_process() {
                 );
                 super::commit::commit(
                     &RuntimeRunContext::new().with_commit(committed.clone()),
+                    Vec::new(),
                     None,
                     &activation.thread_id,
                     RunDisposition::awaiting(ticket.clone()),

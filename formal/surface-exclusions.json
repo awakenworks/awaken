@@ -57,27 +57,9 @@
       "evidence": ["docs/adr/0058-one-neutral-event-vocabulary-message-sourced-classify-routed-two-tier-projection.md"]
     },
     {
-      "path": "crates/contract/awaken-agent-contract/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "Crate module declarations and public re-exports only; all decision-bearing implementations are inventoried in their defining modules.",
-      "evidence": ["crates/contract/awaken-agent-contract/src/lib.rs"]
-    },
-    {
-      "path": "crates/contract/awaken-agent-contract/src/stream/mod.rs",
-      "boundary": "module_facade",
-      "reason": "Declares and re-exports stream modules without implementing stream authority or transition behavior.",
-      "evidence": ["crates/contract/awaken-agent-contract/src/stream/event.rs"]
-    },
-    {
       "path": "crates/contract/awaken-agent-contract/src/thread/read/checkpoint.rs",
       "boundary": "read_port_contract",
       "reason": "Read-only scope DTO and repository trait; consistency and commit authority are implemented and tested by concrete stores.",
-      "evidence": ["docs/design/runtime-persistence.md"]
-    },
-    {
-      "path": "crates/contract/awaken-agent-contract/src/thread/read/mod.rs",
-      "boundary": "module_facade",
-      "reason": "Declares read-side modules only and contains no executable decision logic.",
       "evidence": ["docs/design/runtime-persistence.md"]
     },
     {
@@ -87,28 +69,10 @@
       "evidence": ["docs/design/runtime-persistence.md"]
     },
     {
-      "path": "crates/contract/awaken-provisioning-contract/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "Crate-level documentation, module declarations, and re-exports only; admission, lease, preparation, and provider decisions remain inventoried in their owner modules.",
-      "evidence": ["crates/contract/awaken-provisioning-contract/src/lib.rs"]
-    },
-    {
-      "path": "crates/contract/awaken-session-contract/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "Neutral contract facade and one read-only warmup port; decision kernels are defined in the re-exported owner modules and remain in the inventory.",
-      "evidence": ["crates/contract/awaken-session-contract/src/lib.rs"]
-    },
-    {
       "path": "crates/contract/awaken-session-contract/src/mcp_probe.rs",
       "boundary": "external_port_contract",
       "reason": "Defines the three-state MCP probe result and its port signature only; live handshake classification is owned by the runtime-host adapter.",
       "evidence": ["crates/bin/awaken-cli/tests/mcp_sessions.rs"]
-    },
-    {
-      "path": "crates/control/awaken-admin-config-api/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "Admin adapter crate declarations and re-exports only; route, persistence, and credential decisions remain inventoried in their implementation files.",
-      "evidence": ["crates/control/awaken-admin-config-api/src/router.rs"]
     },
     {
       "path": "crates/control/awaken-admin-config-api/src/openapi.rs",
@@ -123,22 +87,10 @@
       "evidence": ["crates/control/awaken-config-service/src/config_service.rs"]
     },
     {
-      "path": "crates/control/awaken-config-service/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "Config-service module declarations and public re-exports only; authoring and publication decisions live in the referenced implementation modules.",
-      "evidence": ["crates/control/awaken-config-service/src/config_service.rs"]
-    },
-    {
       "path": "crates/control/awaken-config-service/src/service_wiring.rs",
       "boundary": "composition_wiring",
       "reason": "Builder methods install already-authorized collaborator ports into ConfigService fields and contain no selection or authorization policy.",
       "evidence": ["crates/control/awaken-config-service/src/config_service.rs"]
-    },
-    {
-      "path": "crates/runtime/awaken-ext-mcp/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "MCP extension module declarations and public re-exports only; transport, credential, routing, and redaction decisions remain inventoried in their defining modules.",
-      "evidence": ["crates/runtime/awaken-ext-mcp/src/lib.rs"]
     },
     {
       "path": "crates/runtime/awaken-ext-memory/src/agent.rs",
@@ -165,40 +117,16 @@
       "evidence": ["crates/runtime/awaken-observability/src/otel.rs"]
     },
     {
-      "path": "crates/contract/awaken-runtime-contract/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "Runtime-contract module declarations and public re-exports only; all behavior is inventoried in its defining modules.",
-      "evidence": ["crates/contract/awaken-runtime-contract/src/lib.rs"]
-    },
-    {
       "path": "crates/contract/awaken-runtime-contract/src/metrics.rs",
       "boundary": "observability_port",
       "reason": "Structure-only metrics DTO, sink trait, and null implementation; it has no product admission, transition, or persistence authority.",
       "evidence": ["crates/contract/awaken-runtime-contract/src/metrics.rs"]
     },
     {
-      "path": "crates/contract/awaken-runtime-contract/src/plugin/contributions.rs",
-      "boundary": "composition_registry",
-      "reason": "Collects plugin-provided handles and identifiers without admitting them; capability-bound, duplicate, dependency, and permission checks remain in the execution-environment owner.",
-      "evidence": ["crates/contract/awaken-runtime-contract/src/plugin/env.rs"]
-    },
-    {
-      "path": "crates/runtime/awaken-runtime/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "Runtime crate declarations and public re-exports only; the execution decisions remain inventoried in engine and runtime modules.",
-      "evidence": ["crates/runtime/awaken-runtime/src/lib.rs"]
-    },
-    {
       "path": "crates/server/awaken-mcp-server-testkit/src/lib.rs",
       "boundary": "test_support_crate",
       "reason": "Reusable MCP conformance test server and fixtures; it is not linked into a product execution surface.",
       "evidence": ["crates/server/awaken-mcp-server-testkit/tests/core_conformance.rs"]
-    },
-    {
-      "path": "crates/server/awaken-protocol-a2a/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "A2A adapter module declarations and public re-exports only; wire security, routing, lifecycle, and projection logic remain inventoried separately.",
-      "evidence": ["crates/server/awaken-protocol-a2a/src/lib.rs"]
     },
     {
       "path": "crates/server/awaken-protocol-ag-ui/src/types.rs",
@@ -285,12 +213,6 @@
       "evidence": ["crates/server/awaken-session-executor/src/mcp.rs"]
     },
     {
-      "path": "crates/server/awaken-webhook/src/lib.rs",
-      "boundary": "module_facade",
-      "reason": "Webhook crate module declarations and public re-exports only; endpoint validation, signing, retry, and delivery decisions remain inventoried in their owner modules.",
-      "evidence": ["crates/server/awaken-webhook/src/dispatch.rs"]
-    },
-    {
       "path": "crates/worker/awaken-connection-plan/src/plan.rs",
       "boundary": "topology_dto",
       "reason": "Serializable connection-topology value object with field-preserving convenience constructors; transport authentication and admission are intentionally absent.",
@@ -369,12 +291,6 @@
       "evidence": ["crates/server/awaken-coordinator-client/src/worker_control_client.rs"]
     },
     {
-      "path": "crates/contract/awaken-provisioning-contract/src/sandbox.rs",
-      "boundary": "module_facade",
-      "reason": "Production code contains only the Sandbox module declarations and re-exports; every detected decision signal is inside the cfg(test) fake and lifecycle tests. Contract and admission owners remain inventoried in foundation.rs and runtime.rs.",
-      "evidence": ["crates/contract/awaken-provisioning-contract/src/sandbox/foundation.rs", "crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs"]
-    },
-    {
       "path": "crates/contract/awaken-session-contract/src/session/run_coordination.rs",
       "boundary": "projection_dto",
       "reason": "Defines immutable delegated-Run snapshots, budget-resume delivery and ticket shapes, plus a closed disposition enum; it performs no transition, dispatch, persistence, or authorization decision. Runtime and Session owners consume these values.",
@@ -386,7 +302,6 @@
       "reason": "Every state type and repository implementation is compiled only under cfg(any(test, feature = test-support)) and serves tests or scenario fixtures. Production Credential authority remains the neutral repository contract and external durable adapters.",
       "evidence": ["crates/control/awaken-credential-vault/src/repo.rs"]
     },
-    {"path":"crates/server/awaken-protocol-managed/src/official_request_witnesses.rs","boundary":"test_only","reason":"Declared `#[cfg(test)] mod official_request_witnesses;`. It owns no production behavior: it loads the generated official request corpus and asserts every witness decodes into the route parameter type the server already uses, so the risk signals it matches are the shapes under test, not a surface this crate ships."},
-    {"path":"crates/contract/awaken-agent-contract/src/audit/mod.rs","boundary":"module_facade","reason":"Six `pub mod` lines and nothing else. It began matching the authorization risk signal only because one of the modules it declares is named `permission`; the vocabulary and its rules live in audit/permission.rs, which is classified against the tool-policy selector obligation."}
+    {"path":"crates/server/awaken-protocol-managed/src/official_request_witnesses.rs","boundary":"test_only","reason":"Declared `#[cfg(test)] mod official_request_witnesses;`. It owns no production behavior: it loads the generated official request corpus and asserts every witness decodes into the route parameter type the server already uses, so the risk signals it matches are the shapes under test, not a surface this crate ships."}
   ]
 }

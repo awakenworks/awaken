@@ -14,6 +14,17 @@ from formal_kani_options import checked_loop_override, expand_options
 from formal_profile import PROOF_GRADES, profile_result, validate_proof_grade
 
 
+# Input set: the whole tree, and the sentinel says so honestly. Besides the
+# formal/ registries, scripts/ci/check_formal.sh and every crates/**/*.rs file
+# it scans for `#[kani::proof]`, this checker asserts that *every* path an
+# obligation cites as evidence or as a production entrypoint still exists --
+# and an obligation may cite any repository path (crates/, formal/, docs/,
+# e2e/, scripts/, web/, packages/, deploy/ and .github/ all appear today). That
+# citation set is data inside formal/coverage.json, not a static path shape, so
+# no narrower glob can contain it: deleting a cited file while the ledger still
+# names it is exactly the failure a narrower trigger would let through.
+INPUT_GLOBS: tuple[str, ...] = ("**/*",)
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "formal" / "coverage.json"
 ALLOWED = {
