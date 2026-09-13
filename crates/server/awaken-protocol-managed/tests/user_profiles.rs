@@ -158,6 +158,153 @@ async fn beta_capability_selects_one_exact_user_profile_projection() {
     .expect(StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn external_user_details_exist_only_under_the_2026_09_04_selector() {
+    // Decision table (selector x external_user_details in request -> effect):
+    // | 03-24 | present | reject before write            |
+    // | 08-18 | present | reject before write            |
+    // | 09-04 | present | accept; response states every field, null when unsaid |
+    // | 09-04 | absent  | accept; response carries the record (all null) |
+    // | 08-18 | read    | field absent from the response |
+    // | 09-04 | patch   | unnamed fields kept, null clears, value replaces |
+    let app = app();
+    let current = ManagedCapability::UserProfilesCurrent.beta();
+    let external = ManagedCapability::UserProfilesExternal.beta();
+    let details =
+        json!({ "external_user_details": { "account_status": "active", "country": "DE" } });
+    for (selector, rule) in [(USER_PROFILES_BETA, "03-24"), (current, "08-18")] {
+        let body = call_with_beta(
+            &app,
+            "POST",
+            "/v1/user_profiles",
+            selector,
+            Some(details.clone()),
+        )
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, rule);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("user-profiles-2026-09-04"),
+            "{rule}: the refusal names the selector: {body}"
+        );
+    }
+    let created = call_with_beta(
+        &app,
+        "POST",
+        "/v1/user_profiles",
+        external,
+        Some(json!({
+            "access_type": "application",
+            "external_user_details": {
+                "account_status": "active",
+                "country": "DE",
+                "onboarded_at": "2026-09-03T01:02:03Z"
+            }
+        })),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(
+        created["access_type"], "application",
+        "09-04 keeps the current vocabulary"
+    );
+    assert_eq!(
+        created["external_user_details"],
+        json!({
+            "account_status": "active",
+            "country": "DE",
+            "email_hash": null,
+            "entity_type": null,
+            "name_hash": null,
+            "onboarded_at": "2026-09-03T01:02:03Z",
+            "reference_id": null
+        }),
+        "every field is present, null until stated"
+    );
+    let id = created["id"].as_str().unwrap();
+    let read_current = call_with_beta(
+        &app,
+        "GET",
+        &format!("/v1/user_profiles/{id}"),
+        current,
+        None,
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert!(
+        read_current.get("external_user_details").is_none(),
+        "08-18 omits the newer vocabulary"
+    );
+    let bare = call_with_beta(&app, "POST", "/v1/user_profiles", external, Some(json!({})))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(
+        bare["external_user_details"]["country"],
+        Value::Null,
+        "unstated record is all null"
+    );
+    let patched = call_with_beta(
+        &app,
+        "POST",
+        &format!("/v1/user_profiles/{id}"),
+        external,
+        Some(json!({ "external_user_details": { "country": null, "entity_type": "business" } })),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(
+        patched["external_user_details"]["account_status"], "active",
+        "unnamed kept"
+    );
+    assert_eq!(
+        patched["external_user_details"]["country"],
+        Value::Null,
+        "null clears"
+    );
+    assert_eq!(
+        patched["external_user_details"]["entity_type"], "business",
+        "value replaces"
+    );
+    let _ = call_with_beta(
+        &app,
+        "POST",
+        "/v1/user_profiles",
+        external,
+        Some(json!({ "external_user_details": { "country": "Germany" } })),
+    )
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "country must be an alpha-2 code");
+    // The official client sends its default 08-18 selector beside the 09-04
+    // opt-in on one header: the current family is cumulative and the newest
+    // selector decides; the legacy selector stays exclusive.
+    let cumulative = format!("{current}, {external}");
+    let read = call_with_beta(
+        &app,
+        "GET",
+        &format!("/v1/user_profiles/{id}"),
+        &cumulative,
+        None,
+    )
+    .await
+    .expect_for(
+        StatusCode::OK,
+        "08-18 + 09-04 selects the external projection",
+    );
+    assert_eq!(read["external_user_details"]["entity_type"], "business");
+    let exclusive = format!("{USER_PROFILES_BETA}, {external}");
+    let _ = call_with_beta(
+        &app,
+        "GET",
+        &format!("/v1/user_profiles/{id}"),
+        &exclusive,
+        None,
+    )
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "03-24 + 09-04 is refused");
+}
+
 // Test design: malformed_user_profile_query_uses_anthropic_error_envelope
 // Cause/effect graph: malformed public query -> shared ManagedQuery boundary ->
 // SDK-decodable invalid_request_error; the profile application is never called.

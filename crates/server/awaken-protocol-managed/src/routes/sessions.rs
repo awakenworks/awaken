@@ -328,6 +328,7 @@ pub async fn enforce_managed_beta(
     if is_family("/v1/user_profiles")
         && !has_capability(req.headers(), ManagedCapability::UserProfilesLegacy)
         && !has_capability(req.headers(), ManagedCapability::UserProfilesCurrent)
+        && !has_capability(req.headers(), ManagedCapability::UserProfilesExternal)
     {
         return (
             StatusCode::BAD_REQUEST,

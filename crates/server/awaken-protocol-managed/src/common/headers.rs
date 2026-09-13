@@ -14,19 +14,21 @@ pub enum ManagedCapability {
     Memory,
     UserProfilesLegacy,
     UserProfilesCurrent,
+    UserProfilesExternal,
     Dreams,
     TunnelsLegacy,
     TunnelsCurrent,
 }
 
 impl ManagedCapability {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::ManagedAgents,
         Self::Files,
         Self::Skills,
         Self::Memory,
         Self::UserProfilesLegacy,
         Self::UserProfilesCurrent,
+        Self::UserProfilesExternal,
         Self::Dreams,
         Self::TunnelsLegacy,
         Self::TunnelsCurrent,
@@ -41,6 +43,7 @@ impl ManagedCapability {
             Self::Memory => "memory",
             Self::UserProfilesLegacy => "user_profiles_legacy",
             Self::UserProfilesCurrent => "user_profiles_current",
+            Self::UserProfilesExternal => "user_profiles_external",
             Self::Dreams => "dreams",
             Self::TunnelsLegacy => "tunnels_legacy",
             Self::TunnelsCurrent => "tunnels_current",
@@ -56,6 +59,7 @@ impl ManagedCapability {
             Self::Memory => "agent-memory-2026-07-22",
             Self::UserProfilesLegacy => "user-profiles-2026-03-24",
             Self::UserProfilesCurrent => "user-profiles-2026-08-18",
+            Self::UserProfilesExternal => "user-profiles-2026-09-04",
             Self::Dreams => "dreaming-2026-04-21",
             Self::TunnelsLegacy => "mcp-tunnels-2026-05-19",
             Self::TunnelsCurrent => "mcp-tunnels-2026-06-22",

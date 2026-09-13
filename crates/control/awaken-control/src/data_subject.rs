@@ -271,6 +271,7 @@ mod tests {
                 access_type: None,
                 external_id: None,
                 external_user_onboarded_at: None,
+                external_user_details: None,
                 name: None,
             })
             .await
