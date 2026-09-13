@@ -347,17 +347,13 @@ impl ManagedState {
             "parent-terminal-primary-status-terminated",
             ManagedMultiagentEventProvenance::ParentTerminal,
         );
-        if !record
-            .events
-            .iter()
-            .any(|event| event.id == primary_terminated_id)
-        {
+        if !record.has_event_id(&primary_terminated_id) {
             let primary_terminated = primary_thread_status_event(
                 record,
                 primary_terminated_id,
                 PrimaryThreadStatusProjection::Terminated,
             );
-            record.events.push(primary_terminated);
+            record.append_event_once(primary_terminated);
         }
         if record
             .events

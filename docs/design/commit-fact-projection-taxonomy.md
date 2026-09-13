@@ -117,6 +117,16 @@ The shared normalization policy also governs the prior-prefix observation check.
 This removes repeated whole-history pagination scans, while the preceding
 committed-source refresh retains its existing independent consistency work.
 
+The same published `EventPageIndex` is also the candidate reducer's Event-id
+membership authority. A cloned candidate extends its copy-on-write index only
+over Events appended since the published prefix; deterministic append-once
+paths no longer rescan the complete history, and Outcome and coordination
+projectors no longer build private duplicate id sets. Any interval replacement
+that removes Events immediately rebuilds the index from the sole candidate
+vector, and successful publication rebuilds it again after canonical ordering.
+The index remains disposable and derived: it cannot create, remove or authorize
+an Event independently of the candidate vector and its source checkpoint.
+
 Session inbound visibility and processing completion are distinct observations
 of the same retained command. While a User Run is Running, the Session application
 may anchor its exact committed input Message under the existing root CAS. This
@@ -197,6 +207,17 @@ Host relationship reconstruction share one identity grammar while keeping their
 separate domain outputs. A 10,000-unrelated-Run integration case covers the
 indexed membership boundary; it is algorithmic test evidence, not a latency or
 allocator proof.
+
+Managed coordination ordering also consumes the canonicalizer's existing
+`MessageEventIndex`. The index decodes the sole candidate Event vector once and
+joins a tool occurrence by its encoded public Thread and committed Message id.
+The removed path rescanned every Event for every root/child snapshot and matched
+only the Message id, discarding the Thread owner already present in the public
+identity. Snapshot work is now proportional to its messages, content blocks and
+exact matching tool occurrences after the one Event-index build. A qualified
+Event from another Thread cannot acquire a coordination operation merely by
+reusing a source id. This is disposable request-local join state; the Event
+vector and committed Thread snapshots remain the only payload and source truth.
 
 For tool waits and external results:
 

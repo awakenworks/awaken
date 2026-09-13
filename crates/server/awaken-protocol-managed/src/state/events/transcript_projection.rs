@@ -274,11 +274,11 @@ impl ManagedState {
                         ),
                     }
                 });
-                if !record.events.iter().any(|event| event.id == id) {
+                if !record.has_event_id(&id) {
                     record
                         .event_thread_owners
                         .insert(id.clone(), thread_id.to_string());
-                    record.events.push(Event {
+                    record.append_event_once(Event {
                         id,
                         kind,
                         processed_at: None,
@@ -480,11 +480,6 @@ impl ManagedState {
         }
         // These indices exist only for this reduction and are rebuilt from the
         // same record; they do not become independent cross-refresh receipts.
-        let mut projected_ids = record
-            .events
-            .iter()
-            .map(|event| event.id.clone())
-            .collect::<std::collections::HashSet<_>>();
         let mut child_positions = std::collections::HashMap::new();
         for (position, child) in record.child_threads.iter().enumerate() {
             child_positions.entry(child.id.clone()).or_insert(position);
@@ -500,7 +495,7 @@ impl ManagedState {
             // Re-reading the same committed call must not require a parallel
             // process-local call-id cursor, while a call whose link was not yet
             // visible remains eligible on a later refresh.
-            if projected_ids.contains(&sent_event_id) {
+            if record.has_event_id(&sent_event_id) {
                 continue;
             }
             let Some(&position) = child_positions.get(&thread_id) else {
@@ -520,8 +515,7 @@ impl ManagedState {
                     "coordination-status-running",
                     ManagedMultiagentEventProvenance::CoordinationCall { event_id: &call_id },
                 );
-                projected_ids.insert(running_id.clone());
-                record.events.push(Event {
+                record.append_event_once(Event {
                     id: running_id,
                     kind: OutboundKind::SessionThreadStatusRunning {
                         session_thread_id: thread_id.clone(),
@@ -530,8 +524,7 @@ impl ManagedState {
                     processed_at: None,
                 });
             }
-            projected_ids.insert(sent_event_id.clone());
-            record.events.push(Event {
+            record.append_event_once(Event {
                 id: sent_event_id,
                 kind: OutboundKind::AgentThreadMessageSent {
                     to_session_thread_id: thread_id,

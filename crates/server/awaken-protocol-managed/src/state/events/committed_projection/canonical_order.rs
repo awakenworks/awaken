@@ -716,19 +716,22 @@ impl ManagedState {
             }
         }
 
-        {
-            let index = message_index::MessageEventIndex::new(&record.events);
-            if let Some(snapshot) = root_snapshot {
-                index.index_snapshot(
-                    &record.session.id,
-                    &record.session.id,
-                    snapshot,
-                    &mut orders,
-                );
-            }
-            for (thread_id, snapshot) in child_snapshots {
-                index.index_snapshot(&record.session.id, thread_id, snapshot, &mut orders);
-            }
+        let message_event_index = message_index::MessageEventIndex::new(&record.events);
+        if let Some(snapshot) = root_snapshot {
+            message_event_index.index_snapshot(
+                &record.session.id,
+                &record.session.id,
+                snapshot,
+                &mut orders,
+            );
+        }
+        for (thread_id, snapshot) in child_snapshots {
+            message_event_index.index_snapshot(
+                &record.session.id,
+                thread_id,
+                snapshot,
+                &mut orders,
+            );
         }
 
         let mut index_snapshot_facts = |thread_id: &str,
@@ -831,9 +834,12 @@ impl ManagedState {
         coordination_order::index_coordination_orders(
             record,
             links,
-            root_snapshot,
-            child_snapshots,
+            coordination_order::CoordinationSnapshots {
+                root: root_snapshot,
+                children: child_snapshots,
+            },
             lifecycle_events,
+            &message_event_index,
             &mut orders,
             &time_for,
         );

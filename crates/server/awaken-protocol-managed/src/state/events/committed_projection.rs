@@ -51,13 +51,11 @@ impl ManagedState {
                 cursor: terminal.cursor.0,
             },
         );
-        if !record.events.iter().any(|event| event.id == id) {
-            record.events.push(Event {
-                id,
-                kind: OutboundKind::SessionError { error },
-                processed_at: None,
-            });
-        }
+        record.append_event_once(Event {
+            id,
+            kind: OutboundKind::SessionError { error },
+            processed_at: None,
+        });
         Ok(())
     }
 
@@ -753,10 +751,7 @@ impl ManagedState {
                         ),
                     }
                 });
-                if record.events.iter().any(|event| event.id == id) {
-                    continue;
-                }
-                record.events.push(Event {
+                record.append_event_once(Event {
                     id,
                     kind,
                     processed_at: None,
@@ -792,13 +787,11 @@ impl ManagedState {
                         "synthetic root pending projection has no qualified tool id",
                     ))
                 })?;
-                if !record.events.iter().any(|event| event.id == id) {
-                    record.events.push(Event {
-                        id,
-                        kind: projected.kind,
-                        processed_at: None,
-                    });
-                }
+                record.append_event_once(Event {
+                    id,
+                    kind: projected.kind,
+                    processed_at: None,
+                });
             }
         }
 
@@ -922,7 +915,7 @@ impl ManagedState {
                     cursor: terminal.cursor.0,
                 },
             );
-            if record.events.iter().any(|event| event.id == idle_id) {
+            if record.has_event_id(&idle_id) {
                 continue;
             }
             Self::append_root_terminal_error(
@@ -942,11 +935,12 @@ impl ManagedState {
                     .or(root_pending.filter(|_| root_terminal == Some(terminal))),
                 terminal.await_reason.as_ref(),
             )?;
-            record.events.push(primary_thread_status_event(
+            let idle_event = primary_thread_status_event(
                 record,
                 idle_id,
                 PrimaryThreadStatusProjection::Idle { stop_reason },
-            ));
+            );
+            record.append_event_once(idle_event);
             record
                 .checkpoint
                 .progress
