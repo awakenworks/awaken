@@ -16,6 +16,7 @@
     { "version": "1.1.0", "role": "protocol_change_point", "reason": "missing beta selectors restored" },
     { "version": "1.2.0", "role": "protocol_change_point", "reason": "beta Files and Skills adopt GA shapes and drop dated selector pins" },
     { "version": "1.3.0", "role": "protocol_change_point", "reason": "user-profile access, organization compliance, memory-store, toolset, and multipart contract changes" },
-    { "version": "1.4.0", "role": "current_oracle", "reason": "per-request workspace/user-profile headers preserve client defaults; reject mixed httpx/httpx2 configuration" }
+    { "version": "1.4.0", "role": "protocol_change_point", "reason": "per-request workspace/user-profile headers preserve client defaults; reject mixed httpx/httpx2 configuration" },
+    { "version": "1.5.0", "role": "current_oracle", "reason": "auto tool-permission policy with per-call evaluation, user-profile external_user_details under user-profiles-2026-09-04, public GitHub repositories without an authorization_token, environment worker runs an item on its secret-carried sessions token, CredentialsError/IdentityTokenFileError, extra_body merged before client hooks" }
   ]
 }
