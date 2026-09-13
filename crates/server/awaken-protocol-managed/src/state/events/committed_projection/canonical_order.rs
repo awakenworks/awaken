@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod coordination_order;
 mod message_index;
 
 #[derive(Clone, Copy, Debug)]
@@ -521,29 +522,32 @@ pub(super) fn report_commit_cursor(
         .max()
 }
 
-/// First committed visibility of one accepted `send_message` cross-post. The
-/// ToolUse declares intent, but only its non-error accepted ToolResult binds a
-/// concrete coordinated Thread.
-pub(super) fn accepted_coordination_order(
-    record: &SessionRecord,
-    orders: &std::collections::HashMap<String, CanonicalEventOrder>,
-    source: &Event,
-    thread_id: &str,
-) -> Option<CanonicalEventOrder> {
-    if ManagedState::accepted_coordination_thread(record, &source.id).as_deref() != Some(thread_id)
-    {
-        return None;
+/// Attach each live overlay to its explicit retained predecessor, or the
+/// nearest earlier retained durable event. Consume the issued order once;
+/// leading/unanchored overlays must not repeatedly rescan their whole prefix.
+fn group_live_overlays<'a>(
+    events: impl IntoIterator<Item = &'a Event>,
+    durable_ids: &std::collections::HashSet<&str>,
+    hints: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<Option<String>, Vec<Event>> {
+    let mut result = std::collections::HashMap::<Option<String>, Vec<Event>>::new();
+    let mut predecessor = None;
+    for event in events {
+        if !is_transient_event_id(&event.id) {
+            if durable_ids.contains(event.id.as_str()) {
+                predecessor = Some(event.id.as_str());
+            }
+            continue;
+        }
+        let anchor = hints
+            .get(&event.id)
+            .filter(|candidate| durable_ids.contains(candidate.as_str()))
+            .map(String::as_str)
+            .or(predecessor)
+            .map(str::to_owned);
+        result.entry(anchor).or_default().push(event.clone());
     }
-    let source_order = orders.get(&source.id).copied()?;
-    let result_order = record.events.iter().find_map(|event| match &event.kind {
-        OutboundKind::AgentToolResult {
-            tool_use_id,
-            is_error,
-            ..
-        } if tool_use_id == &source.id && *is_error != Some(true) => orders.get(&event.id).copied(),
-        _ => None,
-    })?;
-    Some(source_order.max(result_order))
+    result
 }
 
 impl ManagedState {
@@ -824,196 +828,15 @@ impl ManagedState {
             index_snapshot_facts(thread_id, snapshot);
         }
 
-        let mut tool_operation_by_event_id = std::collections::HashMap::<String, String>::new();
-        let mut advisor_operation_orders =
-            std::collections::HashMap::<String, CanonicalEventOrder>::new();
-        let mut index_tool_operations =
-            |snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
-                if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
-                    return;
-                }
-                let run_ids = snapshot
-                    .runs
-                    .iter()
-                    .map(|run| run.id.clone())
-                    .collect::<Vec<_>>();
-                let coordinates =
-                    Self::assistant_response_coordinates(&snapshot.messages, &run_ids);
-                for (message_index, (message, source_commit_cursor)) in snapshot
-                    .messages
-                    .iter()
-                    .zip(snapshot.message_commit_cursors.iter().copied())
-                    .enumerate()
-                {
-                    let Some((run_id, step, _)) = coordinates.get(&message.id.0) else {
-                        continue;
-                    };
-                    for (block_ordinal, block) in message.content.iter().enumerate() {
-                        let ContentBlock::ToolUse {
-                            id: call_id, name, ..
-                        } = block
-                        else {
-                            continue;
-                        };
-                        if name != awaken_runtime_contract::resolved::ADVISOR_TOOL_ID {
-                            continue;
-                        }
-                        let operation_id =
-                            awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-                                &awaken_agent_contract::agent::run::Id(run_id.clone()),
-                                *step,
-                                call_id,
-                            );
-                        let order = CanonicalEventOrder {
-                            processed_at_unix_ms: snapshot
-                                .commit_timestamps
-                                .get(&source_commit_cursor)
-                                .copied(),
-                            source_commit_cursor,
-                            phase: 50,
-                            ordinal: message_index
-                                .saturating_mul(message.content.len().saturating_add(1))
-                                .saturating_add(block_ordinal),
-                        };
-                        advisor_operation_orders
-                            .entry(operation_id)
-                            .and_modify(|current| *current = (*current).min(order))
-                            .or_insert(order);
-                    }
-                }
-                for event in &record.events {
-                    let Some(identity) = decode_managed_tool_event_id(&event.id) else {
-                        continue;
-                    };
-                    let Some((run_id, step, _)) = coordinates.get(identity.source_id) else {
-                        continue;
-                    };
-                    tool_operation_by_event_id.insert(
-                        event.id.clone(),
-                        awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-                            &awaken_agent_contract::agent::run::Id(run_id.clone()),
-                            *step,
-                            identity.call_id,
-                        ),
-                    );
-                }
-            };
-        if let Some(snapshot) = root_snapshot {
-            index_tool_operations(snapshot);
-        }
-        for snapshot in child_snapshots.values() {
-            index_tool_operations(snapshot);
-        }
-
-        for link in links {
-            let source = record.events.iter().find(|event| {
-                matches!(event.kind, OutboundKind::AgentToolUse { .. })
-                    && tool_operation_by_event_id.get(&event.id)
-                        == Some(&link.created_by_operation_id)
-            });
-            let source_order = match &link.target {
-                CoordinatedThreadTarget::Agent { .. } => source.and_then(|source| {
-                    accepted_coordination_order(record, &orders, source, &link.thread_id.0)
-                }),
-                CoordinatedThreadTarget::Advisor { .. } => advisor_operation_orders
-                    .get(&link.created_by_operation_id)
-                    .copied(),
-            };
-            if let Some(source_order) = source_order {
-                for (role, phase) in [("link-thread-created", 51), ("link-status-running", 52)] {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            &link.thread_id.0,
-                            role,
-                            ManagedMultiagentEventProvenance::LinkOperation {
-                                operation_id: &link.created_by_operation_id,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            processed_at_unix_ms: source_order.processed_at_unix_ms,
-                            source_commit_cursor: source_order.source_commit_cursor,
-                            phase,
-                            ordinal: source_order.ordinal,
-                        },
-                    );
-                }
-            }
-            for source in record.events.iter().filter(|event| {
-                matches!(
-                    &event.kind,
-                    OutboundKind::AgentToolUse { name, .. } if name == SEND_MESSAGE
-                )
-            }) {
-                let Some(source_order) =
-                    accepted_coordination_order(record, &orders, source, &link.thread_id.0)
-                else {
-                    continue;
-                };
-                for (role, phase) in [
-                    ("coordination-status-running", 54),
-                    ("coordination-message-sent", 55),
-                ] {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            &link.thread_id.0,
-                            role,
-                            ManagedMultiagentEventProvenance::CoordinationCall {
-                                event_id: &source.id,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            processed_at_unix_ms: source_order.processed_at_unix_ms,
-                            source_commit_cursor: source_order.source_commit_cursor,
-                            phase,
-                            ordinal: source_order.ordinal,
-                        },
-                    );
-                }
-            }
-            for terminal in lifecycle_events.iter().filter(|event| {
-                event.thread_id == link.thread_id
-                    && matches!(
-                        event.kind,
-                        RunLifecycleEventKind::Completed
-                            | RunLifecycleEventKind::Failed
-                            | RunLifecycleEventKind::Cancelled
-                    )
-            }) {
-                let report_source = child_snapshots
-                    .get(&link.thread_id.0)
-                    .and_then(|snapshot| report_commit_cursor(snapshot, &terminal.run_id));
-                let Some(source_commit_cursor) = report_source else {
-                    continue;
-                };
-                for role in ["child-message-received", "advisor-message-received"] {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            &link.thread_id.0,
-                            role,
-                            ManagedMultiagentEventProvenance::AgentReport {
-                                run_id: &terminal.run_id.0,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            processed_at_unix_ms: time_for(
-                                &terminal.thread_id.0,
-                                terminal.source_commit_cursor,
-                            ),
-                            source_commit_cursor: source_commit_cursor
-                                .max(terminal.source_commit_cursor),
-                            phase: 55,
-                            ordinal: 0,
-                        },
-                    );
-                }
-            }
-        }
+        coordination_order::index_coordination_orders(
+            record,
+            links,
+            root_snapshot,
+            child_snapshots,
+            lifecycle_events,
+            &mut orders,
+            &time_for,
+        );
 
         for (batch_index, projection) in outcome_projections.iter().enumerate() {
             match &projection.terminal {
@@ -1261,27 +1084,11 @@ impl ManagedState {
             .iter()
             .map(|(_, event)| event.id.as_str())
             .collect::<std::collections::HashSet<_>>();
-        let mut overlays = std::collections::HashMap::<Option<String>, Vec<Event>>::new();
-        for (index, event) in original_events
-            .iter()
-            .enumerate()
-            .filter(|(_, event)| is_transient_event_id(&event.id))
-        {
-            let anchor = record
-                .overlay
-                .anchors
-                .get(&event.id)
-                .filter(|candidate| durable_ids.contains(candidate.as_str()))
-                .cloned()
-                .or_else(|| {
-                    original_events[..index]
-                        .iter()
-                        .rev()
-                        .find(|candidate| durable_ids.contains(candidate.id.as_str()))
-                        .map(|candidate| candidate.id.clone())
-                });
-            overlays.entry(anchor).or_default().push(event.clone());
-        }
+        let mut overlays = group_live_overlays(
+            original_events.iter(),
+            &durable_ids,
+            &record.overlay.anchors,
+        );
         let mut canonical = overlays.remove(&None).unwrap_or_default();
         for (_, event) in durable {
             let id = event.id.clone();
@@ -1630,6 +1437,73 @@ mod prefix_comparison_tests {
                 expected,
                 "{field} reverse"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod overlay_anchor_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn event(id: impl Into<String>) -> Event {
+        Event {
+            id: id.into(),
+            kind: OutboundKind::AgentThinking {},
+            processed_at: None,
+        }
+    }
+    #[test]
+    fn one_pass_overlay_assignment_preserves_explicit_and_fallback_predecessors() {
+        // C1 explicit hint names a retained durable event; C2 hint is missing
+        // or no longer retained; C3 a prior retained durable event exists.
+        // R1 C1 => explicit hint wins, including a later retained event.
+        // R2 !C1+C2+C3 => nearest prior durable; R3 !C1+!C3 => head group.
+        // Empty history and a run of 1000 leading overlays consume exactly one
+        // input traversal; order within each anchor group remains issued order.
+        let events = [
+            event("evt_0"),
+            event("durable-a"),
+            event("evt_1"),
+            event("evt_2"),
+            event("durable-b"),
+            event("evt_3"),
+        ];
+        let durable = HashSet::from(["durable-a", "durable-b"]);
+        let hints = HashMap::from([
+            ("evt_1".into(), "durable-b".into()),
+            ("evt_2".into(), "gone".into()),
+            ("evt_3".into(), "durable-a".into()),
+        ]);
+        let result = group_live_overlays(events.iter(), &durable, &hints);
+        let ids = |key: Option<&str>| {
+            result
+                .get(&key.map(str::to_owned))
+                .unwrap()
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(None), ["evt_0"]);
+        assert_eq!(ids(Some("durable-a")), ["evt_2", "evt_3"]);
+        assert_eq!(ids(Some("durable-b")), ["evt_1"]);
+        for count in [0, 1, 1000] {
+            let events = (0..count)
+                .map(|i| event(format!("evt_{i}")))
+                .collect::<Vec<_>>();
+            let inspected = std::cell::Cell::new(0);
+            let result = group_live_overlays(
+                events
+                    .iter()
+                    .inspect(|_| inspected.set(inspected.get() + 1)),
+                &HashSet::new(),
+                &HashMap::new(),
+            );
+            assert_eq!(inspected.get(), count);
+            assert_eq!(result.get(&None).map(Vec::len).unwrap_or_default(), count);
+            if count > 0 {
+                assert_eq!(result[&None], events);
+            }
         }
     }
 }

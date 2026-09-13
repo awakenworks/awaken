@@ -835,6 +835,7 @@ enum ValidatedEventBatchDrive {
 
 mod admission;
 mod committed_projection;
+mod coordination_receipts;
 mod lifecycle_projection;
 mod recovery;
 mod stream;
