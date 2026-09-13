@@ -18,7 +18,7 @@ pub(super) enum SessionRecoveryTrigger {
     ExternalWake,
 }
 
-const EXTERNAL_WAKE_COALESCE: std::time::Duration = std::time::Duration::from_millis(500);
+const EXTERNAL_WAKE_COALESCE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Coalesce a burst of committed dependency hints without delaying the existing
 /// scheduled recovery deadline. Hints received while a full scan runs retain
@@ -171,10 +171,10 @@ mod tests {
         /* Cause/effect graph: C1 the scheduled deadline is due/in 100ms/in
          * 30s; C2 one or many external hints arrive before the next scan.
          * Effects: E1 due remains immediate; E2 a nearer deadline stays 100ms;
-         * E3 a later deadline admits at most the 500ms coalescing bound; E4 C2
+         * E3 a later deadline admits at most the one-second coalescing bound; E4 C2
          * cardinality is absent from the decision and therefore cannot extend
          * the bound. Decision table: W1=due=>0; W2=100ms=>100ms;
-         * W3=30s=>500ms. The supervisor integration consumes one Notify permit
+         * W3=30s=>1s. The supervisor integration consumes one Notify permit
          * before this decision; retained hints during the scan select W1-W3
          * once on the next loop. */
         use std::time::Duration;
@@ -182,7 +182,7 @@ mod tests {
         for (remaining, expected) in [
             (Duration::ZERO, Duration::ZERO),
             (Duration::from_millis(100), Duration::from_millis(100)),
-            (Duration::from_secs(30), Duration::from_millis(500)),
+            (Duration::from_secs(30), Duration::from_secs(1)),
         ] {
             assert_eq!(external_wake_coalescing_delay(remaining), expected);
         }
