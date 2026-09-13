@@ -79,15 +79,23 @@ the budget remains unavailable; this is bounded convergence, not an unbounded
 liveness guarantee. Debug diagnostics identify the conflicting source/CAS fence
 without recording messages or credential material.
 
-After each Session lifecycle recovery scan, the supervisor coalesces trailing
-external dependency hints for at most one second, capped by its already
-scheduled recovery deadline. The first hint after an expired cooldown remains
-immediate. Tokio `Notify` still retains one dirty permit while a scan runs, so
-committed work cannot be lost; a burst joins one following scan instead of
-forcing a back-to-back global Session scan per arrival. The existing supervisor remains the sole scheduler
-and the 30–300 second retry backoff remains unchanged. This bounds added wake
-latency and removes load-amplifying duplicate scans without adding a queue,
-leader, durable cursor or second reconciliation path.
+After a Session lifecycle recovery scan, the supervisor may coalesce trailing
+external dependency hints, capped by its already scheduled recovery deadline
+and by one second. Only a scan that a hint itself reached and that settled no
+durable work arms that window, and it arms it for no longer than that scan's
+own elapsed cost. A scan reached by the scheduled deadline answered no hint,
+and a hint-driven scan that settled work is the live progress path whose next
+hint is the Session's next step rather than a duplicate; neither makes the
+following hint wait. Charging an empty scan its own duration holds hint-driven
+scanning under half the supervisor's time however fast hints arrive, while the
+latency a later hint can inherit stays proportional to what a scan costs
+instead of a fixed second of wall clock. Tokio `Notify` still retains one dirty
+permit while a scan runs, so committed work cannot be lost; a burst joins one
+following scan instead of forcing a back-to-back global Session scan per
+arrival. The existing supervisor remains the sole scheduler and the 30–300
+second retry backoff remains unchanged. This removes load-amplifying duplicate
+scans without adding a queue, leader, durable cursor or second reconciliation
+path, and without taxing an interactive Session a fixed wait per step.
 
 The repository's existing atomic reconciliation scan also derives three
 request-local scheduling hints: incomplete Event batches, a possibly due

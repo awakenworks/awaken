@@ -32,6 +32,33 @@ pub(super) fn external_wake_coalescing_delay(
     scheduled_remaining.min(cooldown_remaining.min(EXTERNAL_WAKE_COOLDOWN))
 }
 
+/// Arm the coalescing window only where a hint can actually be redundant, and
+/// only for what that redundancy cost.
+///
+/// A scan reached by the scheduled deadline is answering no hint at all, and a
+/// hint-driven scan that settled durable work is the live progress path: the
+/// hint after it is the Session's next step, not a duplicate of the one just
+/// served. Only a hint-driven scan that settled nothing evidences the burst
+/// this window exists to collapse.
+///
+/// That scan earns a window of its own elapsed cost, capped at
+/// [`EXTERNAL_WAKE_COOLDOWN`]. Charging a scan its own duration holds
+/// hint-driven scanning to at most half this supervisor's time however fast
+/// hints arrive, while the latency a later hint can inherit stays proportional
+/// to what a scan actually costs instead of a fixed second of wall clock.
+pub(super) fn next_external_wake_cooldown(
+    trigger: SessionRecoveryTrigger,
+    settled: usize,
+    scan_elapsed: std::time::Duration,
+) -> std::time::Duration {
+    match trigger {
+        SessionRecoveryTrigger::ExternalWake if settled == 0 => {
+            scan_elapsed.min(EXTERNAL_WAKE_COOLDOWN)
+        }
+        _ => std::time::Duration::ZERO,
+    }
+}
+
 /// Select the next delay without allowing an early dependency hint to postpone
 /// an already-scheduled retry. The caller supplies the remaining duration from
 /// the existing single deadline; this function creates no second timer.
@@ -51,7 +78,7 @@ pub(super) fn next_session_recovery_delay(
 mod proofs {
     use super::{
         EXTERNAL_WAKE_COOLDOWN, SessionRecoveryTrigger, external_wake_coalescing_delay,
-        next_session_recovery_delay, session_recovery_delay,
+        next_external_wake_cooldown, next_session_recovery_delay, session_recovery_delay,
     };
     use std::time::Duration;
 
@@ -114,13 +141,33 @@ mod proofs {
             Duration::ZERO
         );
     }
+
+    #[kani::proof]
+    fn only_an_empty_hint_driven_scan_arms_the_coalescing_window() {
+        let settled: usize = kani::any();
+        let elapsed_seconds: u64 = kani::any();
+        let elapsed_nanos: u32 = kani::any();
+        kani::assume(elapsed_nanos < 1_000_000_000);
+        let elapsed = Duration::new(elapsed_seconds, elapsed_nanos);
+        assert_eq!(
+            next_external_wake_cooldown(SessionRecoveryTrigger::Scheduled, settled, elapsed),
+            Duration::ZERO
+        );
+        let armed =
+            next_external_wake_cooldown(SessionRecoveryTrigger::ExternalWake, settled, elapsed);
+        assert!(armed <= EXTERNAL_WAKE_COOLDOWN);
+        assert!(armed <= elapsed);
+        if settled != 0 {
+            assert_eq!(armed, Duration::ZERO);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionRecoveryTrigger, external_wake_coalescing_delay, next_session_recovery_delay,
-        session_recovery_delay,
+        EXTERNAL_WAKE_COOLDOWN, SessionRecoveryTrigger, external_wake_coalescing_delay,
+        next_external_wake_cooldown, next_session_recovery_delay, session_recovery_delay,
     };
 
     #[test]
@@ -200,6 +247,48 @@ mod tests {
         ] {
             assert_eq!(
                 external_wake_coalescing_delay(scheduled, cooldown),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn only_an_empty_hint_driven_scan_makes_the_next_hint_wait() {
+        /* Cause/effect graph: C1 what reached this scan (scheduled deadline or
+         * external hint); C2 whether the scan settled durable work. Effects:
+         * E1 the next hint is served immediately; E2 the next hint waits out
+         * the coalescing window. Decision table: A1=(scheduled,nothing)=>E1,
+         * because a deadline scan answered no hint and evidences no burst;
+         * A2=(scheduled,work)=>E1; A3=(hint,work)=>E1, because the hint that
+         * follows live progress is the next step, not a duplicate;
+         * A4=(hint,nothing)=>E2 for the scan's own elapsed cost, the one case
+         * where the hint just served found nothing and its successors
+         * plausibly repeat it; A5=(hint,nothing,scan longer than the cap)=>E2
+         * capped at one second. A3 keeps an interactive Session off a per-step
+         * wait, and the A4 charge keeps that wait proportional to what an empty
+         * scan actually costs. */
+        use std::time::Duration;
+
+        let scan = Duration::from_millis(4);
+        for (trigger, settled, elapsed, expected) in [
+            (SessionRecoveryTrigger::Scheduled, 0, scan, Duration::ZERO),
+            (SessionRecoveryTrigger::Scheduled, 7, scan, Duration::ZERO),
+            (
+                SessionRecoveryTrigger::ExternalWake,
+                7,
+                scan,
+                Duration::ZERO,
+            ),
+            (SessionRecoveryTrigger::ExternalWake, 0, scan, scan),
+            (
+                SessionRecoveryTrigger::ExternalWake,
+                0,
+                Duration::from_secs(30),
+                EXTERNAL_WAKE_COOLDOWN,
+            ),
+        ] {
+            assert_eq!(
+                next_external_wake_cooldown(trigger, settled, elapsed),
                 expected
             );
         }
