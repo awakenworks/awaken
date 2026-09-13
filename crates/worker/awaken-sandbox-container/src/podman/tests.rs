@@ -690,8 +690,10 @@ async fn cancelled_readiness_probe_reaps_the_actual_cli_child() {
                 tokio::select! {
                     result = &mut probe => panic!("C1 probe ended before cancellation: {result:?}"),
                     () = tokio::time::sleep(Duration::from_millis(2)) => {
-                        if let Ok(value) = std::fs::read_to_string(&pid_file) {
-                            if let Ok(pid) = value.parse::<u32>() { break pid; }
+                        if let Ok(value) = std::fs::read_to_string(&pid_file)
+                            && let Ok(pid) = value.parse::<u32>()
+                        {
+                            break pid;
                         }
                     }
                 }
@@ -1519,4 +1521,116 @@ async fn process_secret_is_forwarded_by_alias_without_entering_podman_argv() {
         .unwrap();
     let process = rt.spawn("cid", command).await.unwrap();
     assert_eq!(process.wait().await.unwrap().code, Some(0));
+}
+
+#[tokio::test]
+async fn package_build_network_reaches_the_podman_build_argv() {
+    // The same cause/effect table Docker's `NetworkMode` selection obeys, read
+    // off the real `podman build` argv. B1 Unrestricted without the opt-in ->
+    // the engine's own build network, so no `--network` flag at all;
+    // B2 Unrestricted with the opt-in -> `--network host`; B3 None -> always
+    // `--network none`, opt-in or not; B4 Allowlist -> refused before any
+    // build. The knob existed on Docker alone until the maximal-feature gate
+    // compiled this tier, so the deployment setting silently did nothing here.
+    async fn build_argv(network: pc::NetworkPolicy, host_opt_in: bool) -> Option<Vec<String>> {
+        let (rt, fake) = runtime_with(9000, |args| match args.first().map(String::as_str) {
+            Some("image") if args.get(1).map(String::as_str) == Some("exists") => {
+                err("no such image")
+            }
+            Some("image") => ok("sha256:exact-base"),
+            Some("build") => ok(""),
+            other => panic!("unexpected podman command: {other:?}"),
+        });
+        let rt = rt.with_package_build_host_network(host_opt_in);
+        let requirements = pc::PackageRequirements {
+            managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let outcome =
+            ContainerRuntime::prepare_package_image(&rt, "python:3.13", &requirements, &network)
+                .await;
+        if matches!(network, pc::NetworkPolicy::Allowlist { .. }) {
+            let error = outcome.expect_err("B4 an allowlist has no no-bypass build network");
+            assert!(
+                error.to_string().contains("no-bypass allowlist network"),
+                "B4 states why it refused: {error}"
+            );
+        } else {
+            outcome.expect("B1-B3 build the package image");
+        }
+        let calls = fake.calls.lock().unwrap();
+        calls
+            .iter()
+            .find(|args| args.first().map(String::as_str) == Some("build"))
+            .cloned()
+    }
+
+    fn network_flag(argv: &[String]) -> Option<&str> {
+        argv.iter()
+            .position(|arg| arg == "--network")
+            .and_then(|index| argv.get(index + 1))
+            .map(String::as_str)
+    }
+
+    let b1 = build_argv(pc::NetworkPolicy::Unrestricted, false)
+        .await
+        .expect("B1 builds");
+    assert_eq!(
+        network_flag(&b1),
+        None,
+        "B1 keeps the engine's build network"
+    );
+    let b2 = build_argv(pc::NetworkPolicy::Unrestricted, true)
+        .await
+        .expect("B2 builds");
+    assert_eq!(
+        network_flag(&b2),
+        Some("host"),
+        "B2 opts in to the host network"
+    );
+    for opt_in in [false, true] {
+        let b3 = build_argv(pc::NetworkPolicy::None, opt_in)
+            .await
+            .expect("B3 builds");
+        assert_eq!(
+            network_flag(&b3),
+            Some("none"),
+            "B3 a denied Environment denies its build too, opt-in {opt_in}"
+        );
+    }
+    for opt_in in [false, true] {
+        assert!(
+            build_argv(
+                pc::NetworkPolicy::Allowlist {
+                    hosts: vec!["pypi.org".into()],
+                },
+                opt_in,
+            )
+            .await
+            .is_none(),
+            "B4 refuses before any build, opt-in {opt_in}"
+        );
+    }
+
+    let namespace = ContainerRealizationNamespace::from_stable_parts(["podman-tests"])
+        .expect("constant test namespace");
+    let rt = PodmanRuntime::with_exec(
+        namespace,
+        9000,
+        Arc::new(FakeExec {
+            handler: Box::new(|_| ok("")),
+            calls: Mutex::new(Vec::new()),
+        }),
+    );
+    assert!(
+        !rt.package_build_host_network,
+        "the opt-in is off by default"
+    );
+    assert!(
+        rt.with_package_build_host_network(true)
+            .package_build_host_network,
+        "the deployment selects it explicitly"
+    );
 }

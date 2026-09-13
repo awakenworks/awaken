@@ -18,6 +18,52 @@ const PACKAGE_RECIPE_VERSION: &str = "4";
 pub(crate) const PACKAGE_BUILD_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30 * 60);
 
+/// The network one package image build is given. Every tier asks the same
+/// question, so it is answered once here and each adapter only renders the
+/// answer in its own vocabulary. A tier that decided this for itself would be
+/// the second mapping this module exists to prevent, and the two would drift:
+/// the host opt-in reached Docker builds and silently never reached Podman's.
+#[cfg(any(feature = "docker", feature = "podman"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackageBuildNetwork {
+    /// The engine's own build network. Reachable, and bounded by the engine.
+    EngineDefault,
+    /// The deployment opted this build in to the host network.
+    Host,
+    /// The Environment denies egress, so its build gets none either.
+    Denied,
+}
+
+/// Cause/effect for the build network, crossed over the host opt-in:
+///
+/// | Rule | policy       | host opt-in | Effect                     |
+/// |------|--------------|-------------|----------------------------|
+/// | B1   | Unrestricted | false       | EngineDefault              |
+/// | B2   | Unrestricted | true        | Host                       |
+/// | B3   | None         | either      | Denied                     |
+/// | B4   | Allowlist    | either      | refused: no no-bypass net  |
+///
+/// B4 is a refusal rather than a narrowing because an image build that cannot
+/// enforce the allowlist would reach hosts the Environment denies; failing the
+/// activation closed is the only answer that preserves the egress boundary.
+#[cfg(any(feature = "docker", feature = "podman"))]
+pub(crate) fn package_build_network(
+    network: &pc::NetworkPolicy,
+    host_opt_in: bool,
+) -> Result<PackageBuildNetwork, RuntimeError> {
+    match network {
+        pc::NetworkPolicy::Unrestricted => Ok(if host_opt_in {
+            PackageBuildNetwork::Host
+        } else {
+            PackageBuildNetwork::EngineDefault
+        }),
+        pc::NetworkPolicy::None => Ok(PackageBuildNetwork::Denied),
+        pc::NetworkPolicy::Allowlist { .. } => Err(RuntimeError::Backend(
+            "package image build has no no-bypass allowlist network".into(),
+        )),
+    }
+}
+
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
 fn requirement_is_pinned(manager: &str, package: &str) -> bool {
     match manager {

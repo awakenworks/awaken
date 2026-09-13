@@ -158,9 +158,11 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
         got.contains("warm reply") && got.contains("turn_end"),
         "the warm agent served the session over the real wire: {got:?}"
     );
-    environment
-        .as_ref()
-        .dispose()
+    // W4: the checkout seam above is the unfenced `create_environment`, so no
+    // aggregate effect owns this Environment and no disposal preparation
+    // receipt exists to authorize `dispose_for_effect`. Reclaiming warm-pool
+    // capacity is exactly what the unattached port names.
+    pc::Sandbox::dispose_unattached(environment.as_ref())
         .await
         .expect("W4 explicit Session cleanup removes the checked-out Environment");
 }
@@ -206,8 +208,7 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
         "a mounted session did NOT consume the shape-matched warm agent (it bypassed the pool)"
     );
 
-    environment
-        .dispose()
+    pc::Sandbox::dispose_unattached(environment.as_ref())
         .await
         .expect("dispose mounted environment");
     pool.shutdown().await;
