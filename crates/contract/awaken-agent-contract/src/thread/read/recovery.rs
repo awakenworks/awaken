@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::awaiting::ResumeTicket;
 use crate::agent::message::Message;
-use crate::agent::run::{Id as RunId, Record as RunRecord};
+use crate::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use crate::agent::state::Command as StateCommand;
 use crate::agent::thread::Id as ThreadId;
 use crate::audit::record::Record as EventRecord;
@@ -69,6 +69,40 @@ pub fn decode_resume_ticket_json_for_owner(
     let ticket = serde_json::from_str(raw)?;
     validate_resume_ticket_owner(&ticket, row_run_id, expected_thread_id)?;
     Ok(ticket)
+}
+
+/// Project decoded commit facts into first-seen Run order and latest Run state.
+///
+/// Both durable adapters use this reducer inside their recovery transaction.
+/// Each row is still decoded in commit order, including overwritten states;
+/// the first decoder error is returned without reading later rows. A temporary
+/// identity index avoids rescanning every previous Run for each commit. It is
+/// discarded with this query and never replaces the committed fact authority.
+/// Transition admission remains owned by the commit boundary.
+pub fn project_committed_run_records<E>(
+    thread_id: &ThreadId,
+    commits: impl IntoIterator<Item = Result<(RunId, RunState), E>>,
+) -> Result<(Vec<RunRecord>, Option<RunId>), E> {
+    let mut positions = std::collections::HashMap::<RunId, usize>::new();
+    let mut runs = Vec::new();
+    let mut latest_run_id = None;
+    for row in commits {
+        let (run_id, state) = row?;
+        latest_run_id = Some(run_id.clone());
+        let record = RunRecord {
+            id: run_id.clone(),
+            thread_id: thread_id.clone(),
+            state,
+        };
+        match positions.entry(run_id) {
+            std::collections::hash_map::Entry::Occupied(entry) => runs[*entry.get()] = record,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(runs.len());
+                runs.push(record);
+            }
+        }
+    }
+    Ok((runs, latest_run_id))
 }
 
 /// One internally consistent prefix of committed Thread truth.
@@ -150,6 +184,88 @@ pub trait RunRecoverySource: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_projection_retains_first_seen_order_and_last_committed_states() {
+        // Causes: C1 zero/nonzero facts; C2 repeated vs distinct Run ids; C3
+        // interleaved updates; C4 the last commit revisits an earlier Run; C5
+        // any decoded state. Effects: empty => ([], None), otherwise one record
+        // per id in FIRST appearance order, each state from its LAST fact, and
+        // latest_run_id from the LAST commit (not the last distinct Run).
+        // Decision rules R0=!C1; R1=C1+!C2; R2=C1+C2; R3=C3+C4. Exhaust all
+        // streams of length 0..=5 over two non-lexically-ordered ids and three
+        // states. Admission owns legal transitions; this reducer must not add a
+        // second transition validator. Direct first/last positions are the oracle.
+        let thread = ThreadId("parent-owned-thread".into());
+        let alphabet = [
+            RunState::Running,
+            RunState::Awaiting,
+            RunState::Ended(crate::agent::run::EndCause::Indeterminate),
+        ];
+        for length in 0..=5_u32 {
+            for mut code in 0..6_usize.pow(length) {
+                let input = (0..length)
+                    .map(|_| {
+                        let symbol = code % 6;
+                        code /= 6;
+                        (
+                            RunId(if symbol / 3 == 0 { "z-run" } else { "a-run" }.into()),
+                            alphabet[symbol % 3].clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let (runs, latest) =
+                    project_committed_run_records(&thread, input.iter().cloned().map(Ok::<_, ()>))
+                        .unwrap();
+                let first_ids = input
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, (id, _))| !input[..*i].iter().any(|(before, _)| before == id))
+                    .map(|(_, (id, _))| id.clone())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    runs.iter().map(|run| run.id.clone()).collect::<Vec<_>>(),
+                    first_ids
+                );
+                assert_eq!(latest, input.last().map(|(id, _)| id.clone()));
+                for run in &runs {
+                    assert_eq!(run.thread_id, thread);
+                    assert_eq!(
+                        &run.state,
+                        &input.iter().rev().find(|(id, _)| id == &run.id).unwrap().1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn run_projection_preserves_decoder_failure_and_stops_consumption() {
+        // R4 error at first/middle/final fact => return that exact error and no
+        // partial snapshot; R5 malformed historical state before a later update
+        // of the same id must not be hidden by last-state selection. A second
+        // error after it is never read. Counts observe the decoder boundary,
+        // not internal lookup mechanics.
+        let thread = ThreadId("thread".into());
+        for failure_at in 0..=4 {
+            let reads = std::cell::Cell::new(0);
+            let rows = (0..5).map(|index| {
+                reads.set(reads.get() + 1);
+                if index == failure_at {
+                    Err("first unreadable fact")
+                } else if index > failure_at {
+                    panic!("decoded beyond the first error")
+                } else {
+                    Ok((RunId("same-run".into()), RunState::Running))
+                }
+            });
+            assert_eq!(
+                project_committed_run_records(&thread, rows).unwrap_err(),
+                "first unreadable fact"
+            );
+            assert_eq!(reads.get(), failure_at + 1);
+        }
+    }
 
     #[test]
     fn legacy_snapshot_without_events_remains_readable() {

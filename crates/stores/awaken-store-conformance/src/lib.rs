@@ -691,6 +691,58 @@ pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>
             .values()
             .all(|at| *at > 1_767_225_600_000)
     );
+    // R4 an earlier Run commits again after a distinct Run: latest follows the
+    // last COMMIT while the records retain first appearance order. R5 removing
+    // that Run's wait changes only its ticket; the exact claimed Run and its
+    // ordinal stay unchanged. This exercises the same shared recovery contract
+    // in memory/fs and both SQL adapters, not a backend-specific order oracle.
+    store
+        .commit(running_checkpoint(
+            &thread,
+            &awaiting_run,
+            "resumed-earlier",
+        ))
+        .await
+        .expect("earlier Run resumes");
+    let updated = store
+        .recovery_snapshot(&thread, &claimed_run)
+        .await
+        .expect("R4 snapshot");
+    assert_eq!(
+        updated
+            .runs
+            .iter()
+            .map(|run| run.id.clone())
+            .collect::<Vec<_>>(),
+        vec![awaiting_run.clone(), claimed_run.clone()],
+        "R4 first appearance order"
+    );
+    assert_eq!(
+        updated.latest_run_id,
+        Some(awaiting_run.clone()),
+        "R4 last commit owner"
+    );
+    assert!(
+        updated
+            .runs
+            .iter()
+            .all(|run| run.state == RunState::Running),
+        "R4 latest states"
+    );
+    assert!(
+        updated.resume_tickets.is_empty(),
+        "R5 prior wait is consumed"
+    );
+    assert_eq!(
+        updated.claimed_run_id, claimed_run,
+        "R5 exact claim stays fixed"
+    );
+    assert_eq!(
+        updated.next_commit_ordinal, 1,
+        "R5 ordinal belongs to claimed Run"
+    );
+    assert_eq!(updated.thread_version, 3);
+    assert_eq!(updated.store_cursor, 4);
 }
 
 /// Operation receipts make an ambiguous acknowledgement retry exactly-once at

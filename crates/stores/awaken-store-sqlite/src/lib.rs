@@ -44,7 +44,7 @@ use awaken_agent_contract::thread::read::lifecycle::{
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
-    decode_resume_ticket_json_for_owner,
+    decode_resume_ticket_json_for_owner, project_committed_run_records,
 };
 use awaken_store_schema::StoredU64;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -524,9 +524,7 @@ fn read_recovery_snapshot(
         )
         .map_err(recovery_reject)?;
 
-    let mut runs = Vec::<RunRecord>::new();
-    let mut latest_run_id = None;
-    {
+    let (runs, latest_run_id) = {
         let mut statement = tx
             .prepare(&format!(
                 "SELECT run_id, phase FROM {NS}_commit \
@@ -538,23 +536,15 @@ fn read_recovery_snapshot(
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(recovery_reject)?;
-        for row in rows {
-            let (run_id, state) = row.map_err(recovery_reject)?;
-            let run_id = RunId(run_id);
-            let state = serde_json::from_str::<RunState>(&state).map_err(recovery_reject)?;
-            let record = RunRecord {
-                id: run_id.clone(),
-                thread_id: thread_id.clone(),
-                state,
-            };
-            latest_run_id = Some(run_id.clone());
-            if let Some(existing) = runs.iter_mut().find(|existing| existing.id == run_id) {
-                *existing = record;
-            } else {
-                runs.push(record);
-            }
-        }
-    }
+        project_committed_run_records(
+            &thread_id,
+            rows.map(|row| {
+                let (run_id, state) = row.map_err(recovery_reject)?;
+                let state = serde_json::from_str::<RunState>(&state).map_err(recovery_reject)?;
+                Ok::<_, RecoveryError>((RunId(run_id), state))
+            }),
+        )?
+    };
 
     let (message_commit_cursors, messages) =
         read_thread_json_rows_with_commit::<Message>(&tx, "message", &thread_id)?;
