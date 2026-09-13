@@ -226,11 +226,6 @@ struct MemoryDeleteParams {
         deserialize_with = "crate::types::page::deserialize_optional_query_value"
     )]
     expected_content_sha256: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "crate::types::page::deserialize_optional_query_value"
-    )]
-    expected_version: Option<u64>,
 }
 
 impl MemoryStoreListParams {
@@ -253,29 +248,48 @@ struct MemoryCreateParams {
     path: String,
 }
 
+/// The official optimistic-concurrency precondition
+/// (`BetaManagedAgentsPrecondition`): the update applies only if the stored
+/// `content_sha256` equals the supplied value. The wire never carries the
+/// store's complete generation -- that is an internal CAS witness -- so the
+/// handler binds the supplied hash to the head it loaded and hands the store
+/// that head's complete generation. Replacing this shape with the internal one
+/// made every official SDK precondition a 400.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum MemoryPrecondition {
-    Generation {
-        memory_id: String,
-        version: u64,
-        content_sha256: String,
-    },
+    ContentSha256 { content_sha256: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreconditionRefusal {
+    /// Not 64 lowercase hexadecimal characters: never a hash this server minted.
+    Malformed,
+    /// A well-formed hash that is not the head's: the caller read stale state.
+    Stale,
 }
 
 impl MemoryPrecondition {
-    fn generation(&self) -> awaken_resource_contract::MemoryGeneration {
-        match self {
-            Self::Generation {
-                memory_id,
-                version,
-                content_sha256,
-            } => awaken_resource_contract::MemoryGeneration {
-                memory_id: memory_id.clone(),
-                version: *version,
-                content_sha256: content_sha256.clone(),
-            },
+    /// Bind the supplied hash to the loaded head. Cause/effect: C1 the hash is
+    /// well formed; C2 it equals the head's `content_sha256`. Effects: E1 the
+    /// head's complete generation becomes the CAS base; E2 `Stale`; E3
+    /// `Malformed`. Rules: C1+C2 -> E1; C1+!C2 -> E2; !C1 -> E3.
+    fn bind(
+        &self,
+        current: &awaken_resource_contract::Memory,
+    ) -> Result<awaken_resource_contract::MemoryGeneration, PreconditionRefusal> {
+        let Self::ContentSha256 { content_sha256 } = self;
+        if content_sha256.len() != 64
+            || !content_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(PreconditionRefusal::Malformed);
         }
+        if *content_sha256 != current.content_sha256 {
+            return Err(PreconditionRefusal::Stale);
+        }
+        Ok(current.generation())
     }
 }
 
@@ -884,7 +898,7 @@ async fn get_memory(
 }
 
 /// `POST|PATCH /v1/memory_stores/:id/memories/:mid` — update a memory's content (and/or
-/// path). A complete generation precondition that does not match the durable head is a
+/// path). A `content_sha256` precondition that does not match the durable head is a
 /// `409` (the SDK's `memory_precondition_failed_error`), enforced as a compare-and-
 /// swap in the store. Content, optional rename-replace, and history are one atomic
 /// aggregate operation and append one `modified` version for the updated memory.
@@ -910,18 +924,38 @@ async fn update_memory(
         Ok(None) | Err(MemErr::NotFound(_)) => return not_found("memory"),
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
-    // The CAS base: an explicit complete generation (stale -> conflict), else
-    // the live generation captured by this request.
-    let base = body
-        .precondition
-        .as_ref()
-        .map(MemoryPrecondition::generation)
-        .unwrap_or_else(|| current.generation());
     let new_content = body
         .content
         .flatten()
         .unwrap_or_else(|| current.content.clone().unwrap_or_default());
     let target_path = body.path.flatten();
+    // The CAS base is always the complete generation of the head this request
+    // loaded. A precondition decides whether that head is the one the caller
+    // read: a stale hash conflicts -- except when the stored state already
+    // equals the requested content and path, which the SDK contract answers
+    // with 200 -- and a malformed hash is refused before any write.
+    let base = match body.precondition.as_ref().map(|p| p.bind(&current)) {
+        None | Some(Ok(_)) => current.generation(),
+        Some(Err(PreconditionRefusal::Malformed)) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "precondition.content_sha256 must be 64 lowercase hexadecimal characters",
+            );
+        }
+        Some(Err(PreconditionRefusal::Stale)) => {
+            let same_content = current.content.as_deref().unwrap_or_default() == new_content;
+            let same_path = target_path
+                .as_deref()
+                .is_none_or(|path| path == current.path);
+            if same_content && same_path {
+                return match project_current_memory(&state, &current, &id, view).await {
+                    Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
+                    Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+                };
+            }
+            return memory_conflict();
+        }
+    };
 
     match state
         .memories
@@ -966,20 +1000,20 @@ async fn delete_memory(
     };
     let actor = actor.as_ref().map(|actor| &actor.0.0);
     let path = current.path.clone();
-    if query.expected_content_sha256.is_some() || query.expected_version.is_some() {
-        let (Some(expected_sha), Some(expected_version)) = (
-            query.expected_content_sha256.as_deref(),
-            query.expected_version,
-        ) else {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "expected_version and expected_content_sha256 must be supplied together",
-            );
-        };
-        let base = awaken_resource_contract::MemoryGeneration {
-            memory_id: mid.clone(),
-            version: expected_version,
-            content_sha256: expected_sha.into(),
+    // `expected_content_sha256` is the official conditional-delete query
+    // (`MemoryDeleteParams`); like the update precondition it binds to the
+    // head this request loaded, so the store still fences on that head's
+    // complete generation without the wire ever carrying a version.
+    if let Some(content_sha256) = query.expected_content_sha256.clone() {
+        let base = match (MemoryPrecondition::ContentSha256 { content_sha256 }).bind(&current) {
+            Ok(generation) => generation,
+            Err(PreconditionRefusal::Malformed) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "expected_content_sha256 must be 64 lowercase hexadecimal characters",
+                );
+            }
+            Err(PreconditionRefusal::Stale) => return memory_conflict(),
         };
         match state
             .memories

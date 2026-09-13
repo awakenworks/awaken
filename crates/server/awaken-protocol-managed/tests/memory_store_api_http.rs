@@ -607,8 +607,7 @@ async fn memory_crud_with_precondition_and_version_log() {
         "POST",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         Some(json!({ "content": "new", "precondition": {
-            "type":"generation", "memory_id": mid, "version": mem["generation"]["version"],
-            "content_sha256": "0".repeat(64)
+            "type":"content_sha256", "content_sha256": "0".repeat(64)
         } })),
     )
     .await
@@ -624,8 +623,7 @@ async fn memory_crud_with_precondition_and_version_log() {
         "PATCH",
         &format!("/v1/memory_stores/{store}/memories/{mid}?view=full"),
         Some(json!({ "content": "world", "precondition": {
-            "type":"generation", "memory_id": mid, "version": mem["generation"]["version"],
-            "content_sha256": sha
+            "type":"content_sha256", "content_sha256": sha
         } })),
     )
     .await
@@ -642,8 +640,7 @@ async fn memory_crud_with_precondition_and_version_log() {
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         Some(json!({
             "content": "world",
-            "precondition": { "type":"generation", "memory_id": mid,
-                "version": updated["generation"]["version"],
+            "precondition": { "type":"content_sha256",
                 "content_sha256": updated["content_sha256"] }
         })),
     )
@@ -651,6 +648,45 @@ async fn memory_crud_with_precondition_and_version_log() {
     .expect(StatusCode::OK);
     assert_eq!(updated_basic["content"], Value::Null, "R5");
     assert_eq!(updated_basic["memory_version_id"], updated_version_id);
+    // R6 the SDK contract: a stale precondition whose requested content and
+    // path already equal the stored state answers 200 without a new version;
+    // R7 a malformed hash is refused before any write; R8 the internal
+    // complete-generation witness is not a wire shape.
+    let stale_but_same = call(
+        &router,
+        "POST",
+        &format!("/v1/memory_stores/{store}/memories/{mid}"),
+        Some(json!({ "content": "world", "precondition": {
+            "type":"content_sha256", "content_sha256": "0".repeat(64)
+        } })),
+    )
+    .await
+    .expect_for(StatusCode::OK, "R6");
+    assert_eq!(
+        stale_but_same["memory_version_id"], updated_version_id,
+        "R6 no new version"
+    );
+    let _ = call(
+        &router,
+        "POST",
+        &format!("/v1/memory_stores/{store}/memories/{mid}"),
+        Some(json!({ "content": "other", "precondition": {
+            "type":"content_sha256", "content_sha256": "not-a-hash"
+        } })),
+    )
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "R7");
+    let _ = call(
+        &router,
+        "POST",
+        &format!("/v1/memory_stores/{store}/memories/{mid}"),
+        Some(json!({ "content": "other", "precondition": {
+            "type":"generation", "memory_id": mid, "version": 1,
+            "content_sha256": updated["content_sha256"]
+        } })),
+    )
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "R8");
 
     // Metamorphic list/read rule: changing the head content changes updated
     // state only. Both views must be projected from one frozen head generation;
@@ -857,12 +893,13 @@ async fn memory_crud_with_precondition_and_version_log() {
         &router,
         "DELETE",
         &format!(
-            "/v1/memory_stores/{store}/memories/{mid}?expected_version={}&expected_content_sha256={}",
-            updated["generation"]["version"], "0".repeat(64)
+            "/v1/memory_stores/{store}/memories/{mid}?expected_content_sha256={}",
+            "0".repeat(64)
         ),
         None,
     )
-    .await.expect_for(StatusCode::CONFLICT, "expected status");
+    .await
+    .expect_for(StatusCode::CONFLICT, "expected status");
     assert_eq!(
         stale_delete["error"]["type"],
         "memory_precondition_failed_error"
@@ -886,18 +923,28 @@ async fn memory_crud_with_precondition_and_version_log() {
     .expect(StatusCode::OK);
     assert_eq!(versions_after_stale["data"].as_array().unwrap().len(), 2);
 
+    // A malformed hash is refused before any write; the internal version
+    // witness is not a wire parameter.
+    let _ = call(
+        &router,
+        "DELETE",
+        &format!("/v1/memory_stores/{store}/memories/{mid}?expected_content_sha256=not-a-hash"),
+        None,
+    )
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "malformed hash");
     // Matching delete → receipt + exactly one `deleted` version row.
     let receipt = call(
         &router,
         "DELETE",
         &format!(
-            "/v1/memory_stores/{store}/memories/{mid}?expected_version={}&expected_content_sha256={}",
-            updated["generation"]["version"],
+            "/v1/memory_stores/{store}/memories/{mid}?expected_content_sha256={}",
             updated["content_sha256"].as_str().unwrap()
         ),
         None,
     )
-    .await.expect(StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(receipt["type"], "memory_deleted");
     // The head is gone: retrieve by id is now 404. One request answers both
     // the status and the diagnostic; the second identical GET only existed
