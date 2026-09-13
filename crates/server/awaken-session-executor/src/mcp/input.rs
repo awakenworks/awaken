@@ -29,6 +29,15 @@ fn operation_id(session: &str, server: &str, method: &str, event: &str) -> Strin
     )
 }
 
+fn notification_generation_matches(bound: &McpGenerationRef, current: &McpGenerationRef) -> bool {
+    // The canonical realization owner may extend the same lease without
+    // reconnecting this stream. Only the proved monotonic expiry can differ;
+    // every identity/content/version/owner coordinate remains exact.
+    let mut renewed = bound.clone();
+    renewed.lease_expires_at_unix_ms = current.lease_expires_at_unix_ms;
+    current == &renewed && current.lease_expires_at_unix_ms >= bound.lease_expires_at_unix_ms
+}
+
 #[async_trait::async_trait]
 impl McpNotificationHandler for SessionMcpInput {
     async fn receive(&self, method: &str, params: Value) {
@@ -44,11 +53,15 @@ impl McpNotificationHandler for SessionMcpInput {
         // The recipient is frozen by the exact connection owner, never chosen
         // by the notification payload. Existing root authority and transport
         // drain fences both apply to this incoming effect.
-        if host.mcp_generation_root_authority(&self.generation) != Some(true)
-            || !host
-                .mcp_projection(&self.generation)
-                .is_some_and(|p| p.state == crate::session_slot::McpProjectionState::Active)
-        {
+        let admitted = host
+            .active_mcp_projections(&self.generation.session_id)
+            .iter()
+            .any(|projection| {
+                let current = &projection.request.generation;
+                notification_generation_matches(&self.generation, current)
+                    && host.mcp_generation_root_authority(current) == Some(true)
+            });
+        if !admitted {
             return;
         }
         let (event_id, text) = match input {
@@ -205,6 +218,54 @@ fn validate_input_placement(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_subscription_survives_only_same_owner_monotonic_renewal() {
+        // L1 identical/longer same-epoch lease -> retain the input stream;
+        // L2 shorter lease, L3 different Session, L4 owner/epoch changed,
+        // L5 content/version/attachment changed -> reject. Root liveness is
+        // independently checked at delivery, never inferred from this match.
+        use awaken_session_contract::{McpAttachmentId, McpGeneration, McpTarget};
+        let generation = |name: &str, version: u64, url: &str| {
+            McpGeneration::of_bare_target(
+                McpAttachmentId(name.into()),
+                version,
+                &McpTarget::parse_http(url).unwrap(),
+            )
+        };
+        let bound = McpGenerationRef {
+            session_id: "s1".into(),
+            generation: generation("phone", 1, "https://phone.test/mcp"),
+            runtime_incarnation: "worker-1".into(),
+            lease_epoch: 1,
+            lease_expires_at_unix_ms: 100,
+        };
+        assert!(notification_generation_matches(&bound, &bound));
+        let mut current = bound.clone();
+        current.lease_expires_at_unix_ms = 200;
+        assert!(notification_generation_matches(&bound, &current));
+        let mut bad = current.clone();
+        bad.lease_expires_at_unix_ms = 99;
+        assert!(!notification_generation_matches(&bound, &bad));
+        let mut bad = current.clone();
+        bad.session_id = "s2".into();
+        assert!(!notification_generation_matches(&bound, &bad));
+        let mut bad = current.clone();
+        bad.runtime_incarnation = "worker-2".into();
+        assert!(!notification_generation_matches(&bound, &bad));
+        let mut bad = current.clone();
+        bad.lease_epoch = 2;
+        assert!(!notification_generation_matches(&bound, &bad));
+        for changed in [
+            generation("phone", 2, "https://phone.test/mcp"),
+            generation("other", 1, "https://phone.test/mcp"),
+            generation("phone", 1, "https://other.test/mcp"),
+        ] {
+            let mut bad = current.clone();
+            bad.generation = changed;
+            assert!(!notification_generation_matches(&bound, &bad));
+        }
+    }
 
     #[test]
     fn notification_placement_rejects_inert_opaque_and_remote_configuration() {

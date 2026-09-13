@@ -659,6 +659,11 @@ async fn zhike_live_deepseek_mcp_sales() {
     // Z3 same platform/provider fixture as Z1, but a real model chooses tools
     // and conversational replies. Credentials are supplied only to the model
     // adapter; no request, trace or failure assertion prints their value.
+    let (executor, model) = deepseek_executor();
+    sales_scenario(executor, &model, false).await;
+}
+
+fn deepseek_executor() -> (Arc<dyn LlmExecutor>, String) {
     let key = std::env::var("DEEPSEEK_API_KEY").expect("explicit DeepSeek configuration required");
     let model = std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let executor = awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint(
@@ -668,5 +673,5 @@ async fn zhike_live_deepseek_mcp_sales() {
         key,
     )
     .unwrap();
-    sales_scenario(Arc::new(executor), &model, false).await;
+    (Arc::new(executor), model)
 }

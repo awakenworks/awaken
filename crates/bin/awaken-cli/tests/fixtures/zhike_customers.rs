@@ -4,6 +4,11 @@ use super::*;
 use awaken_runtime_contract::llm::ChatMessage;
 use awaken_runtime_contract::{ContentBlock, Role};
 
+#[path = "zhike_grounding.rs"]
+mod grounding;
+
+pub(super) use grounding::check_grounding;
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum CustomerCase {
     RefusesContact,
@@ -295,10 +300,8 @@ macro_rules! live_case {
         #[tokio::test(flavor="multi_thread",worker_threads=2)]
         #[ignore="requires explicit DeepSeek; sales Agent runs in Awaken, customer LLM is only the external Provider simulator"]
         async fn $name() {
-            let key=std::env::var("DEEPSEEK_API_KEY").expect("explicit DeepSeek configuration required");
-            let model=std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_|"deepseek-v4-flash".into());
-            let executor=awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint("deepseek",awaken_provider_genai::AdapterKind::OpenAI,"https://api.deepseek.com/v1",key).unwrap();
-            scenario(Arc::new(executor), &model, None, Some(CustomerCase::$case)).await;
+            let (executor, model) = deepseek_executor();
+            scenario(executor, &model, None, Some(CustomerCase::$case)).await;
         }
     };
 }
