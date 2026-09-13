@@ -334,6 +334,35 @@ async fn realization_configuration_covers_every_immutable_kubernetes_input() {
         changed.realization_configuration().unwrap(),
         "E2"
     );
+    // V1 historical emptyDir -> enabled PVC reproduces the independently
+    // identified Classroom drift. V2 size/class changes must remain distinct;
+    // V3 replay of each exact policy is stable. Only continuation_volume may
+    // differ: changing several knobs together would mask an omitted field.
+    // This proves configuration identity, NOT terminal deletion authority.
+    let baseline = base.realization_configuration().unwrap();
+    assert_eq!(baseline["continuation_volume"], "none");
+    let mut identities = std::collections::BTreeSet::new();
+    for (class, size) in [
+        (Some("local-path"), "1Gi"),
+        (Some("local-path"), "2Gi"),
+        (None, "1Gi"),
+    ] {
+        let configuration = || {
+            K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+                .with_continuation_volume(crate::K8sContinuationVolume {
+                    storage_class_name: class.map(str::to_owned),
+                    size: size.into(),
+                })
+                .realization_configuration()
+                .unwrap()
+        };
+        let mut current = configuration();
+        assert_eq!(current, configuration(), "V3 exact replay");
+        let volume = current.remove("continuation_volume").unwrap();
+        assert!(identities.insert(volume), "V1/V2 distinct volume policy");
+        current.insert("continuation_volume".into(), "none".into());
+        assert_eq!(current, baseline, "V1/V2 no unrelated configuration drift");
+    }
 }
 
 #[test]
