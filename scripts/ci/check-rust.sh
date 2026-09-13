@@ -91,6 +91,8 @@ step "authority-arithmetic" "replace lossy or saturating authority arithmetic wi
   python3 scripts/ci/check_authority_arithmetic.py
 step "crate-boundaries" "remove the illegal dependency shown above (a lower layer must not import a higher one)" \
   python3 scripts/ci/check_crate_boundaries.py
+step "feature-matrix" "add the crate to [workspace.members] or register the feature's substitute verifier" \
+  python3 scripts/ci/check_feature_matrix.py
 
 # The sole Rust gate runs toolchain-independent checks even without Cargo.
 # A missing toolchain still fails; it cannot suppress the static evidence or
@@ -182,6 +184,15 @@ case "$mode" in
       # a test run: the workspace suite stays in --full.
       step "clippy" "review the errors above; auto-fixable lints: cargo clippy --fix --all-targets --allow-dirty" \
         cargo clippy --workspace --all-targets --features "$workspace_features" "${locked[@]}" -- -D warnings
+      # P3 an optional feature is declared but no gate compiles it -> a
+      # renamed trait method, a deleted port or a builder added to one tier and
+      # not its sibling rots behind the feature wall and reaches main; worse, a
+      # crate that fails to compile stops its dependents from compiling, so one
+      # such rot hides the next. Compiling the maximal graph here makes
+      # "declared but never compiled" impossible. Compile only: these tiers need
+      # a live daemon to run, which their own integration gates provide.
+      step "all-features" "fix the compile errors above; every declared feature must compile" \
+        cargo check --workspace --all-features --all-targets "${locked[@]}"
       step "formal-coverage" "register the harness in scripts/ci/check_formal.sh or fix formal/coverage.json as shown above" \
         python3 scripts/ci/check_formal_coverage.py
       # The formal-evidence pre-commit hook now triggers on every production
@@ -199,6 +210,10 @@ case "$mode" in
     # artifact tree preserves Cargo's sibling layout for either C1 value.
     export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
     workspace_features+=",awaken-sandbox/hand"
+    # The full run's own feature set is still a subset of what the workspace
+    # declares, so it compiles the maximal graph for the same reason --push does.
+    step "all-features" "fix the compile errors above; every declared feature must compile" \
+      cargo check --workspace --all-features --all-targets "${locked[@]}"
     if step "clippy" "review the errors above; auto-fixable lints: cargo clippy --fix --all-targets --allow-dirty" \
       cargo clippy --workspace --all-targets --features "$workspace_features" "${locked[@]}" -- -D warnings; then
       # Scenario/Coordinator integration uses the real release Hand companion.
