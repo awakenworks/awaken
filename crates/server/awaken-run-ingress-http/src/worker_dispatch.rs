@@ -872,7 +872,7 @@ async fn recovery_snapshot(
             .lock_commit_epoch(&request.claim)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
-            .ok_or_else(|| HostError::bad_request("run claim is stale"))?;
+            .ok_or_else(|| HostError::conflict("run claim is stale"))?;
         let dispatch = guard.request();
         if dispatch.run_id() != &request.claim.run_id {
             return Err(HostError::bad_request(

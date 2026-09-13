@@ -1133,6 +1133,14 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     };
     let settled = match settled {
         Ok(settled) => settled,
+        Err(error) if error.is_dispatch_conflict() => {
+            // A precise transport/store conflict proves this claim has already
+            // been fenced by another immutable identity. It is not a shared
+            // outage and must never close the pool-wide error gate.
+            relinquish_after_claim_failure(store.as_ref(), &claim).await;
+            tracing::debug!(run_id = %claim.run_id.0, %error, "stale dispatch claim was fenced");
+            return Ok(true);
+        }
         Err(error) if error.is_settlement_observation_pending() => {
             // The Run has already committed terminal truth. Only this
             // Dispatch's Session projection is not yet observable, so give it

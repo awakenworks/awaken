@@ -297,6 +297,30 @@ impl Error {
     pub fn is_settlement_observation_pending(&self) -> bool {
         matches!(self, Self::SettlementObservationPending(_))
     }
+
+    #[must_use]
+    pub fn is_dispatch_conflict(&self) -> bool {
+        matches!(self, Self::Dispatch(dispatch::DispatchError::Conflict(_)))
+    }
+}
+
+#[cfg(test)]
+mod error_scope_tests {
+    use super::{DispatchError, Error};
+
+    #[test]
+    fn only_an_exact_dispatch_conflict_is_a_benign_fence() {
+        /* Causes: C1 transport/store reports Conflict; C2 it reports Rejected
+         * or Unavailable; C3 Session settlement is locally pending. Effects:
+         * E1 C1 may be absorbed as an already-fenced claim; E2 C2 retains the
+         * ordinary fault path; E3 C3 uses request-local deferral. */
+        assert!(Error::Dispatch(DispatchError::Conflict("stale".into())).is_dispatch_conflict());
+        assert!(!Error::Dispatch(DispatchError::Rejected("invalid".into())).is_dispatch_conflict());
+        assert!(
+            !Error::Dispatch(DispatchError::Unavailable("store".into())).is_dispatch_conflict()
+        );
+        assert!(!Error::SettlementObservationPending("pending".into()).is_dispatch_conflict());
+    }
 }
 
 /// Shared policy adapter used by every durable backend. Eligibility and
