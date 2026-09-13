@@ -22,13 +22,15 @@ use crate::resolved::{ModelBinding, ToolDescriptor};
 /// model response. Reasoning-capable models may spend minutes before their first
 /// public token or typed tool call, so this is deliberately independent from a
 /// transport-idle detector.
-pub const DEFAULT_MODEL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+pub const DEFAULT_MODEL_RESPONSE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(20 * 60);
 
 /// Runtime watchdog around the complete [`LlmExecutor`] attempt. It is a last
 /// resort for an executor that fails to enforce its own response deadline, and
 /// therefore must outlive [`DEFAULT_MODEL_RESPONSE_TIMEOUT`] so the provider's
 /// typed observation reaches Runtime first. Neither deadline proves remote termination.
-pub const DEFAULT_MODEL_ATTEMPT_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(630);
+pub const DEFAULT_MODEL_ATTEMPT_WATCHDOG: std::time::Duration =
+    std::time::Duration::from_secs(20 * 60 + 30);
 
 const _: () =
     assert!(DEFAULT_MODEL_ATTEMPT_WATCHDOG.as_secs() > DEFAULT_MODEL_RESPONSE_TIMEOUT.as_secs());
@@ -41,11 +43,21 @@ mod inference_deadline_contract_tests {
     fn provider_deadline_precedes_the_runtime_watchdog() {
         // Deadline cause/effect table. Causes: C1 a provider terminates before
         // its response deadline; C2 it reaches its own deadline; C3 an executor
-        // ignores every provider deadline and remains pending. Effects: E1 the
+        // ignores every provider deadline and remains pending; C4 a large,
+        // progressing tool response crosses ten minutes but completes inside
+        // twenty. Effects: E1 the
         // provider result/error reaches Runtime unchanged; E2 only C3 is cut off
         // by the outer watchdog. Rules D1=(C1|C2)=>E1 because response timeout <
-        // watchdog; D2=C3=>E2. Invariant: an outer watchdog must never preempt
+        // watchdog; D2=C3=>E2; D3=C4=>E1. Invariant: an outer watchdog must never preempt
         // the canonical provider observation boundary under default composition.
+        assert_eq!(
+            DEFAULT_MODEL_RESPONSE_TIMEOUT,
+            std::time::Duration::from_secs(20 * 60)
+        );
+        assert_eq!(
+            DEFAULT_MODEL_ATTEMPT_WATCHDOG - DEFAULT_MODEL_RESPONSE_TIMEOUT,
+            std::time::Duration::from_secs(30)
+        );
         assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
     }
 }
