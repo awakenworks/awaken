@@ -141,7 +141,24 @@ impl SharedHost {
             ),
             OutcomeCommand::Resume | OutcomeCommand::Read { .. } => None,
         };
-        let ctx = self.ctx_for(thread, None).await?;
+        // A frozen Worker placement makes the Coordinator a scheduler/reader,
+        // even after the Worker publishes a durable Environment binding. Reuse
+        // the canonical coordination envelope instead of trying to adopt that
+        // physical Environment on every Outcome projection read.
+        let worker_placement = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.baseline.as_ref().is_some_and(|baseline| {
+                    baseline.runtime_placement
+                        == awaken_session_contract::SessionRuntimePlacement::Worker
+                })
+            })
+            .unwrap_or(false);
+        let ctx = if worker_placement {
+            self.ctx_for_session_coordination(thread, None).await?
+        } else {
+            self.ctx_for(thread, None).await?
+        };
         let binding = outcome_binding(&ctx.config, self.judge_snapshot.as_ref());
         let host_grader = HostAgentGrader {
             host: self,

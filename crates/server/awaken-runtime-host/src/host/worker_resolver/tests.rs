@@ -2873,3 +2873,46 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         .expect("later Session use preserves frozen baseline");
     }
 }
+
+#[tokio::test]
+async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
+    // Causes: frozen placement is Worker and its durable Environment is Resident,
+    // but this cold Coordinator has no local owner. Effects: prepare/read reuse
+    // coordination context and committed Outcome truth without physical adoption;
+    // a pure read creates no model call or replacement Environment.
+    let thread = "outcome-coordinator-read";
+    let activation = test_activation(thread, "outcome-source");
+    let mut projection = empty_frozen_projection_for_snapshot(
+        "workspace",
+        eager_environment(),
+        &activation.snapshot,
+    );
+    projection.baseline.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "opaque-worker-owned-environment".into(),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let managed = managed_test_host(host.clone());
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        thread,
+        projection,
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .unwrap();
+    host.prepare_outcome(thread, "outcome-a", "finish", "done", 1)
+        .await
+        .expect("prepare uses no local Environment");
+    assert!(
+        host.committed_outcome_projection(thread, "outcome-a")
+            .await
+            .expect("read remote-owned outcome")
+            .is_none()
+    );
+    assert!(host.session_environment(thread).await.is_none());
+}
