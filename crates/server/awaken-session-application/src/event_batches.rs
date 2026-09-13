@@ -852,7 +852,7 @@ impl SessionApplication {
                     return Ok(progress);
                 }
                 if self
-                    .another_root_run_blocks_user(&session.session_id, &run_id)
+                    .reconcile_blocking_root_run(&session.session_id, &run_id)
                     .await?
                 {
                     return Ok(EventBatchProgress::Pending);
@@ -1344,7 +1344,7 @@ impl SessionApplication {
         Ok(())
     }
 
-    async fn another_root_run_blocks_user(
+    async fn reconcile_blocking_root_run(
         &self,
         session_id: &str,
         target_run_id: &awaken_agent_contract::agent::run::Id,
@@ -1369,6 +1369,35 @@ impl SessionApplication {
             .ok_or_else(|| {
                 RunError::internal("root Thread recovery omitted its latest Run state")
             })?;
+        if latest.state == RunState::Awaiting {
+            // The queued input is already a durable recovery trigger. Reuse
+            // its exact predecessor interval/Dispatch receipt instead of a
+            // second repair queue or synthetic tool acknowledgement.
+            let root = self
+                .session(session_id)
+                .await
+                .map_err(|error| RunError::unavailable(error.to_string()))?;
+            if root.execution == awaken_session_contract::SessionExecutionState::Running
+                && root.active_activity_epochs.is_empty()
+                && let Some(observation) = root.running_interval.as_ref().and_then(|interval| {
+                    interval.observations.iter().find(|observation| {
+                        observation.activity_epoch == root.activity_epoch
+                            && observation.run_id == latest.id
+                            && observation.thread_id.0 == session_id
+                    })
+                })
+            {
+                self.settle_user_event_dispatch_observed(
+                    session_id,
+                    root.activity_epoch,
+                    observation.clone(),
+                    &latest.id,
+                    awaken_session_contract::SessionAgentRunBoundary::Awaiting,
+                )
+                .await
+                .map_err(crate::SessionActivityError::run_error)?;
+            }
+        }
         Ok(matches!(
             latest.state,
             RunState::Running | RunState::Awaiting

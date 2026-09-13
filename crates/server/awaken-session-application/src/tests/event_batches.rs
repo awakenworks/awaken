@@ -584,6 +584,10 @@ async fn finalize_applied_user_dispatch(
     // removes that Run's exact activity and publishes processed. Tests that do
     // not call this helper intentionally model the pre-Dispatch window.
     let activity_epoch = runtime.activity_epoch(run_id);
+    let boundary = awaken_session_contract::session_agent_run_boundary(
+        &runtime.states.lock().unwrap()[&run_id.0],
+    )
+    .unwrap();
     app.settle_user_event_dispatch_observed(
         session_id,
         activity_epoch,
@@ -595,6 +599,7 @@ async fn finalize_applied_user_dispatch(
             source_commit_cursor: 1,
         },
         run_id,
+        boundary,
     )
     .await
     .expect("simulated applied Dispatch finalizes the User Event");
@@ -1883,6 +1888,7 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 session
                     .settle_user_event_dispatch(
                         &first_run,
+                        awaken_session_contract::SessionAgentRunBoundary::Completed,
                         epoch,
                         SessionEventProjectionAnchor {
                             source_commit_cursor: 11
@@ -4809,6 +4815,143 @@ fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart() {
     );
 }
 
+#[test]
+fn queued_user_before_awaiting_boundary_must_not_hide_required_tool_action() {
+    run_composed_async_test(queued_user_before_awaiting_boundary_case);
+}
+
+async fn queued_user_before_awaiting_boundary_case() {
+    for legacy in [false, true] {
+        queued_input_before_awaiting_boundary(false, legacy).await;
+        queued_input_before_awaiting_boundary(true, legacy).await;
+    }
+}
+
+async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) {
+    // Live Classroom regression: C1 first User is executing; C2 a later User
+    // is accepted BEFORE first Awaiting settlement; C3 first Dispatch settles;
+    // C4 a cold supervisor reconciles the same root. Effects: E1 first input
+    // processed with no active epoch; E2 later User unprocessed/unreserved;
+    // E3 Session Idle exposes the exact required action instead of withholding
+    // it until that blocked later User executes. Rule AQ1 C1+C2+C3+C4=>E1-E3.
+    // C5 later User carries/does not carry its paired System input; both remain
+    // unprocessed together. A System after a ToolReply is not this partition.
+    // The existing outcome-crosses-awaiting test covers the opposite order
+    // (C2 AFTER C3); both orders must retain the same actionability and queue.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("AQ1 repository"),
+    );
+    let id = "queued-before-awaiting";
+    create(repository.as_ref(), persisted(id, false, "idle")).await;
+    let runtime = Arc::new(EventBatchRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    for (key, content) in [("first", "first"), ("later", "queued")] {
+        let mut inputs = vec![SessionEventInput::UserMessage {
+            content: vec![ContentBlock::text(content)],
+        }];
+        if key == "later" && with_system {
+            inputs.push(SessionEventInput::SystemMessage {
+                content: vec![ContentBlock::text("paired later context")],
+            });
+        }
+        app.append_session_event_batch(id, inputs, Some(key.into()), None)
+            .await
+            .expect("AQ1 append");
+        assert!(app.reconcile_event_batches().await.failures.is_empty());
+    }
+    let run = runtime
+        .latest_run
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("AQ1 first Run");
+    assert_eq!(
+        runtime.reserved.lock().unwrap().len(),
+        1,
+        "AQ1 later stays queued"
+    );
+    runtime.await_run(&run);
+    if legacy {
+        // AQ2 reproduces the old policy (no Awaiting-specific closure) through
+        // its conservative Completed branch, then reopens the SQLite-backed
+        // application against the real fixture's Awaiting Run. The exact
+        // Dispatch receipt/interval remain durable; no SQL repair is used.
+        let epoch = runtime.activity_epoch(&run);
+        app.settle_user_event_dispatch_observed(
+            id,
+            epoch,
+            awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: epoch,
+                thread_id: ThreadId(id.into()),
+                run_id: run.clone(),
+                lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(epoch),
+                source_commit_cursor: 1,
+            },
+            &run,
+            awaken_session_contract::SessionAgentRunBoundary::Completed,
+        )
+        .await
+        .expect("AQ2 old conservative settlement");
+        assert_eq!(
+            repository.get(id).await.unwrap().execution,
+            awaken_session_contract::SessionExecutionState::Running,
+            "AQ2 stranded legacy shape"
+        );
+    } else {
+        finalize_applied_user_dispatch(&app, &runtime, id, &run).await;
+    }
+    let cold = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert!(cold.reconcile_event_batches().await.failures.is_empty());
+    let root = repository.get(id).await.expect("AQ1 durable root");
+    assert!(root.event_batches[0].events[0].processed, "AQ1/E1");
+    assert!(root.active_activity_epochs.is_empty(), "AQ1/E1");
+    assert!(!root.event_batches[1].events[0].processed, "AQ1/E2");
+    assert!(
+        root.event_batches[1]
+            .events
+            .iter()
+            .all(|entry| !entry.processed),
+        "AQ1/E2 paired System stays queued"
+    );
+    assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "AQ1/E2");
+    assert_eq!(
+        root.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "AQ1/E3 queued successor cannot hide the first Run's required action"
+    );
+    // AQ3 exact repeated recovery is a complete root stutter; AQ4 a later
+    // active epoch must survive an old callback. Compare the whole serialized
+    // aggregate, not merely status, so receipts and timestamps cannot drift.
+    let stable = serde_json::to_value(&root).unwrap();
+    assert!(cold.reconcile_event_batches().await.failures.is_empty());
+    assert_eq!(
+        serde_json::to_value(repository.get(id).await.unwrap()).unwrap(),
+        stable,
+        "AQ3"
+    );
+    let (_, newer_epoch) = cold
+        .begin_activity_for_operation(id, "newer-execution")
+        .await
+        .unwrap();
+    assert!(newer_epoch > runtime.activity_epoch(&run));
+    let newer = serde_json::to_value(repository.get(id).await.unwrap()).unwrap();
+    finalize_applied_user_dispatch(&cold, &runtime, id, &run).await;
+    assert_eq!(
+        serde_json::to_value(repository.get(id).await.unwrap()).unwrap(),
+        newer,
+        "AQ4 old callback cannot close a newer activity"
+    );
+}
+
 async fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart_case() {
     // Eligibility/recovery decision table. C1 first User is Running/Awaiting;
     // C2 a later batch contains User then DefineOutcome; C3 one/two restarted
@@ -5262,6 +5405,11 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
         }
         let mut previous = None;
         for cursor in [2, 3] {
+            let boundary = if cursor == 2 {
+                awaken_session_contract::SessionAgentRunBoundary::Awaiting
+            } else {
+                awaken_session_contract::SessionAgentRunBoundary::Completed
+            };
             // Recreate the stateless application to exercise persisted receipts.
             let cold = application_with_runtime(
                 runtime.clone(),
@@ -5280,7 +5428,7 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
                 source_commit_cursor: cursor,
             };
             let root = cold
-                .settle_user_event_dispatch_observed(id, epoch, observation.clone(), &run)
+                .settle_user_event_dispatch_observed(id, epoch, observation.clone(), &run, boundary)
                 .await
                 .unwrap();
             assert_eq!(
@@ -5294,13 +5442,25 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
             );
             assert_eq!(published(&root), original, "R3");
             let bytes = serde_json::to_value(&root).unwrap();
-            cold.settle_user_event_dispatch_observed(id, epoch, observation.clone(), &run)
+            cold.settle_user_event_dispatch_observed(
+                id,
+                epoch,
+                observation.clone(),
+                &run,
+                boundary,
+            )
+            .await
+            .unwrap();
+            if let Some((old_epoch, old_observation)) = previous {
+                cold.settle_user_event_dispatch_observed(
+                    id,
+                    old_epoch,
+                    old_observation,
+                    &run,
+                    boundary,
+                )
                 .await
                 .unwrap();
-            if let Some((old_epoch, old_observation)) = previous {
-                cold.settle_user_event_dispatch_observed(id, old_epoch, old_observation, &run)
-                    .await
-                    .unwrap();
             }
             assert_eq!(
                 serde_json::to_value(repository.get(id).await.unwrap()).unwrap(),

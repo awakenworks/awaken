@@ -11,7 +11,7 @@ use crate::event_batches::{
 pub enum SessionEventDispatchSettlementEffect {
     NotEvent,
     Applied { fully_settled: bool },
-    Replayed,
+    Replayed { fully_settled: bool },
 }
 
 /// A terminal aggregate admits an already-started Environment receipt only
@@ -358,6 +358,7 @@ impl PersistedSession {
     pub fn settle_user_event_dispatch(
         &mut self,
         run_id: &awaken_agent_contract::agent::run::Id,
+        boundary: crate::SessionAgentRunBoundary,
         expected_epoch: u64,
         projection_anchor: SessionEventProjectionAnchor,
         processed_at_unix_ms: u64,
@@ -380,26 +381,69 @@ impl PersistedSession {
             receipt,
             processed_at_unix_ms,
         )?;
+        let all_events_processed = self
+            .event_batches
+            .iter()
+            .all(SessionEventBatch::is_complete);
+        // Awaiting blocks later ordinary User Runs in Dispatch. Their
+        // unprocessed admission is not physical activity and must not
+        // hide the action needed to unblock the predecessor. Other
+        // pending command kinds retain the existing reconciliation gate.
+        let only_blocked_users = boundary == crate::SessionAgentRunBoundary::Awaiting
+            && self.event_batches.iter().all(|batch| {
+                batch.events.iter().enumerate().all(|(index, entry)| {
+                    entry.processed
+                        || match &entry.event {
+                            crate::SessionEventCommand::UserMessage { .. } => true,
+                            crate::SessionEventCommand::SystemMessage { .. } => index
+                                .checked_sub(1)
+                                .and_then(|previous| batch.events.get(previous))
+                                .is_some_and(|previous| {
+                                    !previous.processed
+                                        && matches!(
+                                            previous.event,
+                                            crate::SessionEventCommand::UserMessage { .. }
+                                        )
+                                }),
+                            _ => false,
+                        }
+                })
+            });
+        let inputs_allow_idle = all_events_processed || only_blocked_users;
         match plan {
             SessionEventDispatchSettlementPlan::Apply => {
                 let last_active = self
                     .settle_activity_epoch(expected_epoch)
                     .ok_or(SessionEventBatchError::ProgressMismatch)?;
-                let all_events_processed = self
-                    .event_batches
-                    .iter()
-                    .all(SessionEventBatch::is_complete);
                 Ok(SessionEventDispatchSettlementEffect::Applied {
                     fully_settled: session_event_execution_may_close(
                         plan,
                         true,
                         last_active,
-                        all_events_processed,
+                        inputs_allow_idle,
                     ),
                 })
             }
             SessionEventDispatchSettlementPlan::Replay => {
-                Ok(SessionEventDispatchSettlementEffect::Replayed)
+                // Old binaries could persist an exact settled Awaiting receipt
+                // but retain Running because a later User was queued. Recheck
+                // only that same interval/epoch; never retire a newer activity.
+                Ok(SessionEventDispatchSettlementEffect::Replayed {
+                    fully_settled: boundary == crate::SessionAgentRunBoundary::Awaiting
+                        && inputs_allow_idle
+                        && self.active_activity_epochs.is_empty()
+                        && self.activity_epoch == expected_epoch
+                        && self.execution == SessionExecutionState::Running
+                        && self.running_interval.as_ref().is_some_and(|interval| {
+                            interval.observations.iter().any(|observation| {
+                                observation.activity_epoch == expected_epoch
+                                    && observation.run_id == *run_id
+                                    && observation.thread_id.0 == self.session_id
+                                    && observation.source_commit_cursor
+                                        == projection_anchor.source_commit_cursor
+                            })
+                        }),
+                })
             }
             SessionEventDispatchSettlementPlan::Reject => {
                 Err(SessionEventBatchError::ProgressMismatch)

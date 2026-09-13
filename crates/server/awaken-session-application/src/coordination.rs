@@ -870,7 +870,7 @@ impl SessionAgentCoordination for SessionApplication {
         if !retained {
             return Ok(());
         }
-        let (_, _, observation) = self.committed_agent_boundary(&command).await?;
+        let (_, state, observation) = self.committed_agent_boundary(&command).await?;
         let observation = observation.ok_or_else(|| {
             self.wake_lifecycle_supervisor();
             RunError::unavailable(
@@ -882,6 +882,8 @@ impl SessionAgentCoordination for SessionApplication {
             command.session_activity_epoch,
             observation,
             &command.source_run_id,
+            session_agent_run_boundary(&state)
+                .ok_or_else(|| RunError::bad_request("invalid committed settlement boundary"))?,
         )
         .await
         .map_err(crate::SessionActivityError::run_error)?;
