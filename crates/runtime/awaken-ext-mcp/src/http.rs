@@ -271,8 +271,7 @@ impl HttpShared {
         let mut parser = SseParser::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| McpTransportError::TransportError(e.to_string()))?;
-            let text = String::from_utf8_lossy(&chunk);
-            for data in parser.push(&text) {
+            for data in parser.push_bytes(&chunk) {
                 if let Some(result) = self.route_sse_data(&data, id).await {
                     return result.map(Some);
                 }
@@ -600,8 +599,7 @@ async fn listen(shared: Arc<HttpShared>) {
                 let mut stream = response.bytes_stream();
                 let mut parser = SseParser::new();
                 while let Some(Ok(chunk)) = stream.next().await {
-                    let text = String::from_utf8_lossy(&chunk);
-                    dispatch_sse_events(&shared, parser.push(&text)).await;
+                    dispatch_sse_events(&shared, parser.push_bytes(&chunk)).await;
                 }
                 // The peer may close immediately after a complete data line.
                 // Route that final event through the same request-id demux as
@@ -665,6 +663,14 @@ fn extract_result(value: Value) -> Result<Value, McpTransportError> {
 
 #[async_trait]
 impl McpToolTransport for HttpTransport {
+    fn set_notification_handler(
+        &self,
+        methods: Vec<String>,
+        handler: Option<Arc<dyn crate::notification::McpNotificationHandler>>,
+    ) -> Result<(), McpTransportError> {
+        self.shared.sinks.install_application(methods, handler)
+    }
+
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
         let result = self.request("tools/list", json!({})).await?;
         let parsed: ListToolsResult = serde_json::from_value(result)?;

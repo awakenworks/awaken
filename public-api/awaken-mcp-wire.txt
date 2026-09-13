@@ -41,6 +41,7 @@ impl awaken_mcp_wire::sse::SseParser
 pub fn awaken_mcp_wire::sse::SseParser::finish(&mut self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
 pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_mcp_wire::sse::SseParser::push_bytes(&mut self, &[u8]) -> alloc::vec::Vec<alloc::string::String>
 pub enum awaken_mcp_wire::IconTheme
 pub awaken_mcp_wire::IconTheme::Dark
 pub awaken_mcp_wire::IconTheme::Light
@@ -231,6 +232,7 @@ impl awaken_mcp_wire::sse::SseParser
 pub fn awaken_mcp_wire::sse::SseParser::finish(&mut self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
 pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_mcp_wire::sse::SseParser::push_bytes(&mut self, &[u8]) -> alloc::vec::Vec<alloc::string::String>
 pub struct awaken_mcp_wire::TaskIdParams
 pub awaken_mcp_wire::TaskIdParams::task_id: alloc::string::String
 pub struct awaken_mcp_wire::TaskMetadata

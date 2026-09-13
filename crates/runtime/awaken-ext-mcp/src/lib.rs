@@ -23,6 +23,7 @@ pub mod error;
 pub mod http;
 pub mod id_mapping;
 pub mod manager;
+pub mod notification;
 pub mod plugin;
 mod router;
 pub mod sampling;

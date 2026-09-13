@@ -195,7 +195,7 @@ impl Plugin for McpPlugin {
         PluginManifest {
             id: plugin_id(&self.server_name),
             requires: Vec::new(),
-            config_sections: Vec::new(),
+            config_sections: vec![plugin_id(&self.server_name)],
             bound: CapabilityBound {
                 tools: IdBound::Namespace(self.namespace.clone()),
                 ..Default::default()
@@ -222,6 +222,16 @@ impl Plugin for McpPlugin {
 
     fn live_version(&self) -> Option<u64> {
         Some(self.registry.lock().unwrap().version)
+    }
+
+    fn resolve_configured(
+        &self,
+        config: Option<&serde_json::Value>,
+    ) -> Result<Contributions, awaken_runtime_contract::plugin::PluginConfigError> {
+        crate::notification::McpNotificationConfig::parse(config).map_err(|e| {
+            awaken_runtime_contract::plugin::PluginConfigError::new(plugin_id(&self.server_name), e)
+        })?;
+        Ok(self.resolve())
     }
 }
 

@@ -21,10 +21,11 @@ use crate::jsonrpc::ServerNotification;
 use crate::progress::McpProgressUpdate;
 use crate::transport::ListChangedKind;
 
-/// Maximum length of every notification method admitted by this router.
+/// Maximum length of the standard methods handled by the closed classifier.
 const MAX_NOTIFICATION_METHOD_LEN: usize = "notifications/resources/list_changed".len();
 
-/// Closed set of notification effects the runtime admits.
+/// Closed set of standard MCP notification effects. Explicit application
+/// registrations are a separate disjoint namespace, not part of this classifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NotificationAdmission {
     Progress,
@@ -65,14 +66,37 @@ pub(crate) type ProgressRoutes = Arc<Mutex<HashMap<i64, mpsc::Sender<McpProgress
 
 /// The typed sinks a [`route`] call dispatches into.
 pub(crate) struct NotificationSinks {
+    pub(crate) application:
+        std::sync::RwLock<Option<crate::notification::NotificationRegistration>>,
     pub(crate) progress: ProgressRoutes,
     pub(crate) list_changed: broadcast::Sender<ListChangedKind>,
     pub(crate) resource_updated: broadcast::Sender<String>,
 }
 
 impl NotificationSinks {
+    pub(crate) fn install_application(
+        &self,
+        methods: Vec<String>,
+        handler: Option<Arc<dyn crate::notification::McpNotificationHandler>>,
+    ) -> Result<(), awaken_mcp_wire::McpTransportError> {
+        if (handler.is_none() && !methods.is_empty())
+            || methods.len() > 32
+            || methods
+                .iter()
+                .any(|m| !crate::notification::application_method(m))
+        {
+            return Err(awaken_mcp_wire::McpTransportError::ProtocolError(
+                "invalid application notification allowlist".into(),
+            ));
+        }
+        *self.application.write().unwrap() = handler
+            .map(|handler| crate::notification::NotificationRegistration { methods, handler });
+        Ok(())
+    }
+
     pub(crate) fn new() -> Self {
         Self {
+            application: std::sync::RwLock::new(None),
             progress: Arc::new(Mutex::new(HashMap::new())),
             list_changed: broadcast::channel(64).0,
             resource_updated: broadcast::channel(64).0,
@@ -92,8 +116,9 @@ pub(crate) fn spawn_router(
     });
 }
 
-/// Parse and dispatch one notification. Unknown methods and unroutable payloads
-/// are dropped silently.
+/// Route standard notifications first, then explicitly installed application
+/// methods. Unregistered methods remain inert; configuration cannot override
+/// a standard method or change its verified admission classifier.
 pub(crate) async fn route(notification: ServerNotification, sinks: &NotificationSinks) {
     match notification_admission(&notification.method) {
         Some(NotificationAdmission::Progress) => {
@@ -118,7 +143,17 @@ pub(crate) async fn route(notification: ServerNotification, sinks: &Notification
                 let _ = sinks.resource_updated.send(uri.to_string());
             }
         }
-        None => {}
+        None => {
+            let registration = sinks.application.read().unwrap().clone();
+            if let Some(registration) = registration
+                && registration.methods.contains(&notification.method)
+            {
+                registration
+                    .handler
+                    .receive(&notification.method, notification.params)
+                    .await;
+            }
+        }
     }
 }
 
@@ -185,6 +220,62 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RecordingApplication(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl crate::notification::McpNotificationHandler for RecordingApplication {
+        async fn receive(&self, method: &str, _params: Value) {
+            self.0.lock().unwrap().push(method.to_owned());
+        }
+    }
+
+    #[tokio::test]
+    async fn application_notifications_require_exact_registration_and_do_not_steal_progress() {
+        // A1 no registration -> inert; A2 exact method -> one callback;
+        // A3 another method or suffix -> inert; A4 a second connection has no
+        // authority from A2; A5 standard progress retains its own token sink.
+        // Invalid allowlists are refused before replacing the installed sink.
+        let sinks = NotificationSinks::new();
+        let application = Arc::new(RecordingApplication(std::sync::Mutex::new(Vec::new())));
+        let method = "notifications/phone/input";
+        route(notification(method, Value::Null), &sinks).await;
+        sinks
+            .install_application(vec![method.into()], Some(application.clone()))
+            .unwrap();
+        route(notification(method, Value::Null), &sinks).await;
+        route(
+            notification("notifications/phone/input/extra", Value::Null),
+            &sinks,
+        )
+        .await;
+        route(notification(method, Value::Null), &NotificationSinks::new()).await;
+        assert!(
+            sinks
+                .install_application(
+                    vec!["notifications/progress".into()],
+                    Some(application.clone())
+                )
+                .is_err()
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        sinks.progress.lock().await.insert(7, tx);
+        route(
+            notification(
+                "notifications/progress",
+                serde_json::json!({"progressToken":7,"progress":1}),
+            ),
+            &sinks,
+        )
+        .await;
+        assert_eq!(rx.try_recv().unwrap().progress, 1.0);
+        assert_eq!(*application.0.lock().unwrap(), vec![method]);
+        // A6 disabling the current published policy removes the old handler;
+        // clearing may not leave an earlier nonempty selection installed.
+        sinks.install_application(Vec::new(), None).unwrap();
+        route(notification(method, Value::Null), &sinks).await;
+        assert_eq!(*application.0.lock().unwrap(), vec![method]);
+    }
 
     fn notification(method: &str, params: Value) -> ServerNotification {
         ServerNotification {

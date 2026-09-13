@@ -208,6 +208,135 @@ not durable, while correlation, authority, transcript, and session identity are.
 
 ## Consequences
 
+### 2026-09-13 amendment: provider-owned voice turns over MCP
+
+Telephone media is external to Runtime. The telephone MCP service owns audio
+framing, ASR hypotheses/revisions, end-of-turn detection, playback scheduling,
+barge-in detection, and the record of what its media endpoint actually played.
+Awaken must not run a second competing voice endpoint detector. The business
+Agent owns response content and tool decisions; Flow owns Issue/Workflow and
+human acceptance. MCP task status and progress remain execution observations,
+not a carrier for a customer's speech.
+
+The implementation reuses `awaken-ext-mcp`'s HTTP/SSE and stdio router,
+`SessionRunBackgroundApplication` for source-labelled User input, and the
+existing exact-Run durable cancellation path. It extends MCP with one explicit
+application notification registration, retained behind the already-owned MCP
+generation call fence. `mcp/input.rs` in Runtime Host is the application adapter;
+it owns no task, dialogue history, durable queue, or independent Run loop.
+Incoming messages cannot choose a Session, workspace, message role, or arbitrary
+Run id from their payload. Connection ownership fixes the destination, while an
+explicit cancellation rule can name only the response derived from an event of
+another configured input method on that same server and Session.
+
+Configuration lives under the exact dynamic plugin id, which must also be
+selected in `plugins` so its executable configuration is publication-frozen:
+
+```json
+{
+  "plugins": ["mcp:phone"],
+  "plugin_config": {
+    "mcp:phone": {
+      "notifications": {
+        "notifications/phone/input": {
+          "event_id": "/id",
+          "delivery": { "kind": "message", "text": "/text" },
+          "when": { "/kind": "turn.completed" }
+        },
+        "notifications/phone/interrupt": {
+          "event_id": "/id",
+          "delivery": {
+            "kind": "cancel_response",
+            "input_method": "notifications/phone/input",
+            "input_event_id": "/input_event_id"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Those are authored application methods, not standard MCP notifications. The
+closed standard-notification classifier remains unchanged. Only configured
+application methods can enter the new sink; unknown methods are inert, standard
+method overrides are rejected, malformed or oversized selected values are not
+silently truncated into a customer statement. HTTP decodes UTF-8 only after line
+assembly, never per arbitrary network frame.
+
+Dynamic sequence:
+
+1. A commissioned Agent calls the ordinary phone tool. The MCP service creates
+   the call and emits a connected business event; tool completion and connection
+   state must not be inferred from an Agent's narration.
+2. The service keeps collecting audio and revising hypotheses. It sends a
+   complete customer turn after provider endpointing; hypotheses are not model
+   input. The Host validates the configured method, fields, source generation,
+   and current root authority, then admits one deterministic Session Run.
+3. The Agent responds through the phone tool. Model text, tool arguments,
+   accepted text, synthesized audio, and actual playback are distinct evidence.
+4. On barge-in the service stops/pauses playback locally, without waiting for an
+   LLM, and invalidates the old response's delivery token. Every speech command
+   carries the source turn identity; the service rejects a stale command before
+   playback. The default opaque-model strategy lets the previous inference
+   reach its terminal envelope and processes the next admitted complete turn.
+   Explicit hard cancellation is a separate policy: its control notification
+   identifies the earlier input whose exact Run must be cancelled. A late
+   duplicate cannot cancel the newer response. Without a provider terminal
+   receipt, hard cancellation remains Indeterminate and cannot be presented as
+   successful conversational continuation. It is not the default turn detector.
+5. A corrected complete turn creates a new input. Partial old tool JSON cannot
+   execute; an already-dispatched remote tool remains governed by its original
+   operation and receipt, never replayed merely because inference was cancelled.
+
+Failure/recovery boundary: deterministic Session operation identity reuses the
+existing admission receipt after admission. Raw notifications have no durable
+acknowledgement and the present transport does not implement a provider replay
+cursor. Bounded admission retries and diagnostic codes are not a guarantee that
+pre-admission messages survive a process crash. A production telephone service
+must expose replay/acknowledgement or a durable input subscription before lossless
+recovery can be qualified. The first Host adapter requires a co-located Native
+Session application; distributed Worker and opaque ACP delivery must not silently
+accept this policy without an executable source-owned ingress.
+
+The full sales acceptance remains an end-to-end gate, not a sum of independent
+green component tests: one Flow Issue commissions the phone Agent; the provider
+pushes all customer turns over MCP; provider receipts prove replies; a verified
+second-channel join continues that same customer's work; a qualification crosses
+the configured threshold; a real human assignment and explicit completion close
+the accountable Issue. Tests must not substitute a customer Session HTTP POST,
+a direct notification-handler invocation, or model text for any of these edges.
+
+The `zhike_sales` provider-push tests own their cause/effect rules in test
+comments. Deterministic inference barriers qualify interruptions at exact model
+boundaries; real DeepSeek repeats qualify model decisions over that same MCP
+path. Neither proves PCM/ASR accuracy, audible playback, real carriers, or the
+Flow Issue gate. Provider qualification additionally requires Chinese telephone
+audio with hesitation, corrections, digits/contact spelling, background noise,
+backchannels and overlapping speech; measure false turn endings, false
+interruptions, last-speech-to-playback and interrupt-to-stop latency, alongside
+lost/duplicate messages, stale playback and wrong-customer effects. No observed
+latency or success-rate claim may be made from text fixtures alone.
+
+Conversational qualification is separate from deterministic transport tests.
+`zhike_customers.rs` drives the SAME provider transport using a customer model
+that sees only a private persona and actually delivered Agent speech. The sales
+Agent does not receive that persona. Reproducible opening triggers cover explicit
+contact refusal, immediate human requests, confidential budgets, channel-only
+refusal, and skepticism; subsequent replies are generated from the conversation.
+The correction case injects a revised budget only after the Agent elicits the
+original amount. Silence is a valid customer response, not an artificial extra
+turn after every farewell. Cause/effect assertions are attached to these cases;
+model self-reported success is not an acceptance oracle. A small live corpus
+establishes those observed transcripts, not a calibrated population success rate.
+
+The shared sales instructions distinguish refusing a robot from refusing a
+product, refusing chat from refusing all contact, and temporary phone refusal
+from permission to continue calling. Unknown values remain unknown. Actual Flow
+human assignment and persistent outreach suppression still need their own
+owner-backed integration; recording booleans in a Mock assessment does not prove
+either platform effect occurred.
+
 - **Steer / redirect works for every locally reachable execution path** —
   direct-native, locally hosted durable-native, and locally hosted external-CLI —
   because all reach the one boundary seam over a neutral inbox. A remote Worker
