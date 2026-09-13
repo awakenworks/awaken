@@ -2917,6 +2917,11 @@ async fn same_target_credentials_are_authored_and_selected_deterministically() {
 
 #[tokio::test]
 async fn validate_with_probe_reports_valid_and_the_probe_sees_the_materialized_token() {
+    // Validation decision table (also covers the equivalent let-chain guard):
+    // V1 MCP URL + successful Valid probe => valid and material stays private;
+    // V2 same + Invalid => invalid with HTTP evidence (adjacent test);
+    // V3 no MCP OAuth URL => unknown and zero probe calls (adjacent test).
+    // Failed inspection keeps the initialized unknown result, never a verdict.
     let probe = FakeProbe::new(McpProbeStatus::Valid);
     let h = harness_with_probe(probe.clone());
     let vault_id = create_vault(&h, "mcp").await;
