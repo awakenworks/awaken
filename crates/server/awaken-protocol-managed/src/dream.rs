@@ -48,7 +48,7 @@ impl DreamSessionSource for crate::ManagedState {
         }
         let usage = self
             .session_application()
-            .session_usage(session_id)
+            .session_usage(session_id, None)
             .await
             .ok()?;
         Some(DreamUsage {
