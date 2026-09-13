@@ -244,7 +244,11 @@ def normalize_observation_times(steps: list[dict[str, Any]]) -> list[dict[str, A
 # The wire contract is emitted at the existing Rust driver/root boundaries.
 # These schemas validate its selected fields; they never authorize transitions.
 LEASE_SCHEMA = {"owner": "text", "runtime_incarnation": "text", "epoch": "uint", "expires_at_unix_ms": "uint"}
-GENERATION_SCHEMA = {"session_id": "text", "attachment_id": "text", "generation": "uint", "runtime_incarnation": "text", "lease_epoch": "uint", "lease_expires_at_unix_ms": "uint"}
+# A generation coordinate is the attachment plus its version; the content digest
+# the CAS binds to that version rides with it, so a record cannot name a
+# generation without naming what it bound.
+MCP_GENERATION_SCHEMA = {"attachment_id": "text", "version": "uint", "content_digest": "text"}
+GENERATION_SCHEMA = {"session_id": "text", "generation": MCP_GENERATION_SCHEMA, "runtime_incarnation": "text", "lease_epoch": "uint", "lease_expires_at_unix_ms": "uint"}
 CLAIM_SCHEMA = {"realization_id": "text", "runtime_incarnation": "text", "lease_epoch": "uint", "lease_expires_at_unix_ms": "uint", "stage_idempotency_key": "text"}
 ATTACHMENT_SCHEMA = {"key": "text", "state": ("requested", "realizing", "active", "draining", "removed", "failed"), "ack": "bool", "claim": (None, CLAIM_SCHEMA)}
 ROOT_SCHEMA = {"revision": "uint", "created": (None, "uint"), "updated": (None, "uint"), "lease": (None, LEASE_SCHEMA), "attachments": [ATTACHMENT_SCHEMA]}
@@ -269,7 +273,7 @@ def validate_observation_schema(value: Any, schema: Any, path: str) -> None:
         if valid:
             for index, child in enumerate(value): validate_observation_schema(child, schema[0], f"{path}[{index}]")
             if schema[0] == GENERATION_SCHEMA:
-                identities = [(g["attachment_id"], g["generation"]) for g in value]
+                identities = [generation_identity(g) for g in value]
                 valid = len(identities) == len(set(identities))
             elif schema[0] == ATTACHMENT_SCHEMA:
                 valid = len(value) == len({a["key"] for a in value})
@@ -301,8 +305,13 @@ def realization_event_schema(event: dict[str, Any]) -> dict[str, Any]:
     return {"sequence": "uint", "session": "text", "point": (point,), "data": data_schema}
 
 
+def generation_identity(g: dict[str, Any]) -> tuple[str, int]:
+    """The coordinate a generation record names: one attachment, one version."""
+    return (g["generation"]["attachment_id"], g["generation"]["version"])
+
+
 def project_generation(g: dict[str, Any]) -> dict[str, Any]:
-    return {"key": json.dumps([g["attachment_id"], g["generation"]], separators=(",", ":")),
+    return {"key": json.dumps(list(generation_identity(g)), separators=(",", ":")),
         "session": g["session_id"], "incarnation": g["runtime_incarnation"],
         "epoch": g["lease_epoch"], "expiry": g["lease_expires_at_unix_ms"]}
 
