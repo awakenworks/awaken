@@ -175,6 +175,10 @@ pub struct DataSubject {
     /// cannot create a second profile-shaped source of truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_user_onboarded_at: Option<i64>,
+    /// Platform-stated facts about the entity (`user-profiles-2026-09-04`),
+    /// recorded as given and never verified here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_user_details: Option<ExternalUserDetails>,
     /// Opaque application metadata projected by protocol adapters.
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
@@ -210,6 +214,7 @@ impl DataSubject {
             org: org.into(),
             external_id: None,
             external_user_onboarded_at: None,
+            external_user_details: None,
             metadata: BTreeMap::new(),
             relationship: UserProfileRelationship::default(),
             access_type: None,
@@ -539,7 +544,90 @@ pub struct CreateUserProfileCommand {
     pub access_type: Option<UserProfileAccessType>,
     pub external_id: Option<String>,
     pub external_user_onboarded_at: Option<i64>,
+    pub external_user_details: Option<ExternalUserDetailsUpdate>,
     pub name: Option<String>,
+}
+
+/// Platform-stated facts about the entity behind a profile. Every field is
+/// `None` until the platform supplies it; the platform's statements are
+/// recorded as given, never verified here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalUserDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_status: Option<ExternalAccountStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_type: Option<ExternalEntityType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onboarded_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAccountStatus {
+    Active,
+    Suspended,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalEntityType {
+    Individual,
+    Business,
+    NonProfit,
+    Government,
+}
+
+/// A per-field patch of [`ExternalUserDetails`]: `None` keeps the recorded
+/// value, `Some(Clear)` erases it, `Some(Replace)` overwrites it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExternalUserDetailsUpdate {
+    pub account_status: Option<UserProfileFieldUpdate<ExternalAccountStatus>>,
+    pub country: Option<UserProfileFieldUpdate<String>>,
+    pub email_hash: Option<UserProfileFieldUpdate<String>>,
+    pub entity_type: Option<UserProfileFieldUpdate<ExternalEntityType>>,
+    pub name_hash: Option<UserProfileFieldUpdate<String>>,
+    pub onboarded_at: Option<i64>,
+    pub reference_id: Option<UserProfileFieldUpdate<String>>,
+}
+
+impl ExternalUserDetailsUpdate {
+    /// Apply the patch; returns whether anything recorded changed.
+    fn apply(&self, details: &mut ExternalUserDetails) -> bool {
+        fn field<T: Clone + PartialEq>(
+            slot: &mut Option<T>,
+            update: &Option<UserProfileFieldUpdate<T>>,
+        ) -> bool {
+            let next = match update {
+                None => return false,
+                Some(UserProfileFieldUpdate::Clear) => None,
+                Some(UserProfileFieldUpdate::Replace(value)) => Some(value.clone()),
+            };
+            let changed = *slot != next;
+            *slot = next;
+            changed
+        }
+        let mut changed = false;
+        changed |= field(&mut details.account_status, &self.account_status);
+        changed |= field(&mut details.country, &self.country);
+        changed |= field(&mut details.email_hash, &self.email_hash);
+        changed |= field(&mut details.entity_type, &self.entity_type);
+        changed |= field(&mut details.name_hash, &self.name_hash);
+        if let Some(onboarded_at) = self.onboarded_at {
+            changed |= details.onboarded_at != Some(onboarded_at);
+            details.onboarded_at = Some(onboarded_at);
+        }
+        changed |= field(&mut details.reference_id, &self.reference_id);
+        changed
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -550,6 +638,7 @@ pub struct UpdateUserProfileCommand {
     pub trust_grants: Option<BTreeMap<String, UserProfileTrustGrant>>,
     pub external_id: Option<UserProfileFieldUpdate<String>>,
     pub external_user_onboarded_at: Option<i64>,
+    pub external_user_details: Option<ExternalUserDetailsUpdate>,
     pub name: Option<UserProfileFieldUpdate<String>>,
 }
 
@@ -570,6 +659,7 @@ pub struct UserProfileRecord {
     pub trust_grants: BTreeMap<String, UserProfileTrustGrant>,
     pub external_id: Option<String>,
     pub external_user_onboarded_at: Option<i64>,
+    pub external_user_details: Option<ExternalUserDetails>,
     pub name: Option<String>,
     pub revision: u64,
 }
@@ -586,6 +676,7 @@ impl From<&DataSubject> for UserProfileRecord {
             trust_grants: subject.trust_grants.clone(),
             external_id: subject.external_id.clone(),
             external_user_onboarded_at: subject.external_user_onboarded_at,
+            external_user_details: subject.external_user_details.clone(),
             name: subject.name.clone(),
             revision: subject.revision,
         }
@@ -707,6 +798,11 @@ impl DataSubjectApplication {
             subject.access_type = command.access_type;
             subject.external_id = command.external_id.clone();
             subject.external_user_onboarded_at = command.external_user_onboarded_at;
+            if let Some(details) = &command.external_user_details {
+                let mut recorded = ExternalUserDetails::default();
+                details.apply(&mut recorded);
+                subject.external_user_details = Some(recorded);
+            }
             subject.name = command.name.clone();
             match self.repo.create(subject.clone()).await {
                 Ok(()) => return Ok(UserProfileRecord::from(&subject)),
@@ -757,6 +853,14 @@ impl DataSubjectApplication {
             if let Some(external_user_onboarded_at) = command.external_user_onboarded_at {
                 changed |= subject.external_user_onboarded_at != Some(external_user_onboarded_at);
                 subject.external_user_onboarded_at = Some(external_user_onboarded_at);
+            }
+            if let Some(details) = &command.external_user_details {
+                // A first patch materializes the record so later reads see
+                // every field, `null` where the platform said nothing.
+                let recorded = subject
+                    .external_user_details
+                    .get_or_insert_with(Default::default);
+                changed |= details.apply(recorded);
             }
             if let Some(name) = &command.name {
                 let name = match name {

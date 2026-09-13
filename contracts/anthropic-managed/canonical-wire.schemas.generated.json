@@ -28,6 +28,10 @@
         "id": "user_profiles_current"
       },
       {
+        "beta": "user-profiles-2026-09-04",
+        "id": "user_profiles_external"
+      },
+      {
         "beta": "dreaming-2026-04-21",
         "id": "dreams"
       },
