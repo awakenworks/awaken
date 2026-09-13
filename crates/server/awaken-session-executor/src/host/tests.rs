@@ -14577,7 +14577,8 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
         "stub",
         "claim-judge",
         awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS,
-    );
+    )
+    .expect("literal model reference");
     let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub"));
     let thread = "claim-inference-only-judge";
     host.register_thread_workspace(thread, "workspace-judge");
