@@ -186,6 +186,7 @@ mod tests {
                 name: "read".into(),
                 input: serde_json::json!({}),
                 evaluated_permission: None,
+                evaluation: None,
                 session_thread_id: None,
             },
         )
