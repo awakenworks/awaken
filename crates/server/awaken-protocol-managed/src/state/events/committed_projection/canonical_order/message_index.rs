@@ -5,10 +5,13 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use std::collections::HashMap;
 
+type ToolEventPositions<'a> = Vec<(usize, &'a str)>;
+type ToolEventsBySource<'a> = HashMap<&'a str, ToolEventPositions<'a>>;
+
 pub(super) struct MessageEventIndex<'a> {
     events: &'a [Event],
     by_id: HashMap<&'a str, Vec<usize>>,
-    tools_by_source: HashMap<(&'a str, &'a str), Vec<(usize, &'a str)>>,
+    tools_by_source: HashMap<&'a str, ToolEventsBySource<'a>>,
     roles: HashMap<&'static str, &'a OutboundKind>,
     #[cfg(test)]
     examined: std::cell::Cell<usize>,
@@ -32,12 +35,40 @@ impl<'a> MessageEventIndex<'a> {
             if let Some(source) = decode_managed_tool_event_id(&event.id) {
                 index
                     .tools_by_source
-                    .entry((source.thread_id, source.source_id))
+                    .entry(source.thread_id)
+                    .or_default()
+                    .entry(source.source_id)
                     .or_default()
                     .push((position, source.call_id));
             }
         }
         index
+    }
+
+    /// Visit only the qualified tool Events emitted from one committed Message
+    /// in one public Thread. Coordination ordering shares this lookup with the
+    /// ordinary message canonicalizer so the encoded Thread owner cannot be
+    /// dropped by a second Event scan.
+    pub(super) fn tool_events_for_source(
+        &'a self,
+        public_thread: &str,
+        source_id: &str,
+    ) -> impl Iterator<Item = (&'a Event, &'a str)> + 'a {
+        self.tools_by_source
+            .get(public_thread)
+            .and_then(|sources| sources.get(source_id))
+            .into_iter()
+            .flatten()
+            .map(|&(position, call_id)| {
+                #[cfg(test)]
+                self.examined.set(self.examined.get() + 1);
+                (&self.events[position], call_id)
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn examined(&self) -> usize {
+        self.examined.get()
     }
 
     fn matches(
@@ -60,7 +91,8 @@ impl<'a> MessageEventIndex<'a> {
         }
         if let Some(events) = self
             .tools_by_source
-            .get(&(public_thread, message.id.0.as_str()))
+            .get(public_thread)
+            .and_then(|sources| sources.get(message.id.0.as_str()))
         {
             for &(position, call_id) in events {
                 #[cfg(test)]

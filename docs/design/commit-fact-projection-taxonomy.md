@@ -198,6 +198,17 @@ separate domain outputs. A 10,000-unrelated-Run integration case covers the
 indexed membership boundary; it is algorithmic test evidence, not a latency or
 allocator proof.
 
+Managed coordination ordering also consumes the canonicalizer's existing
+`MessageEventIndex`. The index decodes the sole candidate Event vector once and
+joins a tool occurrence by its encoded public Thread and committed Message id.
+The removed path rescanned every Event for every root/child snapshot and matched
+only the Message id, discarding the Thread owner already present in the public
+identity. Snapshot work is now proportional to its messages, content blocks and
+exact matching tool occurrences after the one Event-index build. A qualified
+Event from another Thread cannot acquire a coordination operation merely by
+reusing a source id. This is disposable request-local join state; the Event
+vector and committed Thread snapshots remain the only payload and source truth.
+
 For tool waits and external results:
 
 ```text
