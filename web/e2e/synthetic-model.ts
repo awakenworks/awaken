@@ -1,34 +1,26 @@
 import type { APIRequestContext } from "@playwright/test";
-import { createServer, type Server } from "node:http";
+import { startFakeAnthropic } from "../../e2e/fixtures/fake_anthropic_fixture.mjs";
+
+const SYNTHETIC_API_KEY = "sk-synthetic-e2e"; // awaken-allow: secret (synthetic e2e fixture)
 
 export class SyntheticModelDirectory {
-  private readonly models = new Set<string>();
-  private server?: Server;
+  private readonly models: string[] = [];
+  private upstream?: Awaited<ReturnType<typeof startFakeAnthropic>>;
   private baseUrl = "";
 
   async start() {
-    this.server = createServer((_request, response) => {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({
-        data: Array.from(this.models).map((id) => ({ id })),
-        has_more: false,
-      }));
-    });
-    await new Promise<void>((resolve, reject) => {
-      this.server!.once("error", reject);
-      this.server!.listen(0, "127.0.0.1", resolve);
-    });
-    const address = this.server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("synthetic model directory did not bind");
-    }
-    this.baseUrl = `http://127.0.0.1:${address.port}`;
+    // One canonical Anthropic wire fixture owns discovery and inference. The
+    // earlier directory-only HTTP fake returned the model list for authoring
+    // but answered a real Quickstart /messages request with that list shape,
+    // leaving its durable Session active and starving later browser scenarios.
+    this.upstream = await startFakeAnthropic(SYNTHETIC_API_KEY, { models: this.models });
+    this.baseUrl = this.upstream.url;
   }
 
   async stop() {
-    if (!this.server) return;
-    await new Promise<void>((resolve, reject) =>
-      this.server!.close((error) => error ? reject(error) : resolve()));
+    if (!this.upstream) return;
+    await this.upstream.close();
+    this.upstream = undefined;
   }
 
   async configure(
@@ -36,7 +28,7 @@ export class SyntheticModelDirectory {
     model: string,
     configBase = "/v1/config",
   ): Promise<string> {
-    this.models.add(model);
+    if (!this.models.includes(model)) this.models.push(model);
     const workspaceResponse = await request.get(`${configBase}/workspace-context`);
     if (!workspaceResponse.ok()) {
       throw new Error(await workspaceResponse.text());
@@ -69,7 +61,7 @@ export class SyntheticModelDirectory {
         timeout_secs: 60,
         ...(existing
           ? { credential_source_id: existing.id }
-          : { secret: "sk-synthetic-e2e" }), // awaken-allow: secret (synthetic e2e fixture)
+          : { secret: SYNTHETIC_API_KEY }),
       },
     });
     if (!response.ok()) {

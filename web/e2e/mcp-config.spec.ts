@@ -263,6 +263,9 @@ test("UX catalog failure keeps cache and source repair retries successfully", as
   // source -> same standard sync succeeds; successful status is announced.
   const server = await configured(request); await openServer(page, server);
   await page.getByText("Catalog synchronization", { exact: true }).click();
+  // A catalog consumer cannot be mistaken for a cloud publication service.
+  // No positive publish action is rendered until that separate service exists.
+  await expect(page.getByRole("button", { name: /Publish catalog/i })).toHaveCount(0);
   await page.getByLabel("Catalog source URL").fill("https://fixture.test/catalog.json");
   await page.getByRole("button", { name: "Save catalog source" }).click(); await expect(page.getByRole("status").filter({ hasText: "Catalog source saved." })).toBeVisible();
   let fault = true;
@@ -461,6 +464,9 @@ for (const auth of ["mcp_oauth", "environment_variable"] as const) {
     await modal.getByRole("button", { name: auth === "mcp_oauth" ? /MCP OAuth/ : /Environment variable/ }).click();
     await modal.getByLabel("Credential name").fill(`Typed ${auth}`);
     if (auth === "mcp_oauth") {
+      // Existing-token authoring and refresh are supported. An OAuth login
+      // authorization flow is absent and must not be presented as available.
+      await expect(modal.getByRole("button", { name: /Authorize|Sign in|Connect account/i })).toHaveCount(0);
       await modal.getByLabel("MCP server URL").fill(mcp.servers[0].url);
       await modal.getByLabel("Access token (write-only)", { exact: true }).fill(tokenB);
       // K7 optional refresh off/on clears hidden refresh-token material and

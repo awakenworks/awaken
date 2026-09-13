@@ -1,3 +1,17 @@
+fn validate_stdio_credential_binding(
+    target: &awaken_session_contract::McpTarget,
+    has_credential: bool,
+    has_plaintext_holder: bool,
+) -> Result<(), RunError> {
+    if target.sandbox_stdio_target().is_some() && (has_credential || has_plaintext_holder) {
+        return Err(RunError::classified(
+            "mcp_stdio_credential_unsupported",
+            "sandbox stdio MCP credentials require an explicit secret-environment binding; HTTP bearer credentials cannot be projected into a process",
+        ));
+    }
+    Ok(())
+}
+
 // Runtime realization of one Session-owned MCP attachment generation.
 #[async_trait::async_trait]
 impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
@@ -113,14 +127,11 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             .is_some_and(|backend| backend.is_acp());
 
         let sandbox_stdio = request.target.sandbox_stdio_target().cloned();
-        if sandbox_stdio.is_some()
-            && (request.credential.is_some() || request.selected_plaintext_holder.is_some())
-        {
-            return Err(RunError::classified(
-                "mcp_stdio_credential_unsupported",
-                "sandbox stdio MCP credentials require an explicit secret-environment binding; HTTP bearer credentials cannot be projected into a process",
-            ));
-        }
+        validate_stdio_credential_binding(
+            &request.target,
+            request.credential.is_some(),
+            request.selected_plaintext_holder.is_some(),
+        )?;
 
         let (bearer, refresh, actual_realization_kind, mediated_route) = match (
             request.credential.as_ref(),
@@ -719,5 +730,39 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             .drain_mcp_projection(&generation)
             .await
             .map_err(to_run_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdio_requires_an_explicit_secret_environment_binding_before_credentials() {
+        // Cause/effect graph: C1 transport is stdio, C2 an exact credential is
+        // present, C3 a plaintext holder is selected. Effect E1 reject with the
+        // stable unsupported code before materialization; otherwise E2 admit.
+        // Complete decision table: only C1 && (C2 || C3) produces E1. HTTP may
+        // carry either credential shape, and anonymous stdio remains supported.
+        let http =
+            awaken_session_contract::McpTarget::parse_http("https://mcp.example.test/mcp").unwrap();
+        let stdio = awaken_session_contract::McpTarget::sandbox_stdio(
+            "/usr/bin/node",
+            vec!["/mnt/session/uploads/server.js".into()],
+        )
+        .unwrap();
+        for (target, is_stdio) in [(&http, false), (&stdio, true)] {
+            for has_credential in [false, true] {
+                for has_holder in [false, true] {
+                    let result =
+                        validate_stdio_credential_binding(target, has_credential, has_holder);
+                    let rejected = is_stdio && (has_credential || has_holder);
+                    assert_eq!(result.is_err(), rejected);
+                    if let Err(error) = result {
+                        assert_eq!(error.code, "mcp_stdio_credential_unsupported");
+                    }
+                }
+            }
+        }
     }
 }

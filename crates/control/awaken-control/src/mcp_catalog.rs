@@ -51,9 +51,17 @@ impl McpCatalogService {
         Self { store, vault }
     }
     pub(crate) fn supervise(&self, lifecycle: &awaken_service_lifecycle::ServiceLifecycle) {
+        self.supervise_with_interval(lifecycle, std::time::Duration::from_secs(300));
+    }
+
+    fn supervise_with_interval(
+        &self,
+        lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+        refresh_interval: std::time::Duration,
+    ) {
         let service = self.clone();
         lifecycle.spawn("control-mcp-catalog", move |cancel| async move {
-            let mut interval=tokio::time::interval(std::time::Duration::from_secs(300));
+            let mut interval = tokio::time::interval(refresh_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! { ()=cancel.cancelled()=>break, _=interval.tick()=>{} }
