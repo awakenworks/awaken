@@ -10,6 +10,7 @@ use crate::agent::run::RunState;
 use crate::audit::draft::Draft;
 use crate::audit::kind::Kind;
 use crate::audit::model_request::ModelRequestObservation;
+use crate::audit::permission::{PermissionPolicy, PermissionReasonCode};
 
 /// A committed run fact, carrying its own typed data. Lowers to a [`Draft`] for
 /// the durable event log.
@@ -37,10 +38,18 @@ pub enum RunEvent {
     /// The run began awaiting, keyed by `run_id`.
     RunAwaiting { run_id: String },
     /// A protected tool call passed the permission gate (ADR-0030 audit).
+    ///
+    /// `policy` names the authored policy that decided and `reason_code` the
+    /// grounds of an `auto` judgement; both are absent when no authored policy
+    /// decided (a per-Run narrowing, a plugin gate, a person answering a
+    /// ticket). Both are additive on the wire so rows written before they
+    /// existed still decode.
     PermissionDecided {
         tool_id: String,
         call_id: String,
         decision: String,
+        policy: Option<PermissionPolicy>,
+        reason_code: Option<PermissionReasonCode>,
     },
     /// A stable durable-ingress operation consumed this Run's resume ticket.
     /// The correlation detects a different operation attempting to answer the
@@ -93,10 +102,18 @@ impl From<RunEvent> for Draft {
                 tool_id,
                 call_id,
                 decision,
-            } => (
-                Kind::PermissionDecided,
-                serde_json::json!({ "tool_id": tool_id, "call_id": call_id, "decision": decision }),
-            ),
+                policy,
+                reason_code,
+            } => {
+                let mut payload = serde_json::json!({ "tool_id": tool_id, "call_id": call_id, "decision": decision });
+                if let Some(policy) = policy {
+                    payload["policy"] = serde_json::Value::String(policy.as_str().into());
+                }
+                if let Some(reason_code) = reason_code {
+                    payload["reason_code"] = serde_json::Value::String(reason_code.as_str().into());
+                }
+                (Kind::PermissionDecided, payload)
+            }
             RunEvent::ResumeApplied {
                 operation_id,
                 correlation_id,
@@ -134,6 +151,8 @@ mod tests {
             tool_id: "echo".into(),
             call_id: "c1".into(),
             decision: "allow".into(),
+            policy: None,
+            reason_code: None,
         }
         .into();
         assert_eq!(d.kind, Kind::PermissionDecided);
@@ -275,6 +294,134 @@ mod tests {
             draft.payload,
             serde_json::to_value(observation).unwrap(),
             "R1/E2"
+        );
+    }
+
+    #[test]
+    fn permission_decided_lowers_policy_and_reason_additively() {
+        // Cause/effect graph: C1 the gate decided under an authored policy; C2
+        // that policy was `auto` and did not allow, so it has grounds; C3 no
+        // authored policy decided (narrowing, plugin gate, human answer).
+        // Effects: E1 `policy` rides beside the decision; E2 `reason_code`
+        // rides only with it; E3 neither key is written at all, so the payload
+        // is byte-identical to the pre-vocabulary shape.
+        //
+        // | Rule | C1 | C2 | C3 | payload |
+        // |---|---|---|---|---|
+        // | L1 | T | F | F | decision + policy, no reason_code |
+        // | L2 | T | T | F | decision + policy + reason_code |
+        // | L3 | F | F | T | decision only (historical shape) |
+        let l1: Draft = RunEvent::PermissionDecided {
+            tool_id: "read".into(),
+            call_id: "c1".into(),
+            decision: "allow".into(),
+            policy: Some(PermissionPolicy::AlwaysAllow),
+            reason_code: None,
+        }
+        .into();
+        assert_eq!(
+            l1.payload,
+            serde_json::json!({
+                "tool_id": "read", "call_id": "c1", "decision": "allow",
+                "policy": "always_allow"
+            }),
+            "L1"
+        );
+        let l2: Draft = RunEvent::PermissionDecided {
+            tool_id: "write".into(),
+            call_id: "c2".into(),
+            decision: "ask".into(),
+            policy: Some(PermissionPolicy::Auto),
+            reason_code: Some(PermissionReasonCode::Indeterminate),
+        }
+        .into();
+        assert_eq!(
+            l2.payload,
+            serde_json::json!({
+                "tool_id": "write", "call_id": "c2", "decision": "ask",
+                "policy": "auto", "reason_code": "indeterminate"
+            }),
+            "L2"
+        );
+        let l3: Draft = RunEvent::PermissionDecided {
+            tool_id: "bash".into(),
+            call_id: "c3".into(),
+            decision: "deny".into(),
+            policy: None,
+            reason_code: None,
+        }
+        .into();
+        assert_eq!(
+            l3.payload,
+            serde_json::json!({ "tool_id": "bash", "call_id": "c3", "decision": "deny" }),
+            "L3"
+        );
+    }
+
+    #[test]
+    fn permission_decided_payloads_round_trip_old_and_new_rows() {
+        // The reader side of the additive contract: a historical row (no
+        // policy) and a current row (policy + reason) both decode through the
+        // same optional fields, and an unknown policy label is rejected rather
+        // than silently read as another member of the closed vocabulary.
+        //
+        // | Row | payload | policy | reason_code |
+        // |---|---|---|---|
+        // | R1 historical | {decision} | None | None |
+        // | R2 auto deny | {decision, policy: auto, reason_code: judged_high_risk} | Auto | JudgedHighRisk |
+        // | R3 auto allow | {decision, policy: auto} | Auto | None |
+        // | R4 rule | {decision, policy: rule} | Rule | None |
+        // | R5 unknown | {decision, policy: bypass} | decode error | - |
+        #[derive(serde::Deserialize)]
+        struct Row {
+            decision: String,
+            #[serde(default)]
+            policy: Option<PermissionPolicy>,
+            #[serde(default)]
+            reason_code: Option<PermissionReasonCode>,
+        }
+        let read = |payload: serde_json::Value| serde_json::from_value::<Row>(payload);
+
+        let r1 = read(serde_json::json!({ "tool_id": "t", "call_id": "c", "decision": "allow" }))
+            .unwrap();
+        assert_eq!(
+            (r1.decision.as_str(), r1.policy, r1.reason_code),
+            ("allow", None, None),
+            "R1"
+        );
+
+        let r2: Draft = RunEvent::PermissionDecided {
+            tool_id: "t".into(),
+            call_id: "c".into(),
+            decision: "deny".into(),
+            policy: Some(PermissionPolicy::Auto),
+            reason_code: Some(PermissionReasonCode::JudgedHighRisk),
+        }
+        .into();
+        let r2 = read(r2.payload).unwrap();
+        assert_eq!(
+            (r2.decision.as_str(), r2.policy, r2.reason_code),
+            (
+                "deny",
+                Some(PermissionPolicy::Auto),
+                Some(PermissionReasonCode::JudgedHighRisk)
+            ),
+            "R2"
+        );
+
+        let r3 = read(serde_json::json!({ "decision": "allow", "policy": "auto" })).unwrap();
+        assert_eq!(
+            (r3.policy, r3.reason_code),
+            (Some(PermissionPolicy::Auto), None),
+            "R3"
+        );
+
+        let r4 = read(serde_json::json!({ "decision": "allow", "policy": "rule" })).unwrap();
+        assert_eq!(r4.policy, Some(PermissionPolicy::Rule), "R4");
+
+        assert!(
+            read(serde_json::json!({ "decision": "allow", "policy": "bypass" })).is_err(),
+            "R5"
         );
     }
 }

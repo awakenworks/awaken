@@ -103,6 +103,19 @@ async function main() {
       'ask',
       'A1/E1 a call `auto` cannot judge is reported as ask, not allow and not deny',
     );
+    // SDK 0.125.0 `evaluation`: names the resolved permission_policy (`auto`)
+    // and the judgement, whose type equals the flat evaluated_permission and
+    // whose reason_code says no conclusion was reached.
+    assert.deepEqual(
+      modifying.evaluation,
+      { type: 'auto', evaluated_permission: { type: 'ask', reason_code: 'indeterminate' } },
+      'A1/E1 the evaluation object names auto and the indeterminate judgement',
+    );
+    assert.equal(
+      modifying.evaluation.evaluated_permission.type,
+      modifying.evaluated_permission,
+      'A1/E1 the auto judgement type equals the flat evaluated_permission',
+    );
     pass('auto sends a modifying call to a person instead of deciding it');
 
     const approval = await client.beta.sessions.events.send(session.id, {
@@ -129,6 +142,11 @@ async function main() {
       observing.evaluated_permission,
       'allow',
       'A2/E2 an observing call runs unattended under auto',
+    );
+    assert.deepEqual(
+      observing.evaluation,
+      { type: 'auto', evaluated_permission: { type: 'allow' } },
+      'A2/E2 the evaluation object names auto and an allow judgement with no reason',
     );
     assert.ok(
       !finished.delta.some(

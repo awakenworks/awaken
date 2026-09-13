@@ -531,12 +531,17 @@ impl ManagedState {
                 match &mut event.kind {
                     OutboundKind::AgentToolUse {
                         evaluated_permission,
+                        evaluation,
                         ..
                     }
                     | OutboundKind::AgentMcpToolUse {
                         evaluated_permission,
+                        evaluation,
                         ..
-                    } => *evaluated_permission = Some(*recorded),
+                    } => {
+                        *evaluated_permission = Some(recorded.decision);
+                        *evaluation = recorded.evaluation;
+                    }
                     _ => {}
                 }
             }
@@ -555,6 +560,7 @@ impl ManagedState {
                     name: name.clone(),
                     input: input.clone(),
                     evaluated_permission: Some(EvaluatedPermission::Allow),
+                    evaluation: None,
                     session_thread_id: session_thread_id.clone(),
                 };
             }

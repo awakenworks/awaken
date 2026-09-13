@@ -1172,17 +1172,20 @@ impl ManagedState {
 }
 
 /// Collect the gate's recorded decision for every call named in these runs'
-/// committed audit trails.
+/// committed audit trails, with the policy and grounds recorded beside it.
 ///
 /// The audit kind is the one place a permission decision is written down, so
 /// reading it here keeps the projection reporting a recorded answer rather than
 /// inferring one. An unrecognized decision label is skipped: a value this
-/// version does not understand must not be flattened into `allow`.
+/// version does not understand must not be flattened into `allow`. The policy
+/// and reason code are additive fields: a row written before they existed has
+/// none, and a label outside the closed vocabularies reads as none too, so the
+/// decision is still reported while the `evaluation` it cannot name is absent.
 fn harvest_permission_decisions<'a>(
     snapshots: impl Iterator<
         Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     >,
-) -> std::collections::HashMap<String, EvaluatedPermission> {
+) -> std::collections::HashMap<String, RecordedPermission> {
     let mut decisions = std::collections::HashMap::new();
     for snapshot in snapshots {
         for event in &snapshot.events {
@@ -1198,7 +1201,18 @@ fn harvest_permission_decisions<'a>(
                 Some("deny") => EvaluatedPermission::Deny,
                 _ => continue,
             };
-            decisions.insert(call_id.to_string(), decision);
+            let policy = event
+                .payload
+                .get("policy")
+                .and_then(|value| serde_json::from_value(value.clone()).ok());
+            let reason_code = event
+                .payload
+                .get("reason_code")
+                .and_then(|value| serde_json::from_value(value.clone()).ok());
+            decisions.insert(
+                call_id.to_string(),
+                RecordedPermission::from_audit(decision, policy, reason_code),
+            );
         }
     }
     decisions

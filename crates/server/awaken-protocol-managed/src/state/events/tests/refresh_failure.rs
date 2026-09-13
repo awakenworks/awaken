@@ -28,14 +28,8 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
     assert_eq!(*cache_revision, expected.cache_revision, "frame: cache CAS");
     // The recorded gate decisions change what the wire reports for a tool call,
     // so they are projected content and belong in the frame oracle.
-    assert!(
-        permission_decisions
-            .iter()
-            .map(|(call, decision)| (call, serde_json::to_value(decision).ok()))
-            .eq(expected
-                .permission_decisions
-                .iter()
-                .map(|(call, decision)| (call, serde_json::to_value(decision).ok()))),
+    assert_eq!(
+        permission_decisions, &expected.permission_decisions,
         "frame: recorded permission decisions"
     );
     assert_eq!(

@@ -181,10 +181,14 @@ pub(super) async fn drive_resumed(
                     Vec::new(),
                     approval_state,
                     vec![
+                        // A person answered the ticket: no authored policy
+                        // decided this row, so it names none.
                         RunEvent::PermissionDecided {
                             tool_id: pending.tool_id.clone(),
                             call_id: call_id.to_string(),
                             decision: "approved".to_string(),
+                            policy: None,
+                            reason_code: None,
                         }
                         .into(),
                     ],
@@ -338,6 +342,8 @@ pub(super) async fn drive_resumed(
                 tool_id: pending.tool_id.clone(),
                 call_id: call_id.to_string(),
                 decision: decision.to_string(),
+                policy: None,
+                reason_code: None,
             }
             .into(),
         ]

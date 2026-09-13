@@ -162,6 +162,36 @@ enum CommittedEvidence {
         call_id: &'static str,
         decision: &'static str,
     },
+    /// A terminal run whose committed audit records one permission decision
+    /// per row, each as the raw payload the audit table holds: the decision
+    /// label plus the optional `policy` / `reason_code` labels. Raw on
+    /// purpose, so a historical row (no policy) and a label outside the closed
+    /// vocabulary are both representable exactly as they would be on disk.
+    PermissionDecisions(&'static [AuditedPermissionRow]),
+}
+
+/// One raw `PermissionDecided` audit payload: `(call_id, decision, policy, reason_code)`.
+type AuditedPermissionRow = (
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    Option<&'static str>,
+);
+
+fn permission_decided_payload(row: AuditedPermissionRow) -> serde_json::Value {
+    let (call_id, decision, policy, reason_code) = row;
+    let mut payload = serde_json::json!({
+        "tool_id": "bash",
+        "call_id": call_id,
+        "decision": decision,
+    });
+    if let Some(policy) = policy {
+        payload["policy"] = serde_json::Value::String(policy.into());
+    }
+    if let Some(reason_code) = reason_code {
+        payload["reason_code"] = serde_json::Value::String(reason_code.into());
+    }
+    payload
 }
 
 impl CommittedEvidence {
@@ -194,6 +224,8 @@ impl CommittedEvidence {
                     tool_id: "bash".into(),
                     call_id: call_id.into(),
                     decision: decision.into(),
+                    policy: None,
+                    reason_code: None,
                 },
             ));
         }
@@ -205,7 +237,7 @@ impl CommittedEvidence {
                 await_target: None,
             },
         ));
-        events
+        let mut records = events
             .into_iter()
             .map(|(sequence, event)| {
                 let draft: awaken_agent_contract::audit::draft::Draft = event.into();
@@ -216,7 +248,24 @@ impl CommittedEvidence {
                     payload: draft.payload,
                 }
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if let Self::PermissionDecisions(rows) = self {
+            // Raw rows sit between the Running and terminal facts, exactly
+            // where production commits a gate decision.
+            let terminal = records.pop().expect("the terminal fact is last");
+            records.extend(rows.iter().enumerate().map(|(offset, row)| {
+                awaken_agent_contract::audit::record::Record {
+                    sequence: 2 + offset as u64,
+                    run_id: run_id.clone(),
+                    kind: awaken_agent_contract::audit::kind::Kind::PermissionDecided,
+                    payload: permission_decided_payload(*row),
+                }
+            }));
+            let mut terminal = terminal;
+            terminal.sequence = 2 + rows.len() as u64;
+            records.push(terminal);
+        }
+        records
     }
 
     fn snapshot(
@@ -231,9 +280,19 @@ impl CommittedEvidence {
         // though Managed reconstructs the public DTO from Session-root
         // provenance. This keeps the fake faithful to production without using
         // the transcript as the public payload authority.
+        let events = self.audit_records(&run_id, &terminal_state);
+        // The terminal fact is the last audit record; the Thread commit that
+        // carried it (and the Step's new Messages) sits at that same cursor.
+        let terminal_cursor = events
+            .last()
+            .map(|record| record.sequence)
+            .expect("the fixture always commits a terminal fact");
         let mut messages = command.messages.clone();
         let mut message_commit_cursors = vec![1; messages.len()];
-        message_commit_cursors.extend(std::iter::repeat_n(3, outcome.new_messages.len()));
+        message_commit_cursors.extend(std::iter::repeat_n(
+            terminal_cursor,
+            outcome.new_messages.len(),
+        ));
         messages.extend(outcome.new_messages);
         let state = if matches!(self, Self::Compaction) {
             vec![
@@ -243,7 +302,6 @@ impl CommittedEvidence {
         } else {
             Vec::new()
         };
-        let events = self.audit_records(&run_id, &terminal_state);
         awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
             commit_timestamps: Default::default(),
             thread_id: ThreadId(thread_id.into()),
@@ -258,14 +316,14 @@ impl CommittedEvidence {
             message_commit_cursors,
             state,
             state_commit_cursors: if matches!(self, Self::Compaction) {
-                vec![3, 3]
+                vec![terminal_cursor, terminal_cursor]
             } else {
                 Vec::new()
             },
             events,
             resume_tickets: Vec::new(),
-            thread_version: 3,
-            store_cursor: 3,
+            thread_version: terminal_cursor,
+            store_cursor: terminal_cursor,
             next_commit_ordinal: 1,
         }
     }
@@ -1680,4 +1738,185 @@ async fn a_recorded_ask_is_reported_even_though_the_transcript_shows_a_result() 
         .find(|e| e["type"] == "agent.tool_use")
         .expect("the call is visible");
     assert_eq!(use_ev["evaluated_permission"], "ask", "K1");
+}
+
+// --- CE: recorded policy → SDK `evaluation` on both tool-use events -----------
+
+/// Causes: C1 the committed audit row names the policy that decided (and, for
+/// `auto`, its grounds); C2 the row predates the policy vocabulary or names a
+/// policy outside the SDK's `permission_policy` set; C3 the call is a built-in
+/// (`agent.tool_use`) or an MCP tool (`agent.mcp_tool_use`). Effects: E1 the
+/// event carries `evaluation` in exactly the SDK 0.125.0 shape beside the flat
+/// `evaluated_permission`; E2 `evaluation` is absent while the flat decision
+/// is still reported; E3 both event families project identically.
+///
+/// | Rule | policy | decision | reason_code | evaluation |
+/// |---|---|---|---|---|
+/// | P1 | auto | ask | indeterminate | {"type":"auto","evaluated_permission":{"type":"ask","reason_code":"indeterminate"}} |
+/// | P2 | auto | deny | judged_high_risk | {"type":"auto","evaluated_permission":{"type":"deny","reason_code":"judged_high_risk"}} |
+/// | P3 | auto | allow | - | {"type":"auto","evaluated_permission":{"type":"allow"}} |
+/// | P4 | always_allow | allow | - | {"type":"always_allow"} |
+/// | P5 | always_ask | ask | - | {"type":"always_ask"} |
+/// | P6 | rule | allow | - | absent (E2) |
+/// | P7 | none (historical row) | allow | - | absent (E2) |
+/// | P8 | bypass (outside the closed vocabulary) | deny | - | absent, decision still deny (E2) |
+/// | P9 | auto | ask | none (inconsistent row) | absent (E2) |
+#[tokio::test]
+async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events() {
+    const ROWS: &[(&str, &[AuditedPermissionRow], &str, Option<&str>)] = &[
+        (
+            "P1",
+            &[
+                ("builtin-1", "ask", Some("auto"), Some("indeterminate")),
+                ("mc1", "ask", Some("auto"), Some("indeterminate")),
+            ],
+            "ask",
+            Some(
+                r#"{"type":"auto","evaluated_permission":{"type":"ask","reason_code":"indeterminate"}}"#,
+            ),
+        ),
+        (
+            "P2",
+            &[
+                ("builtin-1", "deny", Some("auto"), Some("judged_high_risk")),
+                ("mc1", "deny", Some("auto"), Some("judged_high_risk")),
+            ],
+            "deny",
+            Some(
+                r#"{"type":"auto","evaluated_permission":{"type":"deny","reason_code":"judged_high_risk"}}"#,
+            ),
+        ),
+        (
+            "P3",
+            &[
+                ("builtin-1", "allow", Some("auto"), None),
+                ("mc1", "allow", Some("auto"), None),
+            ],
+            "allow",
+            Some(r#"{"type":"auto","evaluated_permission":{"type":"allow"}}"#),
+        ),
+        (
+            "P4",
+            &[
+                ("builtin-1", "allow", Some("always_allow"), None),
+                ("mc1", "allow", Some("always_allow"), None),
+            ],
+            "allow",
+            Some(r#"{"type":"always_allow"}"#),
+        ),
+        (
+            "P5",
+            &[
+                ("builtin-1", "ask", Some("always_ask"), None),
+                ("mc1", "ask", Some("always_ask"), None),
+            ],
+            "ask",
+            Some(r#"{"type":"always_ask"}"#),
+        ),
+        (
+            "P6",
+            &[
+                ("builtin-1", "allow", Some("rule"), None),
+                ("mc1", "allow", Some("rule"), None),
+            ],
+            "allow",
+            None,
+        ),
+        (
+            "P7",
+            &[
+                ("builtin-1", "allow", None, None),
+                ("mc1", "allow", None, None),
+            ],
+            "allow",
+            None,
+        ),
+        (
+            "P8",
+            &[
+                ("builtin-1", "deny", Some("bypass"), None),
+                ("mc1", "deny", Some("bypass"), None),
+            ],
+            "deny",
+            None,
+        ),
+        (
+            "P9",
+            &[
+                ("builtin-1", "ask", Some("auto"), None),
+                ("mc1", "ask", Some("auto"), None),
+            ],
+            "ask",
+            None,
+        ),
+    ];
+    for (rule, rows, expected_decision, expected_evaluation) in ROWS {
+        let (state, app, completions) = app_with_runtime(
+            ScriptFake::new(|| {
+                ended(vec![
+                    Message::new(
+                        Id("a".into()),
+                        Role::Assistant,
+                        vec![
+                            ContentBlock::ToolUse {
+                                id: "builtin-1".into(),
+                                name: "bash".into(),
+                                input: serde_json::json!({ "command": "ls" }),
+                            },
+                            ContentBlock::ToolUse {
+                                id: "mc1".into(),
+                                name: "mcp__github__search".into(),
+                                input: serde_json::json!({ "q": "rust" }),
+                            },
+                        ],
+                    ),
+                    Message::new(
+                        Id("t".into()),
+                        Role::Tool,
+                        vec![
+                            ContentBlock::ToolResult {
+                                tool_use_id: "builtin-1".into(),
+                                content: vec![ContentBlock::text("ok")],
+                                is_error: false,
+                            },
+                            ContentBlock::ToolResult {
+                                tool_use_id: "mc1".into(),
+                                content: vec![ContentBlock::text("3 hits")],
+                                is_error: false,
+                            },
+                        ],
+                    ),
+                ])
+            })
+            .with_committed_evidence(CommittedEvidence::PermissionDecisions(rows)),
+        );
+        let id = create(&app).await;
+        send_user(&app, &id, "go").await;
+        support::drive_completed_user_dispatches(&state, &id, &completions).await;
+        let list = list_events(&app, &id).await;
+        let expected_evaluation = expected_evaluation
+            .map(|json| serde_json::from_str::<serde_json::Value>(json).unwrap());
+        for event_type in ["agent.tool_use", "agent.mcp_tool_use"] {
+            let use_ev = list["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["type"] == event_type)
+                .unwrap_or_else(|| panic!("{rule}: {event_type} is visible"));
+            assert_eq!(
+                use_ev["evaluated_permission"], *expected_decision,
+                "{rule}/{event_type}: the flat decision is always the recorded one"
+            );
+            match &expected_evaluation {
+                Some(evaluation) => assert_eq!(
+                    use_ev["evaluation"], *evaluation,
+                    "{rule}/{event_type}/E1 the SDK evaluation shape, byte for byte"
+                ),
+                None => assert!(
+                    use_ev.get("evaluation").is_none(),
+                    "{rule}/{event_type}/E2 no evaluation is projected: {use_ev}"
+                ),
+            }
+        }
+    }
 }

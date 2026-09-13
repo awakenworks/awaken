@@ -26,7 +26,10 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
+use awaken_runtime_contract::permission::{
+    PermissionBasis, PermissionPolicy, PermissionReasonCode, ToolPermissionPolicy,
+    ToolPermissionRuling, ToolPermissionVerdict,
+};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
     ToolPresentation, ToolPresentationOverride,
@@ -1084,4 +1087,190 @@ async fn tool_batch_handoff_preserves_the_remaining_calls_and_publication_barrie
             vec![("call-1".into(), false), ("call-2".into(), !allow_second)]
         );
     }
+}
+
+/// A policy that states the authored basis of its verdict, as the rule-based
+/// extension does. The runtime axis under test is that the basis a policy
+/// states reaches the committed audit fact untouched — not how the extension
+/// arrives at it (that is `awaken-ext-permission`'s own decision table).
+struct BasisPolicy(ToolPermissionRuling);
+#[async_trait::async_trait]
+impl ToolPermissionPolicy for BasisPolicy {
+    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
+        self.0.verdict.clone()
+    }
+
+    async fn evaluate_with_basis(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
+        self.0.clone()
+    }
+}
+
+fn audited_rows(commit: &MemoryCommitCoordinator) -> Vec<(String, Option<String>, Option<String>)> {
+    commit
+        .committed()
+        .events
+        .iter()
+        .filter(|e| e.kind == EventKind::PermissionDecided)
+        .map(|e| {
+            (
+                e.payload["decision"].as_str().unwrap_or("").to_string(),
+                e.payload
+                    .get("policy")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                e.payload
+                    .get("reason_code")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_gate_audits_the_policy_and_reason_the_deciding_policy_stated() {
+    // Cause/effect graph: C1 the authored policy fixed the answer
+    // (always_allow / always_ask); C2 the policy was `auto` and the evaluator
+    // allowed, refused, or reached no conclusion; C3 the policy stated no basis
+    // (a fixed host policy outside the authored vocabulary). Effects: E1 the
+    // committed `PermissionDecided` row carries the decision label the gate
+    // outcome maps to; E2 `policy` is the stated policy; E3 `reason_code` is
+    // present exactly for an `auto` refusal (`judged_high_risk`) or an `auto`
+    // ask (`indeterminate`); E4 with no stated basis neither key is written.
+    //
+    // | Rule | verdict | stated basis | decision | policy | reason_code |
+    // |---|---|---|---|---|---|
+    // | G1 | Allow | always_allow | allow | always_allow | - |
+    // | G2 | RequireConfirmation | always_ask | ask | always_ask | - |
+    // | G3 | Allow | auto | allow | auto | - |
+    // | G4 | Deny | auto/judged_high_risk | deny | auto | judged_high_risk |
+    // | G5 | RequireConfirmation | auto/indeterminate | ask | auto | indeterminate |
+    // | G6 | Deny | none | deny | - | - |
+    let ask = || ToolPermissionVerdict::RequireConfirmation {
+        correlation_id: TICKET.to_string(),
+    };
+    let deny = || ToolPermissionVerdict::Deny {
+        reason: "no".to_string(),
+    };
+    /// `(decision, policy, reason_code)` as the committed payload renders them.
+    type AuditedRow<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
+    let rows: [(&str, ToolPermissionRuling, AuditedRow<'_>); 6] = [
+        (
+            "G1",
+            ToolPermissionRuling {
+                verdict: ToolPermissionVerdict::Allow,
+                basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
+            },
+            ("allow", Some("always_allow"), None),
+        ),
+        (
+            "G2",
+            ToolPermissionRuling {
+                verdict: ask(),
+                basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAsk)),
+            },
+            ("ask", Some("always_ask"), None),
+        ),
+        (
+            "G3",
+            ToolPermissionRuling {
+                verdict: ToolPermissionVerdict::Allow,
+                basis: Some(PermissionBasis::auto(None)),
+            },
+            ("allow", Some("auto"), None),
+        ),
+        (
+            "G4",
+            ToolPermissionRuling {
+                verdict: deny(),
+                basis: Some(PermissionBasis::auto(Some(
+                    PermissionReasonCode::JudgedHighRisk,
+                ))),
+            },
+            ("deny", Some("auto"), Some("judged_high_risk")),
+        ),
+        (
+            "G5",
+            ToolPermissionRuling {
+                verdict: ask(),
+                basis: Some(PermissionBasis::auto(Some(
+                    PermissionReasonCode::Indeterminate,
+                ))),
+            },
+            ("ask", Some("auto"), Some("indeterminate")),
+        ),
+        (
+            "G6",
+            ToolPermissionRuling::without_basis(deny()),
+            ("deny", None, None),
+        ),
+    ];
+    for (rule, ruling, (decision, policy, reason_code)) in rows {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(ToolThenText {
+                calls: AtomicUsize::new(0),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                tool_calls: echo_calls(serde_json::json!({"text": "ping"}), 1),
+            }))
+            .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+            .with_gate(Arc::new(PermissionGate::new(Arc::new(BasisPolicy(ruling)))));
+        runtime.register_snapshot(snapshot());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        runtime
+            .execute(activation(), context(&commit))
+            .await
+            .expect("the gate decides and the run commits");
+        assert_eq!(
+            audited_rows(&commit),
+            vec![(
+                decision.to_string(),
+                policy.map(str::to_string),
+                reason_code.map(str::to_string)
+            )],
+            "{rule}"
+        );
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            usize::from(decision == "allow"),
+            "{rule}: only an allow runs the tool"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_per_run_deny_all_narrowing_audits_no_policy_even_over_a_stating_gate() {
+    // The narrowing decides before any authored policy is consulted, so the
+    // row it writes names none — attributing the denial to the authored
+    // `always_allow` would claim the author refused a call they allowed.
+    //
+    // | Rule | narrowing | host policy basis | decision | policy |
+    // |---|---|---|---|---|
+    // | N1 | DenyAll | always_allow | deny | - |
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText {
+            calls: AtomicUsize::new(0),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            tool_calls: echo_calls(serde_json::json!({"text": "ping"}), 1),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(PermissionGate::new(Arc::new(BasisPolicy(
+            ToolPermissionRuling {
+                verdict: ToolPermissionVerdict::Allow,
+                basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
+            },
+        )))));
+    runtime.register_snapshot(snapshot());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    runtime
+        .execute(activation().without_tools(), context(&commit))
+        .await
+        .expect("the restricted Run completes");
+    assert_eq!(
+        audited_rows(&commit),
+        vec![("deny".to_string(), None, None)],
+        "N1"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "N1");
 }

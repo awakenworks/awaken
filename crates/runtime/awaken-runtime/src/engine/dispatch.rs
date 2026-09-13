@@ -203,12 +203,12 @@ pub(super) async fn run_tool_calls(
                 discovery,
             )
         } else {
-            let outcome = gate_decision(runtime, &call, env, store, context).await;
+            let decision = gate_decision(runtime, &call, env, store, context).await;
             // Audit the decision of a real (policy-backed) gate (ADR-0030).
             if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
-                ledger.audit.push(permission_audit(&call, &outcome));
+                ledger.audit.push(permission_audit(&call, &decision));
             }
-            match outcome {
+            match decision.outcome {
                 GateOutcome::Allow => {
                     delegation_started = stage_delegation_request(
                         runtime,
@@ -453,11 +453,11 @@ async fn run_concurrent_tool_calls(
 
         let mut gates = Vec::with_capacity(wave_calls.len());
         for call in wave_calls {
-            let outcome = gate_decision(runtime, call, env, store, context).await;
+            let decision = gate_decision(runtime, call, env, store, context).await;
             if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
-                ledger.audit.push(permission_audit(call, &outcome));
+                ledger.audit.push(permission_audit(call, &decision));
             }
-            gates.push(outcome);
+            gates.push(decision.outcome);
         }
 
         // A wait applies before any executor in this wave starts. Earlier waves
@@ -928,7 +928,7 @@ pub(super) async fn recover_tool_batch(
             if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
                 ledger.audit.push(permission_audit(&call, &gate));
             }
-            match gate {
+            match gate.outcome {
                 GateOutcome::Block { reason } => {
                     record_recovered_output(
                         env,

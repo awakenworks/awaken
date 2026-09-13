@@ -136,7 +136,10 @@ impl PreparedToolExecutor {
         call: &ToolCall,
         state: &Store,
     ) -> Result<ToolOutput, DetachedToolError> {
-        match gate_decision(self.runtime.as_ref(), call, &self.env, state, &self.context).await {
+        match gate_decision(self.runtime.as_ref(), call, &self.env, state, &self.context)
+            .await
+            .outcome
+        {
             GateOutcome::Allow => {}
             outcome => {
                 return Err(DetachedToolError::NotAuthorized {
@@ -176,7 +179,10 @@ impl PreparedToolExecutor {
         call: &ToolCall,
         state: &Store,
     ) -> Result<ToolTaskStart, DetachedToolError> {
-        match gate_decision(self.runtime.as_ref(), call, &self.env, state, &self.context).await {
+        match gate_decision(self.runtime.as_ref(), call, &self.env, state, &self.context)
+            .await
+            .outcome
+        {
             GateOutcome::Allow => {}
             outcome => {
                 return Err(DetachedToolError::NotAuthorized {

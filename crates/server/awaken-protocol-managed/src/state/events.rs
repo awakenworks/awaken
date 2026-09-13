@@ -2,7 +2,7 @@
 //! the live-inbox surface, and `send_events`/`list_events`.
 
 use super::*;
-use crate::types::{EvaluatedPermission, SpanModelUsage};
+use crate::types::{EvaluatedPermission, RecordedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_ext_builtin_tools::SEND_MESSAGE;

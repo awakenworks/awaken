@@ -11,7 +11,10 @@ use awaken_ext_permission::{
     parse_ruleset,
 };
 use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement;
-use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
+use awaken_runtime_contract::permission::{
+    PermissionBasis, PermissionPolicy, PermissionReasonCode, ToolCall, ToolPermissionPolicy,
+    ToolPermissionVerdict,
+};
 use serde_json::json;
 
 fn rule(spec: &str, behavior: ToolPermissionBehavior) -> PermissionRule {
@@ -893,4 +896,192 @@ async fn a_closed_toolset_deferral_and_an_open_toolset_auto_behave_identically()
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The basis every ruling states (ADR-0030 D4)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
+    // Cause/effect graph: C1 the resolved toolset requirement fixed the answer;
+    // C2 the requirement is `auto` and the evaluator allowed / refused / could
+    // not judge; C3 an authored pattern rule matched; C4 nothing matched and
+    // the ruleset default decided; C5 the toolset disabled the tool. Effects:
+    // E1 the ruling's basis names the requirement; E2 an `auto` refusal carries
+    // `judged_high_risk` and an `auto` ask carries `indeterminate`, an `auto`
+    // allow carries none; E3 an authored rule, the authored default and a
+    // disablement all name `rule` — an instruction outside the toolset policy
+    // vocabulary.
+    //
+    // | Rule | source | evaluator | verdict | policy | reason_code |
+    // |---|---|---|---|---|---|
+    // | B1 | always_allow | (ignored) | Allow | always_allow | - |
+    // | B2 | always_ask | (ignored) | Ask | always_ask | - |
+    // | B3 | auto | allow | Allow | auto | - |
+    // | B4 | auto | deny | Deny | auto | judged_high_risk |
+    // | B5 | auto | indeterminate | Ask | auto | indeterminate |
+    // | B6 | authored `Read` allow rule | - | Allow | rule | - |
+    // | B7 | ruleset default deny | - | Deny | rule | - |
+    // | B8 | toolset disabled | - | Deny | rule | - |
+    let expect = |rule: &str,
+                  ruling: awaken_runtime_contract::permission::ToolPermissionRuling,
+                  verdict: fn(&ToolPermissionVerdict) -> bool,
+                  basis: PermissionBasis| {
+        assert!(verdict(&ruling.verdict), "{rule}: {:?}", ruling.verdict);
+        assert_eq!(ruling.basis, Some(basis), "{rule}");
+    };
+    let is_allow = |v: &ToolPermissionVerdict| matches!(v, ToolPermissionVerdict::Allow);
+    let is_ask =
+        |v: &ToolPermissionVerdict| matches!(v, ToolPermissionVerdict::RequireConfirmation { .. });
+    let is_deny = |v: &ToolPermissionVerdict| matches!(v, ToolPermissionVerdict::Deny { .. });
+
+    let fixed = |requirement| {
+        RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+            .with_mcp_toolsets(&[mcp_toolset(requirement)])
+            .with_auto_evaluator(std::sync::Arc::new(FixedAuto(AutoDecision::Deny)))
+    };
+    expect(
+        "B1",
+        fixed(ToolPermissionRequirement::AlwaysAllow)
+            .evaluate_with_basis(&auto_call())
+            .await,
+        is_allow,
+        PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
+    );
+    expect(
+        "B2",
+        fixed(ToolPermissionRequirement::AlwaysAsk)
+            .evaluate_with_basis(&auto_call())
+            .await,
+        is_ask,
+        PermissionBasis::fixed(PermissionPolicy::AlwaysAsk),
+    );
+
+    let auto = |decision| {
+        RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+            .with_mcp_toolsets(&[mcp_toolset(ToolPermissionRequirement::Auto)])
+            .with_auto_evaluator(std::sync::Arc::new(FixedAuto(decision)))
+    };
+    expect(
+        "B3",
+        auto(AutoDecision::Allow)
+            .evaluate_with_basis(&auto_call())
+            .await,
+        is_allow,
+        PermissionBasis::auto(None),
+    );
+    expect(
+        "B4",
+        auto(AutoDecision::Deny)
+            .evaluate_with_basis(&auto_call())
+            .await,
+        is_deny,
+        PermissionBasis::auto(Some(PermissionReasonCode::JudgedHighRisk)),
+    );
+    expect(
+        "B5",
+        auto(AutoDecision::Indeterminate)
+            .evaluate_with_basis(&auto_call())
+            .await,
+        is_ask,
+        PermissionBasis::auto(Some(PermissionReasonCode::Indeterminate)),
+    );
+
+    let authored = RuleBasedToolPermissionPolicy::new(ruleset(
+        ToolPermissionBehavior::Deny,
+        vec![rule("Read", ToolPermissionBehavior::Allow)],
+    ));
+    let call = |tool_id: &str| ToolCall {
+        tool_id: tool_id.into(),
+        call_id: "c".into(),
+        arguments: json!({}),
+    };
+    expect(
+        "B6",
+        authored.evaluate_with_basis(&call("Read")).await,
+        is_allow,
+        PermissionBasis::fixed(PermissionPolicy::Rule),
+    );
+    expect(
+        "B7",
+        authored.evaluate_with_basis(&call("Write")).await,
+        is_deny,
+        PermissionBasis::fixed(PermissionPolicy::Rule),
+    );
+
+    let mut disabled = mcp_toolset(ToolPermissionRequirement::AlwaysAllow);
+    disabled.default.enabled = false;
+    let disabled = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+        .with_mcp_toolsets(&[disabled]);
+    expect(
+        "B8",
+        disabled.evaluate_with_basis(&auto_call()).await,
+        is_deny,
+        PermissionBasis::fixed(PermissionPolicy::Rule),
+    );
+}
+
+#[test]
+fn a_fixed_requirement_compiles_into_a_rule_that_still_names_it() {
+    // The host expands a closed toolset's fixed requirements into rules. The
+    // rule keeps naming its requirement so the audit can report
+    // `always_allow`/`always_ask` rather than an anonymous rule; `auto` compiles
+    // into no rule at all because a deferral is not a decision.
+    //
+    // | Rule | enabled | requirement | behavior | policy |
+    // |---|---|---|---|---|
+    // | C1 | T | always_allow | allow | always_allow |
+    // | C2 | T | always_ask | ask | always_ask |
+    // | C3 | T | auto | (no rule) | - |
+    // | C4 | F | always_allow | deny | rule |
+    use awaken_runtime_contract::agent_bindings::ToolExecutionPolicy;
+    let pattern = || ToolCallPattern::parse("read").unwrap();
+    let policy = |enabled, permission| ToolExecutionPolicy {
+        enabled,
+        permission,
+    };
+    let c1 = PermissionRule::from_fixed_policy(
+        pattern(),
+        policy(true, ToolPermissionRequirement::AlwaysAllow),
+    )
+    .unwrap();
+    assert_eq!(
+        (c1.behavior, c1.policy),
+        (ToolPermissionBehavior::Allow, PermissionPolicy::AlwaysAllow),
+        "C1"
+    );
+    let c2 = PermissionRule::from_fixed_policy(
+        pattern(),
+        policy(true, ToolPermissionRequirement::AlwaysAsk),
+    )
+    .unwrap();
+    assert_eq!(
+        (c2.behavior, c2.policy),
+        (
+            ToolPermissionBehavior::RequireConfirmation,
+            PermissionPolicy::AlwaysAsk
+        ),
+        "C2"
+    );
+    assert!(
+        PermissionRule::from_fixed_policy(pattern(), policy(true, ToolPermissionRequirement::Auto))
+            .is_none(),
+        "C3"
+    );
+    let c4 = PermissionRule::from_fixed_policy(
+        pattern(),
+        policy(false, ToolPermissionRequirement::AlwaysAllow),
+    )
+    .unwrap();
+    assert_eq!(
+        (c4.behavior, c4.policy),
+        (ToolPermissionBehavior::Deny, PermissionPolicy::Rule),
+        "C4"
+    );
+    assert_eq!(
+        rule("Read", ToolPermissionBehavior::Allow).policy,
+        PermissionPolicy::Rule,
+        "an authored rule names `rule`"
+    );
 }
