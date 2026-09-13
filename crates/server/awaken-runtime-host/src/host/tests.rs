@@ -3635,7 +3635,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     // Cause/effect table: C1 a complete tool-free Native snapshot; C2 no
     // Session/Environment/Resource projection; C3 a registered claim's exact
     // publication identity. R1 C1+C2+C3 -> context without a physical Sandbox
-    // or fabricated Resource transition; R2 dispatch still carries Workspace
+    // or fabricated Resource transition, retaining Execution purpose; R2 dispatch still carries Workspace
     // scope even without resource bytes. The live template Outcome E2E verifies
     // the same path through the remote Worker and official Managed API.
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "model"));
@@ -3662,6 +3662,11 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
         .ctx_for_claimed_snapshot(thread, Some("judge"), snapshot.clone(), attempt)
         .await
         .expect("R1 no Resource transition is needed for inference");
+    assert_eq!(
+        ctx.purpose,
+        super::session_ctx::RuntimeContextPurpose::Execution,
+        "R1 omitting a Sandbox must not downgrade the claim to coordination"
+    );
     assert!(ctx.env.is_none(), "R1 no physical environment");
     assert!(host.session_environment(thread).await.is_none());
     let dispatch = host
