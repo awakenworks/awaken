@@ -615,14 +615,49 @@ def shared_conformance_errors(
     return errors
 
 
+# The two commands `--push` exists to run: workspace clippy under
+# `-D warnings` (dead code has turned main red after a green pre-commit) and
+# the formal coverage ledger (a Kani harness registered in formal/coverage.json
+# but not selected by check_formal.sh fails the formal group hours later; the
+# ledger check proves selection in seconds).
+PUSH_GATE_COMMANDS = (
+    "cargo clippy --workspace --all-targets",
+    "python3 scripts/ci/check_formal_coverage.py",
+    "python3 scripts/ci/check_formal_surface.py --require-complete",
+)
+
+
 def rust_hook_errors(hooks: str, gate: str) -> list[str]:
-    """Rust hook composition delegates each static scan to the existing gate."""
+    """Rust hook composition delegates each static scan to the existing gate.
+
+    Pre-commit runs `--quick`; pre-push runs `--push`, which is `--quick`
+    plus the two checks in PUSH_GATE_COMMANDS. The gate must actually run
+    those commands on its `--push` path: a hook that names a mode the script
+    does not implement, or a mode that silently drops one of the commands,
+    keeps the pre-commit latency and loses the reason the mode exists.
+    """
     errors = []
     pre_commit = hooks.split("pre-commit:", 1)[-1].split("\npre-push:", 1)[0]
+    pre_push = hooks.split("\npre-push:", 1)[-1] if "\npre-push:" in hooks else ""
     owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_commit)
     owner_text = owner.group(1) if owner else ""
     if owner_text.count("run: scripts/ci/check-rust.sh --quick") != 1:
         errors.append("Rust pre-commit must delegate to the canonical gate once")
+    push_owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_push)
+    push_text = push_owner.group(1) if push_owner else ""
+    if push_text.count("run: scripts/ci/check-rust.sh --push") != 1:
+        errors.append("Rust pre-push must delegate to the canonical gate's --push mode once")
+    if "check-rust.sh --quick" in pre_push:
+        errors.append("Rust pre-push still runs --quick, which skips clippy and the formal ledger")
+    push_branch = re.search(r"(?ms)^  --quick\|--push\)\n(.*?)^    ;;", gate)
+    push_body = push_branch.group(1) if push_branch else ""
+    if not push_branch or 'if [ "$mode" = "--push" ]' not in push_body:
+        errors.append("check-rust.sh must implement --push as --quick plus push-only steps")
+    for command in PUSH_GATE_COMMANDS:
+        if command not in push_body:
+            errors.append(f"check-rust.sh --push must run {command}")
+    if "-D warnings" not in push_body:
+        errors.append("check-rust.sh --push clippy must deny warnings")
     cargo_gate = gate.find("if ! command -v cargo")
     for checker in ("check_dependency_sources.py", "check_crate_boundaries.py"):
         command = f"python3 scripts/ci/{checker}"
@@ -1015,6 +1050,44 @@ def self_test() -> None:
     hooks = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
     gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
     assert not rust_hook_errors(hooks, gate), "H1 single owner"
+    # Push-mode table. Causes: P1 pre-commit runs --quick; P2 pre-push runs
+    # --push; P3 the gate's --push branch runs workspace clippy under
+    # -D warnings; P4 it runs the formal coverage ledger; P5 pre-push still
+    # names --quick. Effects: accept / reject.
+    # | Rule | P1 | P2 | P3 | P4 | P5 | Effect |
+    # | H5   | T  | T  | T  | T  | F  | accept |
+    # | H6   | F  | T  | T  | T  | F  | reject: pre-commit off --quick |
+    # | H7   | T  | F  | T  | T  | T  | reject: pre-push still --quick |
+    # | H8   | T  | F  | T  | T  | F  | reject: pre-push names no gate mode |
+    # | H9   | T  | T  | F  | T  | F  | reject: --push without clippy |
+    # | H10  | T  | T  | T  | F  | F  | reject: --push without the ledger |
+    # | H11  | T  | T  | T* | T  | F  | reject: clippy present but warnings allowed |
+    pre_push_at = hooks.index("\npre-push:")
+    assert rust_hook_errors(
+        hooks[:pre_push_at].replace("check-rust.sh --quick", "check-rust.sh --push") + hooks[pre_push_at:],
+        gate,
+    ), "H6 pre-commit must keep --quick"
+    assert rust_hook_errors(
+        hooks[:pre_push_at] + hooks[pre_push_at:].replace("check-rust.sh --push", "check-rust.sh --quick"),
+        gate,
+    ), "H7 pre-push must not fall back to --quick"
+    assert rust_hook_errors(
+        hooks[:pre_push_at] + hooks[pre_push_at:].replace("check-rust.sh --push", "check-rust.sh --full"),
+        gate,
+    ), "H8 pre-push must name --push"
+    push_start = gate.index("  --quick|--push)")
+    push_end = gate.index("    ;;", push_start)
+    push_body = gate[push_start:push_end]
+    assert "cargo clippy --workspace --all-targets" in push_body and "check_formal_coverage.py" in push_body, (
+        "H5 the live --push branch carries both commands"
+    )
+    without_clippy = gate[:push_start] + push_body.replace("cargo clippy --workspace --all-targets", "true") + gate[push_end:]
+    assert rust_hook_errors(hooks, without_clippy), "H9 --push must run workspace clippy"
+    without_ledger = gate[:push_start] + push_body.replace("python3 scripts/ci/check_formal_coverage.py", "true") + gate[push_end:]
+    assert rust_hook_errors(hooks, without_ledger), "H10 --push must run the formal ledger"
+    allowing = gate[:push_start] + push_body.replace("-D warnings", "-W warnings") + gate[push_end:]
+    assert rust_hook_errors(hooks, allowing), "H11 --push clippy must deny warnings"
+    assert rust_hook_errors(hooks, gate.replace("  --quick|--push)", "  --quick)")), "H8 gate without a --push branch"
     # Hook input coverage table: G1 glob covers every input -> accept; G2 the
     # command is missing -> reject; G3 the glob drops one input -> reject.
     covering = (

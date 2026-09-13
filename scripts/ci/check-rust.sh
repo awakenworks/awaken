@@ -161,7 +161,7 @@ done
 # The full gate retains its existing real Hand companion in the same graph.
 workspace_features="awaken-cli/container-k8s"
 case "$mode" in
-  --quick)
+  --quick|--push)
     # Causal regression: the physical Attempt owns chained ScheduledActions;
     # embedding its concrete Future in Worker cancellation exceeded rustc's
     # layout-query depth even though ingress tests compiled. This all-targets
@@ -170,6 +170,27 @@ case "$mode" in
     # recursion limits; an ingress-only replacement would lose this coverage.
     step "check" "fix the compile errors shown above" \
       cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+    if [ "$mode" = "--push" ]; then
+      # Push cause/effect table. P1 a commit compiles but carries dead code or
+      # another `-D warnings` lint -> the quick check passes, main goes red at
+      # the first full run; the pre-push gate runs the same workspace clippy
+      # the full gate runs (same feature set, same locked graph) so the lint
+      # is refused before it leaves the machine. P2 a Kani harness is
+      # registered in formal/coverage.json but not selected by
+      # scripts/ci/check_formal.sh -> the formal group fails hours later; the
+      # ledger check proves selection in seconds, so it runs here. Neither is
+      # a test run: the workspace suite stays in --full.
+      step "clippy" "review the errors above; auto-fixable lints: cargo clippy --fix --all-targets --allow-dirty" \
+        cargo clippy --workspace --all-targets --features "$workspace_features" "${locked[@]}" -- -D warnings
+      step "formal-coverage" "register the harness in scripts/ci/check_formal.sh or fix formal/coverage.json as shown above" \
+        python3 scripts/ci/check_formal_coverage.py
+      # A new production module is invisible to the formal-evidence pre-commit
+      # hook, whose glob is the formal inputs themselves; an unclassified
+      # surface therefore reaches main and fails the next commit that does
+      # touch those inputs. The push gate is where that is still cheap.
+      step "formal-surface" "classify the new source in formal/surface-classifications.json (or record an exclusion)" \
+        python3 scripts/ci/check_formal_surface.py --require-complete
+    fi
     ;;
   --full)
     # C1 Cargo's user build-dir differs from target-dir; C2 Scenario tests
@@ -194,7 +215,7 @@ case "$mode" in
     fi
     ;;
   *)
-    echo "ERROR: unknown mode: $mode (expected --quick or --full)" >&2
+    echo "ERROR: unknown mode: $mode (expected --quick, --push or --full)" >&2
     exit 1
     ;;
 esac
