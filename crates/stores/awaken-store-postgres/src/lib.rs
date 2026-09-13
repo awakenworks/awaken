@@ -41,7 +41,7 @@ use awaken_agent_contract::thread::read::lifecycle::{
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
-    decode_resume_ticket_value_for_owner,
+    decode_resume_ticket_value_for_owner, project_committed_run_records,
 };
 use awaken_store_schema::StoredU64;
 use sqlx::Row;
@@ -954,26 +954,17 @@ impl RunRecoverySource for PostgresCommitCoordinator {
         .fetch_all(&mut *tx)
         .await
         .map_err(recovery_reject)?;
-        let mut runs: Vec<RunRecord> = Vec::new();
-        let mut latest_run_id = None;
-        for row in commit_rows {
-            let run_id = RunId(
-                row.try_get::<String, _>("run_id")
-                    .map_err(recovery_reject)?,
-            );
-            let Json(state): Json<RunState> = row.try_get("phase").map_err(recovery_reject)?;
-            let record = RunRecord {
-                id: run_id.clone(),
-                thread_id: thread_id.clone(),
-                state,
-            };
-            latest_run_id = Some(run_id.clone());
-            if let Some(existing) = runs.iter_mut().find(|existing| existing.id == run_id) {
-                *existing = record;
-            } else {
-                runs.push(record);
-            }
-        }
+        let (runs, latest_run_id) = project_committed_run_records(
+            thread_id,
+            commit_rows.into_iter().map(|row| {
+                let run_id = RunId(
+                    row.try_get::<String, _>("run_id")
+                        .map_err(recovery_reject)?,
+                );
+                let Json(state): Json<RunState> = row.try_get("phase").map_err(recovery_reject)?;
+                Ok::<_, RecoveryError>((run_id, state))
+            }),
+        )?;
 
         let message_rows = sqlx::query(&format!(
             "SELECT commit_sequence, data FROM {p}_message WHERE thread_id = $1 ORDER BY id"
