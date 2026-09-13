@@ -1,3 +1,4 @@
+import { withoutAmbientProviderKeys } from '../../e2e/process_environment.mjs';
 import { spawnProduction } from '../../e2e/harness.mjs';
 
 // Browser startup decision rule: an owned empty root must be explicitly
@@ -10,7 +11,10 @@ if (!dataDir) throw new Error('browser backend requires its owned data directory
 if (process.env.AWAKEN_E2E_CARGO_TARGET_DIR) {
   process.env.CARGO_TARGET_DIR = process.env.AWAKEN_E2E_CARGO_TARGET_DIR;
 }
-const server = spawnProduction(dataDir, Number(process.env.AWAKEN_E2E_BACKEND_PORT));
+// L1 live browser owns a provider key -> only config ingress may receive it;
+// L2 production child -> canonical environment filter removes ambient keys.
+// Live MCP browser acceptance proves setup+execution without bypassing this gate.
+const server = spawnProduction(dataDir, Number(process.env.AWAKEN_E2E_BACKEND_PORT), {}, withoutAmbientProviderKeys(process.env));
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => server.kill(signal));
 }

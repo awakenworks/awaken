@@ -35,9 +35,15 @@ export default defineConfig({
   globalTeardown: "./e2e/global-teardown.ts",
   use: {
     baseURL: webUrl,
-    trace: "retain-on-failure",
+    trace: process.env.AWAKEN_UIUX_LIVE === "1" ? "off" : "retain-on-failure",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  // UI/UX acceptance opts into all installed engines; default CI remains the
+  // same Chromium project. Each selected engine runs the same assertions.
+  projects: (process.env.AWAKEN_UIUX_BROWSERS ?? "chromium").split(",").map((name) => {
+    const device = { chromium: "Desktop Chrome", firefox: "Desktop Firefox", webkit: "Desktop Safari" }[name];
+    if (!device) throw new Error(`Unsupported acceptance browser: ${name}`);
+    return { name, use: { ...devices[device] } };
+  }),
   webServer: [
     {
       // The management backend (advertises /v1/capabilities, config plane, sessions…).

@@ -125,7 +125,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
         {renaming ? <span className="row"><input className="ui-input" aria-label={app.t("Vault name", "Vault 名称")} value={vaultName} onChange={(event) => setVaultName(event.target.value)} /><Button disabled={rename.isPending || !vaultName.trim()} onClick={() => rename.mutate()}>{app.t("Save", "保存")}</Button></span> : <div><strong>{entityDisplayName(name, app.t("Unnamed vault", "未命名 Vault"))}</strong><TechnicalId value={id} /></div>}
         <span style={{ flex: 1 }} />
         {!renaming && <Button variant="ghost" onClick={() => setRenaming(true)}>{app.t("Rename", "重命名")}</Button>}
-        <Button variant="ghost" onClick={() => setAdding(true)}>
+        <Button variant="ghost" onClick={() => { setSecret(""); setRefreshToken(""); setRefreshEnabled(false); setAdding(true); }}>
           <Plus /> {app.t("Add credential", "添加凭证")}
         </Button>
         <Button variant="danger" disabled={del.isPending} onClick={confirmDelete}>
@@ -147,7 +147,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
         </div>
       )}
       {adding && (
-        <Modal title={app.t("Add runtime credential", "添加运行时凭证")} onClose={() => setAdding(false)} width="min(760px, 94vw)">
+        <Modal title={app.t("Add runtime credential", "添加运行时凭证")} onClose={() => { if (!create.isPending) { setAdding(false); setSecret(""); setRefreshToken(""); } }} width="min(760px, 94vw)">
             <p className="hint">{app.t(
               "Choose the credential authentication type. The Vault name does not restrict credential types.",
               "选择凭证认证类型；Vault 名称不限制凭证类型。",
@@ -161,6 +161,8 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
                     setType(option.type);
                     setTarget("");
                     setSecret("");
+                    setRefreshToken("");
+                    setRefreshEnabled(false);
                   }}
                 >
                   <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}><strong>{app.t(option.label, option.labelZh)}</strong><small>{app.t(option.consumer, option.consumerZh)}</small></span>
@@ -175,24 +177,24 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
               onChange={(event) => setTarget(event.target.value)}
               placeholder={type === "environment_variable" ? "GITHUB_TOKEN" : "https://mcp.example.com/mcp"}
             />
-            <SecretField label={type === "mcp_oauth" ? app.t("Access token (write-only)", "Access Token（仅写入）") : app.t("Secret (write-only)", "Secret（仅写入）")} hasStored={false} onChange={(intent) => setSecret(intent.value ?? "")} />
+            <SecretField key={type} label={type === "mcp_oauth" ? app.t("Access token (write-only)", "Access Token（仅写入）") : app.t("Secret (write-only)", "Secret（仅写入）")} hasStored={false} onChange={(intent) => setSecret(intent.value ?? "")} />
             {type === "environment_variable" && <TextField label={app.t("Allowed hosts", "允许的 Host")} mono value={allowedHosts} onChange={(event) => setAllowedHosts(event.target.value)} placeholder="api.github.com, github.com" />}
-            {type === "mcp_oauth" && <details open={refreshEnabled}><summary><label className="row" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={refreshEnabled} onChange={(event) => setRefreshEnabled(event.target.checked)} />{app.t("Refresh this token automatically", "自动刷新 Token")}</label></summary>{refreshEnabled && <div className="stack" style={{ marginTop: 10 }}><div className="grid-2"><TextField label="Client id" mono value={clientId} onChange={(event) => setClientId(event.target.value)} /><SecretField label={app.t("Refresh token", "Refresh Token")} hasStored={false} onChange={(intent) => setRefreshToken(intent.value ?? "")} /></div><TextField label="Token endpoint" mono value={tokenEndpoint} onChange={(event) => setTokenEndpoint(event.target.value)} placeholder="https://provider.example.com/oauth/token" /></div>}</details>}
+            {type === "mcp_oauth" && <details open={refreshEnabled}><summary><label className="row" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={refreshEnabled} onChange={(event) => { setRefreshEnabled(event.target.checked); setRefreshToken(""); }} />{app.t("Refresh this token automatically", "自动刷新 Token")}</label></summary>{refreshEnabled && <div className="stack" style={{ marginTop: 10 }}><div className="grid-2"><TextField label="Client id" mono value={clientId} onChange={(event) => setClientId(event.target.value)} /><SecretField label={app.t("Refresh token", "Refresh Token")} hasStored={false} onChange={(intent) => setRefreshToken(intent.value ?? "")} /></div><TextField label="Token endpoint" mono value={tokenEndpoint} onChange={(event) => setTokenEndpoint(event.target.value)} placeholder="https://provider.example.com/oauth/token" /></div>}</details>}
             {type === "mcp_oauth" && <TextField label={app.t("Expires at · optional", "过期时间 · 可选")} mono value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} placeholder="2026-12-31T00:00:00Z" />}
             <InlineNotice tone="info" icon={<Info />}><span>{app.t("Runtime Secrets stores integration and execution credentials. Add model API keys under Models & providers so Awaken can verify and rotate them with the matching provider.", "Runtime Secrets 用于保存集成和执行凭证。模型 API Key 请在“模型与供应商”中添加，以便 Awaken 按对应供应商验证和轮换。")}</span></InlineNotice>
             {create.error instanceof Error && <div className="err">{create.error.message}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>
               <Button
                 variant="primary"
-                disabled={create.isPending || !target.trim() || !secret}
+                disabled={create.isPending || !target.trim() || !secret || (type === "mcp_oauth" && refreshEnabled && (!clientId.trim() || !refreshToken || !tokenEndpoint.trim()))}
                 onClick={() => {
                   if (type === "environment_variable") {
                     const hosts = allowedHosts.split(",").map((host) => host.trim()).filter(Boolean);
-                    create.mutate({ type, display_name: displayName || undefined, secret_name: target, secret_value: secret, networking: hosts.length ? { type: "limited", allowed_hosts: hosts } : { type: "unrestricted" } });
+                    create.mutate({ display_name: displayName || undefined, auth: { type, secret_name: target, secret_value: secret, networking: hosts.length ? { type: "limited", allowed_hosts: hosts } : { type: "unrestricted" } } });
                   } else if (type === "static_bearer") {
-                    create.mutate({ type, display_name: displayName || undefined, mcp_server_url: target, token: secret });
+                    create.mutate({ display_name: displayName || undefined, auth: { type, mcp_server_url: target, token: secret } });
                   } else {
-                    create.mutate({ type, display_name: displayName || undefined, mcp_server_url: target, access_token: secret, expires_at: expiresAt || undefined, ...(refreshEnabled ? { refresh: { client_id: clientId, refresh_token: refreshToken, token_endpoint: tokenEndpoint, token_endpoint_auth: { type: "none" } } } : {}) });
+                    create.mutate({ display_name: displayName || undefined, auth: { type, mcp_server_url: target, access_token: secret, expires_at: expiresAt || undefined, ...(refreshEnabled ? { refresh: { client_id: clientId, refresh_token: refreshToken, token_endpoint: tokenEndpoint, token_endpoint_auth: { type: "none" } } } : {}) } });
                   }
                 }}
               >

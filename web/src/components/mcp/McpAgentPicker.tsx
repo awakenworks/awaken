@@ -44,21 +44,21 @@ export default function McpAgentPicker({ config, toolsets, initialKey, onPatch, 
     setCredential(credentialId);
     apply.mutate({ target: initialKey, credentialId, fixed: false });
   }, [initialKey, catalog.data]);
-  return <Card className="stack">
+  return <Card className="ui-stack">
     <strong>{app.t("Add a configured MCP server", "添加已配置 MCP 服务器")}</strong>
-    <select className="ui-input" aria-label={app.t("Configured MCP server", "已配置 MCP 服务器")} value={key} onChange={(e) => {
-      setKey(e.target.value); const next = catalog.data?.servers.find((s) => s.key === e.target.value);
+    <select className="ui-input" aria-label={app.t("Configured MCP server", "已配置 MCP 服务器")} value={key} disabled={apply.isPending} onChange={(e) => {
+      setKey(e.target.value); setPin(false); const next = catalog.data?.servers.find((s) => s.key === e.target.value);
       setCredential(next?.default_matches_target ? next.default_credential?.vault_credential_id ?? "" : "");
       apply.reset();
     }}><option value="">{app.t("Choose a server…", "选择服务器…")}</option>
       {catalog.data?.servers.map((s) => <option key={s.key} value={s.key}>{s.definition.name} · {s.origin}</option>)}
     </select>
     {row && <>
-      <McpCredentialSelect url={row.definition.transport.type === "url" ? row.definition.transport.url : undefined} value={credential} onChange={(c) => setCredential(c?.id ?? "")} />
-      <label><input type="checkbox" checked={pin} onChange={(e) => setPin(e.target.checked)} /> {app.t("Pin this shared account to the Agent for all future Sessions", "将此共享账户固定到 Agent，供所有后续 Session 使用")}</label>
+      <McpCredentialSelect disabled={apply.isPending} url={row.definition.transport.type === "url" ? row.definition.transport.url : undefined} value={credential} onChange={(c) => setCredential(c?.id ?? "")} />
+      <label><input type="checkbox" disabled={apply.isPending || !credential} checked={pin} onChange={(e) => setPin(e.target.checked)} /> {app.t("Pin this shared account to the Agent for all future Sessions", "将此共享账户固定到 Agent，供所有后续 Session 使用")}</label>
       <span className="mut">{app.t("By default the selected Vault is added only to the first run. Later Sessions choose their own identity.", "默认仅将所选 Vault 加入首次运行，后续 Session 独立选择身份。")}</span>
       <Button disabled={apply.isPending} onClick={() => apply.mutate({ target: key, credentialId: credential, fixed: pin })}>{app.t("Add to draft", "添加到草稿")}</Button>
     </>}
-    {(apply.error || catalog.error) instanceof Error && <div className="err">{(apply.error || catalog.error)?.message}</div>}
+    {(apply.error || catalog.error) instanceof Error && <div role="alert" className="err">{(apply.error || catalog.error)?.message}<Button onClick={() => { void catalog.refetch(); apply.reset(); }}>{app.t("Reload configuration", "重新加载配置")}</Button></div>}
   </Card>;
 }

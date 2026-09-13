@@ -14,14 +14,15 @@
     "record:manifest": "node record/release-manifest.mjs",
     "record:test": "node --test record/contract.test.mjs",
     "record:review": "node record/review.mjs",
-    "proof:test": "node record/run-proofs.mjs"
+    "proof:test": "node record/run-proofs.mjs",
+    "test:ux:mcp": "playwright test mcp-config.spec.ts"
   },
   "dependencies": {
     "@ag-ui/client": "^0.0.57",
-    "@awaken/managed-session-projection": "workspace:*",
-    "@awaken/managed-sdk-oracle": "workspace:*",
-    "@awaken/ui": "file:vendor/awaken-ui-0.8.2.tgz",
     "@ai-sdk/react": "^4.0.39",
+    "@awaken/managed-sdk-oracle": "workspace:*",
+    "@awaken/managed-session-projection": "workspace:*",
+    "@awaken/ui": "file:vendor/awaken-ui-0.8.2.tgz",
     "@tanstack/react-query": "^5.62.0",
     "ai": "^7.0.36",
     "react": "^19.0.0",
@@ -29,6 +30,7 @@
     "react-router": "^7.1.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
     "@playwright/test": "^1.61.1",
     "@types/node": "^26.1.0",
     "@types/react": "^19.0.0",

@@ -14,6 +14,8 @@ export interface Models {
   all: string[];
   /** True while the executable-model projection is loading. */
   loading: boolean;
+  error: Error | null;
+  retry: () => void;
 }
 
 export function useModels(): Models {
@@ -32,5 +34,7 @@ export function useModels(): Models {
     ),
     all: Array.from(new Set(options.map((option) => option.model_id))),
     loading: models.isLoading,
+    error: models.error,
+    retry: () => { void models.refetch(); },
   };
 }
