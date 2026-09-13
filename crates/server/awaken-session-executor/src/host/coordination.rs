@@ -93,25 +93,6 @@ struct PendingCoordinationCall {
     args: SendMessageArgs,
 }
 
-fn assistant_coordinates(
-    message: &Message,
-    runs: &[awaken_agent_contract::agent::run::Record],
-) -> Result<Option<(RunId, usize)>, HostError> {
-    let mut matches = runs.iter().filter_map(|run| {
-        message
-            .id
-            .assistant_step_of(&run.id)
-            .map(|step| (run.id.clone(), step))
-    });
-    let first = matches.next();
-    if matches.next().is_some() {
-        return Err(HostError::internal(
-            "committed assistant message has ambiguous Run coordinates",
-        ));
-    }
-    Ok(first)
-}
-
 fn project_committed_coordination_links(
     session_id: &str,
     advisor_model: Option<&str>,
@@ -119,11 +100,26 @@ fn project_committed_coordination_links(
 ) -> Result<Vec<CoordinatedThreadLink>, HostError> {
     let mut active = Vec::<PendingCoordinationCall>::new();
     let mut links = Vec::<CoordinatedThreadLink>::new();
+    let mut runs = std::collections::HashMap::<_, Option<&RunId>>::new();
+    for run in &committed.runs {
+        runs.entry(run.id.0.as_str())
+            .and_modify(|selected| *selected = None)
+            .or_insert(Some(&run.id));
+    }
     for message in &committed.messages {
         if message.role == Role::Assistant {
             active.clear();
-            let Some((run_id, step)) = assistant_coordinates(message, &committed.runs)? else {
+            let Some((owner, step, None)) = message.id.assistant_coordinates() else {
                 continue;
+            };
+            let run_id = match runs.get(owner).copied().flatten() {
+                Some(run_id) => run_id,
+                None if runs.contains_key(owner) => {
+                    return Err(HostError::internal(
+                        "committed assistant message has ambiguous Run coordinates",
+                    ));
+                }
+                None => continue,
             };
             for block in &message.content {
                 if let ContentBlock::ToolUse { id, name, input } = block
@@ -147,7 +143,7 @@ fn project_committed_coordination_links(
                 {
                     apply_advisor_call(
                         session_id,
-                        &run_id,
+                        run_id,
                         step,
                         id,
                         advisor_model.unwrap_or_default(),
@@ -1055,6 +1051,100 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::llm::ToolCall;
     use awaken_runtime_contract::tool::{ToolOutput, ToolRecoveryPolicy};
+
+    #[test]
+    fn coordination_uses_the_neutral_assistant_decoder_for_exact_run_membership() {
+        // Causes: C1 full/truncated/malformed Assistant identity; C2 selected,
+        // foreign or delimiter-containing Run; C3 Assistant/User role; C4 zero
+        // or 10,000 unrelated selected Runs. Effects: only the full Assistant
+        // message owned by the exact selected nested Run projects one Advisor
+        // link, with the same Run/Step/call identity. This is the Host integration
+        // of MessageId's exhaustive codec table; it introduces no second parser.
+        let selected = RunId("root-assistant-0".into());
+        let mut runs = (0..10_000)
+            .map(|i| awaken_agent_contract::agent::run::Record {
+                id: RunId(format!("unrelated-{i}")),
+                thread_id: ThreadId("session".into()),
+                state: RunState::Running,
+            })
+            .collect::<Vec<_>>();
+        runs.extend([
+            awaken_agent_contract::agent::run::Record {
+                id: RunId("root".into()),
+                thread_id: ThreadId("session".into()),
+                state: RunState::Running,
+            },
+            awaken_agent_contract::agent::run::Record {
+                id: selected.clone(),
+                thread_id: ThreadId("session".into()),
+                state: RunState::Running,
+            },
+        ]);
+        let advisor = |id, role| {
+            Message::new(
+                id,
+                role,
+                vec![ContentBlock::tool_use(
+                    "advisor-call",
+                    awaken_runtime_contract::resolved::ADVISOR_TOOL_ID,
+                    serde_json::json!({}),
+                )],
+            )
+        };
+        let snapshot = RunRecoverySnapshot {
+            thread_id: ThreadId("session".into()),
+            claimed_run_id: selected.clone(),
+            runs,
+            latest_run_id: Some(selected.clone()),
+            messages: vec![
+                advisor(MessageId::assistant(&selected, 3), Role::Assistant),
+                advisor(
+                    MessageId::assistant_truncated(&selected, 3, 0),
+                    Role::Assistant,
+                ),
+                advisor(
+                    MessageId::assistant(&RunId("foreign".into()), 3),
+                    Role::Assistant,
+                ),
+                advisor(MessageId::assistant(&selected, 4), Role::User),
+                advisor(MessageId("root-assistant-bad".into()), Role::Assistant),
+            ],
+            message_commit_cursors: vec![1, 2, 3, 4, 5],
+            commit_timestamps: Default::default(),
+            state: Vec::new(),
+            state_commit_cursors: Vec::new(),
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 5,
+            store_cursor: 5,
+            next_commit_ordinal: 1,
+        };
+        let links =
+            project_committed_coordination_links("session", Some("advisor-model"), &snapshot)
+                .unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target.advisor_model(), Some("advisor-model"));
+        assert_eq!(
+            links[0].latest_run_id,
+            Some(DelegationId::for_parent_call(&selected, "advisor-call").child_run_id())
+        );
+        assert_eq!(
+            links[0].created_by_operation_id,
+            ToolBatch::operation_id_for_step(&selected, 3, "advisor-call")
+        );
+        let mut ambiguous = snapshot.clone();
+        ambiguous
+            .runs
+            .push(awaken_agent_contract::agent::run::Record {
+                id: selected,
+                thread_id: ThreadId("session".into()),
+                state: RunState::Running,
+            });
+        let error =
+            project_committed_coordination_links("session", Some("advisor-model"), &ambiguous)
+                .unwrap_err();
+        assert!(error.message.contains("ambiguous Run coordinates"));
+    }
 
     #[test]
     fn dispatch_admission_errors_preserve_commit_certainty() {
