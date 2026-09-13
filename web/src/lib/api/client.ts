@@ -1,3 +1,4 @@
+import { EventSource as FetchEventSource } from "eventsource";
 // The ONLY module that touches fetch (enforced by web/scripts/lint.mjs).
 // Injects the IAM bearer, and maps both error dialects the host speaks:
 // RFC 9457 problem+json (admin plane) and the managed error envelope
@@ -377,7 +378,20 @@ export function issueApplicationAccessToken(
   return api.post<IssuedApplicationAccessToken>(ws("/v1/application-access-tokens"), request);
 }
 
-/** URL for EventSource consumers (sessions SSE; that face carries no bearer). */
-export function streamUrl(path: string): string {
-  return path;
+/** Managed SSE uses the same beta and management identity as ordinary requests.
+ * The EventSource implementation owns framing/reconnect/abort. Credentials may
+ * only reach this Console origin; redirects cannot create another authority path.
+ */
+export function openManagedEventSource(path: string): FetchEventSource {
+  const url = new URL(path, globalThis.location.origin);
+  if (url.origin !== globalThis.location.origin) throw new Error("Managed event streams must use the Console origin");
+  return new FetchEventSource(url, {
+    fetch: async (input, init) => {
+      const headers = new Headers(init?.headers);
+      for (const [name, value] of Object.entries(requestHeaders(url.pathname + url.search))) headers.set(name, value);
+      const response = await fetch(input, { ...init, headers, credentials: "same-origin", redirect: "error" });
+      if (response.status === 401) signalAuthenticationRequired();
+      return response;
+    },
+  });
 }

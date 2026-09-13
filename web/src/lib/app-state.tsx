@@ -60,6 +60,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   });
   useEffect(() => {
     document.documentElement.setAttribute("data-locale", locale);
+    document.documentElement.lang = locale === "zh" ? "zh-Hans" : "en";
     try { localStorage.setItem("awaken.console.locale", locale); }
     catch { /* The current document still supports language changes. */ }
   }, [locale]);

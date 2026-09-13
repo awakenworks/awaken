@@ -263,3 +263,28 @@ list of `chromium,firefox,webkit` for the engine matrix. Phone/tablet/desktop an
 reflow-width cases cover Chinese/English, dark/light, focus containment, touch
 controls and WCAG A/AA automated checks. This does not replace physical-device,
 manual screen-reader or representative-user studies.
+
+
+Real Orca acceptance reuses that same browser fixture through
+`web/e2e/run-orca.py` (`pnpm -C web test:ux:orca`). The Linux runner creates a
+private Xvfb display, D-Bus session, settings profile and Speech Dispatcher
+instance. It captures actual Orca utterances from a terminal to avoid buffered
+log false negatives, plus espeak-ng PCM through an ALSA file sink. The WAV
+container preserves those captured samples. Missing reader/synthesizer, failed
+browser assertions or empty audio reject acceptance; no speech mock is used.
+The operator's screen-reader setting is checked before and after execution.
+
+Account selectors expose their selected account through a description derived
+from the same backend choice; the loading/error/selected state has one live
+announcement owner. Session Vault selection is a native fieldset with a legend,
+so its per-Session scope is spoken when entering the group. Default selection
+buttons describe their effect on newly added bindings. The presentation locale
+also sets document `lang`, rather than leaving Chinese content marked English.
+Orca-specific decision rules remain beside the corresponding browser tests.
+Managed SSE uses the existing API header/identity owner through the EventSource
+client, so beta headers are present and a polling response cannot hide a rejected
+live subscription. Same-origin and redirect guards bound credential delivery;
+401 uses the shared authentication boundary, and unmount aborts the connection.
+This automation verifies reader output and synthesis, not human listening quality
+or participant comprehension; physical-phone and participant tasks need actual
+external devices/people and remain separately recorded acceptance evidence.
