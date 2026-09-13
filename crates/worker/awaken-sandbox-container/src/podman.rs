@@ -192,6 +192,7 @@ pub struct PodmanRuntime {
     package_registry_auth_file: Option<PathBuf>,
     package_cache_ttl: Option<std::time::Duration>,
     package_build_timeout: std::time::Duration,
+    package_build_host_network: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -314,6 +315,7 @@ impl PodmanRuntime {
             package_registry_auth_file: None,
             package_cache_ttl: None,
             package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
+            package_build_host_network: false,
         }
     }
 
@@ -335,7 +337,15 @@ impl PodmanRuntime {
             package_registry_auth_file: None,
             package_cache_ttl: None,
             package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
+            package_build_host_network: false,
         }
+    }
+
+    /// Deployment-owned selection; the Environment's network policy still bounds it.
+    #[must_use]
+    pub fn with_package_build_host_network(mut self, enabled: bool) -> Self {
+        self.package_build_host_network = enabled;
+        self
     }
 
     /// Publish content-addressed package images to a shared OCI registry.
@@ -749,13 +759,15 @@ impl ContainerRuntime for PodmanRuntime {
             let containerfile = root.join("Containerfile");
             std::fs::write(&containerfile, dockerfile).map_err(backend)?;
             let mut build = vec!["build".into()];
-            match network {
-                pc::NetworkPolicy::Unrestricted => {}
-                pc::NetworkPolicy::None => build.extend(["--network".into(), "none".into()]),
-                pc::NetworkPolicy::Allowlist { .. } => {
-                    return Err(backend(
-                        "package image build has no no-bypass allowlist network",
-                    ));
+            // Render the shared build-network decision in Podman's CLI vocabulary.
+            match crate::packages::package_build_network(network, self.package_build_host_network)?
+            {
+                crate::packages::PackageBuildNetwork::EngineDefault => {}
+                crate::packages::PackageBuildNetwork::Host => {
+                    build.extend(["--network".into(), "host".into()]);
+                }
+                crate::packages::PackageBuildNetwork::Denied => {
+                    build.extend(["--network".into(), "none".into()]);
                 }
             }
             build.extend([

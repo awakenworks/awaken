@@ -635,17 +635,18 @@ pub struct DockerRuntime {
     package_build_host_network: bool,
 }
 
+/// Render the shared build-network decision in Docker's `NetworkMode` vocabulary.
 fn package_build_network(
     network: &pc::NetworkPolicy,
     host_opt_in: bool,
 ) -> Result<&'static str, RuntimeError> {
-    match network {
-        pc::NetworkPolicy::Unrestricted => Ok(if host_opt_in { "host" } else { "default" }),
-        pc::NetworkPolicy::None => Ok("none"),
-        pc::NetworkPolicy::Allowlist { .. } => Err(backend(
-            "package image build has no no-bypass allowlist network",
-        )),
-    }
+    Ok(
+        match crate::packages::package_build_network(network, host_opt_in)? {
+            crate::packages::PackageBuildNetwork::EngineDefault => "default",
+            crate::packages::PackageBuildNetwork::Host => "host",
+            crate::packages::PackageBuildNetwork::Denied => "none",
+        },
+    )
 }
 
 impl DockerRuntime {
