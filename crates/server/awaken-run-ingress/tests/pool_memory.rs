@@ -1113,6 +1113,81 @@ async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
 }
 
 #[tokio::test]
+async fn recovered_claim_does_not_serialize_distinct_threads_until_tool_completion() {
+    assert_recovered_claim_thread_concurrency(false).await;
+}
+
+#[tokio::test]
+async fn recovered_claim_still_serializes_runs_of_the_same_thread() {
+    assert_recovered_claim_thread_concurrency(true).await;
+}
+
+async fn assert_recovered_claim_thread_concurrency(same_thread: bool) {
+    use std::sync::atomic::Ordering;
+
+    // Causes: C1 one queue claim fails; C2 the next claim and resolution succeed;
+    // C3 that Run blocks inside a tool; C4 another Thread is runnable and pool
+    // capacity is two. Effects: E1 the outage permits only one recovery probe;
+    // E2 recovered admission releases the peer before C3 finishes; E3 each Run
+    // executes once and settles after explicit release. Decision rule P1:
+    // C1+C2+C3+C4 => E2, not serialization until the first Run settles.
+    // P2 negates distinct-Thread C4: the second Run must wait for settlement;
+    // releasing a local recovery probe never grants a durable execution claim.
+    // The special-claim and gate tests own E1 while this real Pool/Worker test
+    // crosses the missing recovery-to-execution boundary. A one-hour fallback
+    // and no external wake prevent timers from disguising a lost handoff.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let store = Arc::new(FlakyDispatchStore::new(1));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(DispatchWorker::new(
+        runtime,
+        store.clone(),
+        commit.clone(),
+        "pool",
+    ));
+    for (run, thread) in [
+        ("probe-a", "thread-a"),
+        ("probe-b", if same_thread { "thread-a" } else { "thread-b" }),
+    ] {
+        let mut activation = activation_on(run, thread);
+        activation.input[0].id = awaken_agent_contract::agent::message::Id(format!("{run}-input"));
+        store.enqueue(RunDispatch::new(activation)).await.unwrap();
+    }
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..Default::default()
+        },
+        Arc::new(FlakyResolver { worker }),
+        2,
+        Arc::new(BlackholeWake),
+    );
+    let first_entered = wait_for(|| ran.load(Ordering::SeqCst) >= 1).await;
+    let both_entered = wait_for(|| ran.load(Ordering::SeqCst) == 2).await;
+    // Always release and join even on the regression path; a failed assertion
+    // must not leave blocked tool futures or background renewals behind.
+    release.add_permits(2);
+    let settled = wait_for(|| store.dispatch_count() == 0).await;
+    pool.shutdown().await;
+    assert!(first_entered, "P1/P2 the recovery probe actually executed");
+    assert_eq!(
+        both_entered, !same_thread,
+        "P1/P2 recovered admission preserves only the same-Thread execution fence"
+    );
+    assert!(settled, "P1/E3 both retained Runs settle");
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        2,
+        "P1/E3 no duplicate execution"
+    );
+}
+
+#[tokio::test]
 async fn failed_post_commit_observation_relinquishes_and_self_retries() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
