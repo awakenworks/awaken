@@ -19,6 +19,7 @@ data:
     mode = "local"
     role = "all-in-one"
     run_local_pool = true
+    worker_max_concurrent = 10
     no_browser = true
     identity_mode = "self-managed"
     worker_request_credential_file = "/etc/awaken-auth/worker-trust.json"
