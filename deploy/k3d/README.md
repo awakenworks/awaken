@@ -202,15 +202,19 @@ exactly one Provider request across the crash. This proves the evidence-backed
 terminal-recovery case, not safe replay of opaque in-flight model/tool effects
 or arbitrary historical Runs lacking termination evidence.
 
-On 2026-09-13 (Asia/Singapore), commit `d09552fcf` passed all eleven stages in
-`awaken-adr71-d095-browser-0913`, including the non-skipped real Kubernetes test.
+On 2026-09-13 (Asia/Singapore), commit `8864d19ec` passed all eleven stages in
+`awaken-adr71-8864-0913` after rebasing the recovery changes onto `9d8dfcb19`.
+This includes the non-skipped real Kubernetes identity test, ingress/egress/both
+node partitions, abrupt node loss, and Session Awaiting/queued-input recovery.
 The pressure stage completed 48/48 requests with zero errors and approximately
-2.62 seconds P95; these are fixture observations, not production or DeepSeek
+3.00 seconds P95; these are fixture observations, not production or DeepSeek
 latency guarantees. The script exited successfully and removed its dedicated
 cluster and staged binaries. This run selected the harness's existing
 `AWAKEN_K3D_BUILD_NETWORK=host` and the Sandbox builder's
-`AWAKEN_SANDBOX_BUILD_NETWORK=host` after the default build network failed;
-neither capacity admission nor fault assertions were bypassed.
+`AWAKEN_SANDBOX_BUILD_NETWORK=host`, with the fixture Ubuntu base pinned to the
+production management image's digest. The preceding `4f43036f6` attempt failed
+before cluster creation on a Docker Hub authentication EOF; it is not counted
+as a passing run. Neither capacity admission nor fault assertions were bypassed.
 Replicated stateless roles and Workers use a 15-second `not-ready`/`unreachable`
 `NoExecute` tolerance in this overlay. A dead node is therefore removed from
 Service routing and its workloads become replaceable within the test's bounded
