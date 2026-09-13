@@ -2799,6 +2799,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                 .with_dispatch_store(dispatch.clone())
                 .with_session_control(Arc::new(RecordingSessionControl {
                     resume_calls: calls.clone(),
+                    continuations: Arc::new(std::sync::Mutex::new(Vec::new())),
                     phases: Arc::new(std::sync::Mutex::new(Vec::new())),
                     projection: Arc::new(std::sync::Mutex::new(Some(frozen.clone()))),
                     mcp_stage: None,
