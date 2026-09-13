@@ -269,6 +269,31 @@ impl SessionRecord {
         ));
     }
 
+    /// Append one deterministic public Event if its id is not already present.
+    /// The published page index is extended only over the candidate's new tail;
+    /// it remains derived from `events` and is rebuilt after any reorder/removal.
+    pub(super) fn append_event_once(&mut self, event: Event) -> bool {
+        if self.has_event_id(&event.id) {
+            return false;
+        }
+        self.events.push(event);
+        Arc::make_mut(&mut self.event_page_index).extend(
+            &self.session.id,
+            &self.events,
+            &self.event_thread_owners,
+        );
+        true
+    }
+
+    pub(super) fn has_event_id(&mut self, event_id: &str) -> bool {
+        Arc::make_mut(&mut self.event_page_index).extend(
+            &self.session.id,
+            &self.events,
+            &self.event_thread_owners,
+        );
+        self.event_page_index.positions(event_id).is_some()
+    }
+
     /// Exact positions in the one published canonical event vector.
     pub(super) fn event_positions(&self, id: &str) -> Option<&[usize]> {
         self.event_page_index.positions(id)
