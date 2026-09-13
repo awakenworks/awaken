@@ -73,6 +73,20 @@ query the copy. Do not use `immutable=1` on a live database to suppress side
 effects: that can ignore WAL state. Never delete WAL/SHM to clear a permission
 failure; inspect exact ownership first and preserve retained data.
 
+Historical cleanup diagnosis (2026-09-13): the Classroom Session
+`sesn_fnv1a64:5ecd47b4166ccd4f` was created without continuation storage. Its exact
+retained Pod UID `c3e57ded-7285-4a25-9e97-362a9373a460` is Failed and has emptyDir
+volumes, not a PVC. Recomputing the adoption projection with only the runtime
+continuation setting varied gives `fnv1a64:98f6a0f787d8c1d1` for `none` (stored)
+and `fnv1a64:cbd5a49e61b966ab` for `storage_class=local-path;size=1Gi` (expected
+by the deployed provider). Diagnostic build `a9f14592a` observed exactly this
+pair. This proves deployment-policy drift, not permission to delete: the normal
+adoption check rejects before terminal provider observation. Cleanup remains
+unresolved and must preserve exact-instance, participant and effect fencing;
+do not disable the check or rewrite the historical handle. The other retained
+Sessions `334d9589d3cb3a8b` and `bea88c8a5c7f995a` separately wait for physical
+quiescence; this fingerprint mismatch must not be attributed to them.
+
 The same overlay selects the existing `k8s_continuation_volume` policy. A
 retained Session therefore owns one UID-bound `local-path` PVC mounted at its
 active filesystem. Pod loss may replace only the Pod incarnation; rebuild must
