@@ -30,10 +30,8 @@ impl Id {
     /// partials deliberately return `None`; they do not consume another step.
     #[must_use]
     pub fn assistant_step_of(&self, run: &crate::agent::run::Id) -> Option<usize> {
-        self.0
-            .strip_prefix(&Self::assistant_prefix(run))?
-            .parse()
-            .ok()
+        let (owner, step, response) = self.assistant_coordinates()?;
+        (owner == run.0 && response.is_none()).then_some(step)
     }
 
     /// Recover the assistant step and response ordinal of a committed
@@ -45,9 +43,23 @@ impl Id {
         &self,
         run: &crate::agent::run::Id,
     ) -> Option<(usize, usize)> {
-        let suffix = self.0.strip_prefix(&Self::assistant_prefix(run))?;
-        let (step, response) = suffix.split_once("-truncated-")?;
-        Some((step.parse().ok()?, response.parse().ok()?))
+        let (owner, step, response) = self.assistant_coordinates()?;
+        (owner == run.0).then_some((step, response?))
+    }
+
+    /// Decode the owning Run, Step, and optional truncated response ordinal
+    /// without searching known Runs or allocating a prefix for each candidate.
+    /// The rightmost assistant delimiter owns the numeric suffix: a Run may
+    /// itself contain this delimiter, whereas a Step/response cannot. This is
+    /// the same decoder used by the Run-scoped classifiers above.
+    #[must_use]
+    pub fn assistant_coordinates(&self) -> Option<(&str, usize, Option<usize>)> {
+        let (owner, suffix) = self.0.rsplit_once("-assistant-")?;
+        if let Some((step, response)) = suffix.split_once("-truncated-") {
+            Some((owner, step.parse().ok()?, Some(response.parse().ok()?)))
+        } else {
+            Some((owner, suffix.parse().ok()?, None))
+        }
     }
 
     /// The partial text of a `MaxTokens`-truncated Step response:
@@ -263,6 +275,88 @@ mod tests {
         assert_eq!(Id::steer(&run, 3).0, "r-steer-3");
         assert_eq!(Id::steer_prefix(&run), "r-steer-");
         assert_eq!(Id::resume_input("call9").0, "resume-input-call9");
+    }
+
+    #[test]
+    fn assistant_coordinate_decoder_preserves_run_scoped_classification() {
+        // Causes: C1 Run is empty/plain/Unicode/contains either delimiter;
+        // C2 suffix is full/truncated/invalid; C3 queried Run is owner/other;
+        // C4 integer is zero/leading-zero/plus/max/overflow/negative/empty.
+        // Rules D1=C1+valid C2+C4 => borrowed exact owner and coordinates;
+        // D2=D1+owner => exactly one scoped classifier accepts;
+        // D3=D1+other => neither accepts; D4=invalid C2/C4 => neither accepts.
+        // The independent prefix-and-numeric oracle freezes the previous
+        // accepted language, including noncanonical but previously readable
+        // integers. Rightmost delimiter selection cannot alias a shorter Run.
+        let owners = ["", "r", "r-assistant-2", "r-truncated-0", "运行-assistant-"];
+        let numbers = vec![
+            "0".to_string(),
+            "02".into(),
+            "+2".into(),
+            "".into(),
+            "-1".into(),
+            " 2".into(),
+            "2 ".into(),
+            "x".into(),
+            usize::MAX.to_string(),
+            format!("{}0", usize::MAX),
+        ];
+        for owner in owners {
+            let run = RunId(owner.into());
+            for step in &numbers {
+                let mut suffixes = vec![step.clone()];
+                suffixes.extend(
+                    numbers
+                        .iter()
+                        .map(|response| format!("{step}-truncated-{response}")),
+                );
+                for suffix in suffixes {
+                    let id = Id(format!("{owner}-assistant-{suffix}"));
+                    for candidate in owners {
+                        let candidate = RunId(candidate.into());
+                        let old_suffix = id.0.strip_prefix(&format!("{}-assistant-", candidate.0));
+                        let full = old_suffix.and_then(|value| value.parse::<usize>().ok());
+                        let partial = old_suffix.and_then(|value| {
+                            let (step, response) = value.split_once("-truncated-")?;
+                            Some((step.parse::<usize>().ok()?, response.parse::<usize>().ok()?))
+                        });
+                        assert_eq!(
+                            id.assistant_step_of(&candidate),
+                            full,
+                            "D2-D4 {id:?}/{candidate:?}"
+                        );
+                        assert_eq!(
+                            id.assistant_truncated_response_of(&candidate),
+                            partial,
+                            "D2-D4 {id:?}/{candidate:?}"
+                        );
+                    }
+                    if let Some((decoded_owner, step, response)) = id.assistant_coordinates() {
+                        assert_eq!(decoded_owner, owner, "D1 longest exact owner");
+                        assert_eq!(decoded_owner.as_ptr(), id.0.as_ptr(), "D1 borrowed source");
+                        match response {
+                            None => assert_eq!(id.assistant_step_of(&run), Some(step)),
+                            Some(response) => assert_eq!(
+                                id.assistant_truncated_response_of(&run),
+                                Some((step, response))
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+        for invalid in [
+            "ordinary",
+            "r-assistant",
+            "r-assistant--truncated-",
+            "r-assistant-1-truncated-0-truncated-1",
+        ] {
+            assert_eq!(
+                Id(invalid.into()).assistant_coordinates(),
+                None,
+                "D4 {invalid}"
+            );
+        }
     }
 
     #[test]

@@ -3817,6 +3817,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
             awaken_session_contract::SessionRuntime::coordinated_threads(
                 runtime.as_ref(),
                 &session_id,
+                None,
             )
             .await
             .expect("relationship projection")

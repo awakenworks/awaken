@@ -331,6 +331,7 @@ impl SessionRuntime for EventBatchRuntime {
     async fn coordinated_threads(
         &self,
         session_id: &str,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
         Ok(vec![CoordinatedThreadLink {
             session_id: session_id.to_string(),
