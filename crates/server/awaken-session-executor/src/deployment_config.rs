@@ -402,6 +402,10 @@ pub struct SandboxSettings {
     /// Permit plain-HTTP/TLS-insecure access from the Kubernetes BuildKit Job.
     /// Intended for explicitly trusted development registries such as k3d.
     pub package_registry_insecure: bool,
+    /// Explicit operator opt-in for unrestricted Docker package builds to use
+    /// the builder host network. Never changes Session networking or overrides
+    /// None/Allowlist package policies. Defaults to the ordinary Docker network.
+    pub package_build_host_network: bool,
     /// Rootless BuildKit image used by Kubernetes package-build Jobs. Operators
     /// may point this at an admitted private mirror so Environment startup never
     /// depends on live Docker Hub availability.
@@ -438,6 +442,7 @@ impl Default for SandboxSettings {
             package_image_registry: None,
             package_registry_auth_file: None,
             package_registry_insecure: false,
+            package_build_host_network: false,
             k8s_buildkit_image: "moby/buildkit:v0.30.0-rootless".to_owned(),
             package_image_builder: None,
             package_local_cache_ttl_secs: 7 * 24 * 60 * 60,
