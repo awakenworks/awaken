@@ -541,6 +541,40 @@ mod cgroup_host_config_tests {
     }
 
     #[test]
+    fn package_network_opt_in_preserves_environment_egress_boundary() {
+        // Cause/effect table: host opt-in false/true crossed with Unrestricted,
+        // None, Allowlist. Only Unrestricted+true selects host. None always
+        // selects none; Allowlist always rejects. Execution host_config is separate.
+        for enabled in [false, true] {
+            assert_eq!(
+                package_build_network(&pc::NetworkPolicy::Unrestricted, enabled).unwrap(),
+                if enabled { "host" } else { "default" }
+            );
+            assert_eq!(
+                package_build_network(&pc::NetworkPolicy::None, enabled).unwrap(),
+                "none"
+            );
+            assert!(
+                package_build_network(
+                    &pc::NetworkPolicy::Allowlist {
+                        hosts: vec!["pypi.org".into()]
+                    },
+                    enabled
+                )
+                .is_err()
+            );
+            let rt =
+                DockerRuntime::with_client(Docker::connect_with_local_defaults().unwrap(), 9000);
+            assert!(!rt.package_build_host_network);
+            assert_eq!(
+                rt.with_package_build_host_network(enabled)
+                    .package_build_host_network,
+                enabled
+            );
+        }
+    }
+
+    #[test]
     fn with_client_wraps_a_handle_and_connect_local_builds_one() {
         let docker = Docker::connect_with_local_defaults().unwrap();
         let rt = DockerRuntime::with_client(docker, 9000)
@@ -581,6 +615,20 @@ pub struct DockerRuntime {
     package_registry_credentials: Option<DockerCredentials>,
     package_cache_ttl: Option<std::time::Duration>,
     package_build_timeout: std::time::Duration,
+    package_build_host_network: bool,
+}
+
+fn package_build_network(
+    network: &pc::NetworkPolicy,
+    host_opt_in: bool,
+) -> Result<&'static str, RuntimeError> {
+    match network {
+        pc::NetworkPolicy::Unrestricted => Ok(if host_opt_in { "host" } else { "default" }),
+        pc::NetworkPolicy::None => Ok("none"),
+        pc::NetworkPolicy::Allowlist { .. } => Err(backend(
+            "package image build has no no-bypass allowlist network",
+        )),
+    }
 }
 
 impl DockerRuntime {
@@ -631,7 +679,15 @@ impl DockerRuntime {
             package_registry_credentials: None,
             package_cache_ttl: None,
             package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
+            package_build_host_network: false,
         }
+    }
+
+    /// Deployment-owned selection; the Environment's network policy still bounds it.
+    #[must_use]
+    pub fn with_package_build_host_network(mut self, enabled: bool) -> Self {
+        self.package_build_host_network = enabled;
+        self
     }
 
     /// Publish content-addressed package images to a shared OCI registry.
@@ -1089,15 +1145,8 @@ impl ContainerRuntime for DockerRuntime {
                 t: image.clone(),
                 rm: true,
                 forcerm: true,
-                networkmode: match network {
-                    pc::NetworkPolicy::Unrestricted => "default".into(),
-                    pc::NetworkPolicy::None => "none".into(),
-                    pc::NetworkPolicy::Allowlist { .. } => {
-                        return Err(backend(
-                            "package image build has no no-bypass allowlist network",
-                        ));
-                    }
-                },
+                networkmode: package_build_network(network, self.package_build_host_network)?
+                    .into(),
                 ..Default::default()
             };
             let mut build = self.docker.build_image(options, None, Some(context.into()));

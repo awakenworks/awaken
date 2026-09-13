@@ -114,6 +114,7 @@ pub(super) struct FileConfig {
     pub(super) package_image_registry: Option<String>,
     pub(super) package_registry_auth_file: Option<PathBuf>,
     pub(super) package_registry_insecure: Option<bool>,
+    pub(super) package_build_host_network: Option<bool>,
     pub(super) k8s_buildkit_image: Option<String>,
     pub(super) package_image_builder: Option<String>,
     pub(super) package_local_cache_ttl_secs: Option<u64>,

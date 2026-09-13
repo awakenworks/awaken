@@ -1003,6 +1003,10 @@ mod tests {
         assert_eq!(defaults.package_image_registry, None, "S1");
         assert_eq!(defaults.package_registry_auth_file, None, "S1");
         assert!(!defaults.package_registry_insecure, "S1");
+        assert!(
+            !defaults.package_build_host_network,
+            "S1 default build network is unchanged"
+        );
         assert_eq!(
             defaults.k8s_buildkit_image, "moby/buildkit:v0.30.0-rootless",
             "S1"
@@ -1026,6 +1030,7 @@ mod tests {
                 package_image_registry: Some("registry.internal/agents/".into()),
                 package_registry_auth_file: Some(PathBuf::from("/run/secrets/registry.json")),
                 package_registry_insecure: Some(true),
+                package_build_host_network: Some(true),
                 k8s_buildkit_image: Some(
                     "registry.internal/system/buildkit:v0.30.0-rootless".into(),
                 ),
@@ -1039,6 +1044,10 @@ mod tests {
         .runtime
         .sandbox;
         assert!(selected.trusted_host_enabled, "S2");
+        assert!(
+            selected.package_build_host_network,
+            "S2 explicit build-only operator opt-in"
+        );
         assert!(selected.allow_local_fallback, "S2");
         assert_eq!(selected.warm_pool_size, 3, "S2");
         assert_eq!(selected.warm_pool_total_size, 7, "S2");

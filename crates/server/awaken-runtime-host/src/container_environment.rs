@@ -146,11 +146,11 @@ fn configure_docker_runtime(
             .with_package_registry_auth_file(path)
             .map_err(|error| format!("docker registry authentication: {error}"))?;
     }
-    Ok(
-        runtime.with_package_cache_ttl(std::time::Duration::from_secs(
+    Ok(runtime
+        .with_package_build_host_network(settings.package_build_host_network)
+        .with_package_cache_ttl(std::time::Duration::from_secs(
             settings.package_local_cache_ttl_secs,
-        )),
-    )
+        )))
 }
 
 #[cfg(feature = "container-docker")]
@@ -192,11 +192,11 @@ fn configure_podman_runtime(
             .with_package_registry_auth_file(path)
             .map_err(|error| format!("podman registry authentication: {error}"))?;
     }
-    Ok(
-        runtime.with_package_cache_ttl(std::time::Duration::from_secs(
+    Ok(runtime
+        .with_package_build_host_network(settings.package_build_host_network)
+        .with_package_cache_ttl(std::time::Duration::from_secs(
             settings.package_local_cache_ttl_secs,
-        )),
-    )
+        )))
 }
 
 #[cfg(feature = "container-podman")]

@@ -301,3 +301,15 @@ TrustedHost/self-hosted compatibility rule are checked before the authority
 write. Updates and later binding reuse the same validation leaf, so no
 create-then-bind workflow or local Environment aggregate can become a competing
 source of truth.
+
+### Docker package-build network selection (2026-09-13)
+
+A local acceptance deployment reproduced DNS failure from Docker's default build
+network while the same pinned Sandbox image reached the same package index from
+host networking. The operator may explicitly set `package_build_host_network=true`.
+The default remains false. This configures only the existing Docker package-image
+builder, not a Session/Agent field or a second build service. It is honored only
+for an Environment whose package-build policy is Unrestricted; None remains
+network-none and Allowlist remains rejected where no enforcement exists. It never
+widens the Session execution network. The option grants build-time access to host
+network services, so it is a deployment trust decision, not model-selected data.
