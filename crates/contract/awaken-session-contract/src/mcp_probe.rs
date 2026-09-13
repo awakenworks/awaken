@@ -21,4 +21,29 @@ pub enum McpProbeStatus {
 #[async_trait::async_trait]
 pub trait McpProbe: Send + Sync {
     async fn probe(&self, mcp_server_url: &str, bearer: &RedactedString) -> McpProbeStatus;
+    /// Anonymous and bearer inspection use the same transport owner. Older
+    /// probe implementations retain honest unknown evidence when unsupported.
+    async fn inspect(&self, url: &str, bearer: Option<&RedactedString>) -> McpInspection {
+        McpInspection {
+            status: match bearer {
+                Some(value) => self.probe(url, value).await,
+                None => McpProbeStatus::Unknown,
+            },
+            tools: Vec::new(),
+        }
+    }
+}
+
+/// Ephemeral discovery evidence, never another persisted tool catalog.
+#[derive(Clone, Debug, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct McpProbeTool {
+    pub name: String,
+    pub description: Option<String>,
+    pub input_schema: serde_json::Value,
+}
+#[derive(Clone, Debug)]
+pub struct McpInspection {
+    pub status: McpProbeStatus,
+    pub tools: Vec<McpProbeTool>,
 }

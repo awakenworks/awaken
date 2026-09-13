@@ -25,6 +25,8 @@ mkdir -p "$out_dir"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+python3 "$repo_root/scripts/contract/test_schema_to_typescript.py"
+
 # 1. JSON Schema SSOT from the Rust DTOs, plus the OpenAPI 3.1 document (route
 #    registry over the same schemas; drives frontend openapi-typescript codegen).
 cargo run --locked -q -p awaken-admin-config-api --features schema --example export_schemas \
@@ -33,6 +35,48 @@ cargo run --locked -q -p awaken-admin-config-api --features schema --example exp
     > "$tmp/openapi.generated.json"
 cargo run --locked -q -p awaken-protocol-managed --features schema --example export_schemas \
     > "$tmp/managed-agents.schemas.json"
+
+# Control-owned MCP read/config DTOs share the same management contract output.
+cargo run --locked -q -p awaken-control --features schema --example export_mcp_schemas > "$tmp/mcp.schemas.json"
+python3 - "$tmp/schemas.json" "$tmp/openapi.generated.json" "$tmp/mcp.schemas.json" <<'PYMCP'
+import json,pathlib,sys
+schemas_path,openapi_path,mcp_path=map(pathlib.Path,sys.argv[1:])
+extra=json.loads(mcp_path.read_text())
+for path,is_openapi in [(schemas_path,False),(openapi_path,True)]:
+    root=json.loads(path.read_text())
+    target=root['components']['schemas'] if is_openapi else root['schemas']
+    for key,value in extra["schemas"].items():
+        if key in target and target[key]!=value: raise ValueError('conflicting schema '+key)
+        target[key]=value
+    if is_openapi:
+        for key,value in extra["paths"].items():
+            if key in root["paths"] and root["paths"][key]!=value: raise ValueError('conflicting path '+key)
+            root["paths"][key]=value
+    if is_openapi:
+        # Each exported schema owns its nested definitions. Fragment-only refs
+        # must be rebased when the document embeds them under components.
+        def rebase(value, name):
+            if isinstance(value,list): return [rebase(v,name) for v in value]
+            if not isinstance(value,dict): return value
+            result={k:rebase(v,name) for k,v in value.items()}
+            ref=result.get("$ref", "")
+            if ref.startswith("#/$defs/"):
+                result["$ref"]="#/components/schemas/"+name+ref[1:]
+            return result
+        root["components"]["schemas"]={k:rebase(v,k) for k,v in target.items()}
+        # Reject a published reference that cannot resolve within this document.
+        def check_refs(value):
+            if isinstance(value,list):
+                for v in value: check_refs(v)
+            elif isinstance(value,dict):
+                ref=value.get("$ref", "")
+                if ref.startswith("#/"):
+                    node=root
+                    for part in ref[2:].split("/"): node=node[part.replace("~1","/").replace("~0","~")]
+                for v in value.values(): check_refs(v)
+        check_refs(root)
+    path.write_text(json.dumps(root,indent=2,ensure_ascii=False,sort_keys=True)+'\n')
+PYMCP
 
 # 2. TS types via the lockfile-pinned generator. The helper merges every root
 #    and shared definition into one conflict-checked `$defs` graph so json2ts

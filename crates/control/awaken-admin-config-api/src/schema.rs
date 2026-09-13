@@ -198,11 +198,14 @@ pub(crate) fn selected_admin_bundle(
 pub(crate) fn converged_admin_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         CONVERGED_BUNDLE_ID,
-        vec![Migration::new(
-            1,
-            "seal the converged admin migration history",
-            "SELECT 1",
-        )?],
+        vec![
+            Migration::new(1, "seal the converged admin migration history", "SELECT 1")?,
+            Migration::new(
+                2,
+                "Workspace MCP authoring configuration",
+                include_str!("migrations/V0002__workspace_mcp_configuration.sql").trim(),
+            )?,
+        ],
     )
 }
 

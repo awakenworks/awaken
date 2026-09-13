@@ -30,6 +30,8 @@ use awaken_sql_storage::block_on_owned_runtime as block;
 
 use crate::schema::{BUNDLE_ID, converged_admin_bundle, selected_admin_bundle};
 
+mod mcp;
+
 /// The admin component's table namespace (its bundle prefix).
 pub(crate) const NS: &str = "admin";
 

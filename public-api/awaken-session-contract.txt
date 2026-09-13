@@ -1252,6 +1252,13 @@ pub awaken_session_contract::McpGenerationRef::runtime_incarnation: alloc::strin
 pub awaken_session_contract::McpGenerationRef::session_id: alloc::string::String
 impl awaken_session_contract::McpGenerationRef
 pub const fn awaken_session_contract::McpGenerationRef::attachment_id(&self) -> &awaken_session_contract::McpAttachmentId
+pub struct awaken_session_contract::McpInspection
+pub awaken_session_contract::McpInspection::status: awaken_session_contract::McpProbeStatus
+pub awaken_session_contract::McpInspection::tools: alloc::vec::Vec<awaken_session_contract::McpProbeTool>
+pub struct awaken_session_contract::McpProbeTool
+pub awaken_session_contract::McpProbeTool::description: core::option::Option<alloc::string::String>
+pub awaken_session_contract::McpProbeTool::input_schema: serde_json::value::Value
+pub awaken_session_contract::McpProbeTool::name: alloc::string::String
 pub struct awaken_session_contract::McpProjectionReceipt
 pub awaken_session_contract::McpProjectionReceipt::effect: awaken_session_contract::McpProjectionEffectKind
 pub awaken_session_contract::McpProjectionReceipt::effect_id: alloc::string::String
@@ -2232,6 +2239,7 @@ pub fn awaken_session_contract::McpAttachmentRealizer::publish_mcp_generation<'l
 pub fn awaken_session_contract::McpAttachmentRealizer::publish_mcp_generation_receipt<'life0, 'async_trait>(&'life0 self, awaken_session_contract::McpGenerationRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::McpProjectionReceipt, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::McpAttachmentRealizer::stage_mcp_attachment<'life0, 'async_trait>(&'life0 self, awaken_session_contract::StageMcpAttachment) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_contract::McpProbe: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::McpProbe::inspect<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<&'life2 awaken_agent_contract::secret::RedactedString>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::McpInspection> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::McpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_session_contract::RunApplication: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::RunApplication::history<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

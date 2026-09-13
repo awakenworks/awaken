@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "servers": [
+    {
+      "id": "notion",
+      "name": "Notion",
+      "description": "Search, read and manage Notion pages.",
+      "icon": null,
+      "transport": {
+        "type": "url",
+        "url": "https://mcp.notion.com/mcp"
+      },
+      "prompts_as_skills": false
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "Read channels and post team updates.",
+      "icon": null,
+      "transport": {
+        "type": "url",
+        "url": "https://mcp.slack.com/mcp"
+      },
+      "prompts_as_skills": false
+    },
+    {
+      "id": "linear",
+      "name": "Linear",
+      "description": "Read and manage engineering issues.",
+      "icon": null,
+      "transport": {
+        "type": "url",
+        "url": "https://mcp.linear.app/mcp"
+      },
+      "prompts_as_skills": false
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Inspect repositories, issues and pull requests.",
+      "icon": null,
+      "transport": {
+        "type": "url",
+        "url": "https://api.githubcopilot.com/mcp/"
+      },
+      "prompts_as_skills": false
+    },
+    {
+      "id": "sentry",
+      "name": "Sentry",
+      "description": "Inspect application errors and incidents.",
+      "icon": null,
+      "transport": {
+        "type": "url",
+        "url": "https://mcp.sentry.dev/mcp"
+      },
+      "prompts_as_skills": false
+    }
+  ]
+}

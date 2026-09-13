@@ -85,6 +85,36 @@ def _normalize_ref_siblings(value: JsonValue) -> JsonValue:
     return {**normalized, "allOf": [{"$ref": reference}]}
 
 
+def _reuse_named_unions(definitions: dict[str, JsonObject]) -> None:
+    """Reference the existing transport union when serde flattened it into a DTO.
+
+    Assertion siblings are intersections in JSON Schema. A named allOf reference
+    preserves that meaning and avoids json2ts emitting a duplicate suffixed union.
+    Only a unique, assertion-identical named union can be reused.
+    """
+    for name, node in definitions.items():
+        if "properties" not in node:
+            continue
+        for keyword in ("anyOf", "oneOf"):
+            branches = node.get(keyword)
+            if not isinstance(branches, list):
+                continue
+            candidates = [
+                target for target, other in definitions.items()
+                if target != name and {
+                    key: value for key, value in other.items()
+                    if key not in SCHEMA_ANNOTATION_KEYS and key != "$schema"
+                } == {keyword: branches}
+            ]
+            if len(candidates) != 1:
+                continue
+            conjunction = node.setdefault("allOf", [])
+            if not isinstance(conjunction, list):
+                raise ContractCodegenError("allOf must be an array")
+            del node[keyword]
+            conjunction.append({"$ref": f"#/$defs/{candidates[0]}"})
+
+
 def _merge_definition(
     definitions: dict[str, JsonObject],
     owners: dict[str, str],
@@ -169,6 +199,7 @@ def build_codegen_schema(bundle_path: Path, output_path: Path) -> None:
             "allOf": [{"$ref": f"#/$defs/{target}"}],
         }
 
+    _reuse_named_unions(definitions)
     normalized = cast(dict[str, JsonObject], _normalize_ref_siblings(definitions))
     output = {
         "$comment": (

@@ -49,7 +49,7 @@ test("shell renders the Awaken Agents brand, route scope and task-oriented rail"
   await expect(rail.getByRole("button", { name: "Files", exact: true })).toBeVisible();
   await expect(rail.getByRole("button", { name: "Artifacts", exact: true })).toBeVisible();
   await expect(rail.getByRole("button", { name: "Models & providers" })).toBeVisible();
-  await expect(rail.getByRole("button", { name: "MCP overview" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "MCP servers" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "Inference credentials" })).toHaveCount(0);
 });
 
@@ -506,33 +506,19 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   const displayName = "Issue Tracker Agent";
   const model = `mcp-model-${Date.now()}`;
   await syntheticModels.configure(request, model);
-  const credentialWorkspace = await workspaceId(request);
-  const credentialPath = await workspaceApiPath(request, "/v1/config/credentials");
-  const credentialResponse = await request.get(`${credentialPath}?workspace_id=${encodeURIComponent(credentialWorkspace)}`);
-  const credentialBody = await credentialResponse.text();
-  expect(credentialResponse.ok(), credentialBody).toBe(true);
-  const credentialSources = JSON.parse(credentialBody);
-  let mcpCredential = credentialSources.find((credential: {
-    status: string;
-    kind?: string;
-    provider_id?: string;
-    env_key?: string;
-  }) => credential.status === "active"
-    && credential.kind !== "worker_local"
-    && !credential.provider_id
-    && !credential.env_key);
-  if (!mcpCredential) {
-    const created = await request.post(await workspaceApiPath(request, "/v1/config/credentials"), {
-      data: {
-        workspace_id: credentialWorkspace,
-        kind: "vault",
-        secret: `mcp-token-${Date.now()}`,
-      },
-    });
-    const createdBody = await created.text();
-    expect(created.status(), createdBody).toBe(201);
-    mcpCredential = JSON.parse(createdBody);
-  }
+  // Credential selection now follows the target-owned Managed Vault child;
+  // an unscoped generic secret is not evidence of MCP eligibility.
+  const createdVault = await request.post(await workspaceApiPath(request, "/v1/vaults"), { headers: MANAGED_HEADERS, data: { display_name: "Issue tracker credentials" } });
+  expect(createdVault.ok()).toBe(true);
+  const vault = await createdVault.json();
+  const createdCredential = await request.post(await workspaceApiPath(request, `/v1/vaults/${vault.id}/credentials`), { headers: MANAGED_HEADERS, data: {
+    display_name: "Issue tracker account", auth: { type: "static_bearer", mcp_server_url: "https://mcp.example.test/issues", token: `mcp-token-${Date.now()}` },
+  } });
+  expect(createdCredential.ok()).toBe(true);
+  const credential = await createdCredential.json();
+  const candidates = await request.get(await workspaceApiPath(request, "/v1/config/mcp-servers/credentials?url=https%3A%2F%2Fmcp.example.test%2Fissues"));
+  expect(candidates.ok()).toBe(true);
+  const mcpCredential = (await candidates.json()).data.find((c: { id: string }) => c.id === credential.id);
   expect(mcpCredential).toBeTruthy();
 
   await page.goto("/w/default/agents/new");
@@ -558,9 +544,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await page.getByRole("button", { name: "MCP integration", exact: true }).click();
   await page.getByLabel("Server name").fill("issues");
   await page.getByLabel("URL").fill("https://mcp.example.test/issues");
-  await page.getByLabel("Credential source").selectOption(
-    `${mcpCredential.id}@${mcpCredential.version}`,
-  );
+  await page.getByLabel("Credential account").selectOption(mcpCredential.id);
   await page.getByLabel("Prompts as skills").check();
   const issuesIntegration = page.locator(".mcp-integration-card").first();
   await issuesIntegration.getByLabel("Default permission").selectOption("always_allow");
@@ -608,7 +592,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
     {
       name: "issues",
       url: "https://mcp.example.test/issues",
-      credential: { id: mcpCredential.id, revision: mcpCredential.version },
+      credential: { id: mcpCredential.source.id, revision: mcpCredential.source.revision },
       prompts_as_skills: true,
     },
     {
@@ -651,6 +635,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   expect((await request.get(await workspaceApiPath(request, `/v1/config/agents/${id}`))).ok()).toBe(true);
 
   await page.goto("/w/default/mcp");
+  await page.getByText("Existing Agent bindings", { exact: true }).click();
   const issuesRow = page.getByRole("row", { name: /issues https:\/\/mcp\.example\.test\/issues/ });
   await expect(issuesRow.getByText("https://mcp.example.test/issues", { exact: true })).toBeVisible();
   await expect(issuesRow.getByText("Allow without asking", { exact: true })).toBeVisible();

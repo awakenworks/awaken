@@ -1981,6 +1981,22 @@ pub awaken_protocol_managed::ManagedTunnelScope::workspace_id: alloc::string::St
 pub struct awaken_protocol_managed::ManagedWorkSessionAccess
 impl awaken_protocol_managed::ManagedWorkSessionAccess
 pub fn awaken_protocol_managed::ManagedWorkSessionAccess::new(alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>, alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> alloc::sync::Arc<Self>
+pub struct awaken_protocol_managed::McpCredentialChoice
+pub awaken_protocol_managed::McpCredentialChoice::auth_type: &'static str
+pub awaken_protocol_managed::McpCredentialChoice::display_name: alloc::string::String
+pub awaken_protocol_managed::McpCredentialChoice::id: alloc::string::String
+pub awaken_protocol_managed::McpCredentialChoice::mcp_server_url: alloc::string::String
+pub awaken_protocol_managed::McpCredentialChoice::source: awaken_credential_contract::CredentialRef
+pub awaken_protocol_managed::McpCredentialChoice::target_fingerprint: alloc::string::String
+pub awaken_protocol_managed::McpCredentialChoice::vault_id: alloc::string::String
+pub awaken_protocol_managed::McpCredentialChoice::vault_name: alloc::string::String
+pub struct awaken_protocol_managed::McpInspectionView
+pub awaken_protocol_managed::McpInspectionView::checked_at: alloc::string::String
+pub awaken_protocol_managed::McpInspectionView::credential: core::option::Option<awaken_protocol_managed::McpCredentialChoice>
+pub awaken_protocol_managed::McpInspectionView::http_status: core::option::Option<u16>
+pub awaken_protocol_managed::McpInspectionView::location: &'static str
+pub awaken_protocol_managed::McpInspectionView::status: &'static str
+pub awaken_protocol_managed::McpInspectionView::tools: alloc::vec::Vec<awaken_session_contract::mcp_probe::McpProbeTool>
 pub struct awaken_protocol_managed::ModelEntry
 pub awaken_protocol_managed::ModelEntry::context_window: core::option::Option<u32>
 pub awaken_protocol_managed::ModelEntry::display_name: alloc::string::String
@@ -2009,6 +2025,10 @@ pub async fn awaken_protocol_managed::VaultState::reconcile_rollouts(&self) -> c
 pub fn awaken_protocol_managed::VaultState::set_rollout_target(&self, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>)
 pub fn awaken_protocol_managed::VaultState::with_material_delivery(self, awaken_credential_contract::custody::CredentialMaterialDelivery) -> Self
 pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>) -> Self
+impl awaken_protocol_managed::VaultState
+pub async fn awaken_protocol_managed::VaultState::inspect_mcp(&self, &str, &str, core::option::Option<&str>) -> core::result::Result<awaken_protocol_managed::McpInspectionView, awaken_credential_vault::CredentialError>
+pub async fn awaken_protocol_managed::VaultState::mcp_credential_choices(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<awaken_protocol_managed::McpCredentialChoice>, awaken_credential_vault::CredentialError>
+pub async fn awaken_protocol_managed::VaultState::mcp_credential_inventory(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_protocol_managed::McpCredentialChoice>, awaken_credential_vault::CredentialError>
 impl awaken_session_application::session_services::CredentialMaterialIngress for awaken_protocol_managed::VaultState
 pub fn awaken_protocol_managed::VaultState::enter_material<'life0, 'async_trait>(&'life0 self, awaken_session_application::session_services::CredentialMaterialIngressCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_application::session_services::CredentialMaterialIngressReceipt, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_protocol_managed::VaultState::retire_material<'life0, 'async_trait>(&'life0 self, awaken_session_application::session_services::CredentialMaterialRetirementCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

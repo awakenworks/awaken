@@ -99,12 +99,12 @@ export const TOP_LEVEL_PAGE_INTENTS: Record<string, PageIntent> = {
     outcomeZh: "创建 Agent 前，请至少连接一个供应商并完成模型测试。",
   },
   mcp: {
-    title: "MCP overview",
-    titleZh: "MCP 概览",
-    description: "See which MCP servers are referenced by Agent drafts and which Agents use them. MCP servers are configured inside each Agent, not on this page.",
-    descriptionZh: "查看 Agent 草稿引用的 MCP 服务器及其使用者。MCP 服务器在各 Agent 内配置，本页只做汇总。",
-    outcome: "Open the owning Agent to add, change, or remove an MCP server.",
-    outcomeZh: "需要新增、修改或移除 MCP 服务器时，请打开对应 Agent。",
+    title: "MCP servers",
+    titleZh: "MCP 服务器",
+    description: "Configure MCP servers, choose a credential account, and test the connection or a real Agent session.",
+    descriptionZh: "配置 MCP 服务器、选择凭证账户，并检查连接或启动真实 Agent 会话。",
+    outcome: "Choose a server and account, check its connection, then use it in an Agent.",
+    outcomeZh: "选择服务器和账户，检查连接，再将配置用于 Agent。",
   },
   protocols: {
     title: "API & protocols",

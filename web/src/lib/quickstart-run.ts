@@ -13,6 +13,7 @@ export interface QuickRunSessionInput {
   /** The revision the publish boundary acknowledged, never the draft's own. */
   sourceRevision: number;
   environmentId?: string;
+  vaultIds?: string[];
   task: string;
   outcome?: OutcomeDraft;
   title: string;
@@ -26,6 +27,7 @@ export function quickRunSessionRequest(input: QuickRunSessionInput): CreateSessi
     // unversioned fallback configuration.
     agent: { id: input.agentId, type: "agent", version: input.sourceRevision },
     environment_id: input.environmentId ?? BUILTIN_LOCAL_ENVIRONMENT_ID,
+    ...(input.vaultIds?.length ? { vault_ids: input.vaultIds } : {}),
     // The official create boundary owns initial_events atomically. A second POST
     // would create a partial Session on transport failure and duplicate the
     // idempotency/retry semantics creation already owns. At most one

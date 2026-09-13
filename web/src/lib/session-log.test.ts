@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ContentBlock, SessionEvent } from "./api/types";
 import {
   sessionErrorText,
+  isToolUseEvent,
   spanDurationMs,
   textOf,
   toolDiagnostics,
@@ -85,4 +86,16 @@ describe("Session presentation projections", () => {
       error: { type: "unknown_error", message: "worker disconnected", retry_status: { type: "exhausted" } },
     }))).toBe("worker disconnected");
   });
+});
+
+it("MCP calls share the ordinary approval and result projection family", () => {
+  // M1 native/MCP/custom call -> one shared presentation family; M2 MCP result
+  // with its own exact id -> completed diagnostics; M3 unrelated id -> pending.
+  for (const type of ["agent.tool_use", "agent.mcp_tool_use", "agent.custom_tool_use"]) expect(isToolUseEvent({ type })).toBe(true);
+  expect(isToolUseEvent({ type: "agent.message" })).toBe(false);
+  const call = ev({ id: "mcp-call", type: "agent.mcp_tool_use", name: "read_source", mcp_server_name: "notion", input: {}, processed_at: "2026-09-13T00:00:00Z" });
+  const result = ev({ id: "mcp-result", type: "agent.mcp_tool_result", mcp_tool_use_id: "mcp-call", content: [{ type: "text", text: "ok" }], processed_at: "2026-09-13T00:00:01Z" });
+  expect(traceSpans([call, result]).map((s) => s.kind)).toEqual(["tool", "tool_result"]);
+  expect(toolDiagnostics([call, result])).toEqual([{ name: "read_source", calls: 1, completed: 1, failures: 0, medianDurationMs: 1000 }]);
+  expect(toolDiagnostics([call, ev({ ...result, mcp_tool_use_id: "other" })])[0]?.completed).toBe(0);
 });

@@ -47,6 +47,8 @@ interface Props {
   onReviewRun: (intent: QuickRunIntent) => void;
   /** Starter handed over by the Quickstart landing route, if any. */
   initialTemplateId?: string;
+  vaultIds: string[];
+  onVaultIdsChange: (ids: string[]) => void;
   onBuilderSectionChange: (section: BuilderSection) => void;
   onAdvancedSectionChange: (section: AdvancedSection) => void;
   onResourcesChange: (inputs: InputBinding[]) => void;
@@ -75,6 +77,7 @@ export default function AgentEditorStages(props: Props) {
         published={props.published}
         runPending={props.runPending}
         initialTemplateId={props.initialTemplateId}
+        vaultIds={props.vaultIds} onVaultIdsChange={props.onVaultIdsChange}
         onPatch={props.onPatch}
         onManageModels={props.onManageModels}
         onRefreshRuntimes={props.onRefreshRuntimes}

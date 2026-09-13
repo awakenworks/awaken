@@ -9,6 +9,7 @@ import { InlineNotice, Button, Card } from "@awaken/ui";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import VaultMcpGroups from "../components/mcp/VaultMcpGroups";
 import { useConfirm } from "../components/ui/Confirm";
 import { useToast } from "../components/ui/Toast";
 import { Modal, Pill, SecretField, TechnicalId, TextField } from "../components/ui";
@@ -25,15 +26,6 @@ export const RUNTIME_CREDENTIAL_TYPES: ReadonlyArray<{ type: RuntimeCredentialTy
   { type: "mcp_oauth", label: "MCP OAuth", labelZh: "MCP OAuth", consumer: "One MCP server with optional renewal", consumerZh: "供一个 MCP Server 使用，可自动续期" },
 ];
 
-function credentialTypesForVault(name?: string) {
-  if (name?.startsWith("Integrations ·")) {
-    return RUNTIME_CREDENTIAL_TYPES.filter((option) => option.type !== "environment_variable");
-  }
-  if (name?.startsWith("Sandbox environment ·") || name?.startsWith("Shared runtime ·")) {
-    return RUNTIME_CREDENTIAL_TYPES.filter((option) => option.type === "environment_variable");
-  }
-  return RUNTIME_CREDENTIAL_TYPES;
-}
 
 function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredential }) {
   const app = useApp();
@@ -82,7 +74,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [vaultName, setVaultName] = useState(name ?? "Runtime · integrations");
-  const allowedTypes = credentialTypesForVault(name);
+  const allowedTypes = RUNTIME_CREDENTIAL_TYPES;
   const [type, setType] = useState<RuntimeCredentialType>(allowedTypes[0]?.type ?? "environment_variable");
   const [displayName, setDisplayName] = useState("");
   const [target, setTarget] = useState("");
@@ -157,8 +149,8 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
       {adding && (
         <Modal title={app.t("Add runtime credential", "添加运行时凭证")} onClose={() => setAdding(false)} width="min(760px, 94vw)">
             <p className="hint">{app.t(
-              `This Vault is categorized as ${name?.split(" · ")[0] ?? "runtime"}; only matching credential types are shown.`,
-              `此 Vault 的分类是“${name?.split(" · ")[0] ?? "运行时"}”；这里只显示用途匹配的凭证类型。`,
+              "Choose the credential authentication type. The Vault name does not restrict credential types.",
+              "选择凭证认证类型；Vault 名称不限制凭证类型。",
             )}</p>
             <div className="row" style={{ alignItems: "stretch" }}>
               {allowedTypes.map((option) => (
@@ -218,14 +210,15 @@ export default function VaultsSurface() {
   const workspace = app.workspaceId;
   const qc = useQueryClient();
   const [vaultName, setVaultName] = useState("runtime");
-  const [vaultCategory, setVaultCategory] = useState("Integrations");
+  const [grouping, setGrouping] = useState<"vault" | "service">("vault");
+  const [focusedVault, setFocusedVault] = useState<string>();
   const vaults = useQuery({
     queryKey: ["vaults", workspace],
     queryFn: () => api.get<Page<Vault>>(ws("/v1/vaults")),
     refetchInterval: 30_000,
   });
   const create = useMutation({
-    mutationFn: () => api.post<Vault>(ws("/v1/vaults"), { display_name: `${vaultCategory} · ${vaultName.trim() || "default"}` }),
+    mutationFn: () => api.post<Vault>(ws("/v1/vaults"), { display_name: vaultName.trim() || "default" }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["vaults", workspace] }),
   });
   const rows = (vaults.data?.data ?? []).filter((v) => !v.archived_at);
@@ -234,19 +227,11 @@ export default function VaultsSurface() {
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
         <span className="mut" style={{ flex: 1, marginRight: 10 }}>
           {app.t(
-            "Choose a category and human-readable name for each Vault. Add only credentials that share the same runtime purpose.",
-            "为每个 Vault 选择分类和易读名称，并只添加用途一致的运行时凭证。",
+            "Vaults group credentials; their resource type stays vault. Each credential declares its own authentication type and target.",
+            "Vault 用于分组凭证，资源类型保持 vault。每份凭证独立声明认证类型和目标。",
           )}
         </span>
         <form className="row" style={{ alignItems: "flex-end" }} onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
-          <div className="ui-field">
-            <label htmlFor="new-vault-category">{app.t("Category", "分类")}</label>
-            <select id="new-vault-category" className="ui-input" value={vaultCategory} onChange={(event) => setVaultCategory(event.target.value)}>
-              <option value="Integrations">{app.t("Integrations", "集成")}</option>
-              <option value="Sandbox environment">{app.t("Sandbox environment", "Sandbox 环境")}</option>
-              <option value="Shared runtime">{app.t("Shared runtime", "共享运行环境")}</option>
-            </select>
-          </div>
           <div className="ui-field">
             <label htmlFor="new-vault-name">{app.t("Vault name", "Vault 名称")}</label>
             <input
@@ -266,9 +251,12 @@ export default function VaultsSurface() {
       {(create.error instanceof Error || vaults.error instanceof Error) && (
         <div className="err">{(create.error || vaults.error)?.message}</div>
       )}
-      {rows.map((v) => (
-        <VaultCard key={v.id} id={v.id} name={v.display_name} />
-      ))}
+      <div className="row" role="group" aria-label={app.t("Credential grouping", "凭证分组")}>
+        <Button onClick={() => { setGrouping("vault"); setFocusedVault(undefined); }}>{app.t("By Vault", "按 Vault")}</Button>
+        <Button onClick={() => setGrouping("service")}>{app.t("By MCP service", "按 MCP 服务")}</Button>
+      </div>
+      {grouping === "service" ? <VaultMcpGroups onOpenVault={(id) => { setFocusedVault(id); setGrouping("vault"); }} />
+        : rows.filter((v) => !focusedVault || focusedVault === v.id).map((v) => <VaultCard key={v.id} id={v.id} name={v.display_name} />)}
       {rows.length === 0 && (
         <div className="mut">{vaults.isLoading ? "…" : app.t("No Vaults yet. Create one for an integration, Sandbox Environment, or shared runtime purpose.", "还没有 Vault。请为集成、Sandbox 环境或共享运行用途创建一个。")}</div>
       )}
