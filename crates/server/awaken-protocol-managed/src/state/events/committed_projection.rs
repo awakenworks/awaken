@@ -226,7 +226,7 @@ impl ManagedState {
             durable_inbound_projections(session_id, &persisted.event_batches);
         let usage = self
             .application
-            .session_usage(session_id)
+            .session_usage(session_id, Some(&links))
             .await
             .map_err(StateError::Run)?;
         let primary_thread_usage = usage_projection::project_committed_thread_usage(

@@ -1014,8 +1014,15 @@ impl SessionApplication {
         self.runtime.supports_mid_conversation_system(thread).await
     }
 
-    pub async fn session_usage(&self, thread: &str) -> Result<SessionUsage, RunError> {
-        self.session_usage_with_additional_thread(thread, None)
+    /// Aggregate current counters through an already observed relationship set
+    /// inside a fenced read, or discover current relationships when absent.
+    /// This borrows query input; it creates no relationship or usage cache.
+    pub async fn session_usage(
+        &self,
+        thread: &str,
+        observed_links: Option<&[awaken_session_contract::CoordinatedThreadLink]>,
+    ) -> Result<SessionUsage, RunError> {
+        self.session_usage_with_additional_thread(thread, None, observed_links)
             .await
     }
 
@@ -1028,7 +1035,7 @@ impl SessionApplication {
         session_id: &str,
         thread_id: &str,
     ) -> Result<SessionUsage, RunError> {
-        self.session_usage_with_additional_thread(session_id, Some(thread_id))
+        self.session_usage_with_additional_thread(session_id, Some(thread_id), None)
             .await
     }
 
@@ -1036,11 +1043,23 @@ impl SessionApplication {
         &self,
         thread: &str,
         additional_thread: Option<&str>,
+        observed_links: Option<&[awaken_session_contract::CoordinatedThreadLink]>,
     ) -> Result<SessionUsage, RunError> {
         let mut usage = self.runtime.session_usage(thread).await?;
+        let links = match observed_links {
+            Some(links) => std::borrow::Cow::Borrowed(links),
+            None => std::borrow::Cow::Owned(self.runtime.coordinated_threads(thread, None).await?),
+        };
+        if links.iter().any(|link| link.session_id != thread) {
+            return Err(RunError::internal(
+                "usage query received a coordinated Thread from another Session",
+            ));
+        }
         let mut included = std::collections::BTreeSet::from([thread.to_string()]);
-        for link in self.runtime.coordinated_threads(thread, None).await? {
-            included.insert(link.thread_id.0.clone());
+        for link in links.iter() {
+            if !included.insert(link.thread_id.0.clone()) {
+                continue;
+            }
             let child = self
                 .runtime
                 .session_thread_usage(thread, &link.thread_id.0)

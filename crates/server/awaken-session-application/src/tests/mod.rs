@@ -125,6 +125,9 @@ struct RecordingBoundaryBudgetRuntime {
     child_usage: Mutex<awaken_session_contract::SessionUsage>,
     child_target: awaken_session_contract::CoordinatedThreadTarget,
     continuations: AtomicUsize,
+    usage_relationship_reads: AtomicUsize,
+    fail_usage_relationship_read: AtomicBool,
+    usage_thread_reads: Mutex<Vec<String>>,
     boundaries: RecordingBoundaries,
     budget_resume_tickets:
         Mutex<HashMap<String, Vec<awaken_session_contract::SessionBudgetResumeTicket>>>,
@@ -436,6 +439,9 @@ impl RecordingBoundaryBudgetRuntime {
                 agent_id: "coord-child".into(),
             },
             continuations: AtomicUsize::new(0),
+            usage_relationship_reads: AtomicUsize::new(0),
+            fail_usage_relationship_read: AtomicBool::new(false),
+            usage_thread_reads: Mutex::new(Vec::new()),
             boundaries: RecordingBoundaries::default(),
             budget_resume_tickets: Mutex::new(HashMap::new()),
             budget_resume_deliveries: Mutex::new(Vec::new()),
@@ -1253,6 +1259,10 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
         session_id: &str,
         _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
+        self.usage_relationship_reads.fetch_add(1, Ordering::SeqCst);
+        if self.fail_usage_relationship_read.load(Ordering::SeqCst) {
+            return Err(RunError::unavailable("relationship query unavailable"));
+        }
         Ok(self
             .boundaries
             .lifecycle(session_id)
@@ -1288,6 +1298,10 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
         session_id: &str,
         child_thread_id: &str,
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        self.usage_thread_reads
+            .lock()
+            .unwrap()
+            .push(child_thread_id.to_string());
         if session_id == child_thread_id {
             Ok(self.root_usage.lock().unwrap().clone())
         } else {

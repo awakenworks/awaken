@@ -4420,8 +4420,8 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     // and leaves the entire warm frame unchanged. Cold reads and lifecycle
     // delivery keep the strict bounded-retry behavior in the adjacent budget
     // table, so this fallback cannot acknowledge an undelivered lifecycle fact.
-    // C4 the initial relation read borrows the already selected root; usage
-    // and final relation reads still request fresh truth. E3 even with C4, both
+    // C4 initial relations borrow the selected root and usage reuses those
+    // relations; final relations request fresh truth. E3 even with C4, both
     // root observations remain and a changed final version discards the private
     // candidate. This catches both a lost reuse argument and reusing the old
     // root for final validation instead of observing current truth.
@@ -4484,8 +4484,8 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     let roots = runtime.coordinated_roots.lock().unwrap();
     assert_eq!(
         roots.len(),
-        3,
-        "E3 initial, usage and final relation queries"
+        2,
+        "E3 initial and final relation queries; usage reuses the initial set"
     );
     assert!(
         roots[0].is_some(),
@@ -4493,8 +4493,8 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     );
     assert_eq!(
         &roots[1..],
-        &[None, None],
-        "E3 usage and final validation retain fresh reads"
+        &[None],
+        "E3 final validation retains a fresh read"
     );
     assert!(
         matches!(
