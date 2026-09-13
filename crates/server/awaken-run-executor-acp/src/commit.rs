@@ -23,6 +23,7 @@ pub(super) async fn finish_failure(
     );
     commit(
         context,
+        Vec::new(),
         unconsumed_resume,
         &activation.thread_id,
         disposition,
@@ -36,6 +37,7 @@ pub(super) async fn finish_failure(
 /// Commit the Step's messages and disposition through the one boundary (G13).
 pub(super) async fn commit(
     context: &RuntimeRunContext,
+    audit: Vec<awaken_agent_contract::audit::draft::Draft>,
     unconsumed_resume: Option<&PermissionResume>,
     thread_id: &ThreadId,
     disposition: RunDisposition,
@@ -126,12 +128,13 @@ pub(super) async fn commit(
         .commit
         .as_ref()
         .ok_or_else(|| Error::Commit("ACP execution requires a CommitCoordinator".to_string()))?;
-    awaken_agent_contract::thread::commit::commit_run(
+    awaken_agent_contract::thread::commit::commit_run_with_events(
         coordinator.as_ref(),
         thread_id,
         disposition,
         messages,
         state,
+        audit,
     )
     .await
     .map_err(|e| Error::Commit(e.to_string()))?;
