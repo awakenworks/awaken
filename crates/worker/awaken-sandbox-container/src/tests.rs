@@ -5092,18 +5092,24 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
 
     let mut drifted = exact.clone();
     drifted.outputs_path = "/mnt/session/drifted-outputs".into();
-    assert!(
-        matches!(
-            ContainerEnvironmentProvider::observe_environment(
-                &provider,
-                ContainerEnvironmentAdoption::new(&drifted, &handle),
-            )
-            .await
-            .unwrap(),
-            pc::SandboxObservation::Incompatible { .. }
-        ),
-        "A2"
-    );
+    // A2 diagnostic evidence carries only the two equality fingerprints, not
+    // raw spec/paths/environment contents. This changes no admission transition:
+    // mismatch still rejects before backend observation and cannot clear a slot.
+    let pc::SandboxObservation::Incompatible { reason } =
+        ContainerEnvironmentProvider::observe_environment(
+            &provider,
+            ContainerEnvironmentAdoption::new(&drifted, &handle),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("A2 mismatch must reject");
+    };
+    let stored = handle.container_adoption_fingerprint().unwrap().unwrap();
+    assert!(reason.ends_with(&format!(", stored={stored})")));
+    assert_eq!(reason.matches("fnv1a64:").count(), 2);
+    assert!(!reason.contains(&drifted.outputs_path));
+    assert!(!reason.contains(&exact.scope));
     assert_eq!(runtime.st.lock().unwrap().observations, 1, "A2 zero I/O");
     // A3 the creating object holds the original attempt (never durable handle
     // data); both fenced/unfenced observation share fingerprint validation and

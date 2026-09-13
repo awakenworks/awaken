@@ -973,7 +973,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             let (_, expected) = self.adoption_plan(adoption.spec)?;
             if stored != &expected {
                 return Ok(pc::SandboxObservation::Incompatible {
-                    reason: "container provider-effective adoption configuration differs from its durable handle".into(),
+                    reason: format!(
+                        "container provider-effective adoption configuration differs from its durable handle (expected={expected}, stored={stored})"
+                    ),
                 });
             }
         }
