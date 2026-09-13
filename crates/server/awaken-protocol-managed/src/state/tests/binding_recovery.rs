@@ -1429,10 +1429,17 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     assert_eq!(report.settled.len(), 2);
     assert!(applied.lock().unwrap().is_empty(), "R1-R5");
+    // R4/R5 name WHICH Sessions are torn down, not the order. The recovery
+    // sweep reconciles candidates concurrently and re-sorts only its reports by
+    // candidate index; a teardown effect is recorded when its own task
+    // completes, so asserting a sequence here would pin an I/O race rather than
+    // the contract.
+    let mut torn_down = ended.lock().unwrap().clone();
+    torn_down.sort();
     assert_eq!(
-        ended.lock().unwrap().as_slice(),
+        torn_down.as_slice(),
         &["sesn_deleted_empty", "sesn_terminated"],
-        "R4/R5; repository order is stable by Session id"
+        "R4/R5; exactly the terminal and deleted Sessions release their environment"
     );
     for status in ["idle", "running", "rescheduling"] {
         let session = repo.get(&format!("sesn_{status}")).await.unwrap();
