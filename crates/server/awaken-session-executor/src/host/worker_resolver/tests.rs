@@ -2774,3 +2774,145 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
             .unwrap_or(false)
     );
 }
+
+#[tokio::test]
+async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session_use() {
+    use awaken_dispatch::{Clock, DispatchQueue};
+    // Cause/effect table: ordinary Run + Coordinator-issued Session Work receipt
+    // -> canonical frozen realization before runtime. No receipt -> O5's existing
+    // ordinary path. Wrong Session/owner receipt -> reject before environment effects.
+    // Later public Session use must reuse the exact baseline, not fail because an
+    // extension eagerly opened the Thread. Run admission identity stays OrdinaryRoot.
+    for invalid_receipt in [false, true] {
+        let thread = format!("outcome-baseline-{invalid_receipt}");
+        let activation = test_activation(&thread, "outcome-owned-run");
+        let frozen = empty_frozen_projection_for_snapshot(
+            "workspace",
+            eager_environment(),
+            &activation.snapshot,
+        );
+        let dispatch =
+            Arc::new(awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_dispatch_store(dispatch.clone())
+                .with_session_control(Arc::new(RecordingSessionControl {
+                    resume_calls: calls.clone(),
+                    phases: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    projection: Arc::new(std::sync::Mutex::new(Some(frozen.clone()))),
+                    mcp_stage: None,
+                    fail_begin: Arc::new(AtomicBool::new(false)),
+                })),
+        );
+        let managed = managed_test_host(host.clone());
+        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            &managed,
+            Arc::new(ToggleBindingSink {
+                fail: AtomicBool::new(false),
+                calls: AtomicUsize::new(0),
+                binding: std::sync::Mutex::new(None),
+            }),
+        );
+        dispatch
+            .enqueue(with_empty_session_resources(
+                awaken_dispatch::RunDispatch::new(activation),
+                "workspace",
+            ))
+            .await
+            .unwrap();
+        let mut claimed = dispatch
+            .claim(
+                "worker-a",
+                30000,
+                awaken_dispatch::SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        // Serialized edge receipt fixture; production issuance is solely the Coordinator
+        // acquisition port. The real Control path validates it again before realization.
+        claimed.session_work_authority = Some(
+            serde_json::from_value(serde_json::json!({
+                "session_id": if invalid_receipt {"foreign"} else {thread.as_str()},
+                "worker_owner":"worker-a", "authority":{"kind":"not_required"},
+            }))
+            .unwrap(),
+        );
+        let result = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        }
+        .worker_for_claimed(&claimed)
+        .await;
+        if invalid_receipt {
+            assert!(result.is_err());
+            assert!(host.session_environment(&thread).await.is_none());
+            continue;
+        }
+        result.expect("Outcome Work receipt realizes exact baseline");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            host.session_slots
+                .read(&thread, |slot| slot.baseline.is_some()
+                    && slot.runtime.is_some())
+                .unwrap_or(false)
+        );
+        assert!(host.session_environment(&thread).await.is_some());
+        assert_eq!(
+            claimed.request.admission_shape(),
+            awaken_dispatch_contract::DispatchAdmissionShape::OrdinaryRoot
+        );
+        awaken_session_contract::SessionRuntime::install_session_projection(
+            &managed,
+            &thread,
+            frozen,
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        )
+        .await
+        .expect("later Session use preserves frozen baseline");
+    }
+}
+
+#[tokio::test]
+async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
+    // Causes: frozen placement is Worker and its durable Environment is Resident,
+    // but this cold Coordinator has no local owner. Effects: prepare/read reuse
+    // coordination context and committed Outcome truth without physical adoption;
+    // a pure read creates no model call or replacement Environment.
+    let thread = "outcome-coordinator-read";
+    let activation = test_activation(thread, "outcome-source");
+    let mut projection = empty_frozen_projection_for_snapshot(
+        "workspace",
+        eager_environment(),
+        &activation.snapshot,
+    );
+    projection.baseline.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "opaque-worker-owned-environment".into(),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let managed = managed_test_host(host.clone());
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        thread,
+        projection,
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .unwrap();
+    host.prepare_outcome(thread, "outcome-a", "finish", "done", 1)
+        .await
+        .expect("prepare uses no local Environment");
+    assert!(
+        host.committed_outcome_projection(thread, "outcome-a")
+            .await
+            .expect("read remote-owned outcome")
+            .is_none()
+    );
+    assert!(host.session_environment(thread).await.is_none());
+}

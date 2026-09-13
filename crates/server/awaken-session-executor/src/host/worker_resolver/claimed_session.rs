@@ -5,6 +5,13 @@ use super::realization_failure::{
 };
 use super::*;
 
+/// Session projection authority is independent from the Run's admission shape.
+/// Outcome Runs retain OrdinaryRoot identity, but the Coordinator's subordinate
+/// Work receipt still requires the same frozen Session realization before effects.
+pub(super) fn has_session_projection_authority(claimed: &awaken_dispatch::Claimed) -> bool {
+    claimed.request.session_thread_id.is_some() || claimed.session_work_authority.is_some()
+}
+
 /// A co-located dispatch pool has no outbound Control client because its
 /// Session application already drives the same Runtime Host. It may consume a
 /// claimed Managed Run only after that application has installed the complete
@@ -84,7 +91,7 @@ pub(super) async fn install_claimed_session_projection(
             claimed_realization_continuation(slot, &claim)
         })
         .await;
-    if claimed.request.session_thread_id.is_none() {
+    if !has_session_projection_authority(claimed) {
         if let Some(manifest) = dispatched_resources {
             host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
                 .await
