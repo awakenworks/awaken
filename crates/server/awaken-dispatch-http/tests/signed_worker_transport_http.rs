@@ -755,7 +755,7 @@ fn activation() -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint("signed-catalog".into()),
                 instructions: String::new(),
-                max_steps: 1,
+                max_steps: Some(1),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("provider", "model", "genai"),

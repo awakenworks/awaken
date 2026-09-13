@@ -22,7 +22,7 @@ export const BLANK_AGENT_CONFIG: AgentConfig = {
   skills: [],
   multiagent: { type: "coordinator", agents: [{ type: "self" }] },
   delegation_limits: CONSERVATIVE_DELEGATION_LIMITS,
-  max_steps: 8,
+  max_steps: null,
   plugins: [],
   plugin_config: {},
   context_policy: { kind: "keep_all" },

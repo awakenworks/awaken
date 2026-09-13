@@ -27,7 +27,7 @@ async fn main() {
     let config = AgentConfig {
         id: "greeter".to_string(),
         instructions: "You are a friendly greeter.".to_string(),
-        max_steps: 4,
+        max_steps: Some(4),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("demo", "stub", "stub").expect("literal coordinates"),
         inference: Default::default(),

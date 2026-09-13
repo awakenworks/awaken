@@ -379,7 +379,7 @@ export interface AgentConfig {
   disabled_at?: string | null;
   archived_at?: string | null;
   // extensions (our differentiated value, additive to the managed object):
-  max_steps: number;
+  max_steps: number | null;
   plugins: string[];
   /** Per-plugin config sections, keyed by plugin id (for example state_machine,
    * memory, and generative-ui). Permissions live only in typed tools[]. */

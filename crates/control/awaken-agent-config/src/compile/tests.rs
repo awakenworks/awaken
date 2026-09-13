@@ -15,7 +15,7 @@ pub(super) fn config(tools: &[&str]) -> AgentConfig {
     AgentConfig {
         id: "agent-1".to_string(),
         instructions: "be helpful".to_string(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("p", "m", "b").expect("literal coordinates"),
         inference: Default::default(),
@@ -1534,4 +1534,41 @@ fn compile_error_field_path_routes_each_variant() {
         "tool_overrides"
     );
     assert_eq!(CompileError::Serialize("boom".into()).field_path(), "");
+}
+
+#[test]
+fn step_limit_defaults_and_legacy_fingerprint_are_preserved() {
+    // C1 existing numeric config, C2 explicit removal, C3 invalid zero.
+    // L1 C1 -> byte-identical round trip and fingerprint; L2 C2 -> new
+    // fingerprint/no ceiling without mutating old snapshot; L3 C3 -> reject.
+    let finite = config(&[]);
+    let legacy_bytes = serde_json::to_vec(&finite).unwrap();
+    assert!(String::from_utf8_lossy(&legacy_bytes).contains("\"max_steps\":8"));
+    let restored: AgentConfig = serde_json::from_slice(&legacy_bytes).unwrap();
+    assert_eq!(serde_json::to_vec(&restored).unwrap(), legacy_bytes, "L1");
+    let old = compile(&restored, &[]).unwrap();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        old.fingerprint.0,
+        format!("{:x}", Sha256::digest(&legacy_bytes)),
+        "L1 historical hash recipe"
+    );
+    let mut unlimited = finite.clone();
+    unlimited.max_steps = None;
+    let new = compile(&unlimited, &[]).unwrap();
+    assert_ne!(new.fingerprint, old.fingerprint, "L2");
+    assert_eq!(new.resolved_spec.max_steps, None);
+    assert_eq!(old.resolved_spec.max_steps, Some(8));
+    let mut invalid = finite;
+    invalid.max_steps = Some(0);
+    assert!(
+        matches!(
+            compile(&invalid, &[]),
+            Err(CompileError::InvalidBinding {
+                axis: "max_steps",
+                ..
+            })
+        ),
+        "L3"
+    );
 }

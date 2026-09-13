@@ -13,7 +13,6 @@ export interface StarterTemplate {
   descriptionZh: string;
   name: string;
   system: string;
-  maxSteps: number;
   firstTask: string;
   firstTaskZh: string;
   requirement: string;
@@ -41,7 +40,6 @@ export const STARTERS: StarterTemplate[] = [
     descriptionZh: "把一项边界清晰的请求转化为经过检查的结果。",
     name: "Task Assistant",
     system: "You are a focused task assistant. Clarify the intended outcome from available context, complete the work with the configured capabilities, verify the result, and report material limitations.",
-    maxSteps: 10,
     firstTask: "Summarize your role, list the inputs you need, and complete one small representative task.",
     firstTaskZh: "概括你的职责、列出所需输入，并完成一项小型代表任务。",
     requirement: "No Sandbox unless a selected Tool or Skill needs one",
@@ -56,7 +54,6 @@ export const STARTERS: StarterTemplate[] = [
     descriptionZh: "检查代码仓、完成聚焦改动并运行验证。",
     name: "Repository Change Agent",
     system: "You are a careful coding agent. Inspect the repository, make focused changes, and verify behavior before reporting completion.",
-    maxSteps: 16,
     firstTask: "Inspect the mounted repository, identify its verification commands, and report the smallest safe first change.",
     firstTaskZh: "检查已挂载代码仓，找出验证命令，并说明最小且安全的首个改动。",
     requirement: "Requires a filesystem-capable Environment / Sandbox",
@@ -71,7 +68,6 @@ export const STARTERS: StarterTemplate[] = [
     descriptionZh: "用可追溯来源与不确定性说明回答一个决策问题。",
     name: "Evidence Brief Agent",
     system: "You are a research agent. Gather evidence, separate observation from inference, and produce a concise sourced synthesis.",
-    maxSteps: 12,
     firstTask: "Produce a short evidence brief on the supplied question, separating verified facts, inference, and open gaps.",
     firstTaskZh: "围绕给定问题生成简短证据简报，区分已验证事实、推断与待补信息。",
     requirement: "Requires a web/search Tool, MCP server, or supplied Files",

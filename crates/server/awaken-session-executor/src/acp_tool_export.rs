@@ -827,7 +827,7 @@ mod tests {
                     model_candidates: Vec::new(),
                     catalog_fingerprint: CatalogFingerprint("owned-fp".into()),
                     instructions: String::new(),
-                    max_steps: 4,
+                    max_steps: Some(4),
                     delegation_limits: Default::default(),
                     model_binding: ResolvedModelCandidate::host(ModelBinding::new(
                         "test",

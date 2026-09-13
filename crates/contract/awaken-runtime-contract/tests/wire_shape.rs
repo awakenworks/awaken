@@ -34,7 +34,7 @@ fn spec() -> ResolvedSpec {
     ResolvedSpec {
         catalog_fingerprint: CatalogFingerprint("fp-1".into()),
         instructions: "be concise".into(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
             ModelBinding::new("prov", "gpt", "genai"),
@@ -464,4 +464,29 @@ fn boundary_enum_tags_are_exhaustively_pinned() {
         serde_json::to_value(ContextPolicy::KeepLast { keep_last: 5 }).unwrap(),
         json!({ "kind": "keep_last", "keep_last": 5 })
     );
+}
+
+#[test]
+fn optional_step_limit_preserves_legacy_numeric_snapshots() {
+    // Cause/effect table: S1 old positive integer -> identical numeric wire;
+    // S2 null/omitted -> no ceiling; S3 zero/negative/fraction/string -> reject.
+    // Restored finite snapshots must not adopt a new default on restart.
+    let finite = serde_json::to_value(spec()).unwrap();
+    assert_eq!(finite["max_steps"], json!(8));
+    let restored: ResolvedSpec = serde_json::from_value(finite.clone()).unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap(), finite, "S1");
+    for value in [None, Some(serde_json::Value::Null)] {
+        let mut wire = finite.clone();
+        wire.as_object_mut().unwrap().remove("max_steps");
+        if let Some(value) = value {
+            wire["max_steps"] = value;
+        }
+        let restored: ResolvedSpec = serde_json::from_value(wire).unwrap();
+        assert_eq!(restored.max_steps, None, "S2");
+    }
+    for invalid in [json!(0), json!(-1), json!(1.5), json!("16")] {
+        let mut wire = finite.clone();
+        wire["max_steps"] = invalid;
+        assert!(serde_json::from_value::<ResolvedSpec>(wire).is_err(), "S3");
+    }
 }

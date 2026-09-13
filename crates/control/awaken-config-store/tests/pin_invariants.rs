@@ -27,7 +27,7 @@ fn config(id: &str, backend: &str) -> AgentConfig {
     AgentConfig {
         id: id.to_string(),
         instructions: "be helpful".to_string(),
-        max_steps: 8,
+        max_steps: Some(8),
         delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("p", "claude-opus-4-8", backend)
             .expect("literal coordinates"),

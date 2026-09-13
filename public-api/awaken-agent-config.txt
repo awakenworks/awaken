@@ -154,7 +154,7 @@ pub awaken_agent_config::AgentConfig::disabled_at: core::option::Option<alloc::s
 pub awaken_agent_config::AgentConfig::id: alloc::string::String
 pub awaken_agent_config::AgentConfig::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_agent_config::AgentConfig::instructions: alloc::string::String
-pub awaken_agent_config::AgentConfig::max_steps: usize
+pub awaken_agent_config::AgentConfig::max_steps: core::option::Option<usize>
 pub awaken_agent_config::AgentConfig::mcp_servers: alloc::vec::Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>
 pub awaken_agent_config::AgentConfig::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_agent_config::AgentConfig::model_binding: awaken_agent_config::ModelSelection

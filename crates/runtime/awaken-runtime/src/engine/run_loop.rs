@@ -603,7 +603,7 @@ pub(super) async fn drive(
         return Ok(ledger.into_step_result(reached));
     }
 
-    for step in 0..resolved.spec.max_steps {
+    for step in (0..).take_while(|step| resolved.spec.max_steps.is_none_or(|limit| *step < limit)) {
         // Step-boundary incremental commit: everything the completed steps
         // staged — messages, state, audit — becomes durable under a `Running`
         // fact before the next inference. A crash then loses at most the step
@@ -679,7 +679,10 @@ pub(super) async fn drive(
             None
         };
         let checkpoint_ref = checkpoint_ctx.as_ref();
-        let final_step = resolved.spec.max_steps > 1 && step + 1 == resolved.spec.max_steps;
+        let final_step = resolved
+            .spec
+            .max_steps
+            .is_some_and(|limit| limit > 1 && step + 1 == limit);
         let inference = infer_step(
             &llm,
             runtime,

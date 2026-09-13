@@ -91,7 +91,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
             model_candidates: Vec::new(),
             catalog_fingerprint: fingerprint.clone(),
             instructions: String::new(),
-            max_steps: 4,
+            max_steps: Some(4),
             delegation_limits: Default::default(),
             model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                 ModelBinding::new(

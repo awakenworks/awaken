@@ -168,7 +168,7 @@ fn activation(plugin_ids: Vec<String>, max_steps: usize) -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
-                max_steps,
+                max_steps: Some(max_steps),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("p".to_string(), "m".to_string(), "b".to_string()),
@@ -519,4 +519,31 @@ async fn a_guard_receives_the_run_conversation() {
         Some("go"),
         "the guard saw the run's own assistant deliverable"
     );
+}
+
+#[tokio::test]
+async fn no_step_ceiling_allows_long_work_and_still_finishes_naturally() {
+    // U1 no ceiling + 24 required continuations (> old 16) -> 25 evaluations
+    // and NaturalEnd, committed once through the existing guard/Run owner.
+    // U2 finite + never-ending guard -> MaxSteps is covered immediately above.
+    let seen_fc = Arc::new(Mutex::new(Vec::new()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(EchoLlm))
+        .with_plugin(Arc::new(ScriptedGuardPlugin {
+            steer_budget: 24,
+            seen_fc: seen_fc.clone(),
+        }));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let mut input = activation(vec!["scripted".into()], 16);
+    input.snapshot.resolved_spec.max_steps = None;
+    let state = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        runtime.execute(input, RuntimeRunContext::new().with_commit(commit.clone())),
+    )
+    .await
+    .expect("bounded test wait")
+    .expect("execute");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(*seen_fc.lock().unwrap(), (0..=24).collect::<Vec<_>>());
+    assert_eq!(count_user_text(&commit, "revise"), 24);
 }

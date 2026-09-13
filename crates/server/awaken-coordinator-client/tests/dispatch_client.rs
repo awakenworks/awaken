@@ -53,7 +53,7 @@ fn activation(run: &str) -> RunActivation {
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
-                max_steps: 16,
+                max_steps: Some(16),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("p", "m", "b"),

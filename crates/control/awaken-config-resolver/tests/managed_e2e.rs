@@ -74,7 +74,7 @@ fn snapshot_for(model_id: &str) -> ExecutableAgentSnapshot {
             model_candidates: Vec::new(),
             catalog_fingerprint: CatalogFingerprint("fp".into()),
             instructions: String::new(),
-            max_steps: 8,
+            max_steps: Some(8),
             delegation_limits: Default::default(),
             model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                 ModelBinding::new("anthropic", model_id, "genai"),

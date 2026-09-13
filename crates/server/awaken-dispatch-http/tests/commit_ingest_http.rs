@@ -107,7 +107,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: "test".into(),
-                max_steps: 2,
+                max_steps: Some(2),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("provider", "model", "local"),
