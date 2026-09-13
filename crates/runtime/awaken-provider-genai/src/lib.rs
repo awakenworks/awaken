@@ -625,8 +625,13 @@ pub async fn probe_credential(
         return CredentialProbe::Unknown;
     };
     let executor = executor.with_timeout(Duration::from_secs(30));
+    // A model reference the wire would refuse (blank or padded) is a bad-model
+    // input, which this probe already classifies as `Unknown`, never `Invalid`.
+    let Ok(model_binding) = ModelBinding::parse("probe", model, "genai") else {
+        return CredentialProbe::Unknown;
+    };
     let request = ChatRequest {
-        model_binding: ModelBinding::new("probe", model.to_string(), "genai"),
+        model_binding,
         inference: Default::default(),
         messages: vec![awaken_runtime_contract::llm::ChatMessage {
             role: Role::User,

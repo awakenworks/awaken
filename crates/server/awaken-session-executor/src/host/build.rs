@@ -1137,11 +1137,16 @@ impl SharedHost {
 
     /// Override the default tool-free Outcome Judge with the named Agent. The
     /// Judge runs through the same Run boundary in its own fresh context.
-    pub fn with_judge(mut self, judge_agent_id: impl Into<String>) -> Self {
+    /// Refused when the host's configured `model_ref` is not an executable
+    /// binding, since the Judge snapshot pins it.
+    pub fn with_judge(
+        mut self,
+        judge_agent_id: impl Into<String>,
+    ) -> Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding> {
         let id = judge_agent_id.into();
-        let snapshot = default_judge_agent(&self.model_ref, &id, DEFAULT_JUDGE_INSTRUCTIONS);
+        let snapshot = default_judge_agent(&self.model_ref, &id, DEFAULT_JUDGE_INSTRUCTIONS)?;
         self.judge_snapshot = Some(snapshot);
-        self
+        Ok(self)
     }
 
     /// Pin an arbitrary executable Agent snapshot as the Outcome Grader. Its

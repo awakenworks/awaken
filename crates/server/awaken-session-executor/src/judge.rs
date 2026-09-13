@@ -212,7 +212,8 @@ mod tests {
         // table: R1=C1+C2=>E1; R2=C3=>E2; R3=C4=>E2. This prevents a crash from
         // stranding an unfenced legacy Judge Sandbox without weakening the
         // provider's foreign-root fail-closed invariant.
-        let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
+            .expect("literal model reference");
         assert!(environment_free_judge(&inference_only), "R1/E1");
 
         let with_tool = ExecutableAgentSnapshot::builder("judge-tool")
@@ -249,7 +250,8 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let host = judge_test_host(model.clone());
-        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
+            .expect("literal model reference");
         let input = grading_input("agent-grade-exact-json");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let grade = HostAgentGrader {
@@ -289,7 +291,8 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let host = judge_test_host(model);
-        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
+            .expect("literal model reference");
         let input = grading_input("agent-grade-prose-json");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let context = host.ctx_for(&thread.0, None).await.unwrap();

@@ -117,21 +117,26 @@ impl awaken_session_contract::SessionModelPublicationResolver for RoutePublicati
             .clone()
             .unwrap_or_else(|| "scenario".into());
         let candidate = |model: &str| {
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                awaken_runtime_contract::resolved::ModelBinding::new(
-                    provider.clone(),
-                    model,
-                    backend_ref,
-                ),
+            awaken_runtime_contract::resolved::ModelBinding::parse(
+                provider.clone(),
+                model,
+                backend_ref,
             )
+            .map(awaken_runtime_contract::resolved::ResolvedModelCandidate::host)
+            .map_err(|error| {
+                awaken_session_contract::SessionModelResolutionError::Invalid(format!(
+                    "model-route provider `{provider}` / model `{model}` on backend \
+                     `{backend_ref}`: {error}"
+                ))
+            })
         };
         Ok(awaken_session_contract::SessionModelPublication {
-            primary: candidate(&target.model_id),
+            primary: candidate(&target.model_id)?,
             candidates: ["fast", "slow", "default"]
                 .into_iter()
                 .filter(|model| *model != target.model_id)
                 .map(candidate)
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 }
@@ -141,6 +146,8 @@ impl awaken_session_contract::SessionModelPublicationResolver for RoutePublicati
 /// `AWAKEN_MODEL_MODE=model-route`.
 pub fn build_model_route_router() -> Router {
     let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
+    // Literal-equivalent: the closure is only ever applied to the three
+    // string literals below, never to operator or wire input.
     let candidate = |model: &str| {
         awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
             awaken_runtime_contract::resolved::ModelBinding::new("scenario", model, "genai"),

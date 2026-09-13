@@ -2,6 +2,7 @@
 
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
+use awaken_runtime_contract::resolved::InvalidModelBinding;
 use awaken_runtime_contract::{
     CommittedThreadView, EndCause, ExecutableAgentSnapshot, Message, MessageId, ModelBinding, Role,
     RunActivation, RunState, RuntimeRunContext, TranscriptSliceSpec,
@@ -26,17 +27,21 @@ When evidence is present, cite its decisive stable token or locator in the expla
 
 /// A default tool-free Judge snapshot. A composition may replace this with any
 /// pinned Native or ACP Agent snapshot; the Run restriction remains authoritative.
-#[must_use]
+///
+/// `model_ref` is the host's configured default model reference; it is
+/// admitted here so a blank or padded reference is refused where it was
+/// configured instead of stalling the grading Run.
 pub fn default_judge_agent(
     model_ref: &str,
     agent_id: &str,
     instructions: &str,
-) -> ExecutableAgentSnapshot {
-    ExecutableAgentSnapshot::builder(agent_id)
+) -> Result<ExecutableAgentSnapshot, InvalidModelBinding> {
+    let model = ModelBinding::parse("default", model_ref, "default")?;
+    Ok(ExecutableAgentSnapshot::builder(agent_id)
         .instructions(instructions)
-        .model(ModelBinding::new("default", model_ref, "default"))
+        .model(model)
         .max_steps(2)
-        .build()
+        .build())
 }
 
 /// Derive the default tool-free Judge from an already-frozen Worker snapshot.
@@ -215,7 +220,8 @@ mod tests {
 
     #[test]
     fn default_judge_is_tool_free_and_domain_neutral() {
-        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
+            .expect("literal model reference");
         assert_eq!(snapshot.root_agent_id.0, "judge");
         assert!(snapshot.resolved_spec.tool_descriptors.is_empty());
 

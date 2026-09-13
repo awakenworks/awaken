@@ -590,7 +590,8 @@ fn agent_config() -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
+        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
+            .expect("literal coordinates"),
         inference: Default::default(),
         tool_ids: vec!["echo".to_string()],
         model_fallbacks: Vec::new(),
@@ -778,7 +779,8 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
             instructions: format!("body-{id}"),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
+            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
+                .expect("literal coordinates"),
             inference: Default::default(),
             tool_ids: vec!["echo".to_string()],
             ..Default::default()
@@ -870,7 +872,8 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
             instructions: instr.to_string(),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
+            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
+                .expect("literal coordinates"),
             inference: Default::default(),
             tool_ids: vec!["echo".to_string()],
             ..Default::default()

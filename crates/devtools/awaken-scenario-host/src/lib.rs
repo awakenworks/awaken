@@ -113,13 +113,13 @@ pub async fn build_outcome_matrix_router() -> Router {
         Ok("acp") => "acp:claude",
         _ => "default",
     };
+    let judge_binding = ModelBinding::parse("outcome-test", &model_ref, judge_backend)
+        .unwrap_or_else(|error| {
+            panic!("scenario model `{model_ref}` on AWAKEN_OUTCOME_JUDGE_RUNTIME backend: {error}")
+        });
     let judge = ExecutableAgentSnapshot::builder("outcome-judge")
         .instructions("Return only the required strict Outcome Grade JSON.")
-        .model(ModelBinding::new(
-            "outcome-test",
-            model_ref.clone(),
-            judge_backend,
-        ))
+        .model(judge_binding)
         .max_steps(2)
         .build();
     let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
@@ -303,12 +303,10 @@ fn ask_tool_bindings(tool_name: &str) -> AgentBindings {
 /// follow whichever neutral default the runtime currently uses.
 pub fn build_probe_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "probe");
+    let binding = ModelBinding::parse("scenario", &model_ref, "native")
+        .unwrap_or_else(|error| panic!("scenario model `{model_ref}`: {error}"));
     let snapshot = ExecutableAgentSnapshot::builder("assistant")
-        .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
-            "scenario",
-            model_ref.clone(),
-            "native",
-        )))
+        .resolved_model(ResolvedModelCandidate::host(binding))
         .metadata(awaken_runtime_contract::snapshot::AgentSnapshotMetadata {
             source: awaken_runtime_contract::snapshot::AgentConfigRevisionRef {
                 agent_id: AgentId("assistant".into()),
@@ -712,7 +710,10 @@ pub async fn build_resolved_real_router() -> Router {
     let published = awaken_config_service::ModelPublicationResolver::resolve_models(
         &resolver,
         &awaken_tenancy::ScopeId::from("ws"),
-        &ModelSelection::Pinned(ModelBinding::new("anthropic", &model, "genai")),
+        &ModelSelection::Pinned(
+            ModelBinding::parse("anthropic", &model, "genai")
+                .unwrap_or_else(|error| panic!("ANTHROPIC_MODEL `{model}`: {error}")),
+        ),
         &[],
     )
     .await
@@ -842,7 +843,10 @@ pub async fn build_oauth_resolved_router() -> Router {
     let published = awaken_config_service::ModelPublicationResolver::resolve_models(
         &resolver,
         &awaken_tenancy::ScopeId::from("ws"),
-        &ModelSelection::Pinned(ModelBinding::new("anthropic", &model, "genai")),
+        &ModelSelection::Pinned(
+            ModelBinding::parse("anthropic", &model, "genai")
+                .unwrap_or_else(|error| panic!("ANTHROPIC_MODEL `{model}`: {error}")),
+        ),
         &[],
     )
     .await
@@ -899,7 +903,10 @@ pub fn build_graded_router(
     model_ref: impl Into<String>,
     judge_agent_id: impl Into<String>,
 ) -> Router {
-    mount(resource_host(llm, model_ref).map_host(|host| host.with_judge(judge_agent_id)))
+    mount(resource_host(llm, model_ref).map_host(|host| {
+        host.with_judge(judge_agent_id)
+            .unwrap_or_else(|error| panic!("scenario host model reference: {error}"))
+    }))
 }
 
 /// The default deterministic router (echo model) — the CI / e2e server.
@@ -1140,7 +1147,10 @@ pub fn build_remote_delegation_router() -> Router {
     let mut tools = awaken_session_executor::authorable_tools();
     tools.retain(|tool| tool.kind == ToolKind::AgentDelegation);
     let assistant = ExecutableAgentSnapshot::builder("assistant")
-        .model(ModelBinding::new("default", &model_ref, "default"))
+        .model(
+            ModelBinding::parse("default", &model_ref, "default")
+                .unwrap_or_else(|error| panic!("scenario model `{model_ref}`: {error}")),
+        )
         .tools(tools)
         .metadata(awaken_runtime_contract::snapshot::AgentSnapshotMetadata {
             source: awaken_runtime_contract::snapshot::AgentConfigRevisionRef {
@@ -1161,7 +1171,9 @@ pub fn build_remote_delegation_router() -> Router {
     let researcher = ExecutableAgentSnapshot::builder("researcher")
         .resolved_model(
             ResolvedModelCandidate::try_remote(
-                ModelBinding::new("remote", "", format!("a2a:{url}")),
+                ModelBinding::parse("remote", "", format!("a2a:{url}")).unwrap_or_else(|error| {
+                    panic!("AWAKEN_REMOTE_AGENT_URL `{url}` is not an A2A backend: {error}")
+                }),
                 awaken_tenancy::ScopeId::from("default"),
                 None,
                 security_fingerprint,

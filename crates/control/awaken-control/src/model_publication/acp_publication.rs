@@ -99,23 +99,29 @@ impl CatalogModelPublicationResolver {
         ),
         PublicationResolutionError,
     > {
+        // The candidate every refusal below names: the Worker-local credential
+        // (or none) on this ACP backend. Both coordinates are caller data, so
+        // they are admitted once here and reported against their source.
+        let candidate = ModelBinding::parse(
+            credential.map_or("", |credential| credential.id.as_str()),
+            "",
+            backend_ref,
+        )
+        .map_err(|error| {
+            PublicationResolutionError::invalid_binding(
+                format!("Worker capability lookup for backend `{backend_ref}`"),
+                error,
+            )
+        })?;
         let workers = self.workers.as_ref().ok_or_else(|| {
             PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(
-                    credential.map_or("", |credential| credential.id.as_str()),
-                    "",
-                    backend_ref,
-                ),
+                binding: candidate.clone(),
                 reason: "live Worker capability observations are unavailable".into(),
             }
         })?;
         let snapshots = workers.list().await.map_err(|error| {
             PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(
-                    credential.map_or("", |credential| credential.id.as_str()),
-                    "",
-                    backend_ref,
-                ),
+                binding: candidate.clone(),
                 reason: format!("Worker capability observations are unavailable: {error}"),
             }
         })?;
@@ -132,11 +138,7 @@ impl CatalogModelPublicationResolver {
             )),
             awaken_worker_contract::VerifiedAcpCapabilitySelection::Unavailable => {
                 Err(PublicationResolutionError::CandidateUnavailable {
-                    binding: ModelBinding::new(
-                        credential.map_or("", |credential| credential.id.as_str()),
-                        "",
-                        backend_ref,
-                    ),
+                    binding: candidate,
                     reason: format!(
                         "no fresh verified ACP capability is available for {backend_ref}"
                     ),
@@ -144,11 +146,7 @@ impl CatalogModelPublicationResolver {
             }
             awaken_worker_contract::VerifiedAcpCapabilitySelection::Incompatible => {
                 Err(PublicationResolutionError::CandidateUnavailable {
-                    binding: ModelBinding::new(
-                        credential.map_or("", |credential| credential.id.as_str()),
-                        "",
-                        backend_ref,
-                    ),
+                    binding: candidate,
                     reason: format!(
                         "multiple incompatible ACP capability fingerprints are live for {backend_ref}"
                     ),

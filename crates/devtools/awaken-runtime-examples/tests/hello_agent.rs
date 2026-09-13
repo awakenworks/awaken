@@ -16,7 +16,7 @@ async fn hello_agent_example_runs_to_completion() {
         instructions: "You are a friendly greeter.".to_string(),
         max_steps: 4,
         delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned("demo", "stub", "stub"),
+        model_binding: ModelSelection::pinned("demo", "stub", "stub").expect("literal coordinates"),
         inference: Default::default(),
         tool_ids: Vec::new(),
         model_fallbacks: Vec::new(),

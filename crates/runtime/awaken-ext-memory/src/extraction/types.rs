@@ -18,29 +18,31 @@ pub struct MemoryExtractorSnapshot {
 impl MemoryExtractorSnapshot {
     /// Construct the explicit host-executor form used by embedded compositions
     /// and persistence-adapter tests. Provider-backed publications carry their
-    /// complete candidate from the executable snapshot instead.
-    #[must_use]
+    /// complete candidate from the executable snapshot instead. The three
+    /// coordinates are admitted by [`ModelBinding::parse`], so an extractor
+    /// snapshot that the durable wire would refuse cannot be built.
+    ///
+    /// [`ModelBinding::parse`]: awaken_runtime_contract::resolved::ModelBinding::parse
     pub fn host_executor(
         agent_id: impl Into<String>,
         provider_identity_ref: impl Into<String>,
         model_ref: impl Into<String>,
         backend_ref: impl Into<String>,
-    ) -> Self {
+    ) -> Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding> {
         let agent_id = agent_id.into();
-        Self {
+        let binding = awaken_runtime_contract::resolved::ModelBinding::parse(
+            provider_identity_ref,
+            model_ref,
+            backend_ref,
+        )?;
+        Ok(Self {
             agent: crate::memory_agent(
                 &agent_id,
-                awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    awaken_runtime_contract::resolved::ModelBinding::new(
-                        provider_identity_ref,
-                        model_ref,
-                        backend_ref,
-                    ),
-                ),
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding),
                 crate::DEFAULT_MEMORY_INSTRUCTIONS,
             ),
             extraction_prompt: None,
-        }
+        })
     }
 }
 

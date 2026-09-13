@@ -17,7 +17,7 @@ pub(super) fn config(tools: &[&str]) -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned("p", "m", "b"),
+        model_binding: ModelSelection::pinned("p", "m", "b").expect("literal coordinates"),
         inference: Default::default(),
         tool_ids: tools.iter().map(|s| s.to_string()).collect(),
         model_fallbacks: Vec::new(),
@@ -549,7 +549,8 @@ fn a2a_agent_declaring_skills_or_mcp_fails_the_capability_gate() {
     // ADR-0057 D2: a remote (a2a) agent honors neither locally — declaring them is a
     // silent runtime no-op, so publish rejects it. Skills reported first.
     let mut with_skills = config(&[]);
-    with_skills.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+    with_skills.model_binding =
+        ModelSelection::pinned("p", "m", "a2a:https://remote/agent").expect("literal coordinates");
     with_skills.skills = vec![awaken_agent_contract::AgentSkillBinding::custom("review")];
     assert_eq!(
         compile(&with_skills, &[]).unwrap_err(),
@@ -560,7 +561,8 @@ fn a2a_agent_declaring_skills_or_mcp_fails_the_capability_gate() {
     );
 
     let mut with_mcp = config(&[]);
-    with_mcp.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+    with_mcp.model_binding =
+        ModelSelection::pinned("p", "m", "a2a:https://remote/agent").expect("literal coordinates");
     with_mcp.mcp_servers = vec![mcp("gh", "")];
     assert_eq!(
         compile(&with_mcp, &[]).unwrap_err(),
@@ -577,7 +579,7 @@ fn native_and_acp_agents_may_declare_skills_and_mcp() {
     // the CLI's config-home/session), so they compile with them present.
     for backend in ["genai", "acp:claude"] {
         let mut cfg = config(&[]);
-        cfg.model_binding = ModelSelection::pinned("p", "m", backend);
+        cfg.model_binding = ModelSelection::pinned("p", "m", backend).expect("literal coordinates");
         cfg.skills = vec![awaken_agent_contract::AgentSkillBinding::custom("review")];
         cfg.mcp_servers = vec![mcp("gh", "https://mcp.example.test")];
         assert!(
@@ -599,7 +601,7 @@ fn background_tool_execution_is_rejected_for_external_backends_before_publicatio
     assert!(compile(&native, &[]).is_ok(), "R1");
 
     let mut acp = config(&[]);
-    acp.model_binding = ModelSelection::pinned("p", "m", "acp:codex");
+    acp.model_binding = ModelSelection::pinned("p", "m", "acp:codex").expect("literal coordinates");
     acp.plugin_ids = vec!["background_task".into()];
     assert_eq!(
         compile(&acp, &[]).unwrap_err(),
@@ -611,7 +613,8 @@ fn background_tool_execution_is_rejected_for_external_backends_before_publicatio
     );
 
     let mut a2a = config(&[]);
-    a2a.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+    a2a.model_binding =
+        ModelSelection::pinned("p", "m", "a2a:https://remote/agent").expect("literal coordinates");
     a2a.plugin_ids = vec!["background_task".into()];
     assert_eq!(
         compile(&a2a, &[]).unwrap_err(),
@@ -633,7 +636,7 @@ fn state_machine_is_native_only_and_never_a_silent_acp_configuration() {
     assert!(compile(&native, &[]).is_ok());
 
     let mut acp = config(&[]);
-    acp.model_binding = ModelSelection::pinned("p", "m", "acp:codex");
+    acp.model_binding = ModelSelection::pinned("p", "m", "acp:codex").expect("literal coordinates");
     acp.plugin_ids = vec!["state_machine".into()];
     assert_eq!(
         compile(&acp, &[]).unwrap_err(),
@@ -646,7 +649,7 @@ fn state_machine_is_native_only_and_never_a_silent_acp_configuration() {
 
 #[test]
 fn every_model_selection_has_one_strict_tagged_wire_shape() {
-    let selection = ModelSelection::pinned("p", "m", "b");
+    let selection = ModelSelection::pinned("p", "m", "b").expect("literal coordinates");
     let json = serde_json::to_value(&selection).unwrap();
     assert_eq!(
         json,
@@ -923,7 +926,8 @@ fn compile_carries_plugin_ids_and_config_sections() {
     let mut acp = native_acp_residue;
     acp.plugin_ids.clear();
     acp.plugin_config.remove("state_machine");
-    acp.model_binding = ModelSelection::pinned("p", "m", "acp:claude");
+    acp.model_binding =
+        ModelSelection::pinned("p", "m", "acp:claude").expect("literal coordinates");
     let acp_snapshot = compile(&acp, &[tool("echo")]).unwrap();
     assert_eq!(
         acp_snapshot.resolved_spec.plugin_config.get("acp"),
@@ -1491,7 +1495,7 @@ fn model_selection_resolved_reports_pinned_and_policy_variants() {
     // M3 BackendDefault -> resolved None, not auto, exact backend ref
     // Wire shapes are covered by
     // `pinned_selection_is_wire_identical_to_the_flat_triple`.
-    let pinned = ModelSelection::pinned("p", "m", "b");
+    let pinned = ModelSelection::pinned("p", "m", "b").expect("literal coordinates");
     assert_eq!(pinned.resolved(), Some(&ModelBinding::new("p", "m", "b")));
     assert!(!pinned.is_auto());
     assert_eq!(pinned.backend_default_ref(), None);

@@ -305,7 +305,13 @@ pub(crate) async fn run_agent(
         &Default::default(),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .map_err(|error| {
+        AgentRunError::Configuration(format!(
+            "model reference `{}` for Agent `{}` is not an executable binding: {error}",
+            execution.model_ref, execution.agent_id
+        ))
+    })?;
     let catalog = AgentCatalog::new().with_agent(config);
     run_configured_agent(
         &catalog,
@@ -341,7 +347,13 @@ pub(crate) async fn run_agent_until_boundary(
         &Default::default(),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .map_err(|error| {
+        AgentRunError::Configuration(format!(
+            "model reference `{}` for Agent `{}` is not an executable binding: {error}",
+            execution.model_ref, execution.agent_id
+        ))
+    })?;
     config.resolved_spec.plugin_config.agent.toolsets = execution.toolsets.to_vec();
     run_configured_agent_until_boundary(
         &config,
