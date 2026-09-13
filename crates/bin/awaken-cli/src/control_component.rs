@@ -76,6 +76,7 @@ pub(super) async fn control_component_for_process(
         credentials: control.credentials.clone(),
         secrets: control.secrets.clone(),
         profiles: control.profiles.clone(),
+        mcp_config: control.mcp_config.clone(),
         webhook_store: control.webhooks.clone(),
         resource_store: control.resources.clone(),
         config_store: control.config.clone(),

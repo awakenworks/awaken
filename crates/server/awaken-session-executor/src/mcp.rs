@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use awaken_agent_contract::RedactedString;
+use awaken_ext_mcp::McpToolTransport;
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
 use awaken_ext_skills::SkillRegistry as _;
 use awaken_runtime_contract::plugin::Plugin;
@@ -263,20 +264,50 @@ pub struct ExtMcpProbe;
 
 #[async_trait::async_trait]
 impl McpProbe for ExtMcpProbe {
-    async fn probe(&self, mcp_server_url: &str, bearer: &RedactedString) -> McpProbeStatus {
+    async fn probe(&self, url: &str, bearer: &RedactedString) -> McpProbeStatus {
+        self.inspect(url, Some(bearer)).await.status
+    }
+    async fn inspect(
+        &self,
+        url: &str,
+        bearer: Option<&RedactedString>,
+    ) -> awaken_session_contract::McpInspection {
+        use awaken_session_contract::{McpInspection, McpProbeTool};
         let capture = Arc::new(ChallengeCapture {
             status: Mutex::new(None),
         });
-        let connected = HttpTransportBuilder::new(mcp_server_url.to_string())
-            .credential(Credential::Bearer(bearer.expose_secret().to_string()))
-            .refresher(Arc::clone(&capture) as Arc<dyn CredentialRefresher>)
-            .connect()
-            .await;
-        let challenged = *capture.status.lock().unwrap();
-        match (connected, challenged) {
-            (Ok(_), _) => McpProbeStatus::Valid,
-            (Err(_), Some(http_status)) => McpProbeStatus::Invalid { http_status },
-            (Err(_), None) => McpProbeStatus::Unknown,
+        let mut builder = HttpTransportBuilder::new(url.to_string())
+            .refresher(Arc::clone(&capture) as Arc<dyn CredentialRefresher>);
+        if let Some(bearer) = bearer {
+            builder = builder.credential(Credential::Bearer(bearer.expose_secret().to_string()));
+        }
+        let result = tokio::time::timeout(Duration::from_secs(15), async {
+            let transport = builder.connect().await?;
+            transport.list_tools().await
+        })
+        .await;
+        match result {
+            Ok(Ok(tools)) => McpInspection {
+                status: McpProbeStatus::Valid,
+                tools: tools
+                    .into_iter()
+                    .map(|tool| McpProbeTool {
+                        name: tool.name,
+                        description: tool.description,
+                        input_schema: tool.input_schema,
+                    })
+                    .collect(),
+            },
+            _ => McpInspection {
+                status: capture
+                    .status
+                    .lock()
+                    .unwrap()
+                    .map_or(McpProbeStatus::Unknown, |http_status| {
+                        McpProbeStatus::Invalid { http_status }
+                    }),
+                tools: Vec::new(),
+            },
         }
     }
 }

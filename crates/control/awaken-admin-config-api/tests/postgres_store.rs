@@ -381,3 +381,52 @@ async fn postgres_admin_rows_survive_a_reconnect() {
     assert_eq!(pending.len(), 1, "the material intent survives reconnect");
     assert_eq!(pending[0].id().unwrap(), "wh_pending");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_mcp_configuration_cas_and_restart() {
+    // P1 real Postgres + two same-revision writers -> one commit; P2 reconnect
+    // -> exact current config; P3 other Workspace -> absent. Same domain write
+    // predicate as SQLite; SQL owns the final compare-and-swap race.
+    use awaken_agent_config::mcp_config::{
+        McpCatalogSnapshot, McpConfiguration, McpConfigurationRepository,
+    };
+    use std::sync::Arc;
+    let Some(url) = schema_url("t_admin_mcp_config").await else {
+        return;
+    };
+    let store = Arc::new(PostgresAdminStore::connect(&url).unwrap());
+    let mut first = McpConfiguration::new(
+        "w".into(),
+        McpCatalogSnapshot {
+            schema_version: 1,
+            revision: 1,
+            servers: vec![],
+        },
+    );
+    first.advance(0).unwrap();
+    store.put_mcp_configuration(0, &first).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let writers = (0..2)
+        .map(|i| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let mut next = first.clone();
+            next.advance(1).unwrap();
+            next.catalog_url = Some(format!("https://source-{i}.example.test/catalog"));
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.put_mcp_configuration(1, &next)
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = writers
+        .into_iter()
+        .map(|w| w.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    let current = store.get_mcp_configuration("w").unwrap().unwrap();
+    assert_eq!(current.revision, 2);
+    let reopened = PostgresAdminStore::connect_existing(&url).unwrap();
+    assert_eq!(reopened.get_mcp_configuration("w").unwrap(), Some(current));
+    assert!(reopened.get_mcp_configuration("other").unwrap().is_none());
+}

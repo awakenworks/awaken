@@ -1,3 +1,4 @@
+import McpCredentialSelect from "../mcp/McpCredentialSelect";
 import { ExternalLink, Info, Plus, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, Switch } from "@awaken/ui";
 // Managed-Agent integration fields that were previously reachable only through the
@@ -42,13 +43,9 @@ function credentialValue(value: unknown): string {
     : "";
 }
 
-function mcpCredentialLabel(credential: CredentialSource, t: (en: string, zh: string) => string) {
-  return `${t("MCP runtime credential", "MCP 运行时凭证")} · •••${credential.id.slice(-8)} · v${credential.version}`;
-}
 
 export default function AgentIntegrationsEditor({
   config,
-  credentials,
   toolsetCapabilities,
   onChange,
   onValidityChange,
@@ -70,12 +67,6 @@ export default function AgentIntegrationsEditor({
     queryKey: ["skills", app.workspaceId],
     queryFn: () => api.get<Page<Skill>>(ws("/v1/skills")),
   });
-  const activeCredentials = credentials.filter((credential) =>
-    credential.status === "active"
-    && credential.kind !== "worker_local"
-    && !credential.provider_id
-    && !credential.env_key,
-  );
   const syncServers = (nextServers: AgentMcpServer[], tools = config.tools, extra: Partial<AgentConfig> = {}) => {
     const { permission: _legacyPermission, ...pluginConfig } = config.plugin_config;
     onChange({
@@ -211,34 +202,12 @@ export default function AgentIntegrationsEditor({
                   onChange={(event) => setServer(index, { type: "url", url: event.target.value })}
                 />
               )}
-              {!sandboxStdio && (
-              <label className="ui-field">
-                <span>{app.t("Credential source", "凭据来源")}</span>
-                <select
-                  className="ui-input mono"
-                  value={credentialValue(server.credential)}
-                  onChange={(event) => {
-                    const selected = activeCredentials.find((credential) =>
-                      `${credential.id}@${credential.version}` === event.target.value);
-                    setServer(index, {
-                      credential: selected
-                        ? { id: selected.id, revision: selected.version }
-                        : undefined,
-                    });
-                  }}
-                >
-                  <option value="">{app.t("Unauthenticated", "无认证")}</option>
-                  {activeCredentials.map((credential) => (
-                    <option
-                      key={`${credential.id}@${credential.version}`}
-                      value={`${credential.id}@${credential.version}`}
-                    >
-                      {mcpCredentialLabel(credential, app.t)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              )}
+              {!sandboxStdio && <div className="stack">
+                <strong>{app.t("Shared account pinned to Agent · optional", "固定到 Agent 的共享账户 · 可选")}</strong>
+                <McpCredentialSelect url={server.url} value="" sourceKey={credentialValue(server.credential)}
+                  onChange={(choice) => setServer(index, { credential: choice?.source })} />
+                <span className="mut">{app.t("An unpinned server can use Session Vaults. A pinned account takes precedence for every Session.", "未固定账户时可使用 Session Vault；固定账户会优先用于所有 Session。")}</span>
+              </div>}
               <label className="ui-field" style={{ alignSelf: "center" }}>
                 <span>{app.t("Prompts as skills", "将 Prompt 作为 Skill")}</span>
                 <input

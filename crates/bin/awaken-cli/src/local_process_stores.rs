@@ -25,6 +25,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             credentials,
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             profiles: admin.clone(),
+            mcp_config: admin.clone(),
             resources: admin.clone(),
             webhooks: admin,
             config: Arc::new(

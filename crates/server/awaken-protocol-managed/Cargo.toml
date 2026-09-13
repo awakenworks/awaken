@@ -13,7 +13,7 @@ layer = "interface"
 authority = "protocol-managed"
 
 [features]
-schema = ["dep:schemars"]
+schema = ["dep:schemars", "awaken-session-contract/schema"]
 # Ephemeral convenience constructors are intentionally absent from product builds.
 test-support = [
     "awaken-deployment-application/test-support",

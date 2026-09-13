@@ -32,8 +32,10 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 http = "1"
+schemars = { version = "1", optional = true }
 
 [features]
+schema = ["dep:schemars"]
 # Process observation is installed only by the executable scenario harness.
 test-support = []
 

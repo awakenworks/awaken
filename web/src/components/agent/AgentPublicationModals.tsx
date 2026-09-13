@@ -9,6 +9,7 @@ import PublicationSnapshotSummary from "./PublicationSnapshotSummary";
 
 export interface QuickRunIntent {
   environmentId: string;
+  vaultIds?: string[];
   task: string;
   /** The optional Outcome the operator opted into. Creation sends it as a
    * second initial event, so it is reviewed here alongside the first task
@@ -78,6 +79,7 @@ export default function AgentPublicationModals({
               "Awaken 将检查草稿、发布当前审阅版本、创建 Session 并发送首次任务。后续编辑不会改变本次 Session。",
             )}</span>
           </InlineNotice>
+          {quickRunIntent.vaultIds?.length ? <p>{app.t("First-run Vaults", "首次运行 Vault")}: {quickRunIntent.vaultIds.join(", ")}</p> : null}
           <PublicationSnapshotSummary
             sourceRevision={config.generation}
             resourceRevision={resourceRevision}

@@ -1,3 +1,4 @@
+import VaultPicker from "../session/VaultPicker";
 import { ArrowRight, Check, Circle, Info } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -46,6 +47,7 @@ export default function AgentQuickstart({
   published,
   runPending,
   initialTemplateId,
+  vaultIds, onVaultIdsChange,
   onPatch,
   onManageModels,
   onRefreshRuntimes,
@@ -66,6 +68,8 @@ export default function AgentQuickstart({
   /** The Starter the landing surface handed over, if any. Applied once so the
    * step opens already seeded; every field stays editable afterwards. */
   initialTemplateId?: string;
+  vaultIds: string[];
+  onVaultIdsChange: (ids: string[]) => void;
   onPatch: (patch: Partial<AgentConfig>) => void;
   onManageModels: () => void;
   onRefreshRuntimes?: () => void;
@@ -262,6 +266,7 @@ export default function AgentQuickstart({
             value={task}
             onChange={(event) => setTask(event.target.value)}
           />
+          <VaultPicker selected={vaultIds} onChange={onVaultIdsChange} />
           <label className="quickstart-outcome-toggle">
             <input
               type="checkbox"
@@ -314,6 +319,7 @@ export default function AgentQuickstart({
             disabled={!allReady || runPending}
             onClick={() => onReviewRun({
               environmentId,
+              vaultIds,
               task: task.trim(),
               outcome: outcomeEnabled && outcomeReady ? outcomeDraft : undefined,
             })}

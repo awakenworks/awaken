@@ -43,7 +43,7 @@ export const NAV: NavItem[] = [
   { key: "environments", label: "Environments", labelZh: "运行环境", group: "run", path: "/w/:ws/environments", surface: "managed_runtime" },
 
   { key: "models", label: "Models & providers", labelZh: "模型与供应商", group: "connect", path: "/w/:ws/models" },
-  { key: "mcp", label: "MCP overview", labelZh: "MCP 概览", group: "connect", path: "/w/:ws/mcp", surface: "managed_runtime" },
+  { key: "mcp", label: "MCP servers", labelZh: "MCP 服务器", group: "connect", path: "/w/:ws/mcp", surface: "managed_runtime" },
   { key: "protocols", label: "API & protocols", labelZh: "API 与协议", group: "connect", path: "/w/:ws/protocols", surface: "managed_runtime" },
   { key: "webhooks", label: "Webhooks", labelZh: "Webhooks", group: "connect", path: "/w/:ws/webhooks", surface: "managed_runtime" },
   { key: "a2a", label: "A2A federation", labelZh: "A2A 联邦", group: "connect", path: "/w/:ws/a2a-servers", surface: "managed_runtime" },

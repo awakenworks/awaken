@@ -346,46 +346,11 @@ async fn open_process_stores(
         (None, None)
     };
 
-    // The admin aggregate backs three Control ports (profiles / Agent resource
-    // bindings / webhooks) off one store.
-    let mut admin_profiles: Option<Arc<dyn awaken_config_resolver::InferenceProfileStore>> = None;
-    let mut admin_webhooks: Option<Arc<dyn awaken_config_resolver::WebhookStore>> = None;
-    let mut admin_resources: Option<Arc<dyn awaken_config_resolver::AgentInputBindingRepository>> =
-        None;
-    if opens_control {
-        ensure_store_parent(&cfg.admin)?;
-        match &cfg.admin {
-            StoreBackend::Sqlite(p) => {
-                let admin = awaken_admin_config_api::SqliteAdminStore::open(&path(p))
-                    .map_err(|error| format!("open admin SQLite {}: {error}", p.display()))?;
-                let admin = Arc::new(admin);
-                admin_profiles = Some(admin.clone());
-                admin_resources = Some(admin.clone());
-                admin_webhooks = Some(admin);
-            }
-            StoreBackend::Postgres(url) => {
-                // `PostgresAdminStore::connect` builds its own runtime and blocks, so it
-                // must run off the async worker thread to avoid a nested-runtime panic.
-                let url = url.clone();
-                let admin = Arc::new(
-                    tokio::task::spawn_blocking(move || match postgres_schema {
-                        PostgresSchemaMode::Migrate => {
-                            awaken_admin_config_api::PostgresAdminStore::connect(&url)
-                        }
-                        PostgresSchemaMode::Verify => {
-                            awaken_admin_config_api::PostgresAdminStore::connect_existing(&url)
-                        }
-                    })
-                    .await
-                    .map_err(|error| format!("join admin Postgres connection: {error}"))?
-                    .map_err(|error| format!("connect admin Postgres: {error}"))?,
-                );
-                admin_profiles = Some(admin.clone());
-                admin_resources = Some(admin.clone());
-                admin_webhooks = Some(admin);
-            }
-        }
-    }
+    let admin_views = if opens_control {
+        Some(process_stores::open_admin_store_views(&cfg.admin, postgres_schema).await?)
+    } else {
+        None
+    };
 
     // The Managed Session repository owns the shared coordinator database's
     // canonical schema. Open it before WorkQueue or ApplicationAccess can
@@ -597,13 +562,15 @@ async fn open_process_stores(
         control: if opens_control {
             let (environments, sandbox_policies) =
                 control_environment.expect("Control role opens Environment stores");
+            let admin = admin_views.expect("Control role opens admin store");
             Some(ControlStores {
                 catalog: catalog.expect("Control role opens Catalog"),
                 credentials: credentials.expect("Control role opens CredentialRepo"),
                 secrets: secrets.expect("Control role opens SecretStore"),
-                profiles: admin_profiles.expect("Control role opens profile store"),
-                resources: admin_resources.expect("Control role opens Resource authoring store"),
-                webhooks: admin_webhooks.expect("Control role opens Webhook store"),
+                mcp_config: admin.mcp,
+                profiles: admin.profiles,
+                resources: admin.resources,
+                webhooks: admin.webhooks,
                 config: config.expect("Control role opens Config store"),
                 data_subjects: data_subject
                     .as_ref()

@@ -174,7 +174,7 @@ test("Primary create flows disclose their required configuration before commit",
   await page.goto("/w/default/settings");
   await expect(page.getByRole("heading", { name: "Connections & access" })).toBeVisible();
   const settingsGrid = page.locator(".settings-grid");
-  for (const destination of ["API & protocols", "MCP overview", "Webhooks", "A2A federation"]) {
+  for (const destination of ["API & protocols", "MCP servers", "Webhooks", "A2A federation"]) {
     await expect(settingsGrid.getByRole("button", { name: new RegExp(destination) })).toBeVisible();
   }
   // Topology decision table: embedded IAM mounts Access and its token action;

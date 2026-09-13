@@ -10,7 +10,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Pill } from "../ui";
 import type { ContentBlock, InboundEvent, Session, SessionEvent } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
-import { sessionErrorText, textOf } from "../../lib/session-log";
+import { isToolUseEvent, sessionErrorText, textOf } from "../../lib/session-log";
 import { useSessionLog, type SessionLog } from "../../lib/useSessionLog";
 
 export function userFacingRunError(message: string, zh: boolean): string {
@@ -214,7 +214,7 @@ export function TranscriptView({
   useEffect(() => {
     if (!onToolComplete) return;
     for (const event of log) {
-      if (event.type !== "agent.tool_use" && event.type !== "agent.custom_tool_use") continue;
+      if (!isToolUseEvent(event)) continue;
       const result = results.get(event.id);
       if (!result || handledTools.current.has(event.id)) continue;
       handledTools.current.add(event.id);
@@ -314,6 +314,9 @@ export function TranscriptView({
           </div>
         )}
         {log.map((ev) => {
+        if (isToolUseEvent(ev)) return <ToolCard key={ev.id} ev={ev} result={results.get(ev.id)}
+          pendingConfirm={pendingIds.has(ev.id) && !results.get(ev.id)} resolutionEnabled={admission.canResolveTools}
+          onConfirm={(allow, note) => confirm(ev, allow, note)} />;
         switch (ev.type) {
           case "user.message":
             return (
@@ -338,18 +341,6 @@ export function TranscriptView({
                     copyFailedLabel={app.t("Copy failed", "复制失败")}
                   />
                 )}
-              />
-            );
-          case "agent.tool_use":
-          case "agent.custom_tool_use":
-            return (
-              <ToolCard
-                key={ev.id}
-                ev={ev}
-                result={results.get(ev.id)}
-                pendingConfirm={pendingIds.has(ev.id) && !results.get(ev.id)}
-                resolutionEnabled={admission.canResolveTools}
-                onConfirm={(allow, note) => confirm(ev, allow, note)}
               />
             );
           case "session.status_running":
@@ -389,6 +380,7 @@ export function TranscriptView({
               </div>
             );
           case "agent.tool_result":
+          case "agent.mcp_tool_result":
             return null; // folded into its tool card
           default:
             return (

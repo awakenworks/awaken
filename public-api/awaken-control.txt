@@ -242,6 +242,7 @@ pub awaken_control::ControlDependencies::local_browser_auth: core::option::Optio
 pub awaken_control::ControlDependencies::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_control::ControlDependencies::managed_runtime_available: bool
 pub awaken_control::ControlDependencies::managed_tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
+pub awaken_control::ControlDependencies::mcp_config: alloc::sync::Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>
 pub awaken_control::ControlDependencies::mcp_probe: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>>
 pub awaken_control::ControlDependencies::model_discovery: alloc::sync::Arc<dyn awaken_admin_config_api::provider_connection::ModelCatalogDiscovery>
 pub awaken_control::ControlDependencies::model_publication_resolver: alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>
@@ -275,6 +276,7 @@ pub awaken_control::ControlRouterInput::local_browser_auth: core::option::Option
 pub awaken_control::ControlRouterInput::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_control::ControlRouterInput::managed_runtime_available: bool
 pub awaken_control::ControlRouterInput::managed_tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
+pub awaken_control::ControlRouterInput::mcp_catalog: awaken_control::McpCatalogService
 pub awaken_control::ControlRouterInput::model_discovery: alloc::sync::Arc<dyn awaken_admin_config_api::provider_connection::ModelCatalogDiscovery>
 pub awaken_control::ControlRouterInput::model_supply: awaken_admin_config_api::router::ModelSupplyCapabilityView
 pub awaken_control::ControlRouterInput::plane: awaken_config_service::config_plane::ConfigPlane
@@ -326,6 +328,9 @@ pub fn awaken_control::authz::ManagementAuthz::check_entitlement(&self, awaken_i
 impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::mint_service_token(&self, awaken_control::authz::TokenSpec) -> core::result::Result<alloc::string::String, alloc::string::String>
 pub fn awaken_control::authz::ManagementAuthz::register_workspace(&self, &str)
+pub struct awaken_control::McpCatalogService
+impl awaken_control::McpCatalogService
+pub fn awaken_control::McpCatalogService::new(alloc::sync::Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>, alloc::sync::Arc<awaken_protocol_managed::routes::vaults::VaultState>) -> Self
 pub struct awaken_control::RegistrationHealth
 impl awaken_control::RegistrationHealth
 pub fn awaken_control::RegistrationHealth::snapshot(&self) -> awaken_control::RegistrationHealthSnapshot
