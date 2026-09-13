@@ -137,6 +137,19 @@ Ordering is by commit visibility first, then adapter projection order. A live
 stream event may arrive before durable replay sees the matching fact, but replay
 must converge to the committed order.
 
+Assistant response coordinates use the neutral `MessageId` decoder, which also
+owns the existing Run-scoped classifiers. It reads the rightmost assistant
+delimiter and numeric suffix once; Managed then checks the decoded owner against
+the committed Run set. Run names may contain delimiters, so splitting at the
+first delimiter would change historical ownership. Response ordinals still fold
+in transcript order: partials advance the next ordinal by maximum, full responses
+use that ordinal, and repeated message identities retain the last projection.
+For bounded identity lengths, selection takes expected O(R + M) work rather than
+sorting R Runs and trying every Run for each of M messages. This is a read-side
+algorithm change with exhaustive bounded equivalence and codec decision-table
+tests; it does not change publication fences or establish a distributed latency
+guarantee.
+
 For tool waits and external results:
 
 ```text
