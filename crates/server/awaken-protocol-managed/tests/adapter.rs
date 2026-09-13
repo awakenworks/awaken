@@ -2370,6 +2370,14 @@ impl SessionRuntime for OutcomeFake {
                             iteration: 1,
                             result: "needs_revision".into(),
                             explanation: "add FINAL".into(),
+                            // Round 1 was graded by a backend that reports
+                            // counters.
+                            usage: Some(awaken_agent_contract::audit::model_request::TokenUsage {
+                                prompt_tokens: 210,
+                                completion_tokens: 14,
+                                cache_read_tokens: 8,
+                                cache_creation_tokens: 0,
+                            }),
                         },
                         OutcomeIteration {
                             messages: vec![Message::text(
@@ -2382,6 +2390,9 @@ impl SessionRuntime for OutcomeFake {
                             iteration: 2,
                             result: "satisfied".into(),
                             explanation: "ok".into(),
+                            // Round 2 recorded no usage at all; the wire field
+                            // is required, so it reports zeroes.
+                            usage: None,
                         },
                     ],
                 },
@@ -2609,6 +2620,23 @@ async fn outcome_loop_projects_evaluations() {
     );
     assert_eq!(ends[0]["result"], "needs_revision");
     assert_eq!(ends[1]["result"], "satisfied");
+    // Usage cause/effect: C6 the committed round recorded the Judge Run's token
+    // counters; C7 it recorded none. The SDK declares `usage` required, so rule
+    // U1=C6 -> the recorded counters reach the wire unchanged under the SDK's
+    // field names, and rule U2=C7 -> the required field is present and zeroed
+    // rather than omitted or carried over from the neighbouring round.
+    assert_eq!(ends[0]["usage"]["input_tokens"], 210, "U1");
+    assert_eq!(ends[0]["usage"]["output_tokens"], 14, "U1");
+    assert_eq!(ends[0]["usage"]["cache_read_input_tokens"], 8, "U1");
+    assert_eq!(ends[0]["usage"]["cache_creation_input_tokens"], 0, "U1");
+    assert!(
+        ends[0]["usage"].get("speed").is_none(),
+        "U1 no recorded observation carries an inference speed"
+    );
+    assert_eq!(ends[1]["usage"]["input_tokens"], 0, "U2");
+    assert_eq!(ends[1]["usage"]["output_tokens"], 0, "U2");
+    assert_eq!(ends[1]["usage"]["cache_read_input_tokens"], 0, "U2");
+    assert_eq!(ends[1]["usage"]["cache_creation_input_tokens"], 0, "U2");
     cancellation.cancel();
     supervisor
         .await
