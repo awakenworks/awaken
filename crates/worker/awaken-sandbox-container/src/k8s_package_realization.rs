@@ -193,6 +193,34 @@ fn one_claimed_pod<'a>(
     Ok((claimed[0], uid))
 }
 
+/// Count only Pods that belong to this exact Job incarnation. A same-name Pod
+/// from a deleted/recreated Job is not evidence for the currently observed
+/// Job, and an empty result is an incomplete Kubernetes observation rather
+/// than malformed realization evidence.
+pub(crate) fn exact_package_job_pods(
+    job_object: &Job,
+    pods: &[Pod],
+    namespace: &str,
+) -> Result<Vec<Pod>, K8sPackageRealizationError> {
+    let job = job_fact(job_object, namespace)?;
+    Ok(pods
+        .iter()
+        .filter(|pod| {
+            object_namespace(&pod.metadata, namespace)
+                && pod.metadata.deletion_timestamp.is_none()
+                && pod_claims_job(pod, &job)
+                && pod
+                    .metadata
+                    .owner_references
+                    .as_deref()
+                    .is_some_and(|owners| {
+                        owners.len() == 1 && exact_controller_owner(&owners[0], &job)
+                    })
+        })
+        .cloned()
+        .collect())
+}
+
 fn successful_container_status<'a>(
     pod: &'a Pod,
     name: &str,

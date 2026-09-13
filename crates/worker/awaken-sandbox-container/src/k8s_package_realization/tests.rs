@@ -300,6 +300,47 @@ fn assert_rejected(fixture: Fixture, rule: &str) {
 }
 
 #[tokio::test]
+async fn package_job_pod_count_is_exact_to_one_job_incarnation() {
+    /* Causes: C1 a Pod carries the current image-check Job UID; C2 no current
+     * Pod is visible during controller creation/TTL deletion; C3 a same-name
+     * Pod carries an older UID; C4 two Pods carry the current UID. Effects:
+     * E1 return 1; E2/E3 return 0 so the caller retries; E4 return 2 so the
+     * caller rejects ambiguous evidence. */
+    let fixture = canonical_fixture();
+    let job = &fixture.jobs[fixture.job_index(PACKAGE_IMAGE_CHECK_JOB_KIND)];
+    let pod = fixture.pods[fixture.job_pod_index(PACKAGE_IMAGE_CHECK_JOB_KIND)].clone();
+    assert_eq!(
+        exact_package_job_pods(job, &[pod.clone()], NAMESPACE)
+            .unwrap()
+            .len(),
+        1,
+        "C1/E1"
+    );
+    assert_eq!(
+        exact_package_job_pods(job, &[], NAMESPACE).unwrap().len(),
+        0,
+        "C2/E2"
+    );
+
+    let mut stale = pod.clone();
+    stale.metadata.owner_references.as_mut().unwrap()[0].uid = "old-job-uid".into();
+    assert_eq!(
+        exact_package_job_pods(job, &[stale], NAMESPACE)
+            .unwrap()
+            .len(),
+        0,
+        "C3/E3"
+    );
+    assert_eq!(
+        exact_package_job_pods(job, &[pod.clone(), pod], NAMESPACE)
+            .unwrap()
+            .len(),
+        2,
+        "C4/E4"
+    );
+}
+
+#[tokio::test]
 async fn fresh_and_recovered_realizations_return_one_secret_free_typed_proof() {
     /* Cause/effect graph and decision table:
      * C1 exact immutable ConfigMap UID; C2 exact successful Build Job/Pod pair;
