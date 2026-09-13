@@ -1248,7 +1248,8 @@ mod publication_projection_tests {
 
         let mut non_native = agent_config("agent-acp");
         non_native.model_binding =
-            awaken_agent_config::ModelSelection::pinned("p", "m", "acp:claude");
+            awaken_agent_config::ModelSelection::pinned("p", "m", "acp:claude")
+                .expect("literal coordinates");
         plane.put(&owner, &non_native).await.unwrap();
         let non_native = plane.publish(&owner, "agent-acp").await.unwrap();
         assert_eq!(

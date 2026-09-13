@@ -33,7 +33,7 @@ use awaken_ext_permission::{
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::execution::Error;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+use awaken_runtime_contract::resolved::{InvalidModelBinding, ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
@@ -63,13 +63,17 @@ pub fn coding_tool_descriptors() -> Vec<ToolDescriptor> {
 }
 
 /// A coding agent's executable snapshot for `model_ref`.
-pub fn coding_config(model_ref: &str) -> ExecutableAgentSnapshot {
-    ExecutableAgentSnapshot::builder("coder")
+///
+/// `model_ref` is an operator string (`AWAKEN_MODEL`), so it is admitted here
+/// and a blank or padded reference is refused before the session starts.
+pub fn coding_config(model_ref: &str) -> Result<ExecutableAgentSnapshot, InvalidModelBinding> {
+    let model = ModelBinding::parse("default", model_ref, "default")?;
+    Ok(ExecutableAgentSnapshot::builder("coder")
         .instructions(SYSTEM_PROMPT)
-        .model(ModelBinding::new("default", model_ref, "default"))
+        .model(model)
         .tools(coding_tool_descriptors())
         .max_steps(40)
-        .build()
+        .build())
 }
 
 /// The permission policy: read/glob/grep allowed, everything else (write, edit,
@@ -210,7 +214,10 @@ mod tests {
 
     #[test]
     fn coding_config_carries_the_model_ref_tools_and_step_ceiling() {
-        let spec = coding_config("some-model").resolved_spec.clone();
+        let spec = coding_config("some-model")
+            .expect("literal model reference")
+            .resolved_spec
+            .clone();
         // The binding selects the passed model ref.
         assert_eq!(spec.model_binding.model_ref, "some-model");
         // The config carries the coding descriptors (ids match the executable tools).

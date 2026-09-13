@@ -821,7 +821,8 @@ mod tests {
                 "host",
                 "model-config-2",
                 "host",
-            ),
+            )
+            .expect("literal coordinates"),
         )
         .unwrap()
     }
@@ -842,7 +843,8 @@ mod tests {
             "host",
             "model-config-2",
             "host",
-        );
+        )
+        .expect("literal coordinates");
         let current_json = serde_json::to_value(&current).unwrap();
         let decoded_current: MemoryExtractorSnapshot =
             serde_json::from_value(current_json).unwrap();

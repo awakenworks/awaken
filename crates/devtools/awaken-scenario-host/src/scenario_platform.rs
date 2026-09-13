@@ -270,9 +270,7 @@ impl FixedAgentPublication {
         }
         .into_plugin_config(Default::default());
         let snapshot = ExecutableAgentSnapshot::builder(id)
-            .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
-                "",
-                "",
+            .resolved_model(ResolvedModelCandidate::host(fixture_backend_binding(
                 backend_ref,
             )))
             .agent_bindings(AgentBindings {
@@ -301,9 +299,7 @@ impl FixedAgentPublication {
             })
             .collect();
         let snapshot = ExecutableAgentSnapshot::builder(id)
-            .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
-                "",
-                "",
+            .resolved_model(ResolvedModelCandidate::host(fixture_backend_binding(
                 backend_ref,
             )))
             .agent_bindings(AgentBindings {
@@ -315,6 +311,14 @@ impl FixedAgentPublication {
             .build();
         Self::new([snapshot], Vec::new())
     }
+}
+
+/// The backend-owned binding a fixture publication runs on. Fixture backends
+/// are mostly literals, but some are scenario model references from the
+/// environment, so the coordinate is admitted and a bad one fails at startup.
+fn fixture_backend_binding(backend_ref: &str) -> ModelBinding {
+    ModelBinding::parse("", "", backend_ref)
+        .unwrap_or_else(|error| panic!("fixture backend `{backend_ref}`: {error}"))
 }
 
 /// Install the deterministic Memory probe through the same immutable Agent
@@ -345,10 +349,10 @@ pub(super) async fn mount_with_memory_publication_on_lifecycle(
     platform
         .publish_managed_memory_store(SCENARIO_MEMORY_STORE_ID, SCENARIO_MEMORY_STORE_NAME)
         .await;
+    let binding = ModelBinding::parse("scenario", model_ref, "default")
+        .unwrap_or_else(|error| panic!("scenario model `{model_ref}`: {error}"));
     let snapshot = ExecutableAgentSnapshot::builder("assistant")
-        .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
-            "scenario", model_ref, "default",
-        )))
+        .resolved_model(ResolvedModelCandidate::host(binding))
         .plugins([awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()])
         .plugin_config(std::collections::BTreeMap::from([(
             awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),

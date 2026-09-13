@@ -234,7 +234,8 @@ mod tests {
                 "provider",
                 "model",
                 "default",
-            ),
+            )
+            .expect("literal coordinates"),
         )
         .expect("valid extraction intent");
 

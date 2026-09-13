@@ -397,11 +397,8 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
         }
         _ => return Err("model must be a string or object".to_string()),
     };
-    Ok(ModelSelection::pinned(
-        provider_identity_ref,
-        model_ref,
-        backend_ref,
-    ))
+    ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref)
+        .map_err(|error| format!("pinned model is not an executable binding: {error}"))
 }
 
 /// Project a stored config into the managed-shaped object and its live state.

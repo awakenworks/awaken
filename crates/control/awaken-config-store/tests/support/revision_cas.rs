@@ -47,7 +47,8 @@ pub async fn publication_source_table(store: &impl ScopedConfigRegistry) {
     let config = AgentConfig {
         id: "publication-source".into(),
         instructions: "real compiled publication candidate".into(),
-        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
+        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
+            .expect("literal coordinates"),
         ..Default::default()
     };
     for (present, populate_first) in [(false, false), (true, false), (true, true)] {

@@ -170,13 +170,19 @@ impl crate::host::SharedHost {
                         "invalid direct Memory plugin configuration: {error}"
                     ))
                 })?;
-                let model = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    awaken_runtime_contract::resolved::ModelBinding::new(
-                        "default",
-                        effective_model_ref,
-                        "default",
-                    ),
-                );
+                let binding = awaken_runtime_contract::resolved::ModelBinding::parse(
+                    "default",
+                    effective_model_ref,
+                    "default",
+                )
+                .map_err(|error| {
+                    crate::HostError::internal(format!(
+                        "effective model reference `{effective_model_ref}` for direct Memory \
+                         extraction is not an executable binding: {error}"
+                    ))
+                })?;
+                let model =
+                    awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
                 (config, model)
             }
         };

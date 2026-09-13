@@ -35,7 +35,7 @@ async fn agent_reads_then_edits_a_file_after_approval() {
     let runtime = build_runtime(llm);
     let session = CodingSession::new_with_hand_context(
         runtime,
-        coding_config("scripted-model"),
+        coding_config("scripted-model").expect("model reference is an executable binding"),
         HandToolContext::new(&dir),
     );
 
@@ -108,7 +108,7 @@ async fn a_denied_edit_does_not_mutate_the_file() {
     let runtime = build_runtime(llm);
     let session = CodingSession::new_with_hand_context(
         runtime,
-        coding_config("scripted-model"),
+        coding_config("scripted-model").expect("model reference is an executable binding"),
         HandToolContext::new(&dir),
     );
 

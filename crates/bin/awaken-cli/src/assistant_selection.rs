@@ -7,12 +7,17 @@ use awaken_acp_application::AcpHostObservation;
 use awaken_agent_config::ModelSelection;
 use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialStatus};
 use awaken_model_catalog::{OfferingStatus, ProviderCatalog};
+use awaken_runtime_contract::resolved::InvalidModelBinding;
 
+/// The reserved Assistant's model selection, or `None` when nothing installed
+/// can serve it. `Err` means the catalog's Anthropic offering exists but its
+/// coordinates are not an executable binding: the operator data, not the
+/// policy, is wrong, and the caller reports it rather than pinning nothing.
 pub(crate) fn select(
     catalog: &ProviderCatalog,
     credentials: &[CredentialSource],
     observations: &[AcpHostObservation],
-) -> Option<ModelSelection> {
+) -> Result<Option<ModelSelection>, InvalidModelBinding> {
     let detected = |cli_id: &str| {
         observations
             .iter()
@@ -35,11 +40,7 @@ pub(crate) fn select(
                 )
         })
     {
-        return Some(ModelSelection::pinned(
-            "anthropic",
-            &offering.model_id,
-            "acp:claude",
-        ));
+        return ModelSelection::pinned("anthropic", &offering.model_id, "acp:claude").map(Some);
     }
 
     if catalog.offerings.iter().any(|offering| {
@@ -54,7 +55,7 @@ pub(crate) fn select(
                     )
             })
     }) {
-        return Some(ModelSelection::Auto);
+        return Ok(Some(ModelSelection::Auto));
     }
 
     let available = awaken_run_executor_acp::known_acp_clis()
@@ -79,15 +80,15 @@ pub(crate) fn select(
         let awaken_runtime_contract::resolved::Backend::Acp(backend_ref) =
             awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{}", cli.id))
         else {
-            return None;
+            return Ok(None);
         };
-        return Some(ModelSelection::BackendDefault {
+        return Ok(Some(ModelSelection::BackendDefault {
             backend_ref,
             configuration: Default::default(),
-        });
+        }));
     }
 
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -173,7 +174,8 @@ mod tests {
         let catalog = anthropic_catalog();
         let api_key = credential("api", CredentialKind::Vault, Some("anthropic"), None, None);
         assert_eq!(
-            select(&catalog, &[api_key], &[observation("codex")]),
+            select(&catalog, &[api_key], &[observation("codex")])
+                .expect("catalog coordinates are executable"),
             Some(ModelSelection::Auto)
         );
 
@@ -185,12 +187,12 @@ mod tests {
             None,
         );
         assert_eq!(
-            select(&catalog, &[setup_token], &[observation("claude")]),
-            Some(ModelSelection::pinned(
-                "anthropic",
-                "claude-sonnet",
-                "acp:claude"
-            ))
+            select(&catalog, &[setup_token], &[observation("claude")])
+                .expect("catalog coordinates are executable"),
+            Some(
+                ModelSelection::pinned("anthropic", "claude-sonnet", "acp:claude")
+                    .expect("literal coordinates")
+            )
         );
 
         let mut described_spoof = credential(
@@ -219,7 +221,8 @@ mod tests {
             )],
         ));
         assert_eq!(
-            select(&catalog, &[described_spoof], &[observation("claude")]),
+            select(&catalog, &[described_spoof], &[observation("claude")])
+                .expect("catalog coordinates are executable"),
             None,
             "S4/E4"
         );
@@ -236,7 +239,8 @@ mod tests {
                 &ProviderCatalog::default(),
                 &[worker],
                 &[observation("codex")],
-            ),
+            )
+            .expect("catalog coordinates are executable"),
             Some(
                 ModelSelection::try_backend_default("acp:codex", Default::default())
                     .expect("exact ACP backend"),
@@ -278,7 +282,8 @@ mod tests {
                 &ProviderCatalog::default(),
                 std::slice::from_ref(&codex),
                 &[unavailable]
-            ),
+            )
+            .expect("catalog coordinates are executable"),
             None,
             "S1"
         );
@@ -287,7 +292,8 @@ mod tests {
                 &ProviderCatalog::default(),
                 std::slice::from_ref(&codex),
                 &[observation("codex")]
-            ),
+            )
+            .expect("catalog coordinates are executable"),
             Some(
                 ModelSelection::try_backend_default("acp:codex", Default::default())
                     .expect("exact ACP backend"),
@@ -299,7 +305,8 @@ mod tests {
                 &ProviderCatalog::default(),
                 &[codex, claude],
                 &[observation("codex"), observation("claude")]
-            ),
+            )
+            .expect("catalog coordinates are executable"),
             None,
             "S3"
         );

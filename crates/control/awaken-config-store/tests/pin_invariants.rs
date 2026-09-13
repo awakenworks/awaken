@@ -29,7 +29,8 @@ fn config(id: &str, backend: &str) -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned("p", "claude-opus-4-8", backend),
+        model_binding: ModelSelection::pinned("p", "claude-opus-4-8", backend)
+            .expect("literal coordinates"),
         inference: Default::default(),
         tool_ids: vec!["echo".to_string()],
         ..Default::default()

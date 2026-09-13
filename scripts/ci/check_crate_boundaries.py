@@ -1569,7 +1569,7 @@ def selftest_composite_identity_is_stated() -> None:
 # the admission even while the old ones are still being moved. The durable
 # ingress is already closed: deserialization goes through `parse`.
 UNVALIDATED_MODEL_BINDING_PRODUCER = re.compile(r"\bModelBinding::new\s*\(")
-UNVALIDATED_MODEL_BINDING_BASELINE = 467
+UNVALIDATED_MODEL_BINDING_BASELINE = 430
 # The one place `ModelBinding::new` is the subject rather than a producer: the
 # round-trip property asserts that every binding `new` builds also decodes,
 # which is the invariant whose absence let a constructible binding stall a run

@@ -77,8 +77,19 @@ impl CatalogModelPublicationResolver {
             .map_err(PublicationResolutionError::CatalogUnavailable)
     }
 
-    fn binding_of(offering: &Offering) -> ModelBinding {
-        ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
+    /// The native binding a catalog offering names. Offerings are operator
+    /// data, so their coordinates go through the admission and a padded or
+    /// blank id is reported against the offering rather than panicking.
+    fn binding_of(offering: &Offering) -> Result<ModelBinding, PublicationResolutionError> {
+        ModelBinding::parse(&offering.provider_id.0, &offering.model_id, "genai").map_err(|error| {
+            PublicationResolutionError::invalid_binding(
+                format!(
+                    "catalog offering `{}` on provider `{}`",
+                    offering.model_id, offering.provider_id.0
+                ),
+                error,
+            )
+        })
     }
 
     async fn candidate(

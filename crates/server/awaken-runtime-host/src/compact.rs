@@ -210,7 +210,8 @@ mod tests {
         let model = Arc::new(SummaryModel(AtomicU64::new(0)));
         let runner = compact_runner(
             model.clone(),
-            default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS),
+            default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS)
+                .expect("literal model reference"),
             Arc::new(HostCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
                     awaken_store_inmem::MemoryCommitCoordinator::new(),
@@ -248,7 +249,8 @@ mod tests {
         });
         let runner = compact_runner(
             model.clone(),
-            default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS),
+            default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS)
+                .expect("literal model reference"),
             Arc::new(HostCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
                     awaken_store_inmem::MemoryCommitCoordinator::new(),

@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let session = CodingSession::new(build_runtime(llm), coding_config(&model));
+    let session = CodingSession::new(build_runtime(llm), coding_config(&model)?);
     tui::run(runtime, session, &model)?;
     Ok(())
 }

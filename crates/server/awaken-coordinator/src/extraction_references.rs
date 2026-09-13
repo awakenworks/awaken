@@ -140,7 +140,8 @@ mod tests {
                 Role::User,
                 "remember",
             )],
-            MemoryExtractorSnapshot::host_executor("memory-agent", "host", "config-1", "host"),
+            MemoryExtractorSnapshot::host_executor("memory-agent", "host", "config-1", "host")
+                .expect("literal coordinates"),
         )
         .unwrap()
     }

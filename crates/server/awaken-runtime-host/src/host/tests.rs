@@ -1401,6 +1401,7 @@ fn memory_test_snapshot(agent: &str) -> awaken_runtime_contract::ExecutableAgent
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
     )
+    .expect("literal model reference")
 }
 
 fn memory_test_host(model: Arc<dyn LlmExecutor>, agent: &str) -> Arc<SharedHost> {
@@ -4362,7 +4363,8 @@ async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
         )]),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
             .expect("one immutable published Agent");
@@ -4643,7 +4645,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         )]),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
     let host = Arc::new(
@@ -5058,7 +5061,8 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         )]),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
     let host = Arc::new(
@@ -14116,7 +14120,8 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
             &plugin_config,
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-        );
+        )
+        .expect("literal model reference");
         let publications =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid publication");
@@ -23808,7 +23813,8 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
             &Default::default(),
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-        );
+        )
+        .expect("literal model reference");
         let publications =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid publication");
@@ -23987,7 +23993,8 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
         &Default::default(),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
             .expect("valid publication");
@@ -24083,7 +24090,8 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
         )]),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     publication
         .recompute_fingerprint()
         .expect("provider-server root publication remains coherent");
@@ -24889,7 +24897,8 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
         &Default::default(),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
             .expect("valid publication");
@@ -25007,7 +25016,8 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         &Default::default(),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
     let host = Arc::new(
@@ -25084,7 +25094,8 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         &Default::default(),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     let (_, selected_agent, selected, _) = fallback_host
         .resolve_session_publication("delivered-agent-thread", None, Some(delivered.clone()))
         .expect("R5 use the delivered publication as the retained identity authority");
@@ -25113,7 +25124,8 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
             &Default::default(),
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-        );
+        )
+        .expect("literal model reference");
         snapshot.metadata.source.agent_id = snapshot.root_agent_id.clone();
         snapshot.metadata.source.revision = revision;
         snapshot.resolved_spec.instructions = instructions.into();
@@ -25222,7 +25234,8 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         &Default::default(),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
+    )
+    .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
     let mut host =

@@ -895,7 +895,8 @@ mod tests {
             0,
             0,
             Vec::new(),
-            MemoryExtractorSnapshot::host_executor("memory-agent", "host", "model", "host"),
+            MemoryExtractorSnapshot::host_executor("memory-agent", "host", "model", "host")
+                .expect("literal coordinates"),
         )
         .unwrap();
         let runtime_error = || {
@@ -1092,7 +1093,8 @@ mod tests {
         extraction_prompt: Option<&str>,
     ) -> MemoryExtractorSnapshot {
         let mut extractor =
-            MemoryExtractorSnapshot::host_executor(MEMORY_AGENT_ID, "host", "stub", "host");
+            MemoryExtractorSnapshot::host_executor(MEMORY_AGENT_ID, "host", "stub", "host")
+                .expect("literal coordinates");
         if let Some(instructions) = instructions {
             extractor.agent.resolved_spec.instructions = instructions.to_string();
             extractor.agent.recompute_fingerprint().unwrap();
@@ -1277,7 +1279,8 @@ mod tests {
             awaken_ext_memory::default_selector_agent(
                 "stub",
                 awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS,
-            ),
+            )
+            .expect("literal model reference"),
             commit,
         );
         let manifest = vec![
@@ -1663,7 +1666,8 @@ mod tests {
             0,
             1,
             vec![user("remember the maintenance window")],
-            MemoryExtractorSnapshot::host_executor(MEMORY_AGENT_ID, "host", "stub", "host"),
+            MemoryExtractorSnapshot::host_executor(MEMORY_AGENT_ID, "host", "stub", "host")
+                .expect("literal coordinates"),
         )
         .unwrap();
         let generation = intent.claim("crashed-worker", 0, 1).unwrap();

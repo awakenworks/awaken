@@ -61,7 +61,12 @@ pub(super) async fn control_component_for_process(
         &assistant_catalog,
         &assistant_credentials,
         local_acp_observations,
-    );
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "the catalog's Anthropic offering cannot be pinned for the reserved Assistant: {error}"
+        )
+    });
     awaken_control::build_control_component(awaken_control::ControlDependencies {
         service_lifecycle: service_lifecycle.clone(),
         execution_workspace: execution_workspace.to_owned(),

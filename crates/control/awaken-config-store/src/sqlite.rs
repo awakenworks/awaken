@@ -931,7 +931,8 @@ mod scope_tests {
             instructions: "be helpful".to_string(),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
+            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
+                .expect("literal coordinates"),
             tool_ids: Vec::new(),
             model_fallbacks: Vec::new(),
             plugin_ids: Vec::new(),

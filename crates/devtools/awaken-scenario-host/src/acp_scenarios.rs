@@ -160,6 +160,8 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     snapshots.extend(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
         ExecutableAgentSnapshot::builder(format!("matrix-acp-{}", cli.id))
             .instructions(format!("matrix-runtime={} matrix-suite=true", cli.id))
+            // Literal-equivalent: `cli.id` is a `&'static str` row of the
+            // compiled-in ACP CLI catalog, never operator or wire input.
             .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
                 "",
                 "",
@@ -499,9 +501,13 @@ pub async fn build_acp_real_mcp_router() -> Router {
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "acp-real-mcp".to_string());
+    let binding = ModelBinding::parse("scenario", &model_ref, format!("acp:{cli_id}"))
+        .unwrap_or_else(|error| {
+            panic!("ANTHROPIC_MODEL `{model_ref}` / AWAKEN_ACP_CLI `{cli_id}`: {error}")
+        });
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
-        ModelBinding::new("scenario", model_ref, format!("acp:{cli_id}")),
+        binding,
         deployment,
         None,
         move |host| {

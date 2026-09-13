@@ -1795,7 +1795,7 @@ mod tests {
         let validator = ConfigServiceDraftValidator::new(plane, DEFAULT_SCOPE);
 
         let mut good = admin_assistant_config();
-        good.model_binding = ModelSelection::pinned("p", "m", "b");
+        good.model_binding = ModelSelection::pinned("p", "m", "b").expect("literal coordinates");
         good.tool_ids = vec!["read".to_string()];
         assert!(validator.validate(&good).await.is_ok());
 
@@ -1885,7 +1885,7 @@ mod tests {
         );
         let validator = ConfigServiceDraftValidator::new(plane, DEFAULT_SCOPE);
         let mut bad = admin_assistant_config();
-        bad.model_binding = ModelSelection::pinned("p", "m", "b");
+        bad.model_binding = ModelSelection::pinned("p", "m", "b").expect("literal coordinates");
         bad.tool_ids = vec!["ghost".to_string()];
         let err = validator
             .validate(&bad)

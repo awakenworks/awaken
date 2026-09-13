@@ -1332,7 +1332,8 @@ mod tests {
                 &plugin_config,
                 &[],
                 awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-            );
+            )
+            .expect("literal model reference");
             config.resolved_spec.plugin_config.agent.toolsets = vec![ToolsetPolicy {
                 source: ToolsetSource::Agent,
                 default: ToolExecutionPolicy::default(),

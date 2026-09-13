@@ -24,7 +24,9 @@ use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::{ToolGateHook, ToolPermissionPolicy};
 use awaken_runtime_contract::plugin::Plugin;
-use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
+use awaken_runtime_contract::resolved::{
+    ContextPolicy, InvalidModelBinding, ModelBinding, ToolDescriptor,
+};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 use awaken_sandbox_local::LocalSandbox;
@@ -473,6 +475,11 @@ pub fn authorable_tools() -> Vec<ToolDescriptor> {
     tools
 }
 
+/// The generated host-default snapshot for `agent_id` on `model_ref`.
+///
+/// `model_ref` is the host's configured default model reference (an operator
+/// string, not a decoded binding), so it is admitted here and a blank or padded
+/// reference is refused at the Session boundary instead of panicking.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn server_config(
     agent_id: &str,
@@ -483,11 +490,12 @@ pub(crate) fn server_config(
     plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
     dynamic_descriptors: &[ToolDescriptor],
     context_policy: ContextPolicy,
-) -> ExecutableAgentSnapshot {
+) -> Result<ExecutableAgentSnapshot, InvalidModelBinding> {
+    let model = ModelBinding::parse("default", model_ref, "default")?;
     let tools = advertised_tools(client_tools, delegates, dynamic_descriptors);
-    ExecutableAgentSnapshot::builder(agent_id)
+    let snapshot = ExecutableAgentSnapshot::builder(agent_id)
         .instructions(SYSTEM_PROMPT)
-        .model(ModelBinding::new("default", model_ref, "default"))
+        .model(model)
         .model_candidates(Vec::new())
         .tools(tools)
         .max_steps(20)
@@ -508,7 +516,8 @@ pub(crate) fn server_config(
             ..Default::default()
         })
         .context_policy(context_policy)
-        .build()
+        .build();
+    Ok(snapshot)
 }
 
 /// The plugins this server configures, advertised with their config schema so a
@@ -719,7 +728,8 @@ mod tests {
             &Default::default(),
             &[],
             ContextPolicy::KeepAll,
-        );
+        )
+        .expect("literal model reference");
         let mut spec = config.resolved_spec.clone();
         spec.plugin_config
             .insert(STATE_MACHINE_PLUGIN_ID.to_string(), section);

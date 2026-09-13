@@ -91,9 +91,19 @@ impl awaken_config_service::ModelPublicationResolver for ScenarioHostModelResolv
                 .next()
                 .ok_or(awaken_config_service::PublicationResolutionError::MissingPrimary)?;
             let binding = |offering: &awaken_model_catalog::Offering| {
-                ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
+                ModelBinding::parse(&offering.provider_id.0, &offering.model_id, "genai").map_err(
+                    |error| {
+                        awaken_config_service::PublicationResolutionError::invalid_binding(
+                            format!("scenario catalog offering `{}`", offering.model_id),
+                            error,
+                        )
+                    },
+                )
             };
-            (binding(primary), offerings.map(binding).collect())
+            (
+                binding(primary)?,
+                offerings.map(binding).collect::<Result<Vec<_>, _>>()?,
+            )
         };
         let context_window = catalog.context_window(&primary.model_ref);
         let max_output_tokens = catalog.max_output_tokens(&primary.model_ref);

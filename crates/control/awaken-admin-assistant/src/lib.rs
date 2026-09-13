@@ -1137,10 +1137,22 @@ impl RawTool for DraftAgent {
             return error_or_committed(call.call_id, &self.store, &audit_event, error).await;
         }
         // `model` pins a concrete id; absent → Auto (resolve at publish, ADR-0052 D5).
-        let model_binding = args
-            .model
-            .map(|m| ModelSelection::pinned("default", m, "default"))
-            .unwrap_or(ModelSelection::Auto);
+        // The id is tool-call input, so a blank or padded one is a tool error.
+        let model_binding = match args.model {
+            Some(model) => match ModelSelection::pinned("default", &model, "default") {
+                Ok(selection) => selection,
+                Err(error) => {
+                    return error_or_committed(
+                        call.call_id,
+                        &self.store,
+                        &audit_event,
+                        format!("model `{model}` is not an executable binding: {error}"),
+                    )
+                    .await;
+                }
+            },
+            None => ModelSelection::Auto,
+        };
         let plugin_ids = plugin_ids_of(&args.plugin_config);
         let resources = args.resources;
         let mcp_servers = args.mcp_servers;
@@ -1320,8 +1332,19 @@ impl RawTool for PatchAgent {
         if let Some(v) = patch.description {
             config.description = Some(v);
         }
-        if let Some(m) = patch.model {
-            config.model_binding = ModelSelection::pinned("default", m, "default");
+        if let Some(model) = patch.model {
+            config.model_binding = match ModelSelection::pinned("default", &model, "default") {
+                Ok(selection) => selection,
+                Err(error) => {
+                    return error_or_committed(
+                        call.call_id,
+                        &self.store,
+                        &audit_event,
+                        format!("model `{model}` is not an executable binding: {error}"),
+                    )
+                    .await;
+                }
+            };
         }
         if let Some(v) = patch.max_steps {
             config.max_steps = v;

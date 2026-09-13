@@ -978,10 +978,12 @@ mod tests {
             })
         };
         assert_eq!(
-            projected(ModelSelection::pinned("openai", "gpt-5", "genai"))
-                .expect("R1")
-                .model
-                .id,
+            projected(
+                ModelSelection::pinned("openai", "gpt-5", "genai").expect("literal coordinates")
+            )
+            .expect("R1")
+            .model
+            .id,
             "gpt-5;provider=openai",
             "R1"
         );
@@ -1885,7 +1887,8 @@ mod tests {
         let path = temp.path().join("config.sqlite");
         let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
         let mut config = awaken_admin_assistant::admin_assistant_config();
-        config.model_binding = ModelSelection::pinned("provider", "model-a", "backend");
+        config.model_binding =
+            ModelSelection::pinned("provider", "model-a", "backend").expect("literal coordinates");
         config.tool_ids.clear();
         plane
             .put(&ScopeId::from(RESERVED_ADMIN_SCOPE), &config)

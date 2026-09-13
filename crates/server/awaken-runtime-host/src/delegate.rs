@@ -912,7 +912,8 @@ mod durable_cancel_tests {
             &Default::default(),
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-        );
+        )
+        .expect("literal model reference");
         let overrides = child
             .resolved_spec
             .tool_descriptors
@@ -1421,7 +1422,8 @@ mod durable_cancel_tests {
             &Default::default(),
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-        );
+        )
+        .expect("literal model reference");
         child_snapshot.resolved_spec.plugin_config.agent.toolsets =
             vec![crate::config::test_agent_toolset_permission(
                 "write",
@@ -1436,7 +1438,8 @@ mod durable_cancel_tests {
             &Default::default(),
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-        );
+        )
+        .expect("literal model reference");
         let service = HostRunDelegationService::new(
             Arc::new(AwaitPermission),
             sandbox,

@@ -113,17 +113,23 @@ impl awaken_session_contract::SessionModelPublicationResolver for DreamScenarioM
                 )),
             );
         }
+        let provider_identity_ref = target
+            .provider_id
+            .clone()
+            .unwrap_or_else(|| "scenario".into());
+        let binding = awaken_runtime_contract::resolved::ModelBinding::parse(
+            &provider_identity_ref,
+            self.model_ref.clone(),
+            "genai",
+        )
+        .map_err(|error| {
+            awaken_session_contract::SessionModelResolutionError::Invalid(format!(
+                "Dream scenario provider `{provider_identity_ref}` / model `{}`: {error}",
+                self.model_ref
+            ))
+        })?;
         Ok(awaken_session_contract::SessionModelPublication {
-            primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                awaken_runtime_contract::resolved::ModelBinding::new(
-                    target
-                        .provider_id
-                        .clone()
-                        .unwrap_or_else(|| "scenario".into()),
-                    self.model_ref.clone(),
-                    "genai",
-                ),
-            ),
+            primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding),
             candidates: Vec::new(),
         })
     }

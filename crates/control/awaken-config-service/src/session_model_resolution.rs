@@ -43,6 +43,7 @@ impl SessionModelPublicationResolver for ConfigSessionModelPublicationResolver {
                 PublicationResolutionError::MissingPrimary
                 | PublicationResolutionError::CandidateUnavailable { .. }
                 | PublicationResolutionError::DuplicateBinding(_)
+                | PublicationResolutionError::InvalidBinding { .. }
                 | PublicationResolutionError::Invalid(_) => {
                     SessionModelResolutionError::Invalid(error.to_string())
                 }

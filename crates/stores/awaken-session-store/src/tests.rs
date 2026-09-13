@@ -2503,7 +2503,8 @@ fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent 
                 "host",
                 "model-1",
                 "host",
-            );
+            )
+            .expect("literal coordinates");
             extractor.agent.resolved_spec.instructions = "extract durable facts".into();
             extractor.agent.recompute_fingerprint().unwrap();
             extractor
