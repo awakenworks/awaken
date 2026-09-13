@@ -81,18 +81,18 @@ pub const fn session_event_dispatch_settlement_plan(
 
 /// Decide whether the applied aggregate mutation may close Running. This does
 /// not model the database or queue: it joins the exact production plan result
-/// with the same root's activity-removal and Event-completeness facts.
+/// with the same root's activity-removal and input-actionability facts.
 #[must_use]
 pub(crate) const fn session_event_execution_may_close(
     dispatch: SessionEventDispatchSettlementPlan,
     exact_activity_removed: bool,
     last_active: bool,
-    all_events_processed: bool,
+    inputs_allow_idle: bool,
 ) -> bool {
     matches!(dispatch, SessionEventDispatchSettlementPlan::Apply)
         && exact_activity_removed
         && last_active
-        && all_events_processed
+        && inputs_allow_idle
 }
 
 impl SessionEventBatch {
@@ -220,18 +220,18 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
     );
     let exact_activity_removed = kani::any();
     let last_active = kani::any();
-    let all_events_processed = kani::any();
+    let inputs_allow_idle = kani::any();
     assert_eq!(
         session_event_execution_may_close(
             plan,
             exact_activity_removed,
             last_active,
-            all_events_processed,
+            inputs_allow_idle,
         ),
         plan == SessionEventDispatchSettlementPlan::Apply
             && exact_activity_removed
             && last_active
-            && all_events_processed
+            && inputs_allow_idle
     );
 }
 

@@ -698,12 +698,13 @@ impl SessionApplication {
         expected_epoch: u64,
         observation: SessionRuntimeIntervalObservation,
         run_id: &RunId,
+        boundary: awaken_session_contract::SessionAgentRunBoundary,
     ) -> Result<PersistedSession, SessionActivityError> {
         self.settle_activity_observed_for_event(
             session_id,
             expected_epoch,
             Some(observation),
-            Some(run_id),
+            Some((run_id, boundary)),
         )
         .await
     }
@@ -713,7 +714,7 @@ impl SessionApplication {
         session_id: &str,
         expected_epoch: u64,
         observation: Option<SessionRuntimeIntervalObservation>,
-        event_run_id: Option<&RunId>,
+        event_run_id: Option<(&RunId, awaken_session_contract::SessionAgentRunBoundary)>,
     ) -> Result<PersistedSession, SessionActivityError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
@@ -786,7 +787,7 @@ impl SessionApplication {
                 }
             }
             let settlement = match event_run_id {
-                Some(run_id) => {
+                Some((run_id, boundary)) => {
                     let observation = observation.as_ref().ok_or_else(|| {
                         SessionActivityError::Unavailable(
                             "User Event Dispatch settlement has no commit observation".into(),
@@ -795,6 +796,7 @@ impl SessionApplication {
                     match session
                         .settle_user_event_dispatch(
                             run_id,
+                            boundary,
                             expected_epoch,
                             SessionEventProjectionAnchor {
                                 source_commit_cursor: observation.source_commit_cursor,
@@ -804,7 +806,12 @@ impl SessionApplication {
                         .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
                     {
                         SessionEventDispatchSettlementEffect::NotEvent
-                        | SessionEventDispatchSettlementEffect::Replayed => return Ok(session),
+                        | SessionEventDispatchSettlementEffect::Replayed {
+                            fully_settled: false,
+                        } => return Ok(session),
+                        SessionEventDispatchSettlementEffect::Replayed {
+                            fully_settled: true,
+                        } => Some(true),
                         SessionEventDispatchSettlementEffect::Applied { fully_settled } => {
                             Some(fully_settled)
                         }
