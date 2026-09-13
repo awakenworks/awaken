@@ -33,12 +33,40 @@ use awaken_dispatch_contract::{
     RunClaim, RunDispatch, SessionRunReservationResolution, SessionRunReservationResolutionRequest,
     SettleOutcome, SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
 };
+
 use awaken_dispatch_contract::{
     ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
     worker_credential_realization_capabilities,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_worker_transport_security::{WorkerRequestAuthorizer, WorkerUpstream};
+
+async fn dispatch_response_error(response: reqwest::Response) -> DispatchError {
+    let status = response.status();
+    let detail = response
+        .text()
+        .await
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(512)
+        .collect::<String>();
+    let message = format!(
+        "dispatch transport server returned {status}{}",
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        }
+    );
+    match status {
+        reqwest::StatusCode::CONFLICT => DispatchError::Conflict(message),
+        reqwest::StatusCode::BAD_GATEWAY
+        | reqwest::StatusCode::SERVICE_UNAVAILABLE
+        | reqwest::StatusCode::GATEWAY_TIMEOUT => DispatchError::Unavailable(message),
+        _ => DispatchError::Rejected(message),
+    }
+}
 
 const IDEMPOTENT_TRANSPORT_ATTEMPTS: usize = 3;
 const IDEMPOTENT_TRANSPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
@@ -160,23 +188,7 @@ impl HttpDispatchQueue {
             .await
             .map_err(|e| DispatchError::Rejected(format!("dispatch transport: {e}")))?;
         if !resp.status().is_success() {
-            let status = resp.status();
-            let detail = resp
-                .text()
-                .await
-                .unwrap_or_default()
-                .trim()
-                .chars()
-                .take(512)
-                .collect::<String>();
-            return Err(DispatchError::Rejected(format!(
-                "dispatch transport server returned {status}{}",
-                if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {detail}")
-                }
-            )));
+            return Err(dispatch_response_error(resp).await);
         }
         resp.json()
             .await
@@ -226,23 +238,7 @@ impl HttpDispatchQueue {
                 break;
             }
             if !response.status().is_success() {
-                let status = response.status();
-                let detail = response
-                    .text()
-                    .await
-                    .unwrap_or_default()
-                    .trim()
-                    .chars()
-                    .take(512)
-                    .collect::<String>();
-                return Err(DispatchError::Rejected(format!(
-                    "dispatch transport server returned {status}{}",
-                    if detail.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {detail}")
-                    }
-                )));
+                return Err(dispatch_response_error(response).await);
             }
             match response.json().await {
                 Ok(value) => return Ok(value),
