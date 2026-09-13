@@ -145,6 +145,88 @@ function unionDiscriminants(context, aliasName) {
   return [...values].sort();
 }
 
+/// One object type's wire shape: its required and optional property names and,
+/// for any property whose type is a discriminated union of objects, the shape
+/// of each variant keyed by its `type` literal. Depth-bounded so a nested
+/// object such as `evaluation.evaluated_permission` is described, while the
+/// open-ended content-block trees are left to the block extractors.
+function objectShape(context, type, depth) {
+  const required = [];
+  const optional = [];
+  const nested = {};
+  for (const property of context.checker.getPropertiesOfType(type)) {
+    const name = property.getName();
+    (property.flags & ts.SymbolFlags.Optional ? optional : required).push(name);
+    if (depth === 0) continue;
+    const declaration = property.valueDeclaration ?? property.declarations?.[0];
+    if (!declaration) continue;
+    const propertyType = context.checker.getTypeOfSymbolAtLocation(property, declaration);
+    const members = (propertyType.isUnion() ? propertyType.types : [propertyType]).filter(
+      (member) => !(member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)),
+    );
+    const variants = discriminatedShapes(context, members, depth - 1);
+    if (variants) nested[name] = variants;
+  }
+  const shape = { required: required.sort(), optional: optional.sort() };
+  if (Object.keys(nested).length > 0) shape.nested = nested;
+  return shape;
+}
+
+/// The variants of a discriminated object union keyed by `type` literal, or
+/// `null` when the members are not all objects carrying a literal `type`.
+function discriminatedShapes(context, members, depth) {
+  const variants = {};
+  for (const member of members) {
+    if (!(member.flags & ts.TypeFlags.Object)) return null;
+    const tag = member.getProperty('type');
+    const tagDeclaration = tag?.valueDeclaration ?? tag?.declarations?.[0];
+    if (!tag || !tagDeclaration) return null;
+    const tagType = context.checker.getTypeOfSymbolAtLocation(tag, tagDeclaration);
+    const literals = tagType.isUnion() ? tagType.types : [tagType];
+    if (!literals.every((literal) => literal.isStringLiteral())) return null;
+    for (const literal of literals) {
+      variants[literal.value] = objectShape(context, member, depth);
+    }
+  }
+  return Object.keys(variants).length > 0 ? variants : null;
+}
+
+/// Every committed event's property shape keyed by its `type` literal. The
+/// discriminator list says which events exist; this says what each carries,
+/// so a field added to an existing event — an optional `evaluation`, a new
+/// required `usage` — is a visible contract change, not a silent one.
+function eventShapes(context) {
+  const declaration = oneDeclaration(context, 'BetaManagedAgentsSessionEvent', ts.isTypeAliasDeclaration);
+  const union = context.checker.getTypeAtLocation(declaration);
+  const members = union.isUnion() ? union.types : [union];
+  const shapes = discriminatedShapes(context, members, 2);
+  if (!shapes) {
+    throw new Error(`${context.filename}: BetaManagedAgentsSessionEvent is not a discriminated object union`);
+  }
+  return shapes;
+}
+
+/// The exported declaration names of every scoped Managed `.d.ts` file: the
+/// vocabulary a wire type may cite as its SDK counterpart.
+export function managedDeclaredTypesFromPackageRoot(root, scope) {
+  const names = new Set();
+  for (const { path: scopedPath } of managedTypeFingerprintFromPackageRoot(root, scope).files) {
+    const [prefix, ...rest] = scopedPath.split('/');
+    const relative = prefix === 'beta' ? path.join('resources', 'beta', ...rest)
+      : prefix === 'ga' ? path.join('resources', ...rest)
+        : rest.join('/');
+    const text = fs.readFileSync(path.join(root, relative), 'utf8');
+    for (const match of text.matchAll(/^export (?:interface|type|declare (?:const|function|class|abstract class)|class) ([A-Za-z0-9_]+)/gmu)) {
+      names.add(match[1]);
+    }
+  }
+  return [...names].sort();
+}
+
+export function managedDeclaredTypes(moduleName, scope) {
+  return managedDeclaredTypesFromPackageRoot(resolveSdkPackage(moduleName).root, scope);
+}
+
 function literalEventTypes(root, relative) {
   const context = declarationContext(root, relative);
   const outbound = unionDiscriminants(context, 'BetaManagedAgentsSessionEvent');
@@ -155,7 +237,12 @@ function literalEventTypes(root, relative) {
   if (inbound.some((value) => !outboundSet.has(value))) {
     throw new Error(`${context.filename}: inbound event is absent from committed history`);
   }
-  return { outbound, inbound, preview };
+  const shapes = eventShapes(context);
+  const unshaped = outbound.filter((value) => !(value in shapes));
+  if (unshaped.length > 0) {
+    throw new Error(`${context.filename}: committed events without a shape: ${unshaped.join(', ')}`);
+  }
+  return { outbound, inbound, preview, shapes };
 }
 
 export function managedWireContract(moduleName) {

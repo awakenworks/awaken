@@ -339,12 +339,14 @@ pub struct AgentUpdateParams {
     pub multiagent: Option<Option<MultiagentConfig>>,
 }
 
+/// `AgentRetrieveParams`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AgentRetrieveParams {
     #[serde(default)]
     pub version: Option<u64>,
 }
 
+/// `AgentListParams`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AgentListParams {
     #[serde(default)]

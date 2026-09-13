@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   managedTypeFingerprint,
   managedTypeFingerprintFromPackageRoot,
+  managedDeclaredTypes,
   managedWireContract,
 } from '../src/extract-types.mjs';
 import { resolveSdkPackage } from '../src/package-source.mjs';
@@ -90,4 +91,60 @@ test('current wire contract extracts recursive Session shape and event vocabular
   assert.ok(wire.events.inbound.includes('user.message'));
   assert.deepEqual(wire.events.preview, ['event_delta', 'event_start']);
   assert.ok(wire.managed_betas.includes('managed-agents-2026-04-01'));
+});
+
+test('current wire contract describes every committed event down to its nested discriminated fields', () => {
+  // Cause/effect graph: C1 every member of the committed event union carries
+  // its own property list; C2 a property may itself be a discriminated object
+  // union (0.125's `evaluation`, and its `evaluated_permission` under `auto`).
+  // Effects: E1 each outbound event type has a shape with disjoint
+  // required/optional names; E2 a nested discriminated field is described per
+  // variant, two levels deep; E3 an array-of-blocks field is not mistaken for
+  // a discriminated object. Decision rules: S1=C1=>E1; S2=C1+C2=>E2;
+  // S3=content arrays=>E3. This is what makes a field added to an existing
+  // event a visible contract change rather than a fingerprint delta nobody
+  // can read.
+  const wire = managedWireContract('@anthropic-ai/sdk-current');
+  for (const type of wire.events.outbound) {
+    const shape = wire.events.shapes[type];
+    assert.ok(shape, `S1 ${type} has a shape`);
+    assert.equal(
+      new Set([...shape.required, ...shape.optional]).size,
+      shape.required.length + shape.optional.length,
+      `S1 ${type} required and optional are disjoint`,
+    );
+    assert.ok(shape.required.includes('type'), `S1 ${type} carries its discriminator`);
+  }
+  const toolUse = wire.events.shapes['agent.tool_use'];
+  assert.ok(toolUse.optional.includes('evaluated_permission'), 'S1');
+  assert.ok(toolUse.optional.includes('evaluation'), 'S2');
+  assert.deepEqual(Object.keys(toolUse.nested.evaluation).sort(), ['always_allow', 'always_ask', 'auto'], 'S2');
+  const auto = toolUse.nested.evaluation.auto;
+  assert.deepEqual(auto.required, ['evaluated_permission', 'type'], 'S2');
+  assert.deepEqual(Object.keys(auto.nested.evaluated_permission).sort(), ['allow', 'ask', 'deny'], 'S2 two levels deep');
+  assert.deepEqual(auto.nested.evaluated_permission.deny.required, ['reason_code', 'type'], 'S2');
+  assert.deepEqual(auto.nested.evaluated_permission.allow.required, ['type'], 'S2');
+  assert.deepEqual(wire.events.shapes['agent.mcp_tool_use'].nested.evaluation, toolUse.nested.evaluation, 'S2 same object on both tool-use events');
+  assert.equal(wire.events.shapes['agent.message'].nested, undefined, 'S3 content blocks are not a discriminated field');
+  assert.ok(wire.events.shapes['span.outcome_evaluation_end'].required.includes('usage'), 'S1 a required field the adapter must carry');
+});
+
+test('the current SDK declared-type vocabulary is extracted for the wire naming check', () => {
+  // Cause: C1 every scoped Managed declaration file exports named types.
+  // Effect: E1 one sorted list of those names, which the Rust wire types cite
+  // as their exact SDK counterparts. The names introduced by 0.125 are the
+  // witnesses that the vocabulary reads the events declarations, not only the
+  // resource roots.
+  const names = managedDeclaredTypes('@anthropic-ai/sdk-current', scope);
+  assert.deepEqual(names, [...new Set(names)].sort(), 'E1 sorted and unique');
+  for (const witness of [
+    'BetaManagedAgentsSession',
+    'BetaManagedAgentsAgentToolUseEvent',
+    'BetaManagedAgentsAgentToolEvaluation',
+    'BetaManagedAgentsAgentAutoEvaluatedPermissionDeny',
+    'BetaManagedAgentsAutoPolicy',
+    'BetaFileMetadata',
+  ]) {
+    assert.ok(names.includes(witness), `E1 ${witness}`);
+  }
 });

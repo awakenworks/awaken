@@ -90,7 +90,7 @@
     "BetaFileMetadata": {
       "$defs": {
         "BetaFileScope": {
-          "description": "The beta-only Session scope projection.",
+          "description": "`BetaFileScope`.\n\nThe beta-only Session scope projection.",
           "properties": {
             "id": {
               "type": "string"
@@ -470,6 +470,7 @@
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`Work`.",
       "properties": {
         "acknowledged_at": {
           "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",

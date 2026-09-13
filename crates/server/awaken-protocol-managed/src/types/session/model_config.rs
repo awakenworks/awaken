@@ -150,6 +150,8 @@ impl ModelEffortInput {
     }
 }
 
+/// `BetaManagedAgentsModelConfigParams`.
+///
 /// Input-only model configuration; nullable option values normalize to absence.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

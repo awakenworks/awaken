@@ -201,6 +201,8 @@ impl ResourceAddParams {
     }
 }
 
+/// `ResourceUpdateParams`.
+///
 /// Official write-only repository credential rotation body.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

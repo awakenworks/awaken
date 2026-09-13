@@ -15,6 +15,7 @@ use crate::types::initial_event::{InitialEventClass, InitialEventSpec};
 use crate::types::resource::ResourceInput;
 use crate::types::session::{AgentRef, InboundEvent, OutcomeRubric};
 
+/// `BetaManagedAgentsDeploymentInitialEvent`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum DeploymentInitialEvent {
@@ -74,6 +75,7 @@ impl From<DeploymentInitialEvent> for InboundEvent {
     }
 }
 
+/// `BetaManagedAgentsSchedule`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Schedule {

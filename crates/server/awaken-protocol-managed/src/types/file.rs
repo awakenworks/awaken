@@ -180,6 +180,8 @@ pub struct BetaFileCursorMetadata {
     pub scope: Option<BetaFileScope>,
 }
 
+/// `BetaFileScope`.
+///
 /// The beta-only Session scope projection.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
