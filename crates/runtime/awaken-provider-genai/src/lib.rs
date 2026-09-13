@@ -66,14 +66,14 @@ mod default_timeout_tests {
 
     /// Cause/effect design: C1 the default complete-response and idle-silence
     /// budgets are selected together. Effect E1: the complete response retains
-    /// at least two idle windows, so healthy reasoning progress is not bounded
+    /// at least four idle windows, so healthy reasoning progress is not bounded
     /// by the transport-silence threshold. Coverage rule T1=C1=>E1; a smaller
     /// ratio is the regression boundary asserted here.
     /// Constraints/invariants: the complete-call budget must remain at least
-    /// twice the idle window; specialized overrides do not change defaults.
+    /// four times the idle window; specialized overrides do not change defaults.
     #[test]
     fn complete_reasoning_response_has_a_larger_budget_than_transport_silence() {
-        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 2);
+        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 4);
         assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
     }
 }

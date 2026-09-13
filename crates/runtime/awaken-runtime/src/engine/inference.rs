@@ -266,6 +266,16 @@ pub(super) async fn infer_with_retry_observed(
         Err(err) => {
             span.record("error.type", err.code());
             span.record("otel.status_code", "ERROR");
+            // Structure only: retain enough evidence to distinguish a local
+            // deadline from an authority loss without logging provider bodies,
+            // prompts, credentials, URLs, or arbitrary error text.
+            tracing::warn!(
+                error_code = err.code(),
+                retryable = err.is_retryable(),
+                execution_evidence = ?err.execution_evidence(),
+                elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "model inference returned an error"
+            );
         }
     }
     // Structure-only metric at the same chokepoint as the span (#2): model id,
