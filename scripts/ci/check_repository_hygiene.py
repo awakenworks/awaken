@@ -9,6 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Input set: `--staged` asks git for the complete staged list and inspects every
+# one of those paths (root/name shape) and their contents (hidden Unicode,
+# pasted license text). Nothing narrower is readable here, so the trigger is the
+# whole staged set and the rendered hook carries no glob.
+INPUT_GLOBS: tuple[str, ...] = ("**/*",)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 ALLOWED_ROOT_MD = {

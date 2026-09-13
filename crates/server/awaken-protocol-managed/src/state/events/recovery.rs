@@ -518,6 +518,28 @@ impl ManagedState {
         let client_settled_occurrences = tool_index.client_settled_occurrences;
         let mut qualified = Vec::with_capacity(events.len());
         for mut event in std::mem::take(events) {
+            // Runtime's neutral pending state says only that the client must
+            // supply the result. Managed distinguishes authored custom tools
+            // from self-hosted Agent-toolset execution at this sole projection
+            // boundary, using the frozen Session/child Agent definition. It runs
+            // before the recorded decision is applied, so a converted call is an
+            // Agent tool use like any other and the record reaches it; the `allow`
+            // below is only what a session older than those records reports.
+            if let OutboundKind::AgentCustomToolUse {
+                name,
+                input,
+                session_thread_id,
+            } = &event.kind
+                && !declared_custom_tools.contains(name.as_str())
+            {
+                event.kind = OutboundKind::AgentToolUse {
+                    name: name.clone(),
+                    input: input.clone(),
+                    evaluated_permission: Some(EvaluatedPermission::Allow),
+                    evaluation: None,
+                    session_thread_id: session_thread_id.clone(),
+                };
+            }
             // The recorded gate decision replaces whatever the transcript-only
             // fold inferred. A refused call and an executed call that errored
             // look identical in the transcript, so only this record can tell
@@ -544,25 +566,6 @@ impl ManagedState {
                     }
                     _ => {}
                 }
-            }
-            // Runtime's neutral pending state says only that the client must
-            // supply the result. Managed distinguishes authored custom tools
-            // from self-hosted Agent-toolset execution at this sole projection
-            // boundary, using the frozen Session/child Agent definition.
-            if let OutboundKind::AgentCustomToolUse {
-                name,
-                input,
-                session_thread_id,
-            } = &event.kind
-                && !declared_custom_tools.contains(name.as_str())
-            {
-                event.kind = OutboundKind::AgentToolUse {
-                    name: name.clone(),
-                    input: input.clone(),
-                    evaluated_permission: Some(EvaluatedPermission::Allow),
-                    evaluation: None,
-                    session_thread_id: session_thread_id.clone(),
-                };
             }
             if ProjectedToolUseFamily::from_kind(&event.kind).is_some() {
                 let runtime_call_id = event.id.as_deref().ok_or_else(|| {

@@ -18,6 +18,8 @@ import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 
+import generate_hooks
+
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "e2e/package.json"
 STAGE_GRAPH = ROOT / "e2e/stage_change_coverage_e2e.ts"
@@ -384,66 +386,42 @@ def release_gate_errors(check_all: str, public_api: str, check_rust: str) -> lis
 # A hook that runs only when certain files are staged is a gate whose trigger
 # set must contain its input set: a check that reads `e2e/package.json` but
 # fires only on `packages/managed-sdk-oracle/**` passes by never running when
-# that manifest changes. Each entry names a pre-commit command and the files
-# it reads that are not already implied by its own glob.
-HOOK_INPUTS: dict[str, tuple[str, ...]] = {
-    "managed-sdk-oracle": (
-        "e2e/package.json",
-        "pnpm-lock.yaml",
-        "packages/managed-sdk-oracle/package.json",
-        "contracts/anthropic-managed/upstream-oracle.generated.json",
-    ),
-    "generated-contracts": (
-        "contracts/model-schemas.generated.json",
-        "contracts/openapi.generated.json",
-        "contracts/model-config.d.ts",
-        "contracts/model-selection.generated.d.ts",
-        "contracts/anthropic-managed/canonical-wire.schemas.generated.json",
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-        "crates/server/awaken-protocol-managed/src/types/session.rs",
-        "scripts/contract/generate-contracts.sh",
-    ),
-}
+# that manifest changes.
+#
+# The previous answer was a registry here that named each command and the extra
+# files it reads. That registry could go stale in exactly the way it existed to
+# prevent -- nothing made anyone add a row -- so it is gone. The rule below is
+# structural instead: a checker declares its own inputs as INPUT_GLOBS, that
+# declaration is the *only* author of the command's glob, and this refuses both
+# a hand-written drift from the rendered glob and a declaration nothing runs.
+def generated_hook_glob_errors(
+    hooks: str, declarations: dict[str, tuple[str, ...]]
+) -> list[str]:
+    """Cause/effect for the generated trigger globs:
 
+    | Rule | generated regions match the render | every declaring checker wired | Effect |
+    |------|------------------------------------|-------------------------------|--------|
+    | N1   | yes                                | yes                           | accept |
+    | N2   | no (a glob was hand-edited or is stale) | yes                      | reject |
+    | N3   | yes                                | no                            | reject |
 
-def _expand_braces(pattern: str) -> list[str]:
-    """Expand one level of `{a,b}` alternation (nested braces expand recursively)."""
-    match = re.search(r"\{([^{}]*)\}", pattern)
-    if match is None:
-        return [pattern]
-    expanded = []
-    for alternative in match.group(1).split(","):
-        expanded.extend(_expand_braces(pattern[: match.start()] + alternative + pattern[match.end():]))
-    return expanded
+    N4 is the admitted case and needs no row: a command that runs a checker
+    which declares nothing is not governed at all, and its hand-written glob is
+    left exactly as authored.
+    """
 
-
-def _glob_matches(pattern: str, path: str) -> bool:
-    for alternative in _expand_braces(pattern):
-        regex = re.escape(alternative).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
-        if re.fullmatch(regex, path):
-            return True
-    return False
-
-
-def hook_glob(hooks: str, command: str) -> str | None:
-    match = re.search(rf"^\s+{re.escape(command)}:\n\s+glob: \"([^\"]+)\"", hooks, re.MULTILINE)
-    return match.group(1) if match else None
-
-
-def hook_input_coverage_errors(hooks: str, inputs: dict[str, tuple[str, ...]] = HOOK_INPUTS) -> list[str]:
-    """Cause/effect: G1 a registered hook exists with a glob that matches every
-    input -> accept; G2 the hook is absent -> reject (the check does not run at
-    all); G3 the glob misses an input -> reject (the check does not run when
-    that input changes)."""
     errors: list[str] = []
-    for command, files in inputs.items():
-        glob = hook_glob(hooks, command)
-        if glob is None:
-            errors.append(f"lefthook has no `{command}` command with a trigger glob")
-            continue
-        for path in files:
-            if not _glob_matches(glob, path):
-                errors.append(f"lefthook `{command}` reads {path} but its glob does not trigger on it")
+    if generate_hooks.render(hooks, declarations) != hooks:
+        errors.append(
+            "lefthook.yml trigger globs are hand-edited or stale; regenerate them with "
+            "python3 scripts/ci/generate_hooks.py"
+        )
+    unwired = sorted(set(declarations) - generate_hooks.wired_scripts(hooks))
+    for script in unwired:
+        errors.append(
+            f"scripts/ci/{script} declares INPUT_GLOBS but no lefthook pre-commit "
+            "command runs it, so the declaration triggers nothing"
+        )
     return errors
 
 
@@ -927,7 +905,12 @@ def validate(root: Path) -> list[str]:
         (root / "lefthook.yml").read_text(encoding="utf-8"),
         (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
     ))
-    errors.extend(hook_input_coverage_errors((root / "lefthook.yml").read_text(encoding="utf-8")))
+    errors.extend(
+        generated_hook_glob_errors(
+            (root / "lefthook.yml").read_text(encoding="utf-8"),
+            generate_hooks.declared_input_globs(root / "scripts/ci"),
+        )
+    )
     errors.extend(
         test_deadline_errors(
             (root / NEXTEST_CONFIG).read_text(encoding="utf-8"),
@@ -1088,20 +1071,34 @@ def self_test() -> None:
     allowing = gate[:push_start] + push_body.replace("-D warnings", "-W warnings") + gate[push_end:]
     assert rust_hook_errors(hooks, allowing), "H11 --push clippy must deny warnings"
     assert rust_hook_errors(hooks, gate.replace("  --quick|--push)", "  --quick)")), "H8 gate without a --push branch"
-    # Hook input coverage table: G1 glob covers every input -> accept; G2 the
-    # command is missing -> reject; G3 the glob drops one input -> reject.
-    covering = (
-        "pre-commit:\n  commands:\n    managed-sdk-oracle:\n"
-        '      glob: "{packages/managed-sdk-oracle/**/*,e2e/package.json,pnpm-lock.yaml,'
-        'contracts/anthropic-managed/*}"\n      run: pnpm check\n'
+    # Generated trigger-glob table, on a synthetic hook file.
+    # | Rule | generated regions match the render | declaring checker wired | Effect |
+    # | N1   | yes                                | yes                     | accept |
+    # | N2   | no, one glob was hand-edited       | yes                     | reject |
+    # | N3   | yes                                | no                      | reject |
+    # | N4   | n/a, the invoked checker declares nothing | n/a              | admitted, glob untouched |
+    declarations = {"check_alpha.py": ("docs/*.md",)}
+    synthetic = generate_hooks.render(
+        "pre-commit:\n  commands:\n    alpha:\n"
+        "      run: python3 scripts/ci/check_alpha.py {staged_files}\n"
+        "\n    shell:\n"
+        '      glob: "crates/**/*.rs"\n'
+        "      run: scripts/ci/check-rust.sh --quick\n",
+        declarations,
     )
-    table = {"managed-sdk-oracle": ("e2e/package.json", "pnpm-lock.yaml",
-                                    "packages/managed-sdk-oracle/package.json",
-                                    "contracts/anthropic-managed/upstream-oracle.generated.json")}
-    assert not hook_input_coverage_errors(covering, table), "G1"
-    assert hook_input_coverage_errors(covering.replace("managed-sdk-oracle:", "other:"), table), "G2"
-    assert hook_input_coverage_errors(covering.replace("e2e/package.json,", ""), table), "G3"
-    assert not hook_input_coverage_errors(hooks), "G1 live: the repository hooks cover their inputs"
+    assert not generated_hook_glob_errors(synthetic, declarations), "N1"
+    hand_edited = synthetic.replace(
+        '{docs/*.md,scripts/ci/check_alpha.py}', "docs/README.md"
+    )
+    assert hand_edited != synthetic and generated_hook_glob_errors(hand_edited, declarations), "N2"
+    assert generated_hook_glob_errors(
+        synthetic, {**declarations, "check_unwired.py": ("formal/*.json",)}
+    ), "N3"
+    assert '      glob: "crates/**/*.rs"\n' in synthetic and "check-rust.sh" in synthetic, "N4"
+    # Live: the repository's own hooks are exactly what their declarations render.
+    assert not generated_hook_glob_errors(
+        hooks, generate_hooks.declared_input_globs(ROOT / "scripts/ci")
+    ), "N1 live"
     for checker in ("check_dependency_sources.py", "check_crate_boundaries.py"):
         command = f"python3 scripts/ci/{checker}"
         duplicate = hooks.replace("pre-commit:", f"pre-commit:\n    duplicate:\n      run: {command}", 1)

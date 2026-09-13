@@ -9,6 +9,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Input set: `--staged` size-checks every staged file; the suffix tables below
+# only choose which limit applies, never whether the file is read. The trigger
+# is therefore the whole staged set.
+INPUT_GLOBS: tuple[str, ...] = ("**/*",)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 CODE_WARNING_LIMIT = 1000

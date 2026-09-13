@@ -33,6 +33,11 @@ import re
 import sys
 from pathlib import Path
 
+# Input set: the registry, every design and wiki page that may define or cite an
+# invariant id (the citation scan is `Path("docs").rglob("*.md")`, so it is the
+# whole docs tree), and the product feature registry whose ids it cross-checks.
+INPUT_GLOBS: tuple[str, ...] = ("docs/**/*.md", "formal/features.json")
+
 INVARIANTS = Path("docs/INVARIANTS.md")
 DESIGN_DIR = Path("docs/design")
 WIKI_ROOT = Path("docs/wiki")

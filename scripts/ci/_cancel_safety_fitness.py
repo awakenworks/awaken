@@ -72,18 +72,49 @@ EFFECT_METHODS: dict[str, str] = {
     "spawn_agent_process": "an agent process inside a container",
     "spawn_prepared": "a supervised child process inside a local sandbox",
     "prewarm": "warm containers created ahead of demand",
+    # The podman backend never reached this registry: it creates through
+    # `self.run(&args)`, a name far too general to match. Its own port name is
+    # the precise leaf, and the docker backend spells it identically.
+    "prepare_for_effect": "a container prepared on the runtime for one effect",
 }
 
 # Key: "<relative path>::<fn name>". Value: why the await is cancel-safe
 # despite matching none of the three shapes — name the owner that survives the
 # caller, so a later reader can retire the entry when the code changes.
-CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {}
+CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
+    # A detached `tokio::spawn` body: the caller's cancellation cannot reach it,
+    # and the task registers `InFlightCreate` (Drop at pool.rs:88) as its first
+    # act, which `WarmContainerPool::shutdown` drains before returning. The rule
+    # attributes the await to the lexically enclosing fn, which is not the task.
+    "crates/worker/awaken-sandbox-container/src/pool.rs::spawn_replenish": (
+        "detached task; InFlightCreate's Drop and WarmContainerPool::shutdown's drain own it"
+    ),
+    # Also a detached task. The Staging projection is inserted into the host
+    # before the spawn, and McpStagingActivityGuard (Drop at session_slot.rs:190)
+    # is held inside the task, so a lost task still leaves the Session in a state
+    # the next attachment fails closed on.
+    "crates/server/awaken-session-executor/src/managed_host_mcp_attachment.rs::stage_mcp_attachment": (
+        "detached task; the Staging projection plus McpStagingActivityGuard's Drop own it"
+    ),
+    # Matches on the name only. The callee is a control-plane domain command
+    # (`CreateEnvironmentCommand` keyed by `command_id`), preceded by a durable
+    # audit write and reconciled by `already_applied_output`; no mount, sandbox,
+    # pod, process or clone is created, so there is no host resource to strand.
+    "crates/control/awaken-admin-assistant/src/lib.rs::invoke": (
+        "control-plane command idempotent under command_id, not a host effect"
+    ),
+}
 
 # The shape predates the gate. Converting every instance at once would be a
 # migration, not a fix, so the untriaged remainder is ratcheted: the count may
-# fall and may not rise. Lower it as call sites are owned or registered; never
-# raise it.
-CANCEL_SAFETY_BASELINE = 67
+# fall and may not rise. Lower it as call sites are owned or registered.
+#
+# It rose once, from 67 to 71, and that was the gate telling the truth for the
+# first time: the old admission rule matched any `claim_*`-shaped name, so two
+# pure predicates were admitting five real Kubernetes creations — the Sandbox
+# Pod among them — and the podman backend had no registered leaf at all. A
+# number that falls because the rule stopped looking is not progress.
+CANCEL_SAFETY_BASELINE = 71
 
 FN_HEAD = re.compile(r"\bfn\s+([A-Za-z_]\w*)\s*")
 IMPL_HEAD = re.compile(r"\bimpl\b")
@@ -95,7 +126,35 @@ PENDING_REGISTRATION = re.compile(
     r"|\b(?:pending|in_flight)\s*\.\s*(?:insert|set|replace|push|get_or_insert\w*)\s*\()"
 )
 # (b) a responsibility record is written before the physical call.
-RESPONSIBILITY_RECORD = re.compile(r"\b(?:retain|claim|record)_\w*\s*\(")
+#
+# This was a name shape (`retain_*`/`claim_*`/`record_*`) until a full read of
+# the tree found it admitting `continuation::claim_name(` and
+# `claim_required(` — two *pure functions* that compute a string and a boolean.
+# Five real Kubernetes creations, the Sandbox Pod itself among them, were
+# admitted because a predicate happened to be spelled like a claim. A shape can
+# only guess; a recorder has to be named, together with the reader that reads
+# its record back, because a record nobody reads is not a record.
+#
+# Key: the recording call, exactly as it is written at the call site.
+# Value: the reader that recovers the record, so an entry can be retired when
+# its reader disappears.
+RESPONSIBILITY_RECORDERS: dict[str, str] = {
+    "retain_unknown_memory": (
+        "awaken_sandbox_container::staged_mounts::StagedMounts::into_parts refuses while a "
+        "claim is unsettled, and the existing restoration consumer drains the staging root"
+    ),
+    "retain_for_restoration": (
+        "awaken_sandbox_container::provider_realization::acquire_restore_sandbox observes the "
+        "retained restore target before creating another"
+    ),
+    "record_hand_lifecycle": (
+        "awaken_session_executor::session_environment::session_hand observes the recorded Hand "
+        "lifecycle when it rebuilds or revokes the Session Hand"
+    ),
+}
+RESPONSIBILITY_RECORD = re.compile(
+    r"\b(?:" + "|".join(re.escape(name) for name in RESPONSIBILITY_RECORDERS) + r")\s*\("
+)
 DROP_IMPL = re.compile(r"\bimpl(?:<[^>]*>)?\s+Drop\s+for\s+([A-Za-z_]\w*)")
 
 
@@ -214,7 +273,7 @@ def unowned_effects(sources: dict[Path, str], repo_root: Path) -> list[tuple[str
             if PENDING_REGISTRATION.search(before):
                 continue  # (a) the future is owned by a `pending`/`in_flight` slot
             if RESPONSIBILITY_RECORD.search(before):
-                continue  # (b) the responsibility record precedes the effect
+                continue  # (b) a registered recorder wrote its record first
             owner = _enclosing(impls, function["start"])
             if owner is not None and owner["type"] in crate_drops:
                 continue  # (c) the owning type retains on Drop
@@ -228,7 +287,7 @@ def unowned_effects(sources: dict[Path, str], repo_root: Path) -> list[tuple[str
                     f"{EFFECT_METHODS[effect]} — with the in-flight future held only in a "
                     "local. A caller dropped mid-await leaves the resource on the host with "
                     "no responsibility record. Store the future into a `pending`/`in_flight` "
-                    "slot before polling it, call a `retain_*`/`claim_*`/`record_*` before the "
+                    "slot before polling it, call one of RESPONSIBILITY_RECORDERS before the "
                     "effect, give the owning type a `Drop` that retains, or record the "
                     "surviving owner in CANCEL_SAFETY_EXEMPTIONS",
                 )
@@ -309,7 +368,8 @@ def selftest() -> None:
 
     Causes: C1 a registered effect is awaited inside a function body; C2 a
     `pending`/`in_flight` registration precedes the await in that body; C3 a
-    `retain_`/`claim_`/`record_` call precedes it; C4 the enclosing impl type
+    call to a *registered* recorder (RESPONSIBILITY_RECORDERS) precedes it;
+    C4 the enclosing impl type
     has an `impl Drop` in the crate; C5 the code is test-only (`cfg(test)`);
     C6 the registration exists but only AFTER the await. Effects: E1 reported,
     E2 admitted.
@@ -321,6 +381,12 @@ def selftest() -> None:
     | T4   | T  | F  | F  | T  | F  | F  | E2     |
     | T5   | T  | F  | F  | F  | T  | F  | E2     |
     | T6   | T  | F  | F  | F  | F  | T  | E1     |
+    | T7   | T  | F  | *  | F  | F  | F  | E1     |
+
+    T7 is C3 spelled like a recorder but not registered: a name shape cannot
+    tell a record from a predicate. `continuation::claim_name` and
+    `claim_required` are pure functions, and while the rule matched shapes they
+    admitted five real Kubernetes creations, the Sandbox Pod among them.
 
     The synthetic crate is written to a tempdir and scanned through the same
     `check_all` the gate runs, so the file glob, cfg(test) projection and
@@ -346,6 +412,14 @@ def selftest() -> None:
     retain_first = unregistered.replace(
         "        let handle = m.mount(",
         "        self.retain_unknown_memory(reference.clone(), path.clone());\n"
+        "        let handle = m.mount(",
+    )
+    # Shaped like a recorder, registered nowhere, and — as in the real tree —
+    # a pure function that computes a name.
+    claim_shaped = unregistered.replace(
+        "        let handle = m.mount(",
+        "        let name = claim_name(&plan, continuity);\n"
+        "        let required = claim_required(configured, continuity);\n"
         "        let handle = m.mount(",
     )
     drop_owner = unregistered + "impl Drop for Stage {\n    fn drop(&mut self) {}\n}\n"
@@ -377,7 +451,10 @@ def selftest() -> None:
 
     assert scan(unregistered) == ["crates/worker/example/src/lib.rs::build"], "T1 reported"
     assert scan(pending_first) == [], "T2 pending registered before the await is admitted"
-    assert scan(retain_first) == [], "T3 retain_ before the await is admitted"
+    assert scan(retain_first) == [], "T3 a registered recorder before the await is admitted"
+    assert scan(claim_shaped) == ["crates/worker/example/src/lib.rs::build"], (
+        "T7 a claim_-shaped pure function is not a responsibility record"
+    )
     assert scan(drop_owner) == [], "T4 an owning type with Drop is admitted"
     assert scan(
         unregistered + "mod guard;\n",

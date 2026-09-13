@@ -7,6 +7,6 @@ pub mod run;
 pub mod run_fact;
 pub mod staged;
 
-pub use run::commit_run;
+pub use run::{commit_run, commit_run_with_events};
 pub use run_fact::RunFact;
 pub use staged::RunDisposition;

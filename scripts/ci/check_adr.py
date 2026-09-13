@@ -24,6 +24,10 @@ import re
 import sys
 from pathlib import Path
 
+# Input set: the ADR corpus. Numbers must stay unique across the directory, so
+# every ADR is an input even when only one file changed.
+INPUT_GLOBS: tuple[str, ...] = ("docs/adr/*.md",)
+
 ADR_DIR = Path("docs/adr")
 TITLE = re.compile(r"^#\s+ADR-(\d{4}):\s+\S")
 STATUS = re.compile(r"^-\s+Status:\s*(.+?)\s*$", re.MULTILINE)
