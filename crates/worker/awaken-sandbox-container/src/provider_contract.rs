@@ -382,6 +382,8 @@ pub struct ContainerEnvironmentAdoption<'a> {
     pub spec: &'a pc::SandboxSpec,
     pub handle: &'a pc::SandboxHandle,
     pub retained_attempt: Option<&'a ContainerCreateAttempt>,
+    /// Observation semantics only; never authorizes adoption or deletion.
+    pub observation_purpose: ContainerObservationPurpose,
 }
 
 impl<'a> ContainerEnvironmentAdoption<'a> {
@@ -391,6 +393,7 @@ impl<'a> ContainerEnvironmentAdoption<'a> {
             spec,
             handle,
             retained_attempt: None,
+            observation_purpose: ContainerObservationPurpose::Recovery,
         }
     }
 }

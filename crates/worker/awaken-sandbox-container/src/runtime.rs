@@ -1426,6 +1426,16 @@ pub trait ContainerRuntime: Send + Sync {
         )]))
     }
 
+    /// Recover only configuration facts unambiguously encoded by a historical
+    /// physical handle. This is a candidate for exact fingerprint comparison,
+    /// never a stop receipt or deletion grant. Unsupported histories stay closed.
+    fn historical_terminal_configuration(
+        &self,
+        _handle: Option<&pc::ContainerContinuationHandle>,
+    ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
+        Ok(None)
+    }
+
     fn enforces_network_none(&self) -> bool {
         false
     }

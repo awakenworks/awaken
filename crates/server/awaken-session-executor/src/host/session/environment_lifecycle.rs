@@ -960,7 +960,13 @@ impl SharedHost {
         let observation = match effect.provider_fence.as_ref() {
             Some(effect_fence) => {
                 provider
-                    .observe_effective_for_effect(&spec, &handle, retained, effect_fence)
+                    .observe_effective_for_effect(
+                        &spec,
+                        &handle,
+                        retained,
+                        effect_fence,
+                        awaken_sandbox_container::ContainerObservationPurpose::Recovery,
+                    )
                     .await
             }
             None => provider.observe_effective(&spec, &handle, retained).await,
