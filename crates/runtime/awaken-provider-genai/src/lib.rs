@@ -7,9 +7,7 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::content::{
-    ContentBlock, DocumentSource, ImageSource, extract_text,
-};
+use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageSource};
 use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, DEFAULT_MODEL_RESPONSE_TIMEOUT, Error, LlmExecutor,
@@ -831,9 +829,9 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Vec
                 .join("\n")
         ))]),
         (ProviderPartKind::Text, ContentBlock::ToolReference { tool_name }) => {
-            Ok(vec![ContentPart::Text(format!(
-                "Deferred tool `{tool_name}` is now available."
-            ))])
+            Ok(vec![ContentPart::Text(
+                transcript_projection::tool_reference_text(tool_name),
+            )])
         }
         (ProviderPartKind::Binary, ContentBlock::Image { source }) => {
             Ok(vec![ContentPart::Binary(to_genai_binary(source)?)])
@@ -904,7 +902,7 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Vec
             },
         ) => Ok(vec![ContentPart::ToolResponse(ToolResponse::new(
             tool_use_id.clone(),
-            extract_text(content),
+            transcript_projection::tool_result_text(content),
         ))]),
         (
             ProviderPartKind::Reasoning | ProviderPartKind::SignedThinking,

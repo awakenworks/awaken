@@ -234,3 +234,72 @@ async fn typed_tool_schema_reaches_every_managed_compatibility_wire() {
         "R3/E2 uses Gemini's JSON-Schema-native field"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovered_tool_reference_survives_nested_tool_result_on_provider_wire() {
+    // Causes: a committed search result contains one ToolReference, optionally
+    // alongside text; OpenAI needs text while Anthropic accepts typed references.
+    // Effects: the returned discovery is nonempty, ordered and correlated to its
+    // call. No neutral transcript mutation.
+    // R1 reference-only -> discovery text/typed ref; R2 mixed -> preserve order;
+    // Captures actual HTTP, not just neutral values.
+    for adapter in [AdapterKind::OpenAI, AdapterKind::Anthropic] {
+        for mixed in [false, true] {
+            let (base_url, payload) = capture_one_request().await;
+            let executor =
+                GenaiExecutor::from_materialized_endpoint(adapter, base_url, "fixture-secret")
+                    .unwrap()
+                    .with_timeout(Duration::from_secs(5));
+            let mut req = request("deepseek-v4-pro", generated_read_descriptor());
+            req.messages.push(ChatMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::tool_use(
+                    "search-1",
+                    "tool_search",
+                    serde_json::json!({"query":"read"}),
+                )],
+            });
+            let mut content = Vec::new();
+            if mixed {
+                content.push(ContentBlock::text("Found a match:"));
+            }
+            content.push(ContentBlock::tool_reference("read"));
+            req.messages.push(ChatMessage {
+                role: Role::Tool,
+                content: vec![ContentBlock::tool_result("search-1", content)],
+            });
+            let _ = executor.infer(req).await;
+            let body = tokio::time::timeout(Duration::from_secs(5), payload)
+                .await
+                .unwrap()
+                .unwrap();
+            if adapter == AdapterKind::OpenAI {
+                let result = &body["messages"][2];
+                assert_eq!(result["tool_call_id"], "search-1");
+                assert!(
+                    result["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Deferred tool `read` is now available."),
+                    "R1/R2 discovery vanished: {result}"
+                );
+                if mixed {
+                    assert!(
+                        result["content"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("Found a match:")
+                    );
+                }
+            } else {
+                let result = &body["messages"][2]["content"][0];
+                assert_eq!(result["tool_use_id"], "search-1");
+                assert_eq!(
+                    result["content"][usize::from(mixed)]["type"],
+                    "tool_reference"
+                );
+                assert_eq!(result["content"][usize::from(mixed)]["tool_name"], "read");
+            }
+        }
+    }
+}
