@@ -202,10 +202,11 @@ exactly one Provider request across the crash. This proves the evidence-backed
 terminal-recovery case, not safe replay of opaque in-flight model/tool effects
 or arbitrary historical Runs lacking termination evidence.
 
-On 2026-09-13 (Asia/Singapore), commit `d09552fcf` passed all eleven stages in
-`awaken-adr71-d095-browser-0913`, including the non-skipped real Kubernetes test.
+On 2026-09-13 (Asia/Singapore), commit `5a0f12525` passed all eleven stages in
+`awaken-adr71-5a0f-0913`, including the non-skipped real Kubernetes test and the
+Session Awaiting/queued-input recovery changes.
 The pressure stage completed 48/48 requests with zero errors and approximately
-2.62 seconds P95; these are fixture observations, not production or DeepSeek
+3.91 seconds P95; these are fixture observations, not production or DeepSeek
 latency guarantees. The script exited successfully and removed its dedicated
 cluster and staged binaries. This run selected the harness's existing
 `AWAKEN_K3D_BUILD_NETWORK=host` and the Sandbox builder's
