@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod message_index;
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CanonicalEventOrder {
     pub(super) source_commit_cursor: u64,
@@ -75,15 +77,43 @@ pub(super) fn same_thread_projection_prefix(
     left: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     right: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
 ) -> bool {
-    let mut left = left.cloned();
-    let mut right = right.cloned();
-    if let Some(snapshot) = &mut left {
-        snapshot.store_cursor = 0;
-    }
-    if let Some(snapshot) = &mut right {
-        snapshot.store_cursor = 0;
-    }
-    left == right
+    let (left, right) = match (left, right) {
+        (None, None) => return true,
+        (Some(left), Some(right)) => (left, right),
+        _ => return false,
+    };
+    // Exhaustive destructuring makes a new recovery field require an explicit
+    // comparison decision. Only the backend-wide diagnostic cursor is ignored;
+    // equal source versions alone never establish equal retained facts.
+    let awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+        thread_id,
+        claimed_run_id,
+        runs,
+        latest_run_id,
+        messages,
+        message_commit_cursors,
+        commit_timestamps,
+        state,
+        state_commit_cursors,
+        events,
+        resume_tickets,
+        thread_version,
+        store_cursor: _,
+        next_commit_ordinal,
+    } = left;
+    thread_id == &right.thread_id
+        && claimed_run_id == &right.claimed_run_id
+        && runs == &right.runs
+        && latest_run_id == &right.latest_run_id
+        && messages == &right.messages
+        && message_commit_cursors == &right.message_commit_cursors
+        && commit_timestamps == &right.commit_timestamps
+        && state == &right.state
+        && state_commit_cursors == &right.state_commit_cursors
+        && events == &right.events
+        && resume_tickets == &right.resume_tickets
+        && thread_version == &right.thread_version
+        && next_commit_ordinal == &right.next_commit_ordinal
 }
 
 pub(super) fn index_lifecycle_orders(
@@ -682,120 +712,19 @@ impl ManagedState {
             }
         }
 
-        let mut index_messages = |thread_id: &str,
-                                  snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
-            if snapshot.message_commit_cursors.len() != snapshot.messages.len() {
-                return;
+        {
+            let index = message_index::MessageEventIndex::new(&record.events);
+            if let Some(snapshot) = root_snapshot {
+                index.index_snapshot(
+                    &record.session.id,
+                    &record.session.id,
+                    snapshot,
+                    &mut orders,
+                );
             }
-            let run_ids = snapshot.runs.iter().map(|run| run.id.clone()).collect::<Vec<_>>();
-            let response_coordinates = Self::assistant_response_coordinates(&snapshot.messages, &run_ids);
-            let public_owner_thread_id = public_thread_id(&record.session.id, thread_id);
-            let event_count = record.events.len();
-            let event_roles = record
-                .events
-                .iter()
-                .map(|event| (event.kind.type_str(), &event.kind))
-                .collect::<std::collections::HashMap<_, _>>();
-            for (message_index, (message, source_commit_cursor)) in snapshot
-                .messages
-                .iter()
-                .zip(snapshot.message_commit_cursors.iter().copied())
-                .enumerate()
-            {
-                // Generic ids are opaque hashes, but their source ordinal is
-                // bounded by this one Message's encoder output, not by the
-                // Session-wide event count. Build the small reverse index once
-                // and use O(1) lookups below. The former event-by-event
-                // `0..=event_count` search was cubic across a growing transcript
-                // and held the shared Session projection lock long enough to
-                // starve unrelated Worker heartbeats.
-                let ordinal_bound = message_projection_ordinal_bound(message);
-                let mut message_source_ordinals =
-                    std::collections::HashMap::with_capacity(
-                        ordinal_bound.saturating_mul(event_roles.len()),
-                    );
-                for role in event_roles.keys() {
-                    for ordinal in 0..ordinal_bound {
-                        message_source_ordinals.insert(
-                            managed_multiagent_event_id(
-                                &record.session.id,
-                                thread_id,
-                                role,
-                                ManagedMultiagentEventProvenance::Message {
-                                    message_id: &message.id.0,
-                                    ordinal,
-                                },
-                            ),
-                            (ordinal, None),
-                        );
-                    }
-                }
-                // The identity depends on Message coordinates and the event
-                // type, not on the individual historical Event. Extend the one
-                // message-source index once per distinct type, preserving the
-                // generic-before-assistant precedence on a matching id and the
-                // Assistant id's exact type qualification. Rehashing
-                // inside the Event scan made this work grow with the full history.
-                if let Some((run_id, step, response)) = response_coordinates.get(&message.id.0) {
-                    for (role, kind) in &event_roles {
-                        let ordinal = match kind {
-                            OutboundKind::AgentMessage { .. } => usize::from(
-                                message.content.iter().any(|block| matches!(block, ContentBlock::Thinking { .. })),
-                            ),
-                            _ => 0,
-                        };
-                        message_source_ordinals.entry(managed_assistant_event_id(
-                            &record.session.id, thread_id, run_id, *step, *response, role,
-)).or_insert((ordinal, Some(*role)));
-                    }
-                }
-                for event in &record.events {
-                    let tool_source_ordinal = decode_managed_tool_event_id(&event.id)
-                        .filter(|identity| {
-                            identity.thread_id == public_owner_thread_id.as_str()
-                                && identity.source_id == message.id.0
-                        })
-                        .and_then(|identity| {
-                            message.content.iter().position(|block| {
-                                matches!(block, ContentBlock::ToolUse { id, .. } if id == identity.call_id)
-                                    || matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == identity.call_id)
-                            })
-                        });
-                    let message_source_ordinal =
-                        message_source_ordinals.get(&event.id)
-                            .filter(|(_, role)| role.is_none_or(|role| role == event.kind.type_str()))
-                            .map(|(ordinal, _)| *ordinal);
-                    if tool_source_ordinal.is_some()
-                        || message_source_ordinal.is_some()
-                    {
-                        retain_earliest_order(
-                            &mut orders,
-                            event.id.clone(),
-                            CanonicalEventOrder {
-                        processed_at_unix_ms: snapshot
-                            .commit_timestamps
-                            .get(&source_commit_cursor)
-                            .copied(),
-                                source_commit_cursor,
-                                phase: 50,
-                                ordinal: message_index
-                                    .saturating_mul(event_count.saturating_add(1))
-                                    .saturating_add(
-                                        tool_source_ordinal
-                                            .or(message_source_ordinal)
-                                            .unwrap_or_default(),
-                                    ),
-                            },
-                        );
-                    }
-                }
+            for (thread_id, snapshot) in child_snapshots {
+                index.index_snapshot(&record.session.id, thread_id, snapshot, &mut orders);
             }
-        };
-        if let Some(snapshot) = root_snapshot {
-            index_messages(&record.session.id, snapshot);
-        }
-        for (thread_id, snapshot) in child_snapshots {
-            index_messages(thread_id, snapshot);
         }
 
         let mut index_snapshot_facts = |thread_id: &str,
@@ -1606,6 +1535,101 @@ fn historical_pending_order_decision_table() {
                 processed_at_unix_ms: Some(0),
             };
             assert!(pending < terminal, "{rule}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod prefix_comparison_tests {
+    use super::*;
+    use awaken_agent_contract::agent::{
+        awaiting::{AwaitTarget, PauseReason, ResumeTicket},
+        message::{Id as MessageId, Message, Role},
+        run::{Id as RunId, Record, RunState},
+        state::{Command, MergePolicy, Scope},
+        thread::Id as ThreadId,
+    };
+    use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
+
+    #[test]
+    fn borrowed_prefix_comparison_covers_every_serialized_recovery_field() {
+        // C1 either prefix absent; C2 any retained field differs; C3 only the
+        // backend-wide store cursor advances. R1 both absent => same; R2 one
+        // absent => changed; R3 each C2 dimension => changed, even at equal
+        // versions; R4 C3 => same. Check the field inventory against Serialize
+        // so adding a field cannot silently escape this decision table.
+        let thread = ThreadId("thread".into());
+        let run = RunId("run".into());
+        let original = RunRecoverySnapshot {
+            thread_id: thread.clone(),
+            claimed_run_id: run.clone(),
+            runs: vec![],
+            latest_run_id: None,
+            messages: vec![],
+            message_commit_cursors: vec![],
+            commit_timestamps: [(1, 1)].into(),
+            state: vec![],
+            state_commit_cursors: vec![],
+            events: vec![],
+            resume_tickets: vec![],
+            thread_version: 1,
+            store_cursor: 1,
+            next_commit_ordinal: 0,
+        };
+        let fields = serde_json::json!({
+            "thread_id":"other", "claimed_run_id":"other",
+            "runs":[Record { id: run.clone(), thread_id: thread.clone(), state: RunState::Running }],
+            "latest_run_id":"run",
+            "messages":[Message::text(MessageId("message".into()), Role::User, "value")],
+            "message_commit_cursors":[1], "commit_timestamps":{"1":2},
+            "state":[Command::set(Scope::Run, MergePolicy::Disjoint, "key", serde_json::json!(1))],
+            "state_commit_cursors":[1],
+            "events":[awaken_agent_contract::audit::record::Record {
+                sequence: 1, run_id: run.clone(),
+                kind: awaken_agent_contract::audit::kind::Kind::PermissionDecided,
+                payload: serde_json::json!({}),
+            }],
+            "resume_tickets":[RunResumeTicket { run_id: run.clone(), ticket: ResumeTicket::new(
+                "correlation", run.clone(), thread.clone(), "snapshot", "catalog",
+                AwaitTarget::Pause(PauseReason::Manual),
+            )}],
+            "thread_version":2, "store_cursor":2, "next_commit_ordinal":1,
+        });
+        let baseline = serde_json::to_value(&original).unwrap();
+        assert_eq!(
+            baseline
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<std::collections::BTreeSet<_>>(),
+            fields
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert!(same_thread_projection_prefix(None, None));
+        assert!(!same_thread_projection_prefix(Some(&original), None));
+        assert!(!same_thread_projection_prefix(None, Some(&original)));
+        assert!(same_thread_projection_prefix(
+            Some(&original),
+            Some(&original)
+        ));
+        for (field, value) in fields.as_object().unwrap() {
+            let mut changed = baseline.clone();
+            changed[field] = value.clone();
+            let changed: RunRecoverySnapshot = serde_json::from_value(changed).unwrap();
+            let expected = field == "store_cursor";
+            assert_eq!(
+                same_thread_projection_prefix(Some(&original), Some(&changed)),
+                expected,
+                "{field}"
+            );
+            assert_eq!(
+                same_thread_projection_prefix(Some(&changed), Some(&original)),
+                expected,
+                "{field} reverse"
+            );
         }
     }
 }
