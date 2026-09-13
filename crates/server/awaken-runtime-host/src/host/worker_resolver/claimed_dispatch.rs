@@ -7,11 +7,11 @@ use super::*;
 /// ownership. The presence of a remote Control client is a transport detail:
 /// all-in-one execution installs the same complete projection locally.
 const fn canonical_session_projection_is_installed(
-    has_session_affinity: bool,
+    has_session_projection_authority: bool,
     session_dispatch: bool,
     has_frozen_baseline: bool,
 ) -> bool {
-    has_session_affinity && session_dispatch && has_frozen_baseline
+    has_session_projection_authority && session_dispatch && has_frozen_baseline
 }
 
 pub(super) async fn adopt_bound_sandbox(
@@ -313,7 +313,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             .session_slots
             .read(&thread_id.0, |slot| {
                 canonical_session_projection_is_installed(
-                    claimed.request.session_thread_id.is_some(),
+                    super::claimed_session::has_session_projection_authority(claimed),
                     slot.session_dispatch,
                     slot.baseline.is_some(),
                 )
@@ -544,14 +544,14 @@ mod canonical_projection_tests {
 
     #[test]
     fn claimed_dispatch_uses_only_a_complete_session_projection() {
-        // Cause/effect graph: C1 the dispatch is explicitly Session-affine;
+        // Cause/effect graph: C1 the claim has explicit Session affinity or a Coordinator Work receipt;
         // C2 the canonical Dispatch projection was installed; C3 its frozen
         // baseline is present. E1 the retained immutable publication selects
         // the Session, while E2 the compatibility envelope remains the sole
         // input. The three facts are conjunctive so a partial or ordinary slot
         // can never acquire canonical ownership by transport inference.
         //
-        // | Rule | C1 affinity | C2 dispatch | C3 baseline | Effect |
+        // | Rule | C1 authority | C2 dispatch | C3 baseline | Effect |
         // | P1 | yes | yes | yes | E1 canonical projection |
         // | P2 | no  | yes | yes | E2 ordinary dispatch |
         // | P3 | yes | no  | yes | E2 partial projection |
