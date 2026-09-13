@@ -563,3 +563,96 @@ async fn recovery_time_preserves_sqlite_milliseconds_and_timezone() {
         }
     }
 }
+
+#[tokio::test]
+async fn recovery_scope_uses_committed_run_ownership_when_cache_is_damaged() {
+    // C1 committed facts/tickets belong to two distinct Threads; C2 the derived
+    // Run cache has wrong ownership or is absent; C3 a queried Thread has no
+    // commits. R1 C1 => exact per-Thread snapshots; R2 C1+C2 => the same snapshots
+    // from log-owned Run membership, never another Thread's events; R3 C3 =>
+    // empty events/tickets. Cache damage is injected AFTER opening the store:
+    // this proves recovery reads, not merely restart's compatibility hydration.
+    // This read-only test makes no claim about accepting writes with a damaged cache.
+    let path = std::env::temp_dir().join(format!(
+        "awaken-sqlite-log-scope-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let store = SqliteCommitCoordinator::open(path.to_str().unwrap()).unwrap();
+    let mut snapshots = Vec::new();
+    for i in 0..2 {
+        let thread = ThreadId(format!("scope-thread-{i}"));
+        let run = RunId(format!("scope-run-{i}"));
+        let ticket = ResumeTicket::new(
+            format!("scope-correlation-{i}"),
+            run.clone(),
+            thread.clone(),
+            "snapshot",
+            "catalog",
+            AwaitTarget::Pause(PauseReason::Manual),
+        );
+        store
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                RunDisposition::awaiting(ticket),
+                true,
+                vec![Message::text(
+                    MsgId(format!("scope-message-{i}")),
+                    Role::Assistant,
+                    format!("owner-{i}"),
+                )],
+                vec![],
+                vec![],
+            ))
+            .await
+            .unwrap();
+    }
+    for i in 0..2 {
+        snapshots.push(
+            store
+                .recovery_snapshot(
+                    &ThreadId(format!("scope-thread-{i}")),
+                    &RunId(format!("scope-run-{i}")),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for mutation in [
+        "UPDATE runtime_run_record SET thread_id=CASE WHEN thread_id='scope-thread-0' THEN 'scope-thread-1' ELSE 'scope-thread-0' END",
+        "DELETE FROM runtime_run_record",
+    ] {
+        conn.execute(mutation, []).unwrap();
+        for (i, expected) in snapshots.iter().enumerate() {
+            let actual = store
+                .recovery_snapshot(
+                    &ThreadId(format!("scope-thread-{i}")),
+                    &RunId(format!("scope-run-{i}")),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                &actual, expected,
+                "R2 damaged cache cannot change committed scope"
+            );
+        }
+        let empty = store
+            .recovery_snapshot(
+                &ThreadId("absent-thread".into()),
+                &RunId("absent-run".into()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            empty.runs.is_empty() && empty.events.is_empty() && empty.resume_tickets.is_empty(),
+            "R3"
+        );
+    }
+    drop(conn);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}

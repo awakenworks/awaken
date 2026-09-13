@@ -1356,3 +1356,89 @@ async fn recovery_time_truncates_postgres_submilliseconds_and_normalizes_timezon
         }
     }
 }
+
+#[tokio::test]
+async fn recovery_scope_uses_committed_run_ownership_when_cache_is_damaged() {
+    // C1 committed facts/tickets belong to two distinct Threads; C2 the derived
+    // Run cache has wrong ownership or is absent; C3 a queried Thread has no
+    // commits. R1 C1 => exact per-Thread snapshots; R2 C1+C2 => the same snapshots
+    // from log-owned Run membership, never another Thread's events; R3 C3 =>
+    // empty events/tickets. Cache damage is injected AFTER opening the store:
+    // this proves recovery reads, not merely restart's compatibility hydration.
+    // This read-only test makes no claim about accepting writes with a damaged cache.
+    let Some(pool) = schema_pool("t_recovery_log_owned_scope").await else {
+        return;
+    };
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let mut snapshots = Vec::new();
+    for i in 0..2 {
+        let thread = ThreadId(format!("scope-thread-{i}"));
+        let run = RunId(format!("scope-run-{i}"));
+        let ticket = ResumeTicket::new(
+            format!("scope-correlation-{i}"),
+            run.clone(),
+            thread.clone(),
+            "snapshot",
+            "catalog",
+            AwaitTarget::Pause(PauseReason::Manual),
+        );
+        store
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                awaken_agent_contract::thread::commit::RunDisposition::awaiting(ticket),
+                true,
+                vec![Message::text(
+                    MessageId(format!("scope-message-{i}")),
+                    Role::Assistant,
+                    format!("owner-{i}"),
+                )],
+                vec![],
+                vec![],
+            ))
+            .await
+            .unwrap();
+    }
+    for i in 0..2 {
+        snapshots.push(
+            store
+                .recovery_snapshot(
+                    &ThreadId(format!("scope-thread-{i}")),
+                    &RunId(format!("scope-run-{i}")),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    for mutation in [
+        "UPDATE runtime_run_record SET thread_id=CASE WHEN thread_id='scope-thread-0' THEN 'scope-thread-1' ELSE 'scope-thread-0' END",
+        "DELETE FROM runtime_run_record",
+    ] {
+        sqlx::query(mutation).execute(&pool).await.unwrap();
+        for (i, expected) in snapshots.iter().enumerate() {
+            let actual = store
+                .recovery_snapshot(
+                    &ThreadId(format!("scope-thread-{i}")),
+                    &RunId(format!("scope-run-{i}")),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                &actual, expected,
+                "R2 damaged cache cannot change committed scope"
+            );
+        }
+        let empty = store
+            .recovery_snapshot(
+                &ThreadId("absent-thread".into()),
+                &RunId("absent-run".into()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            empty.runs.is_empty() && empty.events.is_empty() && empty.resume_tickets.is_empty(),
+            "R3"
+        );
+    }
+}

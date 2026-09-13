@@ -103,7 +103,11 @@ fn bundle_applies_on_real_sqlite() {
         .expect("runner")
         .run_bundle(&conn, &bundle)
         .expect("apply bundle on sqlite");
-    assert_eq!(applied.len(), 11, "all eleven migrations applied");
+    assert_eq!(
+        applied.len(),
+        bundle.migrations().len(),
+        "all migrations applied"
+    );
 
     for table in TABLES {
         let count: i64 = conn
@@ -673,7 +677,11 @@ async fn bundle_applies_on_real_postgres() {
             .run_bundle(&bundle)
             .await
             .expect("apply bundle on postgres");
-    assert_eq!(applied.len(), 11, "all eleven migrations applied");
+    assert_eq!(
+        applied.len(),
+        bundle.migrations().len(),
+        "all migrations applied"
+    );
 
     // Column types rendered to Postgres forms (information_schema.columns).
     let legacy_phase_type: String = sqlx::query(
@@ -759,7 +767,12 @@ fn sqlite_v11_indexes_run_predecessors_without_rewriting_history() {
     // time assertion: host load is not a deterministic query-plan oracle.
     let connection = Connection::open_in_memory().unwrap();
     let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
-    let full = commit_bundle().unwrap();
+    let current = commit_bundle().unwrap();
+    let full = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        current.migrations()[..11].to_vec(),
+    )
+    .unwrap();
     let previous = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
         full.migrations()[..10].to_vec(),
@@ -851,7 +864,11 @@ async fn postgres_v11_indexes_run_predecessors_without_rewriting_history()
     let (admin, pool, schema) = isolated_postgres_pool(&url, "event_predecessor_v11").await?;
     let runner =
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)?;
-    let full = commit_bundle()?;
+    let current = commit_bundle()?;
+    let full = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        current.migrations()[..11].to_vec(),
+    )?;
     let previous = awaken_scoped_migration::MigrationBundle::new(
         COMMIT_BUNDLE_ID,
         full.migrations()[..10].to_vec(),
@@ -898,6 +915,298 @@ async fn postgres_v11_indexes_run_predecessors_without_rewriting_history()
         "R2 {plan:?}"
     );
     assert!(runner.run_bundle(&full).await?.is_empty(), "R3");
+    drop(runner);
+    drop_postgres_pool(admin, pool, &schema).await?;
+    Ok(())
+}
+
+const RECOVERY_INDEX_COLUMNS: [(&str, [&str; 2]); 4] = [
+    ("commit_thread_sequence", ["thread_id", "sequence"]),
+    ("commit_run_sequence", ["run_id", "sequence"]),
+    ("message_thread_id", ["thread_id", "id"]),
+    ("state_command_thread_id", ["thread_id", "id"]),
+];
+const RECOVERY_RANGE_READS: [(&str, &str); 5] = [
+    (
+        "commit_thread_sequence",
+        "SELECT sequence, CAST(phase AS TEXT) FROM runtime_commit WHERE thread_id='thread-7' ORDER BY sequence",
+    ),
+    (
+        "commit_run_sequence",
+        "SELECT COUNT(*), '' FROM runtime_commit WHERE run_id='run-7'",
+    ),
+    (
+        "message_thread_id",
+        "SELECT id, CAST(data AS TEXT) FROM runtime_message WHERE thread_id='thread-7' ORDER BY id",
+    ),
+    (
+        "message_thread_id",
+        "SELECT id, CAST(data AS TEXT) FROM runtime_message WHERE thread_id='thread-7' AND id<208 ORDER BY id DESC LIMIT 2",
+    ),
+    (
+        "state_command_thread_id",
+        "SELECT id, CAST(data AS TEXT) FROM runtime_state_command WHERE thread_id='thread-7' ORDER BY id",
+    ),
+];
+const RECOVERY_STORED_ROWS: [&str; 3] = [
+    "SELECT sequence, thread_id, run_id, CAST(phase AS TEXT) || '|' || CAST(committed_at AS TEXT) FROM runtime_commit ORDER BY sequence",
+    "SELECT id, thread_id, CAST(commit_sequence AS TEXT), CAST(data AS TEXT) FROM runtime_message ORDER BY id",
+    "SELECT id, thread_id, CAST(commit_sequence AS TEXT), CAST(data AS TEXT) FROM runtime_state_command ORDER BY id",
+];
+
+#[test]
+fn sqlite_v12_indexes_recovery_ranges_atomically_without_changing_rows() {
+    // C1 populated v11 with interleaved Threads/Runs; C2 a conflicting name on
+    // the SECOND new index; C3 migration retry; C4 repeated startup; C5 another
+    // prefix. R1=C1+C2 => no v12 ledger row or partially installed first index,
+    // and all facts survive. R2=C1+C3 => exact old query results and stored rows,
+    // all four equality/range index definitions. R3=C4 => no migration/duplicate.
+    // R4=C5 => isolated index names. Query-plan checks use real normal planner
+    // decisions; do not disable sequential scans or assert noisy wall time.
+    let conn = Connection::open_in_memory().unwrap();
+    let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+    let full = commit_bundle().unwrap();
+    let previous = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..11].to_vec(),
+    )
+    .unwrap();
+    runner.run_bundle(&conn, &previous).unwrap();
+    // Physical access-path data; typed Runtime semantics remain tested by the
+    // existing store conformance suites against the same migrated schema.
+    for n in 1..=10000_i64 {
+        conn.execute(
+            "INSERT INTO runtime_commit(sequence,thread_id,run_id,phase) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![
+                n,
+                format!("thread-{}", n % 100),
+                format!("run-{}", n % 1000),
+                "\"Running\""
+            ],
+        )
+        .unwrap();
+        for table in ["message", "state_command"] {
+            conn.execute(
+                &format!(
+                    "INSERT INTO runtime_{table}(commit_sequence,thread_id,data) VALUES(?1,?2,?3)"
+                ),
+                rusqlite::params![
+                    n,
+                    format!("thread-{}", n % 100),
+                    format!("{{\"sequence\":{n}}}")
+                ],
+            )
+            .unwrap();
+        }
+    }
+    let stored = || {
+        RECOVERY_STORED_ROWS
+            .iter()
+            .map(|query| {
+                conn.prepare(query)
+                    .unwrap()
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let read = |query: &str| {
+        conn.prepare(query)
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let before = stored();
+    let results = RECOVERY_RANGE_READS
+        .iter()
+        .map(|(_, q)| read(q))
+        .collect::<Vec<_>>();
+    conn.execute_batch("CREATE INDEX runtime_commit_run_sequence ON runtime_commit(sequence)")
+        .unwrap();
+    assert!(
+        runner.run_bundle(&conn, &full).is_err(),
+        "R1 collision must fail"
+    );
+    assert_eq!(stored(), before);
+    let partial: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='runtime_commit_thread_sequence'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(partial, 0, "R1 first index rolled back");
+    let ledger: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_schema_migrations WHERE version=12 AND bundle_id=?1",
+            [COMMIT_BUNDLE_ID],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ledger, 0, "R1 no false version receipt");
+    conn.execute_batch("DROP INDEX runtime_commit_run_sequence")
+        .unwrap();
+    assert_eq!(
+        runner
+            .run_bundle(&conn, &full)
+            .unwrap()
+            .iter()
+            .map(|m| m.version)
+            .collect::<Vec<_>>(),
+        [12]
+    );
+    assert_eq!(stored(), before, "R2 unchanged facts/times/coordinates");
+    for ((name, query), expected) in RECOVERY_RANGE_READS.iter().zip(results) {
+        assert_eq!(read(query), expected, "R2 {name}");
+        let plan = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        assert!(plan.contains(&format!("runtime_{name}")), "R2 {plan}");
+    }
+    assert!(runner.run_bundle(&conn, &full).unwrap().is_empty(), "R3");
+    SqliteMigrationRunner::with_prefix("peer")
+        .unwrap()
+        .run_bundle(&conn, &full)
+        .unwrap();
+    for prefix in ["runtime", "peer"] {
+        for (name, expected) in RECOVERY_INDEX_COLUMNS {
+            let columns = conn
+                .prepare(&format!("PRAGMA index_info({prefix}_{name})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(2))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(columns, expected, "R2/R4 {prefix}_{name}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn postgres_v12_indexes_recovery_ranges_atomically_without_changing_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    // PostgreSQL executes the same C1-C5/R1-R4 table as SQLite above. All rows
+    // are retained, a second-DDL failure rolls back the first index, and real
+    // EXPLAIN must select each access path with normal planner settings.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return Ok(());
+    };
+    let (admin, pool, schema) = isolated_postgres_pool(&url, "recovery_ranges_v12").await?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)?;
+    let full = commit_bundle()?;
+    let previous = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..11].to_vec(),
+    )?;
+    runner.run_bundle(&previous).await?;
+    sqlx::query("INSERT INTO runtime_commit(sequence,thread_id,run_id,phase) SELECT n, 'thread-'||(n%100), 'run-'||(n%1000), '\"Running\"'::jsonb FROM generate_series(1,10000) n").execute(&pool).await?;
+    for table in ["message", "state_command"] {
+        sqlx::query(&format!("INSERT INTO runtime_{table}(commit_sequence,thread_id,data) SELECT sequence,thread_id,jsonb_build_object('sequence',sequence) FROM runtime_commit ORDER BY sequence")).execute(&pool).await?;
+    }
+    let mut before = Vec::new();
+    for query in RECOVERY_STORED_ROWS {
+        before.push(
+            sqlx::query_as::<_, (i64, String, String, String)>(query)
+                .fetch_all(&pool)
+                .await?,
+        );
+    }
+    let mut results = Vec::new();
+    for (_, query) in RECOVERY_RANGE_READS {
+        results.push(
+            sqlx::query_as::<_, (i64, String)>(query)
+                .fetch_all(&pool)
+                .await?,
+        );
+    }
+    sqlx::query("CREATE INDEX runtime_commit_run_sequence ON runtime_commit(sequence)")
+        .execute(&pool)
+        .await?;
+    assert!(
+        runner.run_bundle(&full).await.is_err(),
+        "R1 collision must fail"
+    );
+    let partial:i64=sqlx::query_scalar("SELECT COUNT(*) FROM pg_indexes WHERE schemaname=current_schema() AND indexname='runtime_commit_thread_sequence'").fetch_one(&pool).await?;
+    assert_eq!(partial, 0, "R1 first index rolled back");
+    let ledger: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_schema_migrations WHERE version=12 AND bundle_id=$1",
+    )
+    .bind(COMMIT_BUNDLE_ID)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(ledger, 0, "R1 no false version receipt");
+    sqlx::query("DROP INDEX runtime_commit_run_sequence")
+        .execute(&pool)
+        .await?;
+    assert_eq!(
+        runner
+            .run_bundle(&full)
+            .await?
+            .iter()
+            .map(|m| m.version)
+            .collect::<Vec<_>>(),
+        [12]
+    );
+    for (query, expected) in RECOVERY_STORED_ROWS.into_iter().zip(before) {
+        assert_eq!(
+            sqlx::query_as::<_, (i64, String, String, String)>(query)
+                .fetch_all(&pool)
+                .await?,
+            expected,
+            "R1/R2 unchanged facts"
+        );
+    }
+    for table in ["commit", "message", "state_command"] {
+        sqlx::query(&format!("ANALYZE runtime_{table}"))
+            .execute(&pool)
+            .await?;
+    }
+    for ((name, query), expected) in RECOVERY_RANGE_READS.into_iter().zip(results) {
+        assert_eq!(
+            sqlx::query_as::<_, (i64, String)>(query)
+                .fetch_all(&pool)
+                .await?,
+            expected,
+            "R2 {name}"
+        );
+        let plan = sqlx::query_scalar::<_, String>(&format!("EXPLAIN {query}"))
+            .fetch_all(&pool)
+            .await?
+            .join("\n");
+        assert!(plan.contains(&format!("runtime_{name}")), "R2 {plan}");
+    }
+    assert!(runner.run_bundle(&full).await?.is_empty(), "R3");
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), "peer")?
+        .run_bundle(&full)
+        .await?;
+    for prefix in ["runtime", "peer"] {
+        for (name, columns) in RECOVERY_INDEX_COLUMNS {
+            let definition:String=sqlx::query_scalar("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname=$1").bind(format!("{prefix}_{name}")).fetch_one(&pool).await?;
+            assert!(
+                definition.contains(&format!("({}, {})", columns[0], columns[1])),
+                "R2/R4 {definition}"
+            );
+        }
+    }
     drop(runner);
     drop_postgres_pool(admin, pool, &schema).await?;
     Ok(())
