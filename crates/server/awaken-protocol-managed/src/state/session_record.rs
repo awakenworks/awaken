@@ -186,7 +186,7 @@ pub(super) struct SessionRecord {
     /// decision beside the transcript lets the projection report the recorded
     /// answer instead of inferring one from the shape of the result — an
     /// inference that read a refusal as a permission.
-    pub(super) permission_decisions: HashMap<String, crate::types::session::EvaluatedPermission>,
+    pub(super) permission_decisions: HashMap<String, crate::types::session::RecordedPermission>,
     /// The optional root Run owner and reason whose aggregate idle event is
     /// waiting for coordinated Thread settlement. The owner lets a later terminal
     /// of that same Run supersede an earlier Awaiting reason without allowing an

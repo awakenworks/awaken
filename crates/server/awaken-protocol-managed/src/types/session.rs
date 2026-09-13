@@ -15,6 +15,8 @@ mod content;
 pub(crate) use content::project_advisor_thread_message_content;
 mod agent_ref;
 pub use agent_ref::{AgentRef, AgentRefObject, ModelOverride};
+mod tool_evaluation;
+pub use tool_evaluation::{AutoEvaluatedPermission, RecordedPermission, ToolEvaluation};
 mod model_config;
 pub use model_config::{
     ModelConfig, ModelConfigParams, ModelEffort, ModelEffortInput, ModelEffortLevel,
@@ -593,7 +595,7 @@ pub enum InboundEvent {
         custom_tool_use_id: String,
         #[serde(default)]
         content: Option<Vec<ContentBlock>>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "super::presence::bool_or_null")]
         is_error: bool,
     },
     /// The generic client-provided result for an awaiting tool, keyed by the
@@ -607,7 +609,7 @@ pub enum InboundEvent {
         tool_use_id: String,
         #[serde(default)]
         content: Option<Vec<ContentBlock>>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "super::presence::bool_or_null")]
         is_error: bool,
     },
     #[serde(rename = "user.define_outcome")]
@@ -914,6 +916,8 @@ pub enum OutboundKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         evaluated_permission: Option<EvaluatedPermission>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        evaluation: Option<ToolEvaluation>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         session_thread_id: Option<String>,
     },
     #[serde(rename = "agent.tool_result")]
@@ -939,6 +943,8 @@ pub enum OutboundKind {
         input: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         evaluated_permission: Option<EvaluatedPermission>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        evaluation: Option<ToolEvaluation>,
         #[serde(skip_serializing_if = "Option::is_none")]
         session_thread_id: Option<String>,
     },

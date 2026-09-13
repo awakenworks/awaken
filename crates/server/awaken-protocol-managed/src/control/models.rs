@@ -31,7 +31,7 @@ const CREATED_AT: &str = "2026-01-01T00:00:00Z";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ModelListQuery {
+pub(crate) struct ModelListQuery {
     #[serde(default, deserialize_with = "deserialize_optional_query_value")]
     before_id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_query_value")]

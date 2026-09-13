@@ -5,7 +5,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { extractOperations } from './extract-operations.mjs';
-import { auditRequestTypesFromPackageRoot } from './extract-wire-contracts.mjs';
+import {
+  auditRequestTypesFromPackageRoot,
+  extractRequestContractsFromPackageRoot,
+} from './extract-wire-contracts.mjs';
+import {
+  officialRequestWitnesses,
+  serializedRequestWitnesses,
+} from './official-request-witnesses.mjs';
 import { managedTypeFingerprint, managedWireContract } from './extract-types.mjs';
 import { managedRuntimeFingerprint } from './extract-runtime.mjs';
 import { managedExportFingerprint } from './extract-exports.mjs';
@@ -27,12 +34,16 @@ const supportPath = path.join(
   repoRoot,
   'crates/server/awaken-protocol-managed/contracts/sdk-support.generated.json',
 );
+const requestWitnessesPath = path.join(
+  repoRoot,
+  'crates/server/awaken-protocol-managed/contracts/request-witnesses.generated.json',
+);
 
 function fingerprint(operations) {
   return crypto.createHash('sha256').update(JSON.stringify(stableJson(operations))).digest('hex');
 }
 
-function generated() {
+async function generated() {
   const extracted = anchors.anchors.map((anchor) => {
     const sdk = extractOperations(anchor.module, scope);
     auditRequestTypesFromPackageRoot(
@@ -72,6 +83,17 @@ function generated() {
     'E2E @anthropic-ai/sdk must be an exact executable mirror of the current oracle anchor',
   );
   const currentWireContract = managedWireContract(currentOracle.module);
+  const currentRoot = resolveSdkPackage(currentOracle.module).root;
+  const requestWitnesses = await officialRequestWitnesses({
+    packageRoot: currentRoot,
+    version: currentOracle.version,
+    operations: currentOracle.operations,
+    contracts: extractRequestContractsFromPackageRoot(
+      currentRoot,
+      scope,
+      currentOracle.operations.map(({ id }) => id),
+    ),
+  });
   const currentById = new Map(
     currentOracle.operations.map((operation) => [operation.id, operation]),
   );
@@ -130,6 +152,7 @@ function generated() {
         }),
       ),
     }),
+    requestWitnesses: stableJson(requestWitnesses),
     coverage: stableJson({
       schema_version: 2,
       operations: operationCoverage({
@@ -165,10 +188,11 @@ function check(target, value) {
 }
 
 const command = process.argv[2];
-const output = generated();
+const output = await generated();
 if (command === 'generate') {
   write(oraclePath, output.oracle);
   write(supportPath, output.support);
+  fs.writeFileSync(requestWitnessesPath, serializedRequestWitnesses(output.requestWitnesses));
   write(coveragePath, output.coverage);
   for (const [target, value] of Object.entries(output.fixtures)) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -179,6 +203,11 @@ if (command === 'generate') {
 } else if (command === 'check') {
   check(oraclePath, output.oracle);
   check(supportPath, output.support);
+  assert.equal(
+    fs.readFileSync(requestWitnessesPath, 'utf8'),
+    serializedRequestWitnesses(output.requestWitnesses),
+    `${requestWitnessesPath} is stale`,
+  );
   check(coveragePath, output.coverage);
   for (const [target, value] of Object.entries(output.fixtures)) {
     assert.equal(fs.readFileSync(target, 'utf8'), value, `${target} is stale`);
