@@ -61,6 +61,10 @@ grep -q 'name: awaken-sandbox-open-egress' "$RENDERED"
 grep -q 'type: ClusterIP' "$RENDERED"
 ! grep -Eq '^kind: (Ingress|Gateway)$|type: (NodePort|LoadBalancer)|hostPort:' "$RENDERED"
 grep -q 'role = "all-in-one"' "$RENDERED"
+# Capacity rule: the Classroom flagship campaign deliberately enters ten
+# independent Sessions. The local product Worker must admit that exact bound;
+# autoscaling and per-Sandbox resource limits remain separate authorities.
+grep -q 'worker_max_concurrent = 10' "$RENDERED"
 grep -q 'no_browser = true' "$RENDERED"
 grep -q 'identity_mode = "self-managed"' "$RENDERED"
 grep -q 'worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"' "$RENDERED"
