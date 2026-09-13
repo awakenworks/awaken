@@ -195,6 +195,10 @@ const userProfilesOnboardedAt = requestOwnsProperty(
   'external_user_onboarded_at',
 );
 const userProfilesOrderBy = requestOwnsProperty('beta.userProfiles.list', 'order_by');
+const userProfilesExternalDetails = requestOwnsProperty(
+  'beta.userProfiles.create',
+  'external_user_details',
+);
 const selectedOperationIDs = new Set(selectedOperations.map(({ id }) => id));
 const owners = [...new Set(behaviorManifest.map(({ owner }) => owner))].sort();
 const OWNER_TIMEOUT_MS = Number(process.env.AWAKEN_MANAGED_OWNER_TIMEOUT_MS ?? 180_000);
@@ -219,6 +223,7 @@ async function executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment
         AWAKEN_MANAGED_SDK_USER_PROFILES_RELATIONSHIP: userProfilesRelationship ? '1' : '0',
         AWAKEN_MANAGED_SDK_USER_PROFILES_ONBOARDED_AT: userProfilesOnboardedAt ? '1' : '0',
         AWAKEN_MANAGED_SDK_USER_PROFILES_ORDER_BY: userProfilesOrderBy ? '1' : '0',
+        AWAKEN_MANAGED_SDK_USER_PROFILES_EXTERNAL_DETAILS: userProfilesExternalDetails ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_FILES: selectedOperationIDs.has('files.upload') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_SKILLS: selectedOperationIDs.has('skills.create') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_DREAMS: selectedOperationIDs.has('beta.dreams.create') ? '1' : '0',

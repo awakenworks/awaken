@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use awaken_data_subject_application::{
     CreateUserProfileCommand, DataSubjectApplication, DataSubjectApplicationError,
-    EnrollmentTicket, UpdateUserProfileCommand, UserProfileFieldUpdate, UserProfileRecord,
+    EnrollmentTicket, ExternalAccountStatus, ExternalEntityType, ExternalUserDetails,
+    ExternalUserDetailsUpdate, UpdateUserProfileCommand, UserProfileFieldUpdate, UserProfileRecord,
     UserProfileRelationship, UserProfileTrustGrant, UserProfileTrustGrantStatus,
 };
 use axum::extract::{Path, State};
@@ -17,9 +18,10 @@ use serde::Deserialize;
 use crate::common::headers::{ManagedCapability, has_capability};
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::user_profile::{
-    AccessType, CurrentUserProfile, EnrollmentUrl, LegacyUserProfile, Relationship, TrustGrant,
-    TrustGrantStatus, UserProfile, UserProfileCore, UserProfileCreateParams,
-    UserProfileUpdateParams,
+    AccessType, AccountStatus, CurrentUserProfile, EnrollmentUrl, EntityType,
+    ExternalUserDetails as WireExternalUserDetails, ExternalUserDetailsParams, LegacyUserProfile,
+    Relationship, TrustGrant, TrustGrantStatus, UserProfile, UserProfileCore,
+    UserProfileCreateParams, UserProfileUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
@@ -82,73 +84,129 @@ fn bad_request(message: impl Into<String>) -> WireError {
 enum UserProfileProjection {
     Legacy,
     Current,
+    /// `user-profiles-2026-09-04`: the current vocabulary plus the
+    /// platform-stated `external_user_details`.
+    External,
 }
 
-fn user_profile_projection(legacy: bool, current: bool) -> Option<UserProfileProjection> {
-    match (legacy, current) {
-        (true, false) => Some(UserProfileProjection::Legacy),
-        (false, true) => Some(UserProfileProjection::Current),
-        (true, true) | (false, false) => None,
+fn user_profile_projection(
+    legacy: bool,
+    current: bool,
+    external: bool,
+) -> Option<UserProfileProjection> {
+    // The legacy vocabulary (03-24) is exclusive: it names a different access
+    // model. The current family is cumulative: an official client sends its
+    // default 08-18 selector beside the 09-04 opt-in on one header, and the
+    // newer selector decides the projection.
+    match (legacy, current, external) {
+        (true, false, false) => Some(UserProfileProjection::Legacy),
+        (false, true, false) => Some(UserProfileProjection::Current),
+        (false, _, true) => Some(UserProfileProjection::External),
+        _ => None,
     }
 }
 
 fn selected_projection(headers: &HeaderMap) -> Result<UserProfileProjection, WireError> {
     let legacy = has_capability(headers, ManagedCapability::UserProfilesLegacy);
     let current = has_capability(headers, ManagedCapability::UserProfilesCurrent);
-    match user_profile_projection(legacy, current) {
+    let external = has_capability(headers, ManagedCapability::UserProfilesExternal);
+    match user_profile_projection(legacy, current, external) {
         Some(projection) => Ok(projection),
-        None if legacy && current => Err(bad_request(
+        None if legacy && (current || external) => Err(bad_request(
             "legacy and current User Profiles beta capabilities cannot be combined",
         )),
         None => Err(bad_request("a User Profiles beta capability is required")),
     }
 }
 
+/// The fields a request may carry under each projection. `access_type` is
+/// current-or-newer vocabulary; `external_user_details` exists only under the
+/// external projection. Legacy carries neither.
 fn user_profile_field_set_is_valid(
     projection: UserProfileProjection,
     access_type_is_present: bool,
+    external_user_details_is_present: bool,
 ) -> bool {
-    projection == UserProfileProjection::Current || !access_type_is_present
+    match projection {
+        UserProfileProjection::Legacy => {
+            !access_type_is_present && !external_user_details_is_present
+        }
+        UserProfileProjection::Current => !external_user_details_is_present,
+        UserProfileProjection::External => true,
+    }
 }
 
 fn reject_current_only_field(
     projection: UserProfileProjection,
     access_type_is_present: bool,
+    external_user_details_is_present: bool,
 ) -> Result<(), WireError> {
-    if !user_profile_field_set_is_valid(projection, access_type_is_present) {
+    if user_profile_field_set_is_valid(
+        projection,
+        access_type_is_present,
+        external_user_details_is_present,
+    ) {
+        Ok(())
+    } else if external_user_details_is_present && projection != UserProfileProjection::External {
+        Err(bad_request(
+            "external_user_details requires the user-profiles-2026-09-04 beta capability",
+        ))
+    } else {
         Err(bad_request(
             "access_type requires the user-profiles-2026-08-18 beta capability",
         ))
-    } else {
-        Ok(())
     }
 }
 
 #[cfg(kani)]
 #[kani::proof]
 fn user_profile_capability_and_field_projection_is_total_exclusive_and_exact() {
+    // Exactly one selector chooses a projection; none or several choose
+    // nothing. The field set admitted by each projection is monotone in the
+    // selector's age: legacy admits neither newer field, current admits
+    // access_type, external admits both.
     let legacy: bool = kani::any();
     let current: bool = kani::any();
+    let external: bool = kani::any();
     let access_type_is_present: bool = kani::any();
-    let projection = user_profile_projection(legacy, current);
-
+    let external_user_details_is_present: bool = kani::any();
+    let projection = user_profile_projection(legacy, current, external);
+    // Legacy is exclusive; the current family (08-18, 09-04) is cumulative
+    // with the newest selector deciding; nothing selected chooses nothing.
+    assert_eq!(
+        projection.is_some(),
+        (legacy && !current && !external) || (!legacy && (current || external)),
+    );
     match projection {
-        None => assert_eq!(legacy, current),
+        None => {}
         Some(UserProfileProjection::Legacy) => {
-            assert!(legacy && !current);
+            assert!(legacy && !current && !external);
             assert_eq!(
                 user_profile_field_set_is_valid(
                     UserProfileProjection::Legacy,
                     access_type_is_present,
+                    external_user_details_is_present,
                 ),
-                !access_type_is_present,
+                !access_type_is_present && !external_user_details_is_present,
             );
         }
         Some(UserProfileProjection::Current) => {
-            assert!(!legacy && current);
+            assert!(current && !legacy && !external);
+            assert_eq!(
+                user_profile_field_set_is_valid(
+                    UserProfileProjection::Current,
+                    access_type_is_present,
+                    external_user_details_is_present,
+                ),
+                !external_user_details_is_present,
+            );
+        }
+        Some(UserProfileProjection::External) => {
+            assert!(external && !legacy);
             assert!(user_profile_field_set_is_valid(
-                UserProfileProjection::Current,
+                UserProfileProjection::External,
                 access_type_is_present,
+                external_user_details_is_present,
             ));
         }
     }
@@ -175,6 +233,85 @@ fn parse_external_user_onboarded_at(value: Option<&str>) -> Result<Option<i64>, 
                 })
         })
         .transpose()
+}
+
+fn external_user_details_to_application(
+    params: Option<ExternalUserDetailsParams>,
+) -> Result<Option<ExternalUserDetailsUpdate>, WireError> {
+    let Some(params) = params else {
+        return Ok(None);
+    };
+    for (field, value) in [
+        ("external_user_details.country", &params.country),
+        ("external_user_details.email_hash", &params.email_hash),
+        ("external_user_details.name_hash", &params.name_hash),
+        ("external_user_details.reference_id", &params.reference_id),
+    ] {
+        check_len(field, value.as_ref().and_then(|value| value.as_deref()))?;
+    }
+    if let Some(country) = params.country.as_ref().and_then(|value| value.as_deref())
+        && !(country.len() == 2 && country.bytes().all(|byte| byte.is_ascii_uppercase()))
+    {
+        return Err(bad_request(
+            "external_user_details.country must be an ISO 3166-1 alpha-2 code",
+        ));
+    }
+    let onboarded_at = params
+        .onboarded_at
+        .as_deref()
+        .map(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map(|timestamp| timestamp.timestamp_millis())
+                .map_err(|_| {
+                    bad_request("external_user_details.onboarded_at must be an RFC 3339 timestamp")
+                })
+        })
+        .transpose()?;
+    Ok(Some(ExternalUserDetailsUpdate {
+        account_status: field_update(params.account_status.map(|value| {
+            value.map(|status| match status {
+                AccountStatus::Active => ExternalAccountStatus::Active,
+                AccountStatus::Suspended => ExternalAccountStatus::Suspended,
+                AccountStatus::Blocked => ExternalAccountStatus::Blocked,
+            })
+        })),
+        country: field_update(params.country),
+        email_hash: field_update(params.email_hash),
+        entity_type: field_update(params.entity_type.map(|value| {
+            value.map(|kind| match kind {
+                EntityType::Individual => ExternalEntityType::Individual,
+                EntityType::Business => ExternalEntityType::Business,
+                EntityType::NonProfit => ExternalEntityType::NonProfit,
+                EntityType::Government => ExternalEntityType::Government,
+            })
+        })),
+        name_hash: field_update(params.name_hash),
+        onboarded_at,
+        reference_id: field_update(params.reference_id),
+    }))
+}
+
+fn external_user_details_to_wire(details: ExternalUserDetails) -> WireExternalUserDetails {
+    WireExternalUserDetails {
+        account_status: details.account_status.map(|status| match status {
+            ExternalAccountStatus::Active => AccountStatus::Active,
+            ExternalAccountStatus::Suspended => AccountStatus::Suspended,
+            ExternalAccountStatus::Blocked => AccountStatus::Blocked,
+        }),
+        country: details.country,
+        email_hash: details.email_hash,
+        entity_type: details.entity_type.map(|kind| match kind {
+            ExternalEntityType::Individual => EntityType::Individual,
+            ExternalEntityType::Business => EntityType::Business,
+            ExternalEntityType::NonProfit => EntityType::NonProfit,
+            ExternalEntityType::Government => EntityType::Government,
+        }),
+        name_hash: details.name_hash,
+        onboarded_at: details
+            .onboarded_at
+            .map(|value| awaken_session_contract::epoch_millis_to_rfc3339(value.max(0) as u64)),
+        reference_id: details.reference_id,
+    }
 }
 
 fn relationship_to_application(value: Relationship) -> UserProfileRelationship {
@@ -290,6 +427,19 @@ fn project(record: UserProfileRecord, projection: UserProfileProjection) -> User
             external_user_onboarded_at: record
                 .external_user_onboarded_at
                 .map(|value| awaken_session_contract::epoch_millis_to_rfc3339(value.max(0) as u64)),
+            external_user_details: None,
+        }),
+        UserProfileProjection::External => UserProfile::Current(CurrentUserProfile {
+            core,
+            access_type,
+            external_user_onboarded_at: record
+                .external_user_onboarded_at
+                .map(|value| awaken_session_contract::epoch_millis_to_rfc3339(value.max(0) as u64)),
+            // The platform's record is always presented under this selector,
+            // every field `null` until stated, so a reader sees one shape.
+            external_user_details: Some(external_user_details_to_wire(
+                record.external_user_details.unwrap_or_default(),
+            )),
         }),
     }
 }
@@ -300,11 +450,16 @@ async fn create_profile(
     ManagedJson(params): ManagedJson<UserProfileCreateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
     let projection = selected_projection(&headers)?;
-    reject_current_only_field(projection, params.access_type.is_some())?;
+    reject_current_only_field(
+        projection,
+        params.access_type.is_some(),
+        params.external_user_details.is_some(),
+    )?;
     check_len("external_id", params.external_id.as_deref())?;
     check_len("name", params.name.as_deref())?;
     let external_user_onboarded_at =
         parse_external_user_onboarded_at(params.external_user_onboarded_at.as_deref())?;
+    let external_user_details = external_user_details_to_application(params.external_user_details)?;
     if let (Some(access_type), Some(relationship)) = (params.access_type, params.relationship) {
         validate_access_relationship(access_type, relationship)?;
     }
@@ -321,6 +476,7 @@ async fn create_profile(
             access_type: params.access_type.map(access_type_to_application),
             external_id: params.external_id,
             external_user_onboarded_at,
+            external_user_details,
             name: params.name,
         })
         .await
@@ -433,7 +589,12 @@ async fn update_profile(
     ManagedJson(params): ManagedJson<UserProfileUpdateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
     let projection = selected_projection(&headers)?;
-    reject_current_only_field(projection, params.access_type.is_some())?;
+    reject_current_only_field(
+        projection,
+        params.access_type.is_some(),
+        params.external_user_details.is_some(),
+    )?;
+    let external_user_details = external_user_details_to_application(params.external_user_details)?;
     check_len(
         "external_id",
         params
@@ -488,6 +649,7 @@ async fn update_profile(
                 trust_grants,
                 external_id: field_update(params.external_id),
                 external_user_onboarded_at,
+                external_user_details,
                 name: field_update(params.name),
             },
         )

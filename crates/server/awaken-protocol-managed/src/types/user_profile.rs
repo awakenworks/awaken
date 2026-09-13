@@ -6,7 +6,9 @@
 //! **This is a SEPARATE beta** from the rest of this crate: the official SDK
 //! gates `beta.userProfiles.*` behind its own version: SDK 0.117.1 emits
 //! `user-profiles-2026-03-24`, while SDK 0.120.0 and the current oracle emit
-//! `user-profiles-2026-08-18`. Neither uses the `managed-agents-2026-04-01`
+//! `user-profiles-2026-08-18`, and SDK 0.125.0 / Python 1.5.0 add
+//! `user-profiles-2026-09-04`, under which the platform states
+//! `external_user_details` about the entity. Neither uses the `managed-agents-2026-04-01`
 //! header. `trust_grants` is the end-user's OAuth-style authorization grants —
 //! a closed `{ status }` shape — and is deliberately NOT reused for GDPR
 //! consent (ADR-0050 keeps consent on the neutral `DataSubject` aggregate).
@@ -71,6 +73,62 @@ pub struct CurrentUserProfile {
     pub access_type: Option<AccessType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_user_onboarded_at: Option<String>,
+    /// Present only under `user-profiles-2026-09-04`; every field is `null`
+    /// until the platform supplies it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_user_details: Option<ExternalUserDetails>,
+}
+
+/// The platform's own statement about the entity behind a profile
+/// (`BetaUserProfileExternalUserDetails`). Anthropic does not verify it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ExternalUserDetails {
+    pub account_status: Option<AccountStatus>,
+    pub country: Option<String>,
+    pub email_hash: Option<String>,
+    pub entity_type: Option<EntityType>,
+    pub name_hash: Option<String>,
+    pub onboarded_at: Option<String>,
+    pub reference_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountStatus {
+    Active,
+    Suspended,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityType {
+    Individual,
+    Business,
+    NonProfit,
+    Government,
+}
+
+/// `BetaUserProfileExternalUserDetailsParams`: every field is optional and
+/// nullable, so each one distinguishes absent (keep), `null` (clear), and a
+/// value (replace).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalUserDetailsParams {
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub account_status: Option<Option<AccountStatus>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub country: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub email_hash: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub entity_type: Option<Option<EntityType>>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub name_hash: Option<Option<String>>,
+    #[serde(default)]
+    pub onboarded_at: Option<String>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub reference_id: Option<Option<String>>,
 }
 
 /// The response is selected solely by the explicit beta capability carried on
@@ -108,6 +166,8 @@ pub struct UserProfileCreateParams {
     #[serde(default)]
     pub external_user_onboarded_at: Option<String>,
     #[serde(default)]
+    pub external_user_details: Option<ExternalUserDetailsParams>,
+    #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
     pub name: Option<String>,
@@ -138,6 +198,8 @@ pub struct UserProfileUpdateParams {
     pub external_id: Option<Option<String>>,
     #[serde(default)]
     pub external_user_onboarded_at: Option<String>,
+    #[serde(default)]
+    pub external_user_details: Option<ExternalUserDetailsParams>,
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, String>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]

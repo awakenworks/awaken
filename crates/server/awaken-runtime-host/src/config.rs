@@ -127,6 +127,7 @@ pub(crate) fn config_permission_ruleset(
 /// (`deny` in any rule still wins, absolutely). With no authored policy this is
 /// the fail-closed default: perception is allowed, controlled modifications and
 /// unmatched tools ask.
+#[cfg(test)]
 pub(crate) fn effective_ruleset(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],

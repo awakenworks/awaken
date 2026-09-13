@@ -43,6 +43,10 @@ const supportsOnboardedAt =
   (process.env.AWAKEN_MANAGED_SDK_USER_PROFILES_ONBOARDED_AT ?? '0') === '1';
 const supportsOrderBy =
   (process.env.AWAKEN_MANAGED_SDK_USER_PROFILES_ORDER_BY ?? '0') === '1';
+// SDK 0.125 states `external_user_details` under `user-profiles-2026-09-04`.
+const supportsExternalDetails =
+  (process.env.AWAKEN_MANAGED_SDK_USER_PROFILES_EXTERNAL_DETAILS ?? '0') === '1';
+const EXTERNAL_USER_PROFILES_BETA = 'user-profiles-2026-09-04';
 const selectedUserProfilesBeta = currentUserProfiles
   ? CURRENT_USER_PROFILES_BETA
   : USER_PROFILES_BETA;
@@ -248,6 +252,45 @@ async function main() {
       }
       assert.deepEqual(cleared.trust_grants, {});
       pass('beta.userProfiles.update -> explicit null is distinct from omission');
+      if (supportsExternalDetails && currentUserProfiles) {
+        // Cause/effect graph: X1 the 09-04 selector admits external_user_details
+        // and states every field (null until said); X2 the 08-18 selector
+        // neither admits nor shows it; X3 a patch keeps unnamed fields, null
+        // clears, a value replaces. Effects are read back through the official
+        // client under each selector, so the projection is the only cause.
+        const stated = await client.beta.userProfiles.update(profile.id, {
+          betas: [EXTERNAL_USER_PROFILES_BETA],
+          external_user_details: { account_status: 'active', country: 'DE', reference_id: 'ref-1' },
+        });
+        assert.deepEqual(
+          stated.external_user_details,
+          {
+            account_status: 'active', country: 'DE', email_hash: null, entity_type: null,
+            name_hash: null, onboarded_at: null, reference_id: 'ref-1',
+          },
+          'X1 every field is present, null until stated',
+        );
+        const underCurrent = await client.beta.userProfiles.retrieve(profile.id);
+        assert.equal(underCurrent.external_user_details, undefined, 'X2 08-18 omits the field');
+        const rejected = await fetch(`${baseUrl}/v1/user_profiles/${profile.id}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'anthropic-beta': CURRENT_USER_PROFILES_BETA },
+          body: JSON.stringify({ external_user_details: { country: 'FR' } }),
+        });
+        await assertInvalidRequest(
+          rejected,
+          /external_user_details requires the user-profiles-2026-09-04 beta capability/u,
+          'X2 08-18 does not admit the field',
+        );
+        const patched = await client.beta.userProfiles.update(profile.id, {
+          betas: [EXTERNAL_USER_PROFILES_BETA],
+          external_user_details: { country: null, entity_type: 'business' },
+        });
+        assert.equal(patched.external_user_details.account_status, 'active', 'X3 unnamed kept');
+        assert.equal(patched.external_user_details.country, null, 'X3 null clears');
+        assert.equal(patched.external_user_details.entity_type, 'business', 'X3 value replaces');
+        pass('beta.userProfiles.update -> external_user_details under user-profiles-2026-09-04');
+      }
 
       // Ordering causal graph: the application supplies one deterministic
       // creation/id order; asc preserves it, desc reverses it, and ordering is

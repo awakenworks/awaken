@@ -827,6 +827,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
             access_type: None,
             external_id: Some("external-a".into()),
             external_user_onboarded_at: None,
+            external_user_details: None,
             name: None,
         })
         .await
@@ -871,6 +872,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
                 )])),
                 external_id: None,
                 external_user_onboarded_at: Some(150),
+                external_user_details: None,
                 name: Some(UserProfileFieldUpdate::Replace("Alice".into())),
             },
         )
@@ -887,11 +889,96 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
         updated.trust_grants["calendar"].status,
         UserProfileTrustGrantStatus::Pending
     );
+    // External details: D1 a first patch materializes the record with the
+    // stated fields and `None` elsewhere; D2 a later patch keeps unnamed
+    // fields, clears an explicit Clear, replaces a Replace; D3 a patch that
+    // changes nothing bumps no revision.
+    let stated = application
+        .update_user_profile(
+            "org_a",
+            &profile.id,
+            UpdateUserProfileCommand {
+                external_user_details: Some(ExternalUserDetailsUpdate {
+                    account_status: Some(UserProfileFieldUpdate::Replace(
+                        ExternalAccountStatus::Active,
+                    )),
+                    country: Some(UserProfileFieldUpdate::Replace("DE".into())),
+                    reference_id: Some(UserProfileFieldUpdate::Replace("ref-1".into())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let details = stated
+        .external_user_details
+        .clone()
+        .expect("D1 materialized");
+    assert_eq!(
+        details.account_status,
+        Some(ExternalAccountStatus::Active),
+        "D1"
+    );
+    assert_eq!(details.country.as_deref(), Some("DE"), "D1");
+    assert_eq!(details.entity_type, None, "D1 unstated stays None");
+    assert_eq!(stated.revision, 2, "D1");
+    let patched = application
+        .update_user_profile(
+            "org_a",
+            &profile.id,
+            UpdateUserProfileCommand {
+                external_user_details: Some(ExternalUserDetailsUpdate {
+                    country: Some(UserProfileFieldUpdate::Clear),
+                    entity_type: Some(UserProfileFieldUpdate::Replace(
+                        ExternalEntityType::Business,
+                    )),
+                    onboarded_at: Some(300),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let details = patched.external_user_details.clone().expect("D2");
+    assert_eq!(
+        details.account_status,
+        Some(ExternalAccountStatus::Active),
+        "D2 kept"
+    );
+    assert_eq!(details.country, None, "D2 cleared");
+    assert_eq!(
+        details.entity_type,
+        Some(ExternalEntityType::Business),
+        "D2 replaced"
+    );
+    assert_eq!(details.onboarded_at, Some(300), "D2");
+    assert_eq!(details.reference_id.as_deref(), Some("ref-1"), "D2 kept");
+    assert_eq!(patched.revision, 3, "D2");
+    let same = application
+        .update_user_profile(
+            "org_a",
+            &profile.id,
+            UpdateUserProfileCommand {
+                external_user_details: Some(ExternalUserDetailsUpdate {
+                    onboarded_at: Some(300),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(same.revision, 3, "D3 no change, no revision");
     let unchanged = application
         .update_user_profile("org_a", &profile.id, UpdateUserProfileCommand::default())
         .await
         .unwrap();
-    assert_eq!(unchanged.revision, 1, "R5");
+    assert_eq!(
+        unchanged.revision, same.revision,
+        "R5 an empty patch keeps the revision"
+    );
 }
 
 #[tokio::test]
@@ -916,6 +1003,7 @@ async fn enrollment_hmac_and_expiry_decision_table() {
             access_type: None,
             external_id: None,
             external_user_onboarded_at: None,
+            external_user_details: None,
             name: None,
         })
         .await
@@ -1053,6 +1141,7 @@ async fn stale_profile_writer_retries_without_losing_consent() {
             access_type: None,
             external_id: None,
             external_user_onboarded_at: None,
+            external_user_details: None,
             name: None,
         })
         .await

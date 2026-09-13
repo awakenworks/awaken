@@ -265,13 +265,6 @@ impl ProjectedEvent {
             source_tool_call_id: None,
         }
     }
-    fn with_id(id: String, kind: OutboundKind) -> Self {
-        Self {
-            id: Some(id),
-            kind,
-            source_tool_call_id: None,
-        }
-    }
     /// A projection of one committed tool call, retaining that call's identity.
     fn for_tool_call(call_id: String, kind: OutboundKind) -> Self {
         Self {
