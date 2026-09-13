@@ -43,7 +43,8 @@ use authority::{
 };
 use control::RefreshedSessionRealizationControl;
 use recovery_backoff::{
-    SessionRecoveryTrigger, external_wake_coalescing_delay, next_session_recovery_delay,
+    EXTERNAL_WAKE_COOLDOWN, SessionRecoveryTrigger, external_wake_coalescing_delay,
+    next_session_recovery_delay,
 };
 
 /// One timing policy for every realization owned by the co-located Runtime.
@@ -432,6 +433,7 @@ impl SessionApplication {
     ) -> Result<(), String> {
         let mut recovery_failure_streak = 0_u32;
         let mut next_recovery = tokio::time::Instant::now();
+        let mut external_wake_cooldown = tokio::time::Instant::now();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
@@ -450,6 +452,8 @@ impl SessionApplication {
                 _ = self.lifecycle_wakeup.notified() => {
                     let delay = external_wake_coalescing_delay(
                         next_recovery.saturating_duration_since(tokio::time::Instant::now()),
+                        external_wake_cooldown
+                            .saturating_duration_since(tokio::time::Instant::now()),
                     );
                     tokio::select! {
                         biased;
@@ -503,6 +507,7 @@ impl SessionApplication {
                 recovery_failure_streak.saturating_add(1)
             };
             let now = tokio::time::Instant::now();
+            external_wake_cooldown = now + EXTERNAL_WAKE_COOLDOWN;
             let existing_remaining = next_recovery.saturating_duration_since(now);
             next_recovery = now
                 + next_session_recovery_delay(

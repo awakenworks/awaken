@@ -18,7 +18,7 @@ pub(super) enum SessionRecoveryTrigger {
     ExternalWake,
 }
 
-const EXTERNAL_WAKE_COALESCE: std::time::Duration = std::time::Duration::from_secs(1);
+pub(super) const EXTERNAL_WAKE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Coalesce a burst of committed dependency hints without delaying the existing
 /// scheduled recovery deadline. Hints received while a full scan runs retain
@@ -26,9 +26,10 @@ const EXTERNAL_WAKE_COALESCE: std::time::Duration = std::time::Duration::from_se
 /// burst join the same next scan instead of turning every arrival into another
 /// scan of all Sessions.
 pub(super) fn external_wake_coalescing_delay(
-    existing_remaining: std::time::Duration,
+    scheduled_remaining: std::time::Duration,
+    cooldown_remaining: std::time::Duration,
 ) -> std::time::Duration {
-    existing_remaining.min(EXTERNAL_WAKE_COALESCE)
+    scheduled_remaining.min(cooldown_remaining.min(EXTERNAL_WAKE_COOLDOWN))
 }
 
 /// Select the next delay without allowing an early dependency hint to postpone
@@ -49,7 +50,7 @@ pub(super) fn next_session_recovery_delay(
 #[cfg(kani)]
 mod proofs {
     use super::{
-        EXTERNAL_WAKE_COALESCE, SessionRecoveryTrigger, external_wake_coalescing_delay,
+        EXTERNAL_WAKE_COOLDOWN, SessionRecoveryTrigger, external_wake_coalescing_delay,
         next_session_recovery_delay, session_recovery_delay,
     };
     use std::time::Duration;
@@ -99,12 +100,17 @@ mod proofs {
         let seconds: u64 = kani::any();
         let nanos: u32 = kani::any();
         kani::assume(nanos < 1_000_000_000);
-        let remaining = Duration::new(seconds, nanos);
-        let delay = external_wake_coalescing_delay(remaining);
-        assert!(delay <= remaining);
-        assert!(delay <= EXTERNAL_WAKE_COALESCE);
+        let cooldown_seconds: u64 = kani::any();
+        let cooldown_nanos: u32 = kani::any();
+        kani::assume(cooldown_nanos < 1_000_000_000);
+        let scheduled = Duration::new(seconds, nanos);
+        let cooldown = Duration::new(cooldown_seconds, cooldown_nanos);
+        let delay = external_wake_coalescing_delay(scheduled, cooldown);
+        assert!(delay <= scheduled);
+        assert!(delay <= cooldown);
+        assert!(delay <= EXTERNAL_WAKE_COOLDOWN);
         assert_eq!(
-            external_wake_coalescing_delay(Duration::ZERO),
+            external_wake_coalescing_delay(Duration::MAX, Duration::ZERO),
             Duration::ZERO
         );
     }
@@ -168,23 +174,34 @@ mod tests {
 
     #[test]
     fn external_wake_bursts_share_one_bounded_coalescing_window() {
-        /* Cause/effect graph: C1 the scheduled deadline is due/in 100ms/in
-         * 30s; C2 one or many external hints arrive before the next scan.
-         * Effects: E1 due remains immediate; E2 a nearer deadline stays 100ms;
-         * E3 a later deadline admits at most the one-second coalescing bound; E4 C2
-         * cardinality is absent from the decision and therefore cannot extend
-         * the bound. Decision table: W1=due=>0; W2=100ms=>100ms;
-         * W3=30s=>1s. The supervisor integration consumes one Notify permit
-         * before this decision; retained hints during the scan select W1-W3
-         * once on the next loop. */
+        /* Cause/effect graph: C1 the scheduled deadline is due/near/later;
+         * C2 the post-scan cooldown is expired/active; C3 one or many external
+         * hints arrive. Effects: E1 a due deadline remains immediate; E2 an
+         * expired cooldown makes the first quiet-period hint immediate; E3 a
+         * nearer scheduled deadline wins; E4 an active tail is bounded by one
+         * second; E5 C3 cardinality cannot extend any bound. Decision table:
+         * W1=(due,active)=>0; W2=(later,expired)=>0;
+         * W3=(100ms,active)=>100ms; W4=(30s,active)=>1s. */
         use std::time::Duration;
 
-        for (remaining, expected) in [
-            (Duration::ZERO, Duration::ZERO),
-            (Duration::from_millis(100), Duration::from_millis(100)),
-            (Duration::from_secs(30), Duration::from_secs(1)),
+        for (scheduled, cooldown, expected) in [
+            (Duration::ZERO, Duration::from_secs(1), Duration::ZERO),
+            (Duration::from_secs(30), Duration::ZERO, Duration::ZERO),
+            (
+                Duration::from_millis(100),
+                Duration::from_secs(1),
+                Duration::from_millis(100),
+            ),
+            (
+                Duration::from_secs(30),
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+            ),
         ] {
-            assert_eq!(external_wake_coalescing_delay(remaining), expected);
+            assert_eq!(
+                external_wake_coalescing_delay(scheduled, cooldown),
+                expected
+            );
         }
     }
 }

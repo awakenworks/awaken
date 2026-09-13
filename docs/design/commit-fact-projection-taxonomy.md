@@ -79,11 +79,12 @@ the budget remains unavailable; this is bounded convergence, not an unbounded
 liveness guarantee. Debug diagnostics identify the conflicting source/CAS fence
 without recording messages or credential material.
 
-The Session lifecycle supervisor coalesces external dependency hints for at
-most one second, capped by its already scheduled recovery deadline. Tokio `Notify`
-still retains one dirty permit while a scan runs, so committed work cannot be
-lost; a burst joins one following scan instead of forcing a back-to-back global
-Session scan per arrival. The existing supervisor remains the sole scheduler
+After each Session lifecycle recovery scan, the supervisor coalesces trailing
+external dependency hints for at most one second, capped by its already
+scheduled recovery deadline. The first hint after an expired cooldown remains
+immediate. Tokio `Notify` still retains one dirty permit while a scan runs, so
+committed work cannot be lost; a burst joins one following scan instead of
+forcing a back-to-back global Session scan per arrival. The existing supervisor remains the sole scheduler
 and the 30–300 second retry backoff remains unchanged. This bounds added wake
 latency and removes load-amplifying duplicate scans without adding a queue,
 leader, durable cursor or second reconciliation path.
