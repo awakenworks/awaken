@@ -126,7 +126,7 @@ impl SessionApplication {
                 "a coordinated child Thread must differ from its primary Session",
             ));
         }
-        let links = self.runtime().coordinated_threads(session_id).await?;
+        let links = self.runtime().coordinated_threads(session_id, None).await?;
         if !links
             .iter()
             .any(|link| link.session_id == session_id && link.thread_id == *child_thread_id)
@@ -582,7 +582,7 @@ impl SessionAgentCoordination for SessionApplication {
         let roster = self.coordination_roster(&owner, &session)?;
         let existing_links = self
             .runtime()
-            .coordinated_threads(&command.session_id)
+            .coordinated_threads(&command.session_id, None)
             .await?;
 
         let (thread_id, member, intent) = match &command.target {

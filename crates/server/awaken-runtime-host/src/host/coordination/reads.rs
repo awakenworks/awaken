@@ -9,7 +9,13 @@ impl SharedHost {
     pub(crate) async fn coordinated_threads(
         &self,
         session_id: &str,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<CoordinatedThreadLink>, HostError> {
+        if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id) {
+            return Err(HostError::internal(
+                "coordination query received a snapshot for a different Session root",
+            ));
+        }
         let delivered = self
             .session_slots
             .read(session_id, |slot| slot.published_snapshot.clone())
@@ -30,22 +36,21 @@ impl SharedHost {
                     .advisor
                     .map(|advisor| advisor.model)
             });
-        let commit = self.commit_for_read(session_id).await?;
-        let root_thread = ThreadId(session_id.to_string());
-        let Some(claimed_run) = commit
-            .authoritative_latest_run(&root_thread)
-            .await
-            .map_err(HostError::internal)?
-        else {
-            return Ok(Vec::new());
+        // One recovery reader and one relationship projector serve both an
+        // ordinary latest read and a larger query that already holds this
+        // atomic root prefix. Never reopen or clone that supplied prefix.
+        let committed = match observed_root {
+            Some(snapshot) => std::borrow::Cow::Borrowed(snapshot),
+            None => {
+                let Some(snapshot) = self
+                    .session_thread_recovery_snapshot(session_id, &ThreadId(session_id.into()))
+                    .await?
+                else {
+                    return Ok(Vec::new());
+                };
+                std::borrow::Cow::Owned(snapshot)
+            }
         };
-        // The claim only selects the recovery port's required Run coordinate.
-        // Every relationship input below comes from the returned atomic prefix,
-        // including a newer root Run if it committed between selection and read.
-        let committed = commit
-            .recovery_snapshot(&root_thread, &claimed_run.id)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
         let mut links =
             project_committed_coordination_links(session_id, advisor_model.as_deref(), &committed)?;
         if links.is_empty() {
@@ -55,6 +60,7 @@ impl SharedHost {
         // Child Run facts live in their logical Threads and are intentionally
         // absent from the root snapshot. Enrich only from lifecycle facts at or
         // before the snapshot's backend watermark, never from a later prefix.
+        let commit = self.commit_for_read(session_id).await?;
         let mut cursor = RunLifecycleCursor::default();
         loop {
             let page = commit
@@ -172,6 +178,185 @@ mod tests {
     use awaken_agent_contract::thread::commit::RunDisposition;
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_session_contract::SessionRuntime as _;
+
+    #[tokio::test]
+    async fn coordination_query_reuses_only_the_supplied_root_prefix() {
+        // Causes: C1 latest/supplied root; C2 absent/present committed Run;
+        // C3 same/foreign root identity; C4 later valid/malformed transcript.
+        // Rules Q1=latest+absent => empty and one authoritative selection;
+        // Q2=supplied+same => exact prefix, zero additional root selections;
+        // Q3=Q2+later valid commit => old links; latest => both links;
+        // Q4=Q2+later malformed commit => old links; latest => source error;
+        // Q5=supplied+foreign => reject before any source selection.
+        // This uses the existing real in-memory commit/recovery adapter and
+        // query-policy counter. Adjacent prefix tests own child lifecycle
+        // watermark enrichment; Managed regressions own the final fresh fence.
+        let session = "borrowed-coordination-root";
+        let run = RunId("borrowed-coordination-run".into());
+        let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+        let queries = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
+        let authority = Arc::new(crate::EphemeralRuntimeAuthority::new().with_commit(
+            session,
+            Arc::new(crate::LocalCommitAdapter::with_queries(
+                store.clone(),
+                queries.clone(),
+            )),
+        ));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+                .with_runtime_authority(authority),
+        );
+        let managed = crate::ManagedHost::new(host.clone());
+        assert!(
+            managed
+                .coordinated_threads(session, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "Q1"
+        );
+        assert_eq!(queries.latest_run_reads(), 1, "Q1 latest selection");
+        let advisor = |step| {
+            Message::new(
+                MessageId::assistant(&run, step),
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    format!("advisor-{step}"),
+                    awaken_runtime_contract::resolved::ADVISOR_TOOL_ID,
+                    serde_json::json!({}),
+                )],
+            )
+        };
+        store
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                ThreadId(session.into()),
+                RunDisposition::running(run.clone()),
+                true,
+                vec![advisor(0)],
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        let snapshot = host
+            .session_thread_recovery_snapshot(session, &ThreadId(session.into()))
+            .await
+            .unwrap()
+            .unwrap();
+        let before = queries.latest_run_reads();
+        let original = managed
+            .coordinated_threads(session, Some(&snapshot))
+            .await
+            .unwrap();
+        assert_eq!(original.len(), 1, "Q2 exact advisor link");
+        assert_eq!(
+            queries.latest_run_reads(),
+            before,
+            "Q2 borrowed prefix skips root selection"
+        );
+        store
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                ThreadId(session.into()),
+                RunDisposition::running(run.clone()),
+                true,
+                vec![advisor(1)],
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            managed
+                .coordinated_threads(session, Some(&snapshot))
+                .await
+                .unwrap(),
+            original,
+            "Q3 old prefix"
+        );
+        assert_eq!(
+            queries.latest_run_reads(),
+            before,
+            "Q3 no hidden recovery query"
+        );
+        assert_eq!(
+            managed
+                .coordinated_threads(session, None)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "Q3 fresh links"
+        );
+        assert_eq!(
+            queries.latest_run_reads(),
+            before + 1,
+            "Q3 fresh selector remains active"
+        );
+        store
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                ThreadId(session.into()),
+                RunDisposition::running(run.clone()),
+                true,
+                vec![Message::new(
+                    MessageId::assistant(&run, 2),
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "malformed",
+                        awaken_ext_builtin_tools::SEND_MESSAGE,
+                        serde_json::json!(42),
+                    )],
+                )],
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        let before = queries.latest_run_reads();
+        assert_eq!(
+            managed
+                .coordinated_threads(session, Some(&snapshot))
+                .await
+                .unwrap(),
+            original,
+            "Q4 unchanged observed truth"
+        );
+        assert_eq!(
+            queries.latest_run_reads(),
+            before,
+            "Q4 no hidden recovery query"
+        );
+        let error = managed
+            .coordinated_threads(session, None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("committed send_message arguments are invalid"),
+            "Q4 {error:?}"
+        );
+        let before = queries.latest_run_reads();
+        let mut foreign = snapshot.clone();
+        foreign.thread_id = ThreadId("another-session".into());
+        let error = managed
+            .coordinated_threads(session, Some(&foreign))
+            .await
+            .unwrap_err();
+        assert!(
+            error.message.contains("different Session root"),
+            "Q5 {error:?}"
+        );
+        assert_eq!(
+            queries.latest_run_reads(),
+            before,
+            "Q5 rejected before source I/O"
+        );
+        assert_eq!(
+            snapshot.messages.len(),
+            1,
+            "Q2-Q5 borrowed source never mutated"
+        );
+    }
 
     #[tokio::test]
     async fn thread_usage_reads_authoritative_state_without_rebuilding_history() {

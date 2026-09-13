@@ -815,11 +815,16 @@ impl SessionApplication {
 
     /// Derived Managed child links; the Runtime reconstructs these from the
     /// parent tool facts and ordinary child Thread/dispatch facts.
+    /// A supplied root is borrowed only for a read-only projection; ordinary
+    /// command membership and final-prefix validation still request a fresh read.
     pub async fn coordinated_threads(
         &self,
         session_id: &str,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
-        self.runtime.coordinated_threads(session_id).await
+        self.runtime
+            .coordinated_threads(session_id, observed_root)
+            .await
     }
 
     /// Read cumulative accounting for one logical Thread through its parent
@@ -879,7 +884,7 @@ impl SessionApplication {
         thread_id: &str,
     ) -> Result<(), RunError> {
         let child = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
-        let links = self.runtime.coordinated_threads(session_id).await?;
+        let links = self.runtime.coordinated_threads(session_id, None).await?;
         if !links
             .iter()
             .any(|link| link.session_id == session_id && link.thread_id == child)
@@ -1034,7 +1039,7 @@ impl SessionApplication {
     ) -> Result<SessionUsage, RunError> {
         let mut usage = self.runtime.session_usage(thread).await?;
         let mut included = std::collections::BTreeSet::from([thread.to_string()]);
-        for link in self.runtime.coordinated_threads(thread).await? {
+        for link in self.runtime.coordinated_threads(thread, None).await? {
             included.insert(link.thread_id.0.clone());
             let child = self
                 .runtime

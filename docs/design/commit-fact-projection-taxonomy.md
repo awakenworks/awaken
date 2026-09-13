@@ -79,6 +79,18 @@ the budget remains unavailable; this is bounded convergence, not an unbounded
 liveness guarantee. Debug diagnostics identify the conflicting source/CAS fence
 without recording messages or credential material.
 
+Within one Managed candidate, the initial coordination query borrows its already
+observed atomic Root Thread snapshot. The Runtime Host's existing relationship
+projector and lifecycle-watermark enrichment remain the sole implementation;
+the ordinary query uses the same Thread recovery reader to obtain a fresh prefix.
+A supplied snapshot for another root is rejected before reading sources. No
+relationship cache or second recovery algorithm is added. Command admission,
+usage collection, final relationship validation and the final Root Thread read
+still observe current truth. Reusing an initial prefix therefore removes one
+repeated recovery read without weakening the closing consistency fences. The
+query-policy counter and old-prefix/new-commit decision table verify this scope;
+existing publication proofs do not prove query performance or SQL isolation.
+
 Session inbound visibility and processing completion are distinct observations
 of the same retained command. While a User Run is Running, the Session application
 may anchor its exact committed input Message under the existing root CAS. This

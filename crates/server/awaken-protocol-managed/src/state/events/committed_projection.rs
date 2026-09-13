@@ -141,19 +141,21 @@ impl ManagedState {
                     .push(validate_durable_outcome_projection(outcome_id, terminal)?);
             }
         }
-        // Read the root fence before the later relationship snapshot. This
-        // ordering makes an unknown lifecycle event classifiable without
-        // guessing from its Thread id: a relationship read taken after the
-        // root fence must include every coordinated link committed at or before
-        // that fence. An event beyond the fence remains unconsumed until the
-        // next refresh, when its matching root/link snapshot can catch up.
+        // Read the root fence once and reuse that atomic prefix for the initial
+        // relationship projection. It includes every coordinated link committed
+        // at or before this fence, so an unknown lifecycle event is classifiable
+        // without guessing from its Thread id. An event beyond the fence remains
+        // unconsumed until the next refresh. The final relationship and root
+        // reads below still observe fresh prefixes after the child reads.
         let outcomes_done = started.elapsed();
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
         let durable_outcome_projections = durable_outcome_projections
             .into_iter()
             .filter_map(|projection| projection.anchor(root_snapshot.as_ref()))
             .collect::<Vec<_>>();
-        let (links, child_snapshots) = self.coordinated_projection_prefix(session_id).await?;
+        let (links, child_snapshots) = self
+            .coordinated_projection_prefix(session_id, root_snapshot.as_ref())
+            .await?;
         // The lifecycle feed may advance after the snapshots. Each event carries
         // its source commit cursor, so the recovery snapshot's store cursor can
         // fence it to the exact prefix whose transcript, ticket and disposition
@@ -334,7 +336,7 @@ impl ManagedState {
             // Validation owns no published payload. Release these second full
             // snapshots before constructing the candidate's wire events.
             let (final_links, final_child_snapshots) =
-                self.coordinated_projection_prefix(session_id).await?;
+                self.coordinated_projection_prefix(session_id, None).await?;
             if links != final_links
                 || child_snapshots.len() != final_child_snapshots.len()
                 || child_snapshots.iter().any(|(thread_id, initial)| {

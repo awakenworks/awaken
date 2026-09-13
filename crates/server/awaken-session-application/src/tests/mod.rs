@@ -823,6 +823,7 @@ impl SessionRuntime for RecordingReplyRuntime {
     async fn coordinated_threads(
         &self,
         session_id: &str,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         Ok(vec![awaken_session_contract::CoordinatedThreadLink {
             session_id: session_id.to_string(),
@@ -1010,6 +1011,7 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
     async fn coordinated_threads(
         &self,
         session_id: &str,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         let mut links = self
             .committed_links
@@ -1249,6 +1251,7 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
     async fn coordinated_threads(
         &self,
         session_id: &str,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         Ok(self
             .boundaries

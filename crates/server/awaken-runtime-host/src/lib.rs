@@ -499,9 +499,10 @@ impl SessionRuntime for ManagedHost {
     async fn coordinated_threads(
         &self,
         session_id: &str,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         self.host
-            .coordinated_threads(session_id)
+            .coordinated_threads(session_id, observed_root)
             .await
             .map_err(to_run_error)
     }
@@ -517,7 +518,7 @@ impl SessionRuntime for ManagedHost {
         }
         let links = self
             .host
-            .coordinated_threads(session_id)
+            .coordinated_threads(session_id, None)
             .await
             .map_err(to_run_error)?;
         if !links

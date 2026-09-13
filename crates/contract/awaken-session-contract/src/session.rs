@@ -504,10 +504,20 @@ pub trait SessionRuntime: Send + Sync {
     /// Rebuild the Session's coordinated child-Thread links from existing
     /// committed ToolBatch/transcript/dispatch facts. This is a query, not a
     /// relationship repository.
+    /// `observed_root` may borrow an atomic prefix already read for this Session
+    /// during a larger read-only projection. Implementations must reject a
+    /// different root identity and fence enrichment to that prefix. `None`
+    /// reads the current prefix; command admission and final validation use it.
     async fn coordinated_threads(
         &self,
-        _session_id: &str,
+        session_id: &str,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<crate::CoordinatedThreadLink>, RunError> {
+        if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id) {
+            return Err(RunError::internal(
+                "coordination query received a snapshot for a different Session root",
+            ));
+        }
         Ok(Vec::new())
     }
 
@@ -1498,6 +1508,57 @@ mod tests {
         async fn send(&self, _event: Event) -> Result<(), SinkError> {
             unreachable!("the default run_streaming ignores the sink")
         }
+    }
+
+    #[tokio::test]
+    async fn default_coordination_query_checks_supplied_root_identity() {
+        // D1 no supplied prefix => the unsupported relationship view is empty;
+        // D2 own supplied prefix => empty without execution; D3 foreign prefix
+        // => Internal, never accepted as this Session's observed relationship
+        // source. These are all presence/identity rows for the default port;
+        // the Host tests cover nonempty relations and real recovery queries.
+        let run = awaken_agent_contract::RunId("run".into());
+        let thread = awaken_agent_contract::ThreadId("session".into());
+        let mut snapshot = awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            thread_id: thread.clone(),
+            claimed_run_id: run.clone(),
+            runs: vec![awaken_agent_contract::agent::run::Record {
+                id: run.clone(),
+                thread_id: thread,
+                state: RunState::Running,
+            }],
+            latest_run_id: Some(run),
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            commit_timestamps: Default::default(),
+            state: Vec::new(),
+            state_commit_cursors: Vec::new(),
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 1,
+            store_cursor: 1,
+            next_commit_ordinal: 1,
+        };
+        for observed in [None, Some(&snapshot)] {
+            assert!(
+                MinimalRuntime
+                    .coordinated_threads("session", observed)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "D1-D2"
+            );
+        }
+        snapshot.thread_id = awaken_agent_contract::ThreadId("foreign".into());
+        let error = MinimalRuntime
+            .coordinated_threads("session", Some(&snapshot))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, RunErrorKind::Internal, "D3");
+        assert!(
+            error.message.contains("different Session root"),
+            "D3 exact cause"
+        );
     }
 
     #[tokio::test]

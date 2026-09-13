@@ -317,6 +317,7 @@ impl ManagedState {
     pub(super) async fn coordinated_projection_prefix(
         &self,
         session_id: &str,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<
         (
             Vec<CoordinatedThreadLink>,
@@ -329,7 +330,7 @@ impl ManagedState {
     > {
         let mut links = self
             .application
-            .coordinated_threads(session_id)
+            .coordinated_threads(session_id, observed_root)
             .await
             .map_err(StateError::Run)?;
         let snapshots = self
