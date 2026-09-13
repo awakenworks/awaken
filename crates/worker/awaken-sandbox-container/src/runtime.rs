@@ -1794,6 +1794,46 @@ pub trait ContainerRuntime: Send + Sync {
         ))
     }
 
+    /// Make the container stop and forget every exec attempt it still records.
+    ///
+    /// Deliberately expressed in terms of [`ContainerRuntime::spawn`] rather
+    /// than left to each backend: the pid files are written by the wrapper
+    /// every backend shares, so the enumeration must read exactly the path that
+    /// wrapper wrote. A backend that can exec therefore inherits reaping and
+    /// cannot drift from its own naming; one that cannot exec never started an
+    /// exec, so its inherited failure is unreachable rather than fail-open.
+    async fn reap_exec_orphans(&self, container_id: &str) -> Result<(), RuntimeError> {
+        let reaper = self
+            .spawn(container_id, crate::exec_orphan_reaper_command())
+            .await?;
+        let status = reaper
+            .wait()
+            .await
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        if status.code == Some(0) {
+            return Ok(());
+        }
+        Err(RuntimeError::Backend(format!(
+            "container exec orphan reaping exited with {:?}",
+            status.code
+        )))
+    }
+
+    /// Remove one never-used capacity object addressed only by the logical
+    /// scope its creator was about to create at.
+    ///
+    /// This is the one removal with no durable handle behind it, because the
+    /// caller was cancelled before any handle could exist. It is therefore
+    /// restricted to warm capacity: a scope no Session receipt names, whose
+    /// name no other process can mint. The fail-closed default keeps a backend
+    /// that cannot address an object by scope alone from silently reporting a
+    /// cleanup it did not perform.
+    async fn remove_unreceipted_scope(&self, _scope: &str) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime cannot remove an unreceipted capacity scope".into(),
+        ))
+    }
+
     async fn open_channel(&self, container_id: &str)
     -> Result<Box<dyn AgentChannel>, RuntimeError>;
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError>;

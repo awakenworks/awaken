@@ -409,7 +409,10 @@ impl CreationGuard {
 }
 
 /// One-shot guard for explicitly unfenced callers. It owns no durable marker
-/// and therefore cannot be replayed or adopted as destructive authority.
+/// and therefore cannot be replayed or adopted as destructive authority — only
+/// a [`crate::abandoned_realization::LegacyCreationRecord`], which says nothing
+/// more than "an unfenced creation at this exact root is in flight" and is
+/// published before the root exists so a cancelled attempt is still nameable.
 pub(crate) struct LegacyCreationGuard {
     root: PathBuf,
     identity: Option<DirectoryIdentity>,
@@ -428,22 +431,51 @@ impl LegacyCreationGuard {
         let identity = self
             .identity
             .ok_or_else(|| err("legacy sandbox root was not prepared"))?;
+        // The record this creation published must still name the exact root it
+        // is about to mutate. Without this, a guard whose record was retained
+        // or removed underneath would keep writing into a root that a later
+        // attempt has already been told to refuse.
+        let record = crate::abandoned_realization::read_creation_record(self.lock()?, &self.root)?
+            .ok_or_else(|| err("legacy sandbox creation lost its durable creation record"))?;
+        if record.is_retained() || record.root_identity() != Some(identity) {
+            return Err(err(
+                "legacy sandbox creation record no longer names the root being mutated",
+            ));
+        }
         require_exact_root_locked(&self.root, self.lock()?, identity)
     }
 
     pub(crate) fn prepare_root(&mut self) -> Result<(), pc::SandboxError> {
         require_marker_absence_locked(&self.root, self.lock()?)?;
+        if let Some(identity) = self.identity {
+            // Reclaiming an abandoned attempt: keep the inode the record names
+            // and clear only what that attempt left inside it, exactly as the
+            // fenced guard does for an incomplete Creating root.
+            require_exact_root_locked(&self.root, self.lock()?, identity)?;
+            return self
+                .lock()?
+                .clear_sibling_directory_contents_exact(root_leaf(&self.root)?, identity)
+                .map_err(err);
+        }
         require_absent_locked(
             &self.root,
             self.lock()?,
             root_leaf(&self.root)?,
             "legacy sandbox root",
         )?;
-        self.identity = Some(
-            self.lock()?
-                .create_sibling_directory_noreplace(root_leaf(&self.root)?)
-                .map_err(err)?,
-        );
+        let identity = self
+            .lock()?
+            .create_sibling_directory_noreplace(root_leaf(&self.root)?)
+            .map_err(err)?;
+        // Bind the record to the inode immediately. Until this lands, a later
+        // attempt still recognizes the root — the record standing at all is
+        // what makes it ours — but it cannot detect a substitution.
+        crate::abandoned_realization::write_creation_record(
+            self.lock()?,
+            &self.root,
+            &crate::abandoned_realization::LegacyCreationRecord::in_flight(Some(identity)),
+        )?;
+        self.identity = Some(identity);
         Ok(())
     }
 
@@ -452,11 +484,23 @@ impl LegacyCreationGuard {
             .identity
             .ok_or_else(|| err("legacy sandbox root was not prepared"))?;
         require_exact_root_locked(&self.root, self.lock()?, identity)?;
+        // The creation settled, so the root is live work from here on. Dropping
+        // the record is what makes a finished sandbox stop looking like an
+        // abandoned one to the next attempt at this scope.
+        crate::abandoned_realization::clear_creation_record(self.lock()?, &self.root)?;
         let realization = LegacyLiveEvidence {
             root_identity: identity,
         };
         self.lock.take();
         Ok(realization)
+    }
+
+    /// A deterministic failure whose compensation could not finish states that
+    /// the root and its evidence were kept on purpose. That is the opposite of
+    /// an abandonment — the owner is still speaking, and what it says is "do
+    /// not reuse this" — so the record stops being reclaimable.
+    pub(crate) fn retain_failed_compensation(&self) -> Result<(), pc::SandboxError> {
+        crate::abandoned_realization::retain_creation_record(self.lock()?, &self.root)
     }
 
     pub(crate) fn abort_creation(self) -> Result<(), pc::SandboxError> {
@@ -465,7 +509,7 @@ impl LegacyCreationGuard {
                 .remove_sibling_directory_tree_exact(root_leaf(&self.root)?, identity)
                 .map_err(err)?;
         }
-        Ok(())
+        crate::abandoned_realization::clear_creation_record(self.lock()?, &self.root)
     }
 }
 
@@ -1548,13 +1592,42 @@ pub(crate) fn begin(
     }
 }
 
+/// Admit one unfenced creation at `root`, reclaiming this authority's own
+/// abandoned attempt there and refusing everything else.
+///
+/// The record is published before the guard is returned, and the guard is the
+/// only way to reach [`LegacyCreationGuard::prepare_root`] — the first
+/// filesystem mutation — so no caller can create a root before the statement
+/// that names it exists. Admission itself is
+/// [`crate::abandoned_realization::classify_legacy_root`], which owns the
+/// reclaimable/refused rule as one table.
 pub(crate) fn begin_legacy(root: &Path) -> Result<LegacyCreationGuard, pc::SandboxError> {
+    use crate::abandoned_realization::{LegacyCreationRecord, LegacyRootDisposition};
+
     let lock = acquire(root)?;
     require_marker_absence_locked(root, &lock)?;
-    require_absent_locked(root, &lock, root_leaf(root)?, "legacy sandbox root")?;
+    let record = crate::abandoned_realization::read_creation_record(&lock, root)?;
+    let identity = match crate::abandoned_realization::classify_legacy_root(
+        record.as_ref(),
+        classify_locked(&lock, root_leaf(root)?)?,
+    ) {
+        LegacyRootDisposition::Create => None,
+        LegacyRootDisposition::Reclaim(identity) => Some(identity),
+        LegacyRootDisposition::Refuse(reason) => {
+            return Err(err(format!(
+                "legacy sandbox root `{}` {reason}",
+                root.display()
+            )));
+        }
+    };
+    crate::abandoned_realization::write_creation_record(
+        &lock,
+        root,
+        &LegacyCreationRecord::in_flight(identity),
+    )?;
     Ok(LegacyCreationGuard {
         root: root.to_owned(),
-        identity: None,
+        identity,
         lock: Some(lock),
     })
 }

@@ -217,6 +217,24 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         Ok((plan, adoption))
     }
 
+    /// Dispose never-used capacity that a cancelled creator left at `scope`.
+    ///
+    /// There is deliberately no handle, fence or spec here: the caller was
+    /// dropped before any of them could exist, and demanding one is exactly why
+    /// the container became unreachable. The runtime addresses the object by
+    /// the scope name alone, which only a warm pool mints, so this port cannot
+    /// reach a Session-owned environment.
+    #[cfg(any(feature = "connection", test))]
+    pub(crate) async fn dispose_unreceipted_capacity(
+        &self,
+        scope: &str,
+    ) -> Result<(), pc::SandboxError> {
+        self.runtime
+            .remove_unreceipted_scope(scope)
+            .await
+            .map_err(err)
+    }
+
     /// Realize a Session-owned container environment. The trait `create` boxes this.
     pub async fn create_container(
         &self,
@@ -741,6 +759,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 writeback_done: tokio::sync::Mutex::new(false),
                 remove_done: tokio::sync::Mutex::new(false),
             }),
+            execs: Arc::default(),
         })
     }
 
@@ -947,6 +966,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             realized: Vec::new(),
             recovered: true,
             lifecycle: Arc::new(lifecycle),
+            execs: Arc::default(),
         })
     }
 

@@ -567,7 +567,7 @@ impl PodmanRuntime {
             std::process::id(),
             EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
-        let pid_file = format!("/tmp/{id}.pid");
+        let pid_file = crate::exec_pid_file(&id);
         let mut args = vec!["exec".to_string()];
         if attached_agent {
             args.push("-i".into());
@@ -602,7 +602,10 @@ impl PodmanRuntime {
                 }
             }
         }
-        let mut wrapper = "set -e; pid_file=$1; shift;".to_string();
+        let mut wrapper = format!(
+            "set -e; pid_file=$1; shift; {}",
+            crate::exec_pid_file_prelude()
+        );
         for (alias, _) in &secret_bindings {
             wrapper.push_str(&format!(
                 " export \"$1=${{{alias}}}\"; unset {alias}; shift;"
@@ -1325,6 +1328,16 @@ impl ContainerRuntime for PodmanRuntime {
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
         self.run(&["rm".into(), "-f".into(), container_id.into()])
+            .await
+            .map(|_| ())
+    }
+
+    async fn remove_unreceipted_scope(&self, scope: &str) -> Result<(), RuntimeError> {
+        // Same daemon-global name derivation as Docker. `--ignore` is the CLI's
+        // "absent is success": the cancelled create may never have reached
+        // Podman at all.
+        let name = runtime_container_name(self.realization_namespace.as_str(), scope)?;
+        self.run(&["rm".into(), "-f".into(), "--ignore".into(), name])
             .await
             .map(|_| ())
     }

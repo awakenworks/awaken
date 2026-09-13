@@ -899,8 +899,13 @@ pub(crate) async fn compensate_creation_failure(
         Ok(())
     };
     if teardown.is_err() || shredding.is_err() {
+        // Retaining the root is a statement, not silence. Say so durably before
+        // returning, so the next attempt at this scope refuses the evidence
+        // this path just chose to preserve instead of clearing it as an
+        // abandonment. A fenced guard already says it with its marker phase.
+        let retention = guard.retain_failed_compensation();
         return SandboxError::new(format!(
-            "{phase} failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
+            "{phase} failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained{}",
             teardown
                 .as_ref()
                 .err()
@@ -909,6 +914,9 @@ pub(crate) async fn compensate_creation_failure(
                 .as_ref()
                 .err()
                 .map_or_else(|| "ok".to_owned(), ToString::to_string),
+            retention
+                .err()
+                .map_or_else(String::new, |error| format!("; retention record: {error}")),
         ));
     }
     if let Err(cleanup) = guard.abort_creation() {

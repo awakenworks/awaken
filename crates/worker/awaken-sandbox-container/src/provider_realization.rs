@@ -241,6 +241,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .clone(),
                 staging.guard.take(),
             )),
+            execs: Arc::default(),
         })
     }
 
@@ -360,6 +361,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .clone(),
                 recovered_staging,
             )),
+            execs: Arc::default(),
         })
     }
 

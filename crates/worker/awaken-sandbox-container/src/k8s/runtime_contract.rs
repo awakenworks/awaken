@@ -855,6 +855,31 @@ impl ContainerRuntime for K8sRuntime {
         self.remove_bound(container_id, None, None, None).await
     }
 
+    async fn remove_unreceipted_scope(&self, scope: &str) -> Result<(), RuntimeError> {
+        // Kubernetes names the Pod from the scope, so the cancelled creator's
+        // object is addressable without the durable handle it never produced.
+        // Absent is success: the create may have been dropped before the API
+        // server ever saw it.
+        let pod_name = names::pod_name(&names::k8s_runtime_id(scope)?);
+        let observed = match self.pods().get(&pod_name).await {
+            Ok(pod) => pod,
+            Err(error) if api_not_found(&error) => return Ok(()),
+            Err(error) => return Err(backend(error)),
+        };
+        // The Pod's own observed UID is the only incarnation evidence that can
+        // exist here, and re-reading it is not a weaker gate than the handle
+        // path: this scope was minted by one warm pool that holds no Session
+        // receipt, so there is no durable claim for a stale UID to contradict.
+        let pod_uid = observed
+            .metadata
+            .uid
+            .clone()
+            .ok_or_else(|| backend("Kubernetes warm capacity Pod has no incarnation UID"))?;
+        let claim_uid = continuation::bound_claim_uid(&observed).map(str::to_owned);
+        self.remove_bound(&pod_name, Some(&pod_uid), claim_uid.as_deref(), None)
+            .await
+    }
+
     async fn remove_with_handle(
         &self,
         container_id: &str,

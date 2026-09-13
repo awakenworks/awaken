@@ -272,6 +272,7 @@ mod tests {
             realized: Vec::new(),
             recovered: false,
             lifecycle: Arc::new(crate::ContainerCleanupState::physical_cleanup_only()),
+            execs: Arc::default(),
         };
         (sandbox, commands)
     }

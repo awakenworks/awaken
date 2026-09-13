@@ -14,7 +14,7 @@
 //! reused, not a used container. Reusing a container after a session would require a
 //! workspace reset and is deliberately out of scope.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -30,8 +30,8 @@ use crate::{
 
 /// A process-global sequence for warm container scopes, so names are unique across
 /// every pool in this process (a per-pool counter would collide when two pools warm
-/// the same shape). Paired with the pid, warm names are also unique across processes,
-/// so a fresh run never collides with a prior run's leaked warm container.
+/// the same shape). Paired with the pool incarnation below, warm names are unique
+/// across processes too.
 static WARM_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// The one warm-capacity admission rule. `SandboxCapacityShapeId` remains the
@@ -44,10 +44,29 @@ fn poolable_shape(spec: &pc::SandboxSpec) -> Option<pc::SandboxCapacityShapeId> 
 }
 
 /// A globally-unique scope (container name) for a warm container.
-fn next_warm_scope() -> String {
+///
+/// `incarnation` is minted by [`crate::runtime_owner_id`] — the same authority
+/// that stamps `RUNTIME_OWNER_LABEL` on every container this Worker creates —
+/// rather than by the bare pid it replaced. What that buys, exactly:
+///
+/// * A bare pid is recycled by the kernel. The physical container name is a
+///   pure function of namespace+scope, so a restarted Worker that drew the dead
+///   Worker's pid would address the dead Worker's leaked warm container. Warm
+///   creates are unfenced, and `existing_realization_decision` refuses to
+///   recover *any* existing realization without a durable effect fence, so that
+///   collision does not adopt or replace — it fails the create permanently. The
+///   incarnation (pid + nanosecond epoch + sequence) cannot be drawn twice.
+/// * The leaked container carries that same incarnation in its owner label, so
+///   a leak is attributable to the dead Worker rather than anonymous.
+///
+/// What it does **not** buy, and what no naming scheme in this crate can: a
+/// restarted Worker still cannot *reclaim* the leftover. Unfenced removal is
+/// restricted to a scope this process minted, and the fenced disposal path
+/// needs a durable receipt warm capacity deliberately never has. Cross-restart
+/// reclamation therefore needs a lease over warm capacity, not a better name.
+fn next_warm_scope(incarnation: &str) -> String {
     format!(
-        "warmpool-{}-{}",
-        std::process::id(),
+        "warmpool-{incarnation}-{}",
         WARM_SEQ.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -110,6 +129,17 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
     closed: Arc<AtomicBool>,
     in_flight_creates: Arc<AtomicUsize>,
     create_changed: Arc<tokio::sync::Notify>,
+    /// Warm scopes whose create was started and whose caller then went away.
+    ///
+    /// A scope lands here only through an [`pc::EffectClaim::in_process`]
+    /// retention, which runs on exactly one transition: the claimed create
+    /// dropped unsettled. A create that returned — `Ok` or `Err` — settles and
+    /// never records, because a returned container is in hand and a returned
+    /// error owns whatever it half-created.
+    unreceipted_scopes: Arc<Mutex<BTreeSet<String>>>,
+    /// This pool's incarnation, mixed into every warm scope. See
+    /// [`next_warm_scope`].
+    incarnation: String,
 }
 
 impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
@@ -142,13 +172,78 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             closed: Arc::new(AtomicBool::new(false)),
             in_flight_creates: Arc::new(AtomicUsize::new(0)),
             create_changed: Arc::new(tokio::sync::Notify::new()),
+            unreceipted_scopes: Arc::new(Mutex::new(BTreeSet::new())),
+            incarnation: crate::runtime_owner_id(),
         }
     }
 
     /// A unique per-warm container scope, so pre-warmed names never collide with a
     /// session's thread-scoped name or each other.
     fn warm_scope(&self) -> String {
-        next_warm_scope()
+        next_warm_scope(&self.incarnation)
+    }
+
+    /// Start one warm create whose responsibility record exists before the
+    /// create can be polled.
+    ///
+    /// [`pc::ClaimedEffect::new`] takes the claim by value, so the retention —
+    /// which knows the exact scope this create is about to realize — is minted
+    /// strictly before the future is built. There is no ordering left for a
+    /// reviewer to get wrong: the only way to reach the runtime is through the
+    /// awaited effect, and by then the record is already able to name what the
+    /// runtime is about to create.
+    ///
+    /// Both the readiness probe and the create live inside the claim, because
+    /// both windows strand the same container: the probe's own disposal is an
+    /// await, and a task dropped there leaves a running container the pool has
+    /// otherwise never heard of.
+    fn claimed_warm_create<'a>(
+        inner: &'a ContainerProvider<R>,
+        unreceipted_scopes: &Arc<Mutex<BTreeSet<String>>>,
+        warm_spec: &'a pc::SandboxSpec,
+    ) -> pc::ClaimedEffect<'a, ContainerSandbox<R>> {
+        let scopes = unreceipted_scopes.clone();
+        let scope = warm_spec.scope.clone();
+        let in_flight = move || {
+            scopes
+                .lock()
+                .expect("warm unreceipted scope mutex")
+                .insert(scope);
+        };
+        pc::ClaimedEffect::new(pc::EffectClaim::in_process(in_flight), async move {
+            ready_candidate(inner.create_container(warm_spec).await?).await
+        })
+    }
+
+    /// Warm scopes currently on record as created-by-nobody. Read by
+    /// [`Self::shutdown`] and by the cancellation tests.
+    pub(crate) fn unreceipted_warm_scopes(&self) -> Vec<String> {
+        self.unreceipted_scopes
+            .lock()
+            .expect("warm unreceipted scope mutex")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Dispose every warm scope on record, clearing each only once the runtime
+    /// reports its object gone. A scope whose removal fails stays on record, so
+    /// the drain below keeps it visible instead of reporting a cleanup that did
+    /// not happen.
+    async fn dispose_unreceipted_scopes(&self) {
+        for scope in self.unreceipted_warm_scopes() {
+            if self
+                .inner
+                .dispose_unreceipted_capacity(&scope)
+                .await
+                .is_ok()
+            {
+                self.unreceipted_scopes
+                    .lock()
+                    .expect("warm unreceipted scope mutex")
+                    .remove(&scope);
+            }
+        }
     }
 
     fn begin_create(&self) -> Result<InFlightCreate, pc::SandboxError> {
@@ -220,7 +315,9 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             let create = self.begin_create()?;
             let mut warm_spec = spec.clone();
             warm_spec.scope = self.warm_scope();
-            let sandbox = ready_candidate(self.inner.create_container(&warm_spec).await?).await?;
+            let in_flight =
+                Self::claimed_warm_create(&self.inner, &self.unreceipted_scopes, &warm_spec);
+            let sandbox = in_flight.await?;
             let (excess, evicted) = {
                 let mut map = self.warm.lock().expect("warm pool mutex");
                 let mut evicted = Vec::new();
@@ -321,10 +418,21 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             for sandbox in batch {
                 let _ = sandbox.dispose().await;
             }
+            // The ready set is only the capacity that arrived. A create whose
+            // caller was cancelled never reaches it, so draining `warm` alone is
+            // what let a running container survive the drain that was supposed
+            // to be a complete teardown.
+            self.dispose_unreceipted_scopes().await;
             let changed = self.create_changed.notified();
             if self.in_flight_creates.load(Ordering::SeqCst) == 0 {
                 // No create can begin after `closed`; drain once more to cover the
                 // insertion that happened immediately before the count reached zero.
+                // A scope whose removal failed stays on record and is
+                // deliberately not part of this condition: the drain is
+                // best-effort per container, and blocking teardown on a backend
+                // that keeps refusing would hang the Worker instead of
+                // reporting the leak. `unreceipted_warm_scopes` is what still
+                // names it afterwards.
                 if self
                     .warm
                     .lock()
@@ -352,6 +460,8 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let closed = self.closed.clone();
         let in_flight_creates = self.in_flight_creates.clone();
         let create_changed = self.create_changed.clone();
+        let unreceipted_scopes = self.unreceipted_scopes.clone();
+        let incarnation = self.incarnation.clone();
         let size = self.size;
         let total_size = self.total_size;
         in_flight_creates.fetch_add(1, Ordering::SeqCst);
@@ -378,31 +488,33 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                     }
                 };
                 let mut warm_spec = template;
-                warm_spec.scope = next_warm_scope();
-                match inner.create_container(&warm_spec).await {
-                    Ok(sandbox) => match ready_candidate(sandbox).await {
-                        Ok(sandbox) => {
-                            // Re-check the cap under the lock; dispose an over-cap create.
-                            let over = {
-                                let mut map = warm.lock().expect("warm pool mutex");
-                                let total =
-                                    map.values().map(|entry| entry.ready.len()).sum::<usize>();
-                                match map.get_mut(&key) {
-                                    Some(e) if e.ready.len() < size && total < total_size => {
-                                        e.ready.push(sandbox);
-                                        None
-                                    }
-                                    _ => Some(sandbox),
+                warm_spec.scope = next_warm_scope(&incarnation);
+                // The same claim as the request path. A detached task is not
+                // cancelled by its caller, but it is still dropped when the
+                // runtime it was spawned onto shuts down, and that drop strands
+                // the identical container.
+                let in_flight = Self::claimed_warm_create(&inner, &unreceipted_scopes, &warm_spec);
+                match in_flight.await {
+                    Ok(sandbox) => {
+                        // Re-check the cap under the lock; dispose an over-cap create.
+                        let over = {
+                            let mut map = warm.lock().expect("warm pool mutex");
+                            let total = map.values().map(|entry| entry.ready.len()).sum::<usize>();
+                            match map.get_mut(&key) {
+                                Some(e) if e.ready.len() < size && total < total_size => {
+                                    e.ready.push(sandbox);
+                                    None
                                 }
-                            };
-                            if let Some(excess) = over {
-                                let _ = excess.dispose().await;
-                                return;
+                                _ => Some(sandbox),
                             }
+                        };
+                        if let Some(excess) = over {
+                            let _ = excess.dispose().await;
+                            return;
                         }
-                        Err(_) => return,
-                    },
-                    // A create failure stops replenishing this key (fail closed, no spin).
+                    }
+                    // A create or readiness failure stops replenishing this key
+                    // (fail closed, no spin).
                     Err(_) => return,
                 }
             }
@@ -590,6 +702,11 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
     }
 }
 
+/// Cancellation cases live beside the shared fake in [`tests`] rather than in
+/// it, so the drop-mid-create scenarios stay readable next to each other.
+#[cfg(test)]
+mod cancellation_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,19 +720,24 @@ mod tests {
         has_physical_fingerprint: bool,
     }
 
-    struct RecordingRuntime {
-        creates: AtomicUsize,
+    pub(super) struct RecordingRuntime {
+        pub(super) creates: AtomicUsize,
         fenced_creates: AtomicUsize,
         realization_phases: Mutex<Vec<RealizationPhase>>,
-        removes: AtomicUsize,
-        ready: AtomicBool,
-        block_create: AtomicBool,
-        create_started: tokio::sync::Notify,
-        allow_create: tokio::sync::Semaphore,
+        pub(super) removes: AtomicUsize,
+        pub(super) ready: AtomicBool,
+        pub(super) block_create: AtomicBool,
+        pub(super) create_started: tokio::sync::Notify,
+        pub(super) allow_create: tokio::sync::Semaphore,
+        /// Scopes removed through the unreceipted-capacity port, in order.
+        /// A fake must record this separately from `removes`: the two ports
+        /// differ in exactly the fact under test — one needs a container in
+        /// hand, the other only the name of one nobody ever held.
+        pub(super) unreceipted_removals: Mutex<Vec<String>>,
     }
 
     impl RecordingRuntime {
-        fn ready() -> Self {
+        pub(super) fn ready() -> Self {
             Self {
                 creates: AtomicUsize::new(0),
                 fenced_creates: AtomicUsize::new(0),
@@ -625,6 +747,7 @@ mod tests {
                 block_create: AtomicBool::new(false),
                 create_started: tokio::sync::Notify::new(),
                 allow_create: tokio::sync::Semaphore::new(0),
+                unreceipted_removals: Mutex::new(Vec::new()),
             }
         }
     }
@@ -782,9 +905,17 @@ mod tests {
             self.removes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        async fn remove_unreceipted_scope(&self, scope: &str) -> Result<(), crate::RuntimeError> {
+            self.unreceipted_removals
+                .lock()
+                .unwrap()
+                .push(scope.to_owned());
+            Ok(())
+        }
     }
 
-    fn recording_pool(
+    pub(super) fn recording_pool(
         runtime: Arc<RecordingRuntime>,
         size: usize,
     ) -> WarmContainerPool<RecordingRuntime> {
@@ -806,7 +937,7 @@ mod tests {
         assert!(!pool.sandbox_capabilities().enforced_network_allowlist);
     }
 
-    fn spec(scope: &str, cmd: &[&str]) -> pc::SandboxSpec {
+    pub(super) fn spec(scope: &str, cmd: &[&str]) -> pc::SandboxSpec {
         pc::SandboxSpec {
             process_tree_supervision: false,
             scope: scope.into(),
