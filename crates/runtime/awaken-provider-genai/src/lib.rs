@@ -30,6 +30,8 @@ mod anthropic_content;
 mod error_classification;
 mod inference_options;
 mod model_discovery;
+pub use error_classification::classify_error;
+use error_classification::classify_genai_error;
 pub use model_discovery::{ModelDiscoveryError, discover_model_ids};
 mod openai_responses;
 pub use openai_responses::OpenAiResponsesExecutor;
@@ -37,7 +39,6 @@ mod stop_reason;
 pub use stop_reason::map_stop_reason;
 mod transcript_projection;
 
-use error_classification::classify_genai_error;
 use transcript_projection::{
     NeutralPartKind, ProviderPartKind, ReasoningFoldAction, ReplayRowState, ResponseTransport,
     ThinkingProjection, TranscriptDialect, decide_reasoning_fold, project_part_kind,
@@ -66,14 +67,14 @@ mod default_timeout_tests {
 
     /// Cause/effect design: C1 the default complete-response and idle-silence
     /// budgets are selected together. Effect E1: the complete response retains
-    /// at least two idle windows, so healthy reasoning progress is not bounded
+    /// at least four idle windows, so healthy reasoning progress is not bounded
     /// by the transport-silence threshold. Coverage rule T1=C1=>E1; a smaller
     /// ratio is the regression boundary asserted here.
     /// Constraints/invariants: the complete-call budget must remain at least
-    /// twice the idle window; specialized overrides do not change defaults.
+    /// four times the idle window; specialized overrides do not change defaults.
     #[test]
     fn complete_reasoning_response_has_a_larger_budget_than_transport_silence() {
-        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 2);
+        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 4);
         assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
     }
 }
@@ -467,113 +468,6 @@ fn model_http_client() -> Result<reqwest::Client> {
         .map_err(|error| {
             Error::Binding(format!("model transport could not be constructed: {error}"))
         })
-}
-
-/// Classify a provider error string into the contract's error taxonomy. The
-/// SDK surfaces errors as strings, so classification matches lowercase
-/// substrings, most-specific class first: a context-overflow 400 must not fall
-/// into the generic invalid-request bucket, and a safety rejection must not
-/// look like a retryable provider fault. An unmatched message classifies as a
-/// retryable `Provider` error — the unknown-failure default mirrors treating
-/// an unclassified transport fault as worth one more attempt.
-pub fn classify_error(message: &str) -> Error {
-    fn hits(lower: &str, needles: &[&str]) -> bool {
-        needles.iter().any(|needle| lower.contains(needle))
-    }
-
-    let lower = message.to_lowercase();
-    // Covers Anthropic/OpenAI/Azure phrasings of "the prompt does not fit".
-    const OVERFLOW: &[&str] = &[
-        "prompt is too long",
-        "context_length_exceeded",
-        "context length",
-        "input is too long",
-        "maximum context length",
-        "reduce the length",
-        "too many tokens",
-        "request too large",
-        "413",
-    ];
-    const CONTENT_FILTER: &[&str] = &["content_filter", "content filter", "content policy"];
-    const UNAUTHORIZED: &[&str] = &[
-        "401",
-        "403",
-        "unauthorized",
-        "forbidden",
-        "invalid api key",
-        "authentication",
-        "permission denied",
-    ];
-    const MODEL_NOT_FOUND: &[&str] = &["404", "model not found", "model_not_found"];
-    const RATE_LIMITED: &[&str] = &["rate limit", "ratelimit", "429", "too many requests"];
-    const OVERLOADED: &[&str] = &["overloaded", "529", "503", "unavailable"];
-    const TIMEOUT: &[&str] = &["timeout", "timed out", "408", "504"];
-    const INVALID_REQUEST: &[&str] = &["400", "422", "invalid request", "invalid_request_error"];
-    // A HARD usage/quota/billing exhaustion — recognised distinctly from a transient
-    // 429 rate limit so it is surfaced (not retried) rather than mislabelled.
-    const USAGE_LIMIT: &[&str] = &[
-        "usage limit",
-        "quota",
-        "insufficient_quota",
-        "insufficient balance",
-        "insufficient_balance",
-        "payment required",
-        "billing",
-        "credit balance",
-        "out of credit",
-        "spending limit",
-        "weekly limit",
-        "monthly limit",
-        "exceeded your current",
-    ];
-    // The credential needs re-authentication (expired grant / login) — recognised
-    // distinctly from a generic authorization failure.
-    const LOGIN_REQUIRED: &[&str] = &[
-        "login required",
-        "please log in",
-        "session expired",
-        "token expired",
-        "token has expired",
-        "invalid_grant",
-        "reauthenticate",
-        "re-authenticate",
-    ];
-
-    let message = message.to_string();
-    if hits(&lower, CONTENT_FILTER) {
-        Error::ContentFiltered(message)
-    } else if hits(&lower, OVERFLOW) {
-        Error::ContextOverflow(message)
-    } else if hits(&lower, LOGIN_REQUIRED) {
-        Error::LoginRequired(message)
-    } else if hits(&lower, UNAUTHORIZED) {
-        Error::Unauthorized(message)
-    } else if hits(&lower, USAGE_LIMIT) {
-        // Recognised only; `reset_after` stays `None` here (a free-text message
-        // carries no reliable structured window) and nothing is scheduled from it.
-        Error::UsageLimit {
-            message,
-            reset_after: None,
-        }
-    } else if hits(&lower, MODEL_NOT_FOUND) {
-        Error::ModelNotFound(message)
-    } else if hits(&lower, RATE_LIMITED) {
-        Error::RateLimited {
-            message,
-            retry_after: None,
-        }
-    } else if hits(&lower, OVERLOADED) {
-        Error::Overloaded {
-            message,
-            retry_after: None,
-        }
-    } else if hits(&lower, TIMEOUT) {
-        Error::Timeout(message)
-    } else if hits(&lower, INVALID_REQUEST) {
-        Error::InvalidRequest(message)
-    } else {
-        Error::Provider(message)
-    }
 }
 
 /// The outcome of a live credential probe (ADR-0043 `CredentialValidation`),

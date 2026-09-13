@@ -28,6 +28,8 @@ pub enum TerminalWireFact {
     Status,
     /// A complete non-streaming response body was received and decoded.
     CompleteBody,
+    /// A complete HTTP error response body was received for this invocation.
+    CompleteErrorBody,
     /// The streaming protocol's own end-of-response frame was received.
     StreamEndFrame,
     /// Restored from a journal written before receipts were recorded. Such a
@@ -50,6 +52,9 @@ pub enum ResponseEnvelope {
     /// The provider's complete non-streaming response body was received and
     /// decoded for this exact invocation.
     CompleteBody,
+    /// The provider completed this invocation with an HTTP error response and
+    /// the adapter consumed its complete body. A status line alone is not this.
+    CompleteErrorBody,
     /// The streaming protocol's own end-of-response frame was received
     /// (OpenAI `[DONE]`, Anthropic `message_stop`) — not a socket EOF.
     StreamEndFrame,
@@ -119,6 +124,7 @@ impl TerminalReceipt {
         Self {
             fact: match envelope {
                 ResponseEnvelope::CompleteBody => TerminalWireFact::CompleteBody,
+                ResponseEnvelope::CompleteErrorBody => TerminalWireFact::CompleteErrorBody,
                 ResponseEnvelope::StreamEndFrame => TerminalWireFact::StreamEndFrame,
             },
             seal: Seal,
@@ -1040,7 +1046,7 @@ mod tests {
         // decoded a response envelope it can name.
         // Effects: E1 a receipt recording the exact wire fact; E2 refusal.
         // Rules: R1 = C1 => E1(Status); R2 = C2 => E2; R3 = C3 => E2;
-        // R4 = C4 => E1(CompleteBody/StreamEndFrame). Every refusal leaves the
+        // R4 = C4 => E1(CompleteBody/CompleteErrorBody/StreamEndFrame). Every refusal leaves the
         // caller with `Unknown`, which never permits re-entry — so an
         // unrecognised or absent status can no longer be guessed into a
         // terminal class the way a catch-all arm used to.
@@ -1073,6 +1079,10 @@ mod tests {
             (
                 ResponseEnvelope::CompleteBody,
                 TerminalWireFact::CompleteBody,
+            ),
+            (
+                ResponseEnvelope::CompleteErrorBody,
+                TerminalWireFact::CompleteErrorBody,
             ),
             (
                 ResponseEnvelope::StreamEndFrame,
@@ -1110,6 +1120,18 @@ mod tests {
                     TerminalReceipt::from_wire_status(Some("failed")).unwrap(),
                 ),
                 serde_json::json!({ "Terminated": "status" }),
+            ),
+            (
+                ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
+                    ResponseEnvelope::CompleteBody,
+                )),
+                serde_json::json!({ "Terminated": "complete_body" }),
+            ),
+            (
+                ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
+                    ResponseEnvelope::CompleteErrorBody,
+                )),
+                serde_json::json!({ "Terminated": "complete_error_body" }),
             ),
             (
                 ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
