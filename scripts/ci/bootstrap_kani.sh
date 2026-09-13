@@ -107,8 +107,12 @@ verify_backend() {
 }
 
 kani_build_digest() {
+  # The digest names a set of files, so the order they are hashed in must not
+  # depend on who runs it. `sort` collates by locale, so an operator whose
+  # LANG is not C would compute a different digest for the same bytes and read
+  # an intact qualified cache as tampered with.
   (cd "$source_dir" && find target/kani -type f -print0 |
-    sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)
+    LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)
 }
 
 verify_kani_build() {
