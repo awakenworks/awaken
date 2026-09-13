@@ -689,6 +689,7 @@ async fn settle_retries_only_ambiguous_transport_outcomes() {
 /// | T1 | 200 | no | snapshot returned (covered by runtime-host HTTP test) |
 /// | T2 | 503 | yes, bounded | snapshot returned on the second response |
 /// | T3 | 400 | no | rejected immediately |
+/// | T4 | 409 | no | exact stale-claim conflict |
 #[tokio::test]
 async fn recovery_snapshot_retries_only_ambiguous_transport_outcomes() {
     let claim = RunClaim {
@@ -717,6 +718,16 @@ async fn recovery_snapshot_retries_only_ambiguous_transport_outcomes() {
             .is_err()
     );
     assert_eq!(reject_state.calls.load(Ordering::SeqCst), 1);
+
+    let (conflict_base, conflict_state) =
+        spawn_scripted_idempotent_server(StatusCode::CONFLICT).await;
+    let conflicted =
+        HttpDispatchQueue::new(conflict_base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    assert!(matches!(
+        conflicted.load_recovery_snapshot(&claim, None).await,
+        Err(DispatchError::Conflict(_))
+    ));
+    assert_eq!(conflict_state.calls.load(Ordering::SeqCst), 1, "T4");
 }
 
 // ── 1. The db-less remote-worker seam: enqueue → claim → fence → settle ──────────

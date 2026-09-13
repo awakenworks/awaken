@@ -279,21 +279,34 @@ struct PoolAdmission {
 struct DrainErrorState {
     consecutive_errors: u32,
     retry_not_before: Option<tokio::time::Instant>,
-    probe_in_flight: bool,
+    probe_in_flight: Option<Arc<()>>,
 }
 
 impl DrainErrorState {
-    /// Pure transition inside the pool-wide mutex. The caller owns clock
+    /// Synchronous transition inside the pool-wide mutex. The caller owns clock
     /// comparison; this kernel owns the single recovery-probe authority.
     fn admit_cycle(&mut self, retry_deadline_reached: bool) -> bool {
         if self.consecutive_errors == 0 {
             return true;
         }
-        if self.probe_in_flight || !retry_deadline_reached {
+        if self.probe_in_flight.is_some() || !retry_deadline_reached {
             return false;
         }
-        self.probe_in_flight = true;
+        self.probe_in_flight = Some(Arc::new(()));
         true
+    }
+
+    fn release_probe(&mut self, probe: &Arc<()>) -> bool {
+        if self
+            .probe_in_flight
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, probe))
+        {
+            self.probe_in_flight = None;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -303,10 +316,15 @@ struct DrainErrorGate {
     changed: Notify,
 }
 
+enum DrainCycle {
+    Healthy,
+    Probe(Arc<()>),
+}
+
 impl DrainErrorGate {
     /// During an outage, admit exactly one recovery probe for the whole pool.
     /// Pool width must remain execution concurrency, never retry concurrency.
-    async fn wait_cycle(&self, shutdown: &CancellationToken) -> bool {
+    async fn wait_cycle(&self, shutdown: &CancellationToken) -> Option<DrainCycle> {
         self.wait_cycle_observed(shutdown, || {}).await
     }
 
@@ -316,7 +334,7 @@ impl DrainErrorGate {
         &self,
         shutdown: &CancellationToken,
         mut after_observation: impl FnMut(),
-    ) -> bool {
+    ) -> Option<DrainCycle> {
         loop {
             // notify_waiters does not retain a permit for a future waiter.
             // Register before reading state so a probe that returns after the
@@ -328,35 +346,57 @@ impl DrainErrorGate {
                 let mut state = self.state.lock().await;
                 if state.consecutive_errors == 0 {
                     debug_assert!(state.admit_cycle(false));
-                    return true;
+                    return Some(DrainCycle::Healthy);
                 }
                 let retry_not_before = state
                     .retry_not_before
                     .expect("an error state owns a retry deadline");
                 let now = tokio::time::Instant::now();
                 if state.admit_cycle(now >= retry_not_before) {
-                    return true;
+                    return Some(DrainCycle::Probe(
+                        state
+                            .probe_in_flight
+                            .clone()
+                            .expect("admitted recovery probe"),
+                    ));
                 }
-                (!state.probe_in_flight).then(|| retry_not_before.duration_since(now))
+                state
+                    .probe_in_flight
+                    .is_none()
+                    .then(|| retry_not_before.duration_since(now))
             };
             after_observation();
             match delay {
                 Some(delay) => tokio::select! {
-                    _ = shutdown.cancelled() => return false,
+                    _ = shutdown.cancelled() => return None,
                     _ = &mut changed => {},
                     _ = tokio::time::sleep(delay) => {},
                 },
                 None => tokio::select! {
-                    _ = shutdown.cancelled() => return false,
+                    _ = shutdown.cancelled() => return None,
                     _ = &mut changed => {},
                 },
             }
         }
     }
 
+    /// Queue recovery probes end before long-running execution. Keep the error
+    /// count/deadline until settlement so repeated drive failures still back off.
+    /// Arc identity cannot be reused while a delayed cycle retains its token.
+    async fn release_probe(&self, cycle: &DrainCycle) {
+        let DrainCycle::Probe(probe) = cycle else {
+            return;
+        };
+        let mut state = self.state.lock().await;
+        if state.release_probe(probe) {
+            drop(state);
+            self.changed.notify_waiters();
+        }
+    }
+
     async fn record_success(&self) {
         let mut state = self.state.lock().await;
-        if state.consecutive_errors == 0 && !state.probe_in_flight {
+        if state.consecutive_errors == 0 && state.probe_in_flight.is_none() {
             return;
         }
         *state = DrainErrorState::default();
@@ -369,7 +409,7 @@ impl DrainErrorGate {
         state.consecutive_errors = state.consecutive_errors.saturating_add(1);
         let delay = drain_error_backoff(state.consecutive_errors);
         state.retry_not_before = Some(tokio::time::Instant::now() + delay);
-        state.probe_in_flight = false;
+        state.probe_in_flight = None;
         let consecutive_errors = state.consecutive_errors;
         drop(state);
         self.changed.notify_waiters();
@@ -719,9 +759,9 @@ async fn drain_loop<S: Dispatch + 'static>(
             _ = shutdown.cancelled() => break,
             _ = admission.wake.notified() => {}
         }
-        if !admission.error_gate.wait_cycle(&shutdown).await {
+        let Some(cycle) = admission.error_gate.wait_cycle(&shutdown).await else {
             break;
-        }
+        };
         // Drain everything runnable now. A store error is transient — the next
         // tick retries — so swallow it rather than kill the task.
         match claim_and_drive(
@@ -732,6 +772,7 @@ async fn drain_loop<S: Dispatch + 'static>(
             resolver.as_ref(),
             &completion,
             &admission,
+            &cycle,
         )
         .await
         {
@@ -915,13 +956,41 @@ mod drain_error_proofs {
         let mut state = DrainErrorState {
             consecutive_errors,
             retry_not_before: None,
-            probe_in_flight: false,
+            probe_in_flight: None,
         };
 
         assert!(!state.admit_cycle(false));
-        assert!(!state.probe_in_flight);
+        assert!(state.probe_in_flight.is_none());
         assert!(state.admit_cycle(true));
-        assert!(state.probe_in_flight);
+        assert!(state.probe_in_flight.is_some());
+        assert!(!state.admit_cycle(true));
+    }
+
+    #[kani::proof]
+    fn probe_release_is_exact_and_preserves_backoff() {
+        // P1 exact identity releases the gate, P2 stale identity changes nothing;
+        // both preserve fault history. A retained token cannot equal the next
+        // allocation, including after the previous probe has been released.
+        let mut state = DrainErrorState {
+            consecutive_errors: kani::any(),
+            ..Default::default()
+        };
+        kani::assume(state.consecutive_errors > 0);
+        let errors = state.consecutive_errors;
+        assert!(state.admit_cycle(true));
+        let old = state.probe_in_flight.clone().unwrap();
+        let foreign = std::sync::Arc::new(());
+        let exact: bool = kani::any();
+        assert_eq!(
+            state.release_probe(if exact { &old } else { &foreign }),
+            exact
+        );
+        assert_eq!(state.probe_in_flight.is_none(), exact);
+        assert_eq!(state.consecutive_errors, errors);
+        state.release_probe(&old);
+        assert!(state.admit_cycle(true));
+        assert!(!state.release_probe(&old));
+        assert!(state.probe_in_flight.is_some());
         assert!(!state.admit_cycle(true));
     }
 
@@ -971,6 +1040,7 @@ async fn wake_coordinator_loop(
 /// Claim one runnable dispatch from the shared queue and drive it on the worker
 /// that owns its thread. Returns whether a run was claimed. On settle, notifies the
 /// [`CompletionSink`] so a foreground waiter wakes by event, not by poll.
+#[allow(clippy::too_many_arguments)]
 async fn claim_and_drive<S: Dispatch + 'static>(
     store: &Arc<S>,
     clock: &Arc<dyn Clock>,
@@ -979,6 +1049,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     resolver: &dyn WorkerResolver<S>,
     completion: &Option<Arc<dyn CompletionSink>>,
     admission: &Arc<PoolAdmission>,
+    cycle: &DrainCycle,
 ) -> Result<bool, ClaimAndDriveFailure> {
     let (claimed, retry_exhausted) = {
         let gate = admission.gate.read().await;
@@ -1028,6 +1099,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         // Retry exhaustion is never execution resolution. Every pool and remote
         // path calls the same Worker terminal method through this resolver seam;
         // a failure leaves the exact claim leased for later re-claim.
+        admission.error_gate.release_probe(cycle).await;
         admission.wake.notify_one();
         resolver.terminalize_retry_exhausted(&claimed).await
     } else {
@@ -1037,6 +1109,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
                 // Only now hand a permit to a peer: notifying before resolution
                 // would let a temporarily inadmissible head item hot-loop and starve
                 // later runnable work.
+                admission.error_gate.release_probe(cycle).await;
                 admission.wake.notify_one();
                 worker
                     .drive_claimed_with_renewal(claimed, clock.clone(), claim_renewal)
@@ -1060,6 +1133,27 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     };
     let settled = match settled {
         Ok(settled) => settled,
+        Err(error) if error.is_dispatch_conflict() => {
+            // A precise transport/store conflict proves this claim has already
+            // been fenced by another immutable identity. It is not a shared
+            // outage and must never close the pool-wide error gate.
+            relinquish_after_claim_failure(store.as_ref(), &claim).await;
+            tracing::debug!(run_id = %claim.run_id.0, %error, "stale dispatch claim was fenced");
+            return Ok(true);
+        }
+        Err(error) if error.is_settlement_observation_pending() => {
+            // The Run has already committed terminal truth. Only this
+            // Dispatch's Session projection is not yet observable, so give it
+            // a request-local retry deadline and let unrelated claims proceed.
+            // Re-entry remains fenced by committed truth and the physical slot.
+            defer_after_resolution_failure(
+                store.as_ref(),
+                &claim,
+                RESOLUTION_RETRY_DELAY.as_millis() as u64,
+            )
+            .await?;
+            return Err(ClaimAndDriveFailure::ResolutionDeferred(error));
+        }
         Err(error) => {
             // Cause/effect decision table: C1 this exact mutation claim failed
             // before/after a physical attempt; C2 an opaque physical slot still
@@ -1390,14 +1484,54 @@ mod in_flight_tests {
         })
         .await;
         tokio::time::advance(delay).await;
-        assert!(first.await, "one pool-wide probe owns recovery authority");
+        assert!(
+            first.await.is_some(),
+            "one pool-wide probe owns recovery authority"
+        );
         poll_fn(|cx| {
             assert!(second.as_mut().poll(cx).is_pending());
             Poll::Ready(())
         })
         .await;
         shutdown.cancel();
-        assert!(!second.await, "shutdown releases the blocked sibling");
+        assert!(
+            second.await.is_none(),
+            "shutdown releases the blocked sibling"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn execution_handoff_releases_only_its_probe_without_resetting_backoff() {
+        // Causes: C1 failure deadline, C2 exact probe reaches execution, C3
+        // duplicate/late handoff, C4 a later failure. Rules: C2 opens admission
+        // without clearing the deadline/count; C3 cannot clear the next probe;
+        // C4 retains exponential backoff rather than restarting at 100ms.
+        let gate = DrainErrorGate::default();
+        let shutdown = CancellationToken::new();
+        let (_, delay) = gate.record_failure().await;
+        tokio::time::advance(delay).await;
+        let first = gate.wait_cycle(&shutdown).await.unwrap();
+        let deadline = gate.state.lock().await.retry_not_before;
+        gate.release_probe(&first).await;
+        {
+            let state = gate.state.lock().await;
+            assert!(state.probe_in_flight.is_none());
+            assert_eq!(state.consecutive_errors, 1);
+            assert_eq!(state.retry_not_before, deadline);
+        }
+        let second = gate.wait_cycle(&shutdown).await.unwrap();
+        gate.release_probe(&DrainCycle::Healthy).await;
+        gate.release_probe(&first).await;
+        assert!(gate.state.lock().await.probe_in_flight.is_some());
+        gate.release_probe(&second).await;
+        assert_eq!(gate.record_failure().await, (2, Duration::from_millis(200)));
+        tokio::time::advance(Duration::from_millis(200)).await;
+        let third = gate.wait_cycle(&shutdown).await.unwrap();
+        gate.release_probe(&second).await;
+        assert!(gate.state.lock().await.probe_in_flight.is_some());
+        gate.release_probe(&third).await;
+        gate.record_success().await;
+        assert_eq!(gate.state.lock().await.consecutive_errors, 0);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1409,7 +1543,7 @@ mod in_flight_tests {
         let gate = DrainErrorGate::default();
         let shutdown = CancellationToken::new();
         gate.record_failure().await;
-        gate.state.lock().await.probe_in_flight = true;
+        gate.state.lock().await.probe_in_flight = Some(Arc::new(()));
         let mut observed = false;
         let waiter = gate.wait_cycle_observed(&shutdown, || {
             assert!(!observed, "the reopened gate must admit on the next check");
@@ -1426,6 +1560,7 @@ mod in_flight_tests {
             tokio::time::timeout(Duration::from_secs(1), waiter)
                 .await
                 .expect("completion notification must survive before suspension")
+                .is_some()
         );
         assert!(observed);
     }
