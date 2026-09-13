@@ -593,7 +593,7 @@ pub enum InboundEvent {
         custom_tool_use_id: String,
         #[serde(default)]
         content: Option<Vec<ContentBlock>>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "super::presence::bool_or_null")]
         is_error: bool,
     },
     /// The generic client-provided result for an awaiting tool, keyed by the
@@ -607,7 +607,7 @@ pub enum InboundEvent {
         tool_use_id: String,
         #[serde(default)]
         content: Option<Vec<ContentBlock>>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "super::presence::bool_or_null")]
         is_error: bool,
     },
     #[serde(rename = "user.define_outcome")]

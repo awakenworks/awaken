@@ -163,7 +163,7 @@ struct DeletedMemoryResource {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MemoryStoreCreateParams {
+pub(crate) struct MemoryStoreCreateParams {
     name: String,
     #[serde(default)]
     description: Option<String>,
@@ -173,7 +173,7 @@ struct MemoryStoreCreateParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MemoryStoreUpdateParams {
+pub(crate) struct MemoryStoreUpdateParams {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -184,7 +184,7 @@ struct MemoryStoreUpdateParams {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MemoryStoreListParams {
+pub(crate) struct MemoryStoreListParams {
     #[serde(default, rename = "beta")]
     _beta_selector: Option<bool>,
     #[serde(
@@ -218,14 +218,14 @@ struct MemoryStoreListParams {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MemoryDeleteParams {
+pub(crate) struct MemoryDeleteParams {
     #[serde(default, rename = "beta")]
     _beta_selector: Option<bool>,
     #[serde(
         default,
         deserialize_with = "crate::types::page::deserialize_optional_query_value"
     )]
-    expected_content_sha256: Option<String>,
+    pub(crate) expected_content_sha256: Option<String>,
 }
 
 impl MemoryStoreListParams {
@@ -243,7 +243,7 @@ struct NullableString(Option<String>);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MemoryCreateParams {
+pub(crate) struct MemoryCreateParams {
     content: NullableString,
     path: String,
 }
@@ -257,7 +257,7 @@ struct MemoryCreateParams {
 /// made every official SDK precondition a 400.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum MemoryPrecondition {
+pub(crate) enum MemoryPrecondition {
     ContentSha256 { content_sha256: String },
 }
 
@@ -295,13 +295,13 @@ impl MemoryPrecondition {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MemoryUpdateParams {
+pub(crate) struct MemoryUpdateParams {
     #[serde(default, deserialize_with = "crate::types::presence::double_option")]
     content: Option<Option<String>>,
     #[serde(default, deserialize_with = "crate::types::presence::double_option")]
     path: Option<Option<String>>,
     #[serde(default)]
-    precondition: Option<MemoryPrecondition>,
+    pub(crate) precondition: Option<MemoryPrecondition>,
 }
 
 fn project_version(

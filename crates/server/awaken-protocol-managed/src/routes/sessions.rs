@@ -38,7 +38,7 @@ use crate::types::{Event, StreamFrame};
 
 mod event_admission;
 mod execution_evidence;
-mod pagination;
+pub(crate) mod pagination;
 mod profiled_run;
 
 pub use event_admission::close_event_admission;
@@ -47,13 +47,13 @@ use pagination::{SessionListPage, parse_session_list, session_list_page};
 pub use profiled_run::submit_profiled_session_run;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionListOrder {
+pub(crate) enum SessionListOrder {
     Asc,
     Desc,
 }
 
 impl SessionListOrder {
-    fn parse(value: &str) -> Result<Self, WireErr> {
+    pub(crate) fn parse(value: &str) -> Result<Self, WireErr> {
         match value {
             "asc" => Ok(Self::Asc),
             "desc" => Ok(Self::Desc),
@@ -708,7 +708,7 @@ async fn list_thread_events(
 /// matching the official wire). The returned selection keeps message and thinking
 /// independent so opting into one cannot leak the other's preview frames.
 #[derive(Debug, Clone, Copy, Default)]
-struct PreviewSelection {
+pub(crate) struct PreviewSelection {
     message: bool,
     thinking: bool,
 }
@@ -727,7 +727,7 @@ impl PreviewSelection {
     }
 }
 
-fn parse_event_deltas(raw: Option<&str>) -> Result<PreviewSelection, WireErr> {
+pub(crate) fn parse_event_deltas(raw: Option<&str>) -> Result<PreviewSelection, WireErr> {
     let mut requested = PreviewSelection::default();
     let mut count = 0usize;
     if let Some(q) = raw {
@@ -758,7 +758,7 @@ fn parse_event_deltas(raw: Option<&str>) -> Result<PreviewSelection, WireErr> {
     Ok(requested)
 }
 
-fn parse_event_list_order(raw: Option<&str>) -> Result<SessionListOrder, WireErr> {
+pub(crate) fn parse_event_list_order(raw: Option<&str>) -> Result<SessionListOrder, WireErr> {
     let mut order = None;
     if let Some(query) = raw {
         for (key, value) in form_urlencoded::parse(query.as_bytes()) {
@@ -777,7 +777,7 @@ fn parse_event_list_order(raw: Option<&str>) -> Result<SessionListOrder, WireErr
 }
 
 #[derive(Debug, Default)]
-struct EventListFilter {
+pub(crate) struct EventListFilter {
     created_at_gt: Option<chrono::DateTime<chrono::FixedOffset>>,
     created_at_gte: Option<chrono::DateTime<chrono::FixedOffset>>,
     created_at_lt: Option<chrono::DateTime<chrono::FixedOffset>>,
@@ -822,7 +822,7 @@ impl EventListFilter {
     }
 }
 
-fn parse_event_list_filter(raw: Option<&str>) -> Result<EventListFilter, WireErr> {
+pub(crate) fn parse_event_list_filter(raw: Option<&str>) -> Result<EventListFilter, WireErr> {
     let mut filter = EventListFilter::default();
     let mut seen_bounds = HashSet::new();
     let mut type_count = 0usize;

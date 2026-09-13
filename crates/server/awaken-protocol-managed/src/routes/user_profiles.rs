@@ -529,7 +529,7 @@ impl std::str::FromStr for UserProfileListOrder {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UserProfileListParams {
+pub(crate) struct UserProfileListParams {
     #[serde(flatten)]
     page: PageQuery,
     #[serde(default, rename = "beta")]

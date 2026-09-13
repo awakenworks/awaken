@@ -100,12 +100,12 @@ pub(super) async fn poll_work(
 /// Parsed poll timing. `None` means the caller explicitly sent `block_ms=null`
 /// (serialized by the official SDK as an empty query value); omission uses the
 /// documented 999 ms default.
-struct PollParams {
+pub(crate) struct PollParams {
     block_ms: Option<std::time::Duration>,
     reclaim_older_than_ms: Option<u64>,
 }
 
-fn parse_poll_params(raw: Option<&str>) -> Result<PollParams, WireError> {
+pub(crate) fn parse_poll_params(raw: Option<&str>) -> Result<PollParams, WireError> {
     let mut block_ms = Some(std::time::Duration::from_millis(999));
     let mut reclaim_older_than_ms = None;
     for (key, value) in form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
@@ -138,7 +138,7 @@ fn parse_poll_params(raw: Option<&str>) -> Result<PollParams, WireError> {
 }
 
 #[derive(serde::Deserialize)]
-pub(super) struct HeartbeatParams {
+pub(crate) struct HeartbeatParams {
     #[serde(
         default,
         deserialize_with = "crate::types::page::deserialize_optional_query_value"

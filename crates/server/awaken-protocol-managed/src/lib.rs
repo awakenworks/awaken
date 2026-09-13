@@ -65,6 +65,9 @@ mod tunnel;
 mod work_queue;
 mod work_session_access;
 
+#[cfg(test)]
+mod official_request_witnesses;
+
 pub use inference_policy::{
     InferenceGeoCheckpoint, InferenceGeoPolicyError, ManagedInferenceGeoPolicy, inference_geo_name,
 };

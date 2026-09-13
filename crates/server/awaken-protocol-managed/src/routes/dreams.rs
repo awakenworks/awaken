@@ -59,7 +59,7 @@ async fn list(
         .map_err(error_response)
 }
 
-fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, DreamApiError> {
+pub(crate) fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, DreamApiError> {
     let mut params = DreamListParams::default();
     for (key, value) in form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
         match key.as_ref() {
