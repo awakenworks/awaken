@@ -136,17 +136,38 @@ enum GitAuthentication<'a> {
     },
 }
 
-fn git_command_output(
+/// Configuration every spawned Git receives, before any branch-specific option
+/// and before the caller's arguments.
+///
+/// Invariant: an effect spawns no process that outlives it. Git otherwise
+/// detaches `gc --auto` / `maintenance` after clone, fetch, commit, and
+/// receive-pack, and that child keeps writing under this process's `TMPDIR`
+/// (the effect's `repository-tmp`) after the effect has returned. Every Git
+/// invocation therefore disables automatic maintenance in full: no auto gc,
+/// no detached gc even if one were triggered, no scheduled maintenance, and
+/// no post-fetch commit-graph write.
+const GIT_NO_DETACHED_MAINTENANCE: [&str; 8] = [
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "gc.autoDetach=false",
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "fetch.writeCommitGraph=false",
+];
+
+/// The fully composed Git process for one invocation. The returned directory,
+/// when present, is the Network branch's isolated working directory and must
+/// live until the process has exited.
+fn compose_git_command(
     cwd: Option<&Path>,
     args: &[&str],
     authentication: GitAuthentication<'_>,
-) -> Result<std::process::Output, SandboxError> {
-    let redaction = match &authentication {
-        GitAuthentication::Local => None,
-        GitAuthentication::Network { credential, .. } => *credential,
-    };
+) -> Result<(std::process::Command, Option<tempfile::TempDir>), SandboxError> {
     let mut command = std::process::Command::new("git");
     command
+        .args(GIT_NO_DETACHED_MAINTENANCE)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env_remove(GIT_CREDENTIAL_USERNAME_ENV)
         .env_remove(GIT_CREDENTIAL_PASSWORD_ENV)
@@ -161,14 +182,15 @@ fn git_command_output(
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_NAMESPACE");
-    let isolated_cwd;
+    let mut isolated_cwd = None;
     if let GitAuthentication::Network {
         credential,
         transport,
         alternate_objects,
     } = authentication
     {
-        isolated_cwd = tempfile::tempdir().map_err(|error| SandboxError(error.to_string()))?;
+        let isolated_cwd = isolated_cwd
+            .insert(tempfile::tempdir().map_err(|error| SandboxError(error.to_string()))?);
         command
             .current_dir(isolated_cwd.path())
             .env("HOME", isolated_cwd.path())
@@ -258,6 +280,19 @@ fn git_command_output(
         command.current_dir(dir);
     }
     command.args(args);
+    Ok((command, isolated_cwd))
+}
+
+fn git_command_output(
+    cwd: Option<&Path>,
+    args: &[&str],
+    authentication: GitAuthentication<'_>,
+) -> Result<std::process::Output, SandboxError> {
+    let redaction = match &authentication {
+        GitAuthentication::Local => None,
+        GitAuthentication::Network { credential, .. } => *credential,
+    };
+    let (mut command, isolated_cwd) = compose_git_command(cwd, args, authentication)?;
     let output = command
         .output()
         .map_err(|error| SandboxError(format!("git {}: {error}", args.first().unwrap_or(&""))))?;
@@ -276,6 +311,7 @@ fn git_command_output(
             detail
         )));
     }
+    drop(isolated_cwd);
     Ok(output)
 }
 
@@ -357,6 +393,87 @@ pub(crate) fn git_bytes(cwd: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, Sa
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_git_invocation_disables_detached_maintenance_in_both_branches() {
+        // Invariant: an effect spawns no process that outlives it. R1 Local
+        // branch with a working directory -> the composed argv carries every
+        // maintenance-disabling `-c` before the caller's arguments; R2 Network
+        // branch (anonymous HTTPS) -> the same options precede the transport
+        // configuration and the caller's arguments. Both branches share one
+        // composition, so the assertion is on the exact argv, not on a flag.
+        let expected: Vec<&str> = GIT_NO_DETACHED_MAINTENANCE.to_vec();
+        assert_eq!(
+            expected,
+            [
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "gc.autoDetach=false",
+                "-c",
+                "maintenance.auto=false",
+                "-c",
+                "fetch.writeCommitGraph=false",
+            ],
+            "the pinned option set is the invariant, not a convenience"
+        );
+        let cwd = tempfile::tempdir().unwrap();
+        let caller_args = ["fetch", "--prune", "origin"];
+        let endpoint = "https://example.invalid/repo";
+        let branches = [
+            (
+                "R1 Local",
+                compose_git_command(Some(cwd.path()), &caller_args, GitAuthentication::Local)
+                    .unwrap(),
+            ),
+            (
+                "R2 Network",
+                compose_git_command(
+                    None,
+                    &caller_args,
+                    GitAuthentication::Network {
+                        credential: None,
+                        transport: validate_credentialed_git_transport(endpoint, None).unwrap(),
+                        alternate_objects: None,
+                    },
+                )
+                .unwrap(),
+            ),
+        ];
+        for (rule, (command, isolated_cwd)) in &branches {
+            let argv: Vec<String> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                &argv[..expected.len()],
+                expected.as_slice(),
+                "{rule}: maintenance is disabled before every other option: {argv:?}"
+            );
+            assert!(
+                argv.ends_with(&[
+                    "fetch".to_owned(),
+                    "--prune".to_owned(),
+                    "origin".to_owned()
+                ]),
+                "{rule}: caller arguments stay last: {argv:?}"
+            );
+            assert_eq!(
+                argv.iter()
+                    .filter(|arg| arg.as_str() == "gc.auto=0")
+                    .count(),
+                1,
+                "{rule}: the option set is composed exactly once"
+            );
+            assert_eq!(
+                isolated_cwd.is_some(),
+                *rule == "R2 Network",
+                "{rule}: only the Network branch owns an isolated working directory"
+            );
+        }
+        let local_program = branches[0].1.0.get_program().to_string_lossy().into_owned();
+        assert_eq!(local_program, "git");
+    }
 
     #[test]
     fn failed_git_stderr_redacts_command_credentials_at_the_canonical_seam() {

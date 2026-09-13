@@ -1,0 +1,146 @@
+# Scheduled official-SDK drift canary. The release gate already fails closed
+# once a newer @anthropic-ai/sdk (npm) or anthropic (PyPI) release leaves the
+# pnpm-workspace.yaml minimumReleaseAge quarantine, but the gate only runs when
+# a release is cut, so the drift used to be discovered late. This workflow runs
+# the same two canaries nightly: a release still inside quarantine is reported
+# in the job summary without failing; a release past quarantine (promotion
+# required) fails the job exactly as the release gate would. It is not a
+# quality gate and never invokes the canonical full gate.
+name: awaken-sdk-drift-canary
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: awaken-sdk-drift-canary-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sdk_drift_canary:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out the exact candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      # The runtime half of the TypeScript canary builds and launches the real
+      # server through the E2E cargo harness, so it needs the same toolchain as
+      # the quality workflow.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.96.0
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: sdk-drift-canary
+      - name: Install repository test dependencies
+        run: |
+          # Same lock discipline as the quality workflow: the reviewed lock
+          # trees install exactly or the job fails before any canary runs.
+          pnpm install --frozen-lockfile
+          npm ci --prefix e2e
+      - name: Run the TypeScript official SDK canary
+        id: typescript
+        shell: bash
+        run: |
+          # The default shell is -e; the verdict step owns pass/fail, so this
+          # step records the canary exit status instead of failing on it.
+          set +e
+          set -uo pipefail
+          mkdir -p target/sdk-drift-canary
+          npm --prefix e2e run test:sdk-latest-canary 2>&1 \
+            | tee target/sdk-drift-canary/typescript.log
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Run the Python official SDK canary
+        id: python
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p target/sdk-drift-canary
+          pnpm --filter @awaken/managed-sdk-oracle check:python:online 2>&1 \
+            | tee target/sdk-drift-canary/python.log
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Report registry drift and fail only on required promotion
+        shell: bash
+        env:
+          TYPESCRIPT_STATUS: ${{ steps.typescript.outputs.status }}
+          PYTHON_STATUS: ${{ steps.python.outputs.status }}
+        run: |
+          set -euo pipefail
+          # Decision table per canary: C1 exit 0 and no quarantined_until ->
+          # registry matches the reviewed oracle; C2 exit 0 with
+          # quarantined_until -> a newer release is inside minimumReleaseAge,
+          # report registry/quarantined_until in the summary, do not fail; C3
+          # non-zero exit -> promotion required (or the canary itself broke),
+          # fail the job. Every canary is evaluated before the job's verdict.
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          canaries = (
+              ("TypeScript @anthropic-ai/sdk (npm)", "typescript"),
+              ("Python anthropic (PyPI)", "python"),
+          )
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          failures = []
+          lines = [
+              "## Official SDK drift canary",
+              "",
+              "| Canary | Verdict | registry | quarantined_until |",
+              "| --- | --- | --- | --- |",
+          ]
+          for label, name in canaries:
+              status = os.environ[f"{name.upper()}_STATUS"]
+              with open(f"target/sdk-drift-canary/{name}.log", encoding="utf-8", errors="replace") as log:
+                  text = log.read()
+              registry = re.findall(r"registry=(\S+)", text)
+              quarantined = re.findall(r"quarantined_until=(\S+?)[;\s]", text + " ")
+              registry_value = registry[-1] if registry else "-"
+              quarantined_value = quarantined[-1] if quarantined else "-"
+              if status != "0":
+                  verdict = f"FAIL (exit {status}): promotion required or canary broken"
+                  failures.append(f"{label}: exit {status}")
+              elif quarantined:
+                  verdict = "newer release quarantined; no action until it leaves quarantine"
+              else:
+                  verdict = "registry matches the reviewed oracle"
+              lines.append(f"| {label} | {verdict} | `{registry_value}` | `{quarantined_value}` |")
+          lines.append("")
+          for label, name in canaries:
+              with open(f"target/sdk-drift-canary/{name}.log", encoding="utf-8", errors="replace") as log:
+                  tail = log.read().splitlines()[-20:]
+              lines.extend(
+                  ["<details>", f"<summary>{label} log tail</summary>", "", "```", *tail, "```", "</details>", ""]
+              )
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          if failures:
+              print("official SDK drift canary failed: " + "; ".join(failures), file=sys.stderr)
+              sys.exit(1)
+          PY
+      - name: Retain canary logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sdk-drift-canary-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/sdk-drift-canary/
+          if-no-files-found: error
