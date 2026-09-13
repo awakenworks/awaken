@@ -1876,19 +1876,19 @@ async fn validate_credential(
     // secret-free by construction (a handshake flag or an HTTP status).
     let mut status = CredentialValidationStatus::Unknown;
     let mut mcp_probe = None;
-    if let Some(url) = &mcp_server_url {
-        if let Ok(result) = state.inspect_mcp(&workspace_id, url, Some(&id)).await {
-            match result.status {
-                "valid" => {
-                    status = CredentialValidationStatus::Valid;
-                    mcp_probe = Some(McpProbeResult::ok());
-                }
-                "invalid" => {
-                    status = CredentialValidationStatus::Invalid;
-                    mcp_probe = result.http_status.map(McpProbeResult::invalid);
-                }
-                _ => {}
+    if let Some(url) = &mcp_server_url
+        && let Ok(result) = state.inspect_mcp(&workspace_id, url, Some(&id)).await
+    {
+        match result.status {
+            "valid" => {
+                status = CredentialValidationStatus::Valid;
+                mcp_probe = Some(McpProbeResult::ok());
             }
+            "invalid" => {
+                status = CredentialValidationStatus::Invalid;
+                mcp_probe = result.http_status.map(McpProbeResult::invalid);
+            }
+            _ => {}
         }
     }
     Ok(Json(CredentialValidation {
