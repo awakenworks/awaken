@@ -23,6 +23,15 @@ pub awaken_data_subject_application::DataSubjectError::Storage(alloc::string::St
 pub enum awaken_data_subject_application::ErasureTarget
 pub awaken_data_subject_application::ErasureTarget::Coordinator
 pub awaken_data_subject_application::ErasureTarget::Resources
+pub enum awaken_data_subject_application::ExternalAccountStatus
+pub awaken_data_subject_application::ExternalAccountStatus::Active
+pub awaken_data_subject_application::ExternalAccountStatus::Blocked
+pub awaken_data_subject_application::ExternalAccountStatus::Suspended
+pub enum awaken_data_subject_application::ExternalEntityType
+pub awaken_data_subject_application::ExternalEntityType::Business
+pub awaken_data_subject_application::ExternalEntityType::Government
+pub awaken_data_subject_application::ExternalEntityType::Individual
+pub awaken_data_subject_application::ExternalEntityType::NonProfit
 pub enum awaken_data_subject_application::LawfulBasis
 pub awaken_data_subject_application::LawfulBasis::Consent
 pub awaken_data_subject_application::LawfulBasis::Contract
@@ -66,6 +75,7 @@ pub fn awaken_data_subject_application::ConsentRecord::from(&awaken_data_subject
 pub struct awaken_data_subject_application::CreateUserProfileCommand
 pub awaken_data_subject_application::CreateUserProfileCommand::access_type: core::option::Option<awaken_data_subject_application::UserProfileAccessType>
 pub awaken_data_subject_application::CreateUserProfileCommand::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::CreateUserProfileCommand::external_user_details: core::option::Option<awaken_data_subject_application::ExternalUserDetailsUpdate>
 pub awaken_data_subject_application::CreateUserProfileCommand::external_user_onboarded_at: core::option::Option<i64>
 pub awaken_data_subject_application::CreateUserProfileCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_data_subject_application::CreateUserProfileCommand::name: core::option::Option<alloc::string::String>
@@ -77,6 +87,7 @@ pub awaken_data_subject_application::DataSubject::consents: alloc::vec::Vec<awak
 pub awaken_data_subject_application::DataSubject::created_at: i64
 pub awaken_data_subject_application::DataSubject::erased_at: core::option::Option<i64>
 pub awaken_data_subject_application::DataSubject::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::DataSubject::external_user_details: core::option::Option<awaken_data_subject_application::ExternalUserDetails>
 pub awaken_data_subject_application::DataSubject::external_user_onboarded_at: core::option::Option<i64>
 pub awaken_data_subject_application::DataSubject::id: awaken_runtime_contract::data_subject::DataSubjectId
 pub awaken_data_subject_application::DataSubject::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
@@ -129,6 +140,22 @@ pub awaken_data_subject_application::ErasureProgress::records_removed: usize
 pub awaken_data_subject_application::ErasureProgress::revision: u64
 impl awaken_data_subject_application::ErasureProgress
 pub fn awaken_data_subject_application::ErasureProgress::follows(&self, core::option::Option<u64>, core::option::Option<&Self>) -> bool
+pub struct awaken_data_subject_application::ExternalUserDetails
+pub awaken_data_subject_application::ExternalUserDetails::account_status: core::option::Option<awaken_data_subject_application::ExternalAccountStatus>
+pub awaken_data_subject_application::ExternalUserDetails::country: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::ExternalUserDetails::email_hash: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::ExternalUserDetails::entity_type: core::option::Option<awaken_data_subject_application::ExternalEntityType>
+pub awaken_data_subject_application::ExternalUserDetails::name_hash: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::ExternalUserDetails::onboarded_at: core::option::Option<i64>
+pub awaken_data_subject_application::ExternalUserDetails::reference_id: core::option::Option<alloc::string::String>
+pub struct awaken_data_subject_application::ExternalUserDetailsUpdate
+pub awaken_data_subject_application::ExternalUserDetailsUpdate::account_status: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<awaken_data_subject_application::ExternalAccountStatus>>
+pub awaken_data_subject_application::ExternalUserDetailsUpdate::country: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
+pub awaken_data_subject_application::ExternalUserDetailsUpdate::email_hash: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
+pub awaken_data_subject_application::ExternalUserDetailsUpdate::entity_type: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<awaken_data_subject_application::ExternalEntityType>>
+pub awaken_data_subject_application::ExternalUserDetailsUpdate::name_hash: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
+pub awaken_data_subject_application::ExternalUserDetailsUpdate::onboarded_at: core::option::Option<i64>
+pub awaken_data_subject_application::ExternalUserDetailsUpdate::reference_id: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
 pub struct awaken_data_subject_application::RepoDataSubjectResolver
 impl awaken_data_subject_application::RepoDataSubjectResolver
 pub fn awaken_data_subject_application::RepoDataSubjectResolver::new(alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectRepo>, alloc::sync::Arc<dyn awaken_data_subject_application::ErasureJobRepo>) -> Self
@@ -149,6 +176,7 @@ pub fn awaken_data_subject_application::SystemDataSubjectClock::now_millis(&self
 pub struct awaken_data_subject_application::UpdateUserProfileCommand
 pub awaken_data_subject_application::UpdateUserProfileCommand::access_type: core::option::Option<core::option::Option<awaken_data_subject_application::UserProfileAccessType>>
 pub awaken_data_subject_application::UpdateUserProfileCommand::external_id: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
+pub awaken_data_subject_application::UpdateUserProfileCommand::external_user_details: core::option::Option<awaken_data_subject_application::ExternalUserDetailsUpdate>
 pub awaken_data_subject_application::UpdateUserProfileCommand::external_user_onboarded_at: core::option::Option<i64>
 pub awaken_data_subject_application::UpdateUserProfileCommand::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>
 pub awaken_data_subject_application::UpdateUserProfileCommand::name: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
@@ -158,6 +186,7 @@ pub struct awaken_data_subject_application::UserProfileRecord
 pub awaken_data_subject_application::UserProfileRecord::access_type: core::option::Option<awaken_data_subject_application::UserProfileAccessType>
 pub awaken_data_subject_application::UserProfileRecord::created_at: i64
 pub awaken_data_subject_application::UserProfileRecord::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::UserProfileRecord::external_user_details: core::option::Option<awaken_data_subject_application::ExternalUserDetails>
 pub awaken_data_subject_application::UserProfileRecord::external_user_onboarded_at: core::option::Option<i64>
 pub awaken_data_subject_application::UserProfileRecord::id: alloc::string::String
 pub awaken_data_subject_application::UserProfileRecord::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>

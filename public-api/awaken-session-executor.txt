@@ -351,6 +351,7 @@ pub awaken_session_executor::SandboxSettings::k8s_buildkit_image: alloc::string:
 pub awaken_session_executor::SandboxSettings::k8s_continuation_volume: core::option::Option<awaken_sandbox_container::runtime::K8sContinuationVolume>
 pub awaken_session_executor::SandboxSettings::k8s_image_pull_secrets: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_executor::SandboxSettings::k8s_namespace: alloc::string::String
+pub awaken_session_executor::SandboxSettings::package_build_host_network: bool
 pub awaken_session_executor::SandboxSettings::package_image_builder: core::option::Option<awaken_session_executor::PackageImageBuilder>
 pub awaken_session_executor::SandboxSettings::package_image_registry: core::option::Option<alloc::string::String>
 pub awaken_session_executor::SandboxSettings::package_local_cache_ttl_secs: u64
@@ -444,7 +445,7 @@ pub fn awaken_session_executor::SharedHost::with_environment_binding_sink(self, 
 pub fn awaken_session_executor::SharedHost::with_environment_checkpoint_store(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::runtime::SandboxCheckpointStore>) -> Self
 pub fn awaken_session_executor::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
 pub fn awaken_session_executor::SharedHost::with_inference_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>) -> Self
-pub fn awaken_session_executor::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_session_executor::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::model_binding::InvalidModelBinding>
 pub fn awaken_session_executor::SharedHost::with_judge_snapshot(self, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> Self
 pub fn awaken_session_executor::SharedHost::with_local_workspace(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_session_executor::SharedHost::with_memory_reference_encoder<E>(self, alloc::sync::Arc<E>) -> Self where E: awaken_resource_contract::execution::MemoryMaterializationReferenceEncoder<awaken_dispatch_contract::dispatch::RunClaim> + awaken_resource_contract::execution::MemoryMaterializationReferenceEncoder<awaken_session_contract::session_realization::SessionResourceMaterializationIntent> + awaken_resource_contract::execution::MemoryMaterializationReferenceEncoder<awaken_session_contract::terminal_cleanup::effects::SessionTerminalMemoryIntent> + 'static

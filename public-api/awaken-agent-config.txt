@@ -143,7 +143,7 @@ pub fn awaken_agent_config::ModelSelection::backend_default_ref(&self) -> core::
 pub fn awaken_agent_config::ModelSelection::backend_exact(&self) -> core::option::Option<(&str, &str)>
 pub fn awaken_agent_config::ModelSelection::backend_ref(&self) -> core::option::Option<&str>
 pub fn awaken_agent_config::ModelSelection::is_auto(&self) -> bool
-pub fn awaken_agent_config::ModelSelection::pinned(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_config::ModelSelection::pinned(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::model_binding::InvalidModelBinding>
 pub fn awaken_agent_config::ModelSelection::profile_ref(&self) -> core::option::Option<&str>
 pub fn awaken_agent_config::ModelSelection::requires_reconciliation(&self) -> bool
 pub fn awaken_agent_config::ModelSelection::resolved(&self) -> core::option::Option<&awaken_runtime_contract::resolved::model_binding::ModelBinding>

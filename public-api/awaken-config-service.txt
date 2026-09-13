@@ -11,7 +11,12 @@ pub awaken_config_service::PublicationResolutionError::CatalogUnavailable(alloc:
 pub awaken_config_service::PublicationResolutionError::CredentialInventoryUnavailable(alloc::string::String)
 pub awaken_config_service::PublicationResolutionError::DuplicateBinding(awaken_runtime_contract::resolved::model_binding::ModelBinding)
 pub awaken_config_service::PublicationResolutionError::Invalid(alloc::string::String)
+pub awaken_config_service::PublicationResolutionError::InvalidBinding
+pub awaken_config_service::PublicationResolutionError::InvalidBinding::error: awaken_runtime_contract::resolved::model_binding::InvalidModelBinding
+pub awaken_config_service::PublicationResolutionError::InvalidBinding::origin: alloc::string::String
 pub awaken_config_service::PublicationResolutionError::MissingPrimary
+impl awaken_config_service::PublicationResolutionError
+pub fn awaken_config_service::PublicationResolutionError::invalid_binding(impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::resolved::model_binding::InvalidModelBinding) -> Self
 impl core::convert::From<&str> for awaken_config_service::PublicationResolutionError
 pub fn awaken_config_service::PublicationResolutionError::from(&str) -> Self
 impl core::convert::From<alloc::string::String> for awaken_config_service::PublicationResolutionError
