@@ -15,7 +15,8 @@
     "record:test": "node --test record/contract.test.mjs",
     "record:review": "node record/review.mjs",
     "proof:test": "node record/run-proofs.mjs",
-    "test:ux:mcp": "playwright test mcp-config.spec.ts"
+    "test:ux:mcp": "playwright test mcp-config.spec.ts",
+    "test:ux:orca": "python3 e2e/run-orca.py"
   },
   "dependencies": {
     "@ag-ui/client": "^0.0.57",
@@ -25,6 +26,7 @@
     "@awaken/ui": "file:vendor/awaken-ui-0.8.2.tgz",
     "@tanstack/react-query": "^5.62.0",
     "ai": "^7.0.36",
+    "eventsource": "3.0.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router": "^7.1.0"

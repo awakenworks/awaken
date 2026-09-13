@@ -17,6 +17,7 @@ import {
   createManagedSession,
   getToken,
   issueApplicationAccessToken,
+  openManagedEventSource,
   setResolvedWorkspace,
   workspaceFromPath,
   workspaceIdForRequest,
@@ -387,5 +388,62 @@ describe("structured API failure evidence", () => {
     expect(error).toMatchObject({ status: 401, code: "authentication_error" });
     expect(getToken()).toBe("");
     expect(listener).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("Managed event stream transport", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each(["/v1/workspaces/w/sessions/s/events/stream", "https://console.test/v1/workspaces/w/sessions/s/events/stream"])("delivers named SSE events with canonical headers: %s", async (path) => {
+    // S1 same-origin + management identity -> same beta/bearer/cookie contract
+    // as GET; S2 named SSE frame -> exact event; S3 close -> no reconnect.
+    vi.stubGlobal("location", { origin: "https://console.test" });
+    vi.stubGlobal("sessionStorage", { getItem: () => "management-fixture" });
+    const fetch = vi.fn().mockResolvedValue(new Response('event: session.status_idle\ndata: {"id":"frame-1"}\n\n', { headers: { "content-type": "text/event-stream" } }));
+    vi.stubGlobal("fetch", fetch);
+    const source = openManagedEventSource(path);
+    try {
+      const event = await new Promise<MessageEvent>((resolve, reject) => {
+        source.addEventListener("session.status_idle", resolve);
+        source.onerror = reject;
+      });
+      expect(JSON.parse(event.data)).toEqual({ id: "frame-1" });
+      const [url, init] = fetch.mock.calls[0];
+      expect(String(url)).toBe("https://console.test/v1/workspaces/w/sessions/s/events/stream");
+      expect(new Headers(init.headers).get("anthropic-beta")).toContain("managed-agents-2026-04-01");
+      expect(new Headers(init.headers).get("authorization")).toBe("Bearer management-fixture");
+      expect(init.credentials).toBe("same-origin"); expect(init.redirect).toBe("error");
+    } finally { source.close(); }
+    expect(source.readyState).toBe(2);
+  });
+  it("rejects a foreign stream before sending credentials", () => {
+    // S4 foreign origin -> no request, no authority delegation.
+    vi.stubGlobal("location", { origin: "https://console.test" });
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    expect(() => openManagedEventSource("https://foreign.test/events")).toThrow(/Console origin/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("401 closes the stream and uses the shared authentication boundary", async () => {
+    // S6 expired identity -> remove bearer, notify the existing auth boundary,
+    // and close the stream rather than retrying with that rejected identity.
+    vi.stubGlobal("location", { origin: "https://console.test" });
+    const removeItem = vi.fn(); vi.stubGlobal("sessionStorage", { getItem: () => "expired", removeItem });
+    const target = new EventTarget(); const required = vi.fn();
+    target.addEventListener(AUTHENTICATION_REQUIRED_EVENT, required); vi.stubGlobal("window", target);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+    const source = openManagedEventSource("/v1/sessions/s/events/stream");
+    try { await new Promise<void>((resolve) => { source.onerror = () => resolve(); }); }
+    finally { source.close(); }
+    expect(removeItem).toHaveBeenCalledWith("awaken.product.session-bearer");
+    expect(required).toHaveBeenCalledOnce(); expect(source.readyState).toBe(2);
+  });
+  it("closing a pending stream aborts its request", () => {
+    // S5 unmount with pending transport -> actual fetch abort, not a detached
+    // request carrying management credentials after the observer is gone.
+    vi.stubGlobal("location", { origin: "https://console.test" });
+    let signal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", (_input: unknown, init: RequestInit) => { signal = init.signal as AbortSignal; return new Promise(() => {}); });
+    const source = openManagedEventSource("/v1/sessions/s/events/stream");
+    source.close(); expect(signal?.aborted).toBe(true);
   });
 });

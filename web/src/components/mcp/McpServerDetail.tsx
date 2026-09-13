@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Button, Card, InlineNotice } from "@awaken/ui";
 import { useNavigate } from "react-router";
@@ -10,7 +10,7 @@ import McpCredentialSelect from "./McpCredentialSelect";
 import McpDebugSession from "./McpDebugSession";
 
 export default function McpServerDetail({ row, revision, onChanged }: { row: McpServerRow; revision: number; onChanged: () => void }) {
-  const app = useApp(); const nav = useNavigate();
+  const app = useApp(); const nav = useNavigate(); const defaultHintId = useId();
   const [credential, setCredential] = useState(row.default_matches_target ? row.default_credential?.vault_credential_id ?? "" : "");
   const [debug, setDebug] = useState(false);
   const [inspection, setInspection] = useState<McpInspection>();
@@ -28,9 +28,10 @@ export default function McpServerDetail({ row, revision, onChanged }: { row: Mcp
     {!row.default_matches_target && <InlineNotice tone="warning">{app.t("The endpoint changed. Choose a matching credential again.", "目标地址已变化，请重新选择匹配凭证。")}</InlineNotice>}
     <McpCredentialSelect disabled={check.isPending || saveDefault.isPending || debug} url={row.definition.transport.type === "url" ? row.definition.transport.url : undefined} value={credential} onChange={(choice) => { setCredential(choice?.id ?? ""); setInspection(undefined); check.reset(); saveDefault.reset(); setDebug(false); }} />
     {row.definition.transport.type === "sandbox_stdio" && <p className="hint">{app.t("Sandbox stdio runs in the selected Session environment. This configuration does not inject Vault secrets into process arguments or environment variables.", "Sandbox stdio 在所选 Session 环境中运行。此配置不会将 Vault 秘密注入进程参数或环境变量。")}</p>}
+    <p id={defaultHintId} className="hint">{app.t("The default preselects an account when adding this server to an Agent. It does not change existing bindings.", "默认选择会在向 Agent 添加此服务器时预选账户，不会修改已有绑定。")}</p>
     <div className="row" style={{ flexWrap: "wrap" }}>
       <Button disabled={check.isPending || debug || row.definition.transport.type !== "url"} onClick={() => { setInspection(undefined); check.mutate(); }}>{app.t(check.isPending ? "Checking…" : "Check connection", check.isPending ? "检查中…" : "检查连接")}</Button>
-      <Button disabled={saveDefault.isPending || check.isPending || debug} onClick={() => saveDefault.mutate()}>{app.t("Save default credential", "保存默认凭证")}</Button>
+      <Button aria-describedby={defaultHintId} disabled={saveDefault.isPending || check.isPending || debug} onClick={() => saveDefault.mutate()}>{app.t("Save default credential", "保存默认凭证")}</Button>
       <Button disabled={check.isPending || saveDefault.isPending} onClick={() => setDebug(true)}>{app.t("Test with an Agent", "使用 Agent 试运行")}</Button>
       <Button disabled={check.isPending || saveDefault.isPending} onClick={() => nav(`/w/${app.workspaceId}/agents/new?mcp=${encodeURIComponent(row.key)}`)}>{app.t("Use in a new Agent", "用于新 Agent")}</Button>
     </div>

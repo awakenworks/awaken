@@ -26,7 +26,7 @@ export default function McpServerForm({ initial, pending, error, onSave, onClose
   return <Modal title={app.t(initial ? "Edit MCP server" : "Add MCP server", initial ? "编辑 MCP 服务器" : "添加 MCP 服务器")} onClose={() => void close()}>
     <form className="ui-stack" onSubmit={(event) => { event.preventDefault(); if (!pending) onSave(draft); }}>
       <fieldset disabled={pending} className="mcp-fields ui-stack">
-      <TextField label={app.t("Server ID", "服务器 ID")} required maxLength={80} pattern="[A-Za-z0-9_-]+" title={app.t("Use letters, numbers, hyphens or underscores", "使用英文字母、数字、短横线或下划线")} value={draft.id} disabled={Boolean(initial)} onChange={(e) => patch({ id: e.target.value })} />
+      <TextField label={app.t("Server ID", "服务器 ID")} required maxLength={80} pattern="(?:[A-Za-z0-9_]|-)+" title={app.t("Use letters, numbers, hyphens or underscores", "使用英文字母、数字、短横线或下划线")} value={draft.id} disabled={Boolean(initial)} onChange={(e) => patch({ id: e.target.value })} />
       <TextField label={app.t("Display name", "显示名称")} required maxLength={256} value={draft.name} onChange={(e) => patch({ name: e.target.value })} />
       <TextAreaField label={app.t("Description", "说明")} maxLength={4096} value={draft.description} onChange={(e) => patch({ description: e.target.value })} />
       <TextField label={app.t("Icon URL · optional", "图标 URL · 可选")} type="url" pattern="https://.*" value={draft.icon ?? ""} placeholder="https://…" onChange={(e) => patch({ icon: e.target.value || null })} />
