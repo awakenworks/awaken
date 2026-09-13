@@ -42,7 +42,10 @@ use authority::{
     exact_generation_key, generation_set_authorizes, verify_lease,
 };
 use control::RefreshedSessionRealizationControl;
-use recovery_backoff::{SessionRecoveryTrigger, next_session_recovery_delay};
+use recovery_backoff::{
+    EXTERNAL_WAKE_COOLDOWN, SessionRecoveryTrigger, external_wake_coalescing_delay,
+    next_session_recovery_delay,
+};
 
 /// One timing policy for every realization owned by the co-located Runtime.
 /// Terminal cleanup uses the same lease horizon but renews at one third of it
@@ -430,6 +433,7 @@ impl SessionApplication {
     ) -> Result<(), String> {
         let mut recovery_failure_streak = 0_u32;
         let mut next_recovery = tokio::time::Instant::now();
+        let mut external_wake_cooldown = tokio::time::Instant::now();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
@@ -445,7 +449,19 @@ impl SessionApplication {
         loop {
             let recovery_trigger = tokio::select! {
                 () = cancellation.cancelled() => break,
-                _ = self.lifecycle_wakeup.notified() => Some(SessionRecoveryTrigger::ExternalWake),
+                _ = self.lifecycle_wakeup.notified() => {
+                    let delay = external_wake_coalescing_delay(
+                        next_recovery.saturating_duration_since(tokio::time::Instant::now()),
+                        external_wake_cooldown
+                            .saturating_duration_since(tokio::time::Instant::now()),
+                    );
+                    tokio::select! {
+                        biased;
+                        () = cancellation.cancelled() => break,
+                        () = tokio::time::sleep(delay) => {}
+                    }
+                    Some(SessionRecoveryTrigger::ExternalWake)
+                },
                 _ = tokio::time::sleep_until(next_recovery) => Some(SessionRecoveryTrigger::Scheduled),
                 _ = interval.tick() => {
                     if let Err(error) = self
@@ -491,6 +507,7 @@ impl SessionApplication {
                 recovery_failure_streak.saturating_add(1)
             };
             let now = tokio::time::Instant::now();
+            external_wake_cooldown = now + EXTERNAL_WAKE_COOLDOWN;
             let existing_remaining = next_recovery.saturating_duration_since(now);
             next_recovery = now
                 + next_session_recovery_delay(
@@ -655,6 +672,14 @@ impl SessionApplication {
             quarantined: candidates.quarantined.clone(),
             ..Default::default()
         };
+        let local_candidates = candidates
+            .sessions
+            .iter()
+            .filter(|candidate| candidate.interests.local_realization)
+            .collect::<Vec<_>>();
+        if local_candidates.is_empty() {
+            return report;
+        }
         let admission = match self.refresh_executable_projections().await {
             Ok(admission) => admission,
             Err(error) => {
@@ -665,7 +690,7 @@ impl SessionApplication {
                 return report;
             }
         };
-        for candidate in &candidates.sessions {
+        for candidate in local_candidates {
             let session = match admission
                 .enter(|| self.session_repository().get(&candidate.session_id))
                 .await

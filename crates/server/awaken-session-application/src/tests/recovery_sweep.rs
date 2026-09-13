@@ -6,6 +6,53 @@ enum Phase {
     Resources,
 }
 
+#[tokio::test]
+async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
+    // Cause/effect graph: C1 the atomic repository scan classified Event,
+    // Environment-continuation and local-realization work absent; C2 the root
+    // remains available; C3 a later mutation may enqueue work after this
+    // prefix. Effects: E1 all three phase schedulers perform zero duplicate
+    // root reads; E2 no effect or settlement is reported; E3 C3 is deliberately
+    // outside this candidate and is retained by the supervisor wake/deadline.
+    // Decision table: H1=(!event,!continuation,!local)=>E1,E2; each true-hint
+    // row is owned by the existing phase success/failure tests, which require a
+    // fresh root before effects. A false hint can skip scheduling only; it
+    // carries no payload, receipt or durable cursor.
+    let durable =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(durable.as_ref(), persisted("hint-skip", true, "idle")).await;
+    let observed = Arc::new(FaultingSessionRepository::new(durable));
+    let app = application(
+        observed.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let candidates = SessionRecoveryCandidates {
+        sessions: vec![SessionRecoveryCandidate {
+            workspace_id: "test".into(),
+            session_id: "hint-skip".into(),
+            interests: SessionRecoveryInterests {
+                event_batches: false,
+                environment_continuation: false,
+                local_realization: false,
+            },
+        }],
+        quarantined: Vec::new(),
+    };
+
+    let events = app.reconcile_event_batches_from(&candidates).await;
+    assert_eq!((events.pending, events.settled), (0, 0), "H1/E2 events");
+    assert_eq!(
+        app.reconcile_environment_continuations_from(&candidates, 0)
+            .await,
+        0,
+        "H1/E2 continuation"
+    );
+    let realizations = app.reconcile_session_realizations_from(&candidates).await;
+    assert!(realizations.settled.is_empty(), "H1/E2 realization");
+    assert!(realizations.failures.is_empty(), "H1/E2 realization");
+    assert!(observed.observed_gets.lock().unwrap().is_empty(), "H1/E1");
+}
+
 impl Phase {
     // Normalize only the assertions, not the production reports or decisions.
     async fn reconcile(
@@ -85,6 +132,7 @@ async fn recovery_sweeps_isolate_slow_sessions_with_a_bounded_owned_sweep() {
                 .map(|id| SessionRecoveryCandidate {
                     workspace_id: "test".into(),
                     session_id: id.clone(),
+                    interests: SessionRecoveryInterests::default(),
                 })
                 .collect(),
             quarantined: Vec::new(),
@@ -174,6 +222,7 @@ async fn recovery_sweeps_retain_read_failures_and_missing_root_semantics() {
                 .map(|id| SessionRecoveryCandidate {
                     workspace_id: "test".into(),
                     session_id: id.into(),
+                    interests: SessionRecoveryInterests::default(),
                 })
                 .collect(),
             quarantined: vec![SessionRecoveryQuarantine {

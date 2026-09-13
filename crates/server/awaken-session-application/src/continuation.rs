@@ -139,29 +139,16 @@ impl SessionApplication {
     ) -> usize {
         let mut failures = 0;
         for candidate in &candidates.sessions {
-            let session = match self.session_repository().get(&candidate.session_id).await {
-                Ok(session) => session,
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
-                Err(error) => {
-                    failures += 1;
-                    tracing::warn!(
-                        session = %candidate.session_id,
-                        error = ?error,
-                        "Session Environment continuation reload failed"
-                    );
-                    continue;
-                }
-            };
-            if session.is_terminal() {
+            if !candidate.interests.environment_continuation {
                 continue;
             }
             if let Err(error) = self
-                .reconcile_environment_continuation(&session.session_id, now_unix_ms)
+                .reconcile_environment_continuation(&candidate.session_id, now_unix_ms)
                 .await
             {
                 failures += 1;
                 tracing::warn!(
-                    session = %session.session_id,
+                    session = %candidate.session_id,
                     error = ?error,
                     "Session Environment continuation remains pending"
                 );
