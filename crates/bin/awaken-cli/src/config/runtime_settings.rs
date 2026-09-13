@@ -117,6 +117,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .map(|value| value.trim_end_matches('/').to_owned()),
         package_registry_auth_file: file.package_registry_auth_file.clone(),
         package_registry_insecure: file.package_registry_insecure.unwrap_or(false),
+        package_build_host_network: file.package_build_host_network.unwrap_or(false),
         k8s_buildkit_image: file
             .k8s_buildkit_image
             .as_deref()

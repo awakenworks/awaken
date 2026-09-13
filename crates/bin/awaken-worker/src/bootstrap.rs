@@ -243,6 +243,7 @@ struct WorkerFileConfig {
     k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
     acp_clis: Option<Vec<String>>,
     container_image: Option<String>,
+    package_build_host_network: Option<bool>,
 }
 
 /// Fully validated inputs for the standalone Worker process.
@@ -333,6 +334,8 @@ impl WorkerDaemonConfig {
             .then(|| awaken_session_executor::AcpWorkerProfile::new(acp_clis))
             .transpose()?;
         runtime.container_image = file.container_image;
+        runtime.sandbox.package_build_host_network =
+            file.package_build_host_network.unwrap_or(false);
         if let Some(path) = &file.worker_local_credential_bindings_file {
             if path.as_os_str().is_empty() {
                 return Err("worker_local_credential_bindings_file must not be empty".into());
@@ -1121,6 +1124,16 @@ mod tests {
                 .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
             "R1"
         );
+
+        // PBN: standalone default is false; explicit true crosses the same typed
+        // settings boundary without invoking a builder or changing Session networking.
+        assert!(!resolved.runtime.sandbox.package_build_host_network);
+        write(&format!(
+            "role='worker'\nworker_server='https://coordinator:3000'\nworker_request_credential_file='{}'\nsandbox_tier='docker'\npackage_build_host_network=true\n",
+            credential.display()
+        ));
+        let package_host = WorkerDaemonConfig::load(&path, None).expect("PBN host build config");
+        assert!(package_host.runtime.sandbox.package_build_host_network);
 
         // Sandbox configuration cause/effect decision table: S1 K8s tier plus
         // non-empty namespace and image preserves configuration but makes no
