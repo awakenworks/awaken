@@ -1146,7 +1146,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(adoption, None, ContainerObservationPurpose::Recovery)
+        self.observe_container_adoption(adoption, None, adoption.observation_purpose)
             .await
     }
 
@@ -1155,12 +1155,8 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         adoption: ContainerEnvironmentAdoption<'_>,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(
-            adoption,
-            Some(effect_fence),
-            ContainerObservationPurpose::Recovery,
-        )
-        .await
+        self.observe_container_adoption(adoption, Some(effect_fence), adoption.observation_purpose)
+            .await
     }
 
     async fn adopt_environment(

@@ -5203,6 +5203,63 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
 }
 
 #[tokio::test]
+async fn observation_purpose_reaches_runtime_without_granting_cleanup() {
+    // O1 ordinary constructor => Recovery. O2 explicit terminal observation
+    // => TerminalCleanup through the same fenced/unfenced observer. O3 both
+    // purposes remain subject to exact adoption configuration; drift => no I/O.
+    // All rows are read-only: zero removals and no cleanup authorization minted.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = provider(runtime.clone());
+    let exact = spec("purpose-propagation");
+    let sandbox = provider.create_container(&exact).await.unwrap();
+    let handle = pc::Sandbox::handle(&sandbox);
+    let fence = ContainerEffectFence::new("observe", "owner", "runtime", 1, u64::MAX).unwrap();
+    for purpose in [
+        ContainerObservationPurpose::Recovery,
+        ContainerObservationPurpose::TerminalCleanup,
+    ] {
+        for fenced in [false, true] {
+            let mut adoption = ContainerEnvironmentAdoption::new(&exact, &handle);
+            assert_eq!(
+                adoption.observation_purpose,
+                ContainerObservationPurpose::Recovery
+            );
+            adoption.observation_purpose = purpose;
+            if fenced {
+                ContainerEnvironmentProvider::observe_environment_for_effect(
+                    &provider, adoption, &fence,
+                )
+                .await
+                .unwrap();
+            } else {
+                ContainerEnvironmentProvider::observe_environment(&provider, adoption)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                runtime.st.lock().unwrap().observation_purposes.last(),
+                Some(&purpose)
+            );
+            let mut drifted = exact.clone();
+            drifted.outputs_path = "/different".into();
+            adoption.spec = &drifted;
+            let before = runtime.st.lock().unwrap().observations;
+            let observation = ContainerEnvironmentProvider::observe_environment_for_effect(
+                &provider, adoption, &fence,
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                observation,
+                pc::SandboxObservation::Incompatible { .. }
+            ));
+            assert_eq!(runtime.st.lock().unwrap().observations, before);
+            assert!(runtime.st.lock().unwrap().removals.is_empty());
+        }
+    }
+}
+
+#[tokio::test]
 async fn restored_adoption_rechecks_original_authority_after_each_query_response() {
     use pc::test_support::EffectAuthority;
     use std::time::Duration;

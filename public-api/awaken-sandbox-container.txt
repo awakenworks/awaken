@@ -102,6 +102,7 @@ impl awaken_sandbox_container::ContainerCreateAttempt
 pub fn awaken_sandbox_container::ContainerCreateAttempt::as_str(&self) -> &str
 pub struct awaken_sandbox_container::ContainerEnvironmentAdoption<'a>
 pub awaken_sandbox_container::ContainerEnvironmentAdoption::handle: &'a awaken_provisioning_contract::sandbox::runtime::SandboxHandle
+pub awaken_sandbox_container::ContainerEnvironmentAdoption::observation_purpose: awaken_sandbox_container::ContainerObservationPurpose
 pub awaken_sandbox_container::ContainerEnvironmentAdoption::retained_attempt: core::option::Option<&'a awaken_sandbox_container::ContainerCreateAttempt>
 pub awaken_sandbox_container::ContainerEnvironmentAdoption::spec: &'a awaken_provisioning_contract::spec::SandboxSpec
 impl<'a> awaken_sandbox_container::ContainerEnvironmentAdoption<'a>

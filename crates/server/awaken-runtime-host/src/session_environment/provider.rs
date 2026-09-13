@@ -603,6 +603,7 @@ impl SessionEnvironmentProvider {
         handle: &pc::SandboxHandle,
         retained: Option<&super::SessionEnvironment>,
         effect_fence: &pc::SandboxEffectFence,
+        purpose: awaken_sandbox_container::ContainerObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
@@ -612,11 +613,10 @@ impl SessionEnvironmentProvider {
                 pc::SandboxProvider::observe_for_effect(provider, spec, handle, effect_fence).await
             }
             Self::Container { provider, .. } => {
+                let mut adoption = Self::container_observation_adoption(spec, handle, retained)?;
+                adoption.observation_purpose = purpose;
                 provider
-                    .observe_environment_for_effect(
-                        Self::container_observation_adoption(spec, handle, retained)?,
-                        effect_fence,
-                    )
+                    .observe_environment_for_effect(adoption, effect_fence)
                     .await
             }
         }

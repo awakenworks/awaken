@@ -373,7 +373,17 @@ impl SharedHost {
             None => (resident, None),
         };
         let observation = provider
-            .observe_effective_for_effect(&spec, &handle, resident.as_deref(), effect_fence)
+            .observe_effective_for_effect(
+                &spec,
+                &handle,
+                resident.as_deref(),
+                effect_fence,
+                if mode == BoundEnvironmentPreparationMode::LiveSource {
+                    awaken_sandbox_container::ContainerObservationPurpose::Recovery
+                } else {
+                    awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup
+                },
+            )
             .await
             .map_err(|error| {
                 HostError::unavailable_classified(

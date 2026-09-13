@@ -18,6 +18,12 @@ use tokio::io::AsyncReadExt;
 
 #[derive(Default)]
 struct FakeContainerProvider {
+    observations: std::sync::Mutex<
+        Vec<(
+            awaken_sandbox_container::ContainerObservationPurpose,
+            pc::SandboxEffectFence,
+        )>,
+    >,
     adopts: std::sync::atomic::AtomicUsize,
     creates: std::sync::atomic::AtomicUsize,
     disposals: Arc<std::sync::atomic::AtomicUsize>,
@@ -194,6 +200,18 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
         Ok(())
     }
 
+    async fn observe_environment_for_effect(
+        &self,
+        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        fence: &pc::SandboxEffectFence,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        self.observations
+            .lock()
+            .unwrap()
+            .push((adoption.observation_purpose, fence.clone()));
+        self.observe_environment(adoption).await
+    }
+
     async fn create_environment(
         &self,
         spec: &pc::SandboxSpec,
@@ -227,6 +245,59 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
             shared: self.shared.clone(),
         }))
     }
+}
+
+#[tokio::test]
+async fn host_observation_preserves_purpose_and_exact_fence() {
+    // H1 ordinary recovery and H2 terminal cleanup pass their distinct purpose
+    // plus the unchanged fence through the same adapter. H3 provider failure
+    // remains an error, never a stopped receipt. No creation/adoption/disposal.
+    let fake = Arc::new(FakeContainerProvider::default());
+    fake.shared
+        .lock()
+        .unwrap()
+        .insert("__ready_observation".into(), Vec::new());
+    let provider = SessionEnvironmentProvider::container(
+        fake.clone(),
+        Vec::new(),
+        Arc::new(FakeHandExecutorFactory),
+        "/usr/local/bin/awaken-sandbox",
+    );
+    let spec = provider.effective_spec(&spec()).unwrap();
+    let handle = current_fake_container_handle(&spec);
+    let fence = pc::SandboxEffectFence::new("observe", "owner", "boot", 1, u64::MAX).unwrap();
+    for purpose in [
+        awaken_sandbox_container::ContainerObservationPurpose::Recovery,
+        awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup,
+    ] {
+        assert_eq!(
+            provider
+                .observe_effective_for_effect(&spec, &handle, None, &fence, purpose)
+                .await
+                .unwrap(),
+            pc::SandboxObservation::Ready
+        );
+        assert_eq!(
+            fake.observations.lock().unwrap().last(),
+            Some(&(purpose, fence.clone()))
+        );
+    }
+    fake.shared.lock().unwrap().remove("__ready_observation");
+    assert!(
+        provider
+            .observe_effective_for_effect(
+                &spec,
+                &handle,
+                None,
+                &fence,
+                awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(fake.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.adopts.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.disposals.load(Ordering::SeqCst), 0);
 }
 
 #[async_trait]
@@ -3711,7 +3782,13 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         .await
         .unwrap();
     let terminal_observation = namespace
-        .observe_effective_for_effect(&namespace_spec, &handle, None, &terminal_fence)
+        .observe_effective_for_effect(
+            &namespace_spec,
+            &handle,
+            None,
+            &terminal_fence,
+            awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup,
+        )
         .await
         .unwrap();
     assert!(
