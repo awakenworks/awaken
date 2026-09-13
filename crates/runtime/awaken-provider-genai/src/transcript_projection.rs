@@ -170,9 +170,49 @@ pub(crate) const fn decide_reasoning_fold(
     }
 }
 
+/// Text-only provider projection must retain nested discovery references while
+/// preserving the existing byte concatenation of ordinary tool-result text.
+pub(crate) fn tool_result_text(
+    content: &[awaken_agent_contract::agent::content::ContentBlock],
+) -> String {
+    use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
+    content
+        .iter()
+        .map(|part| match part {
+            ContentBlock::ToolReference { tool_name } => tool_reference_text(tool_name),
+            _ => extract_text(std::slice::from_ref(part)),
+        })
+        .collect()
+}
+
+pub(crate) fn tool_reference_text(tool_name: &str) -> String {
+    format!("Deferred tool `{tool_name}` is now available.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_result_text_preserves_plain_bytes_and_discovery_references() {
+        // Decision partitions: empty result stays empty; ordinary text and its
+        // embedded newlines concatenate unchanged; a nested reference is visible
+        // between surrounding text. No separator is injected into existing text.
+        use awaken_agent_contract::agent::content::ContentBlock;
+        assert_eq!(tool_result_text(&[]), "");
+        assert_eq!(
+            tool_result_text(&[ContentBlock::text("a\n"), ContentBlock::text("b")]),
+            "a\nb"
+        );
+        assert_eq!(
+            tool_result_text(&[
+                ContentBlock::text("Found: "),
+                ContentBlock::tool_reference("convert_temperature"),
+                ContentBlock::text(" Done.")
+            ]),
+            "Found: Deferred tool `convert_temperature` is now available. Done."
+        );
+    }
 
     #[test]
     fn attached_reasoning_keeps_the_complete_tool_response_replayable() {
