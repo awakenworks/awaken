@@ -205,8 +205,8 @@ export default function AgentEditorSurface() {
 
   useEffect(() => {
     if (previousRouteId.current === id) return;
+    if (previousRouteId.current !== "new" || id !== cfg.id) setFirstRunVaultIds([]);
     previousRouteId.current = id;
-    setFirstRunVaultIds([]);
     setStage(stageForQuery(searchParams.get("stage")));
     setBuilderSection(builderSectionForQuery(searchParams.get("section")));
     setAdvancedSection(advancedSectionForQuery(searchParams.get("section")));

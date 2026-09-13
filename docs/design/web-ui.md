@@ -235,3 +235,31 @@ Vault pages offer container and MCP-target grouping over the same records.
 and source purposes carry extensibility. Names cannot filter allowed auth types.
 Agent catalog selection reuses ToolSet reconciliation, keeps shared account
 pinning opt-in, and passes default Vaults to the reviewed first-run request.
+
+MCP UI/UX acceptance extends `web/e2e/mcp-config.spec.ts`; its cause/effect
+comments own the decision rules. The same production backend and real MCP
+fixture exercise account selection, configuration conflicts, retries, denial,
+Session identity reuse, and new-Agent first-run identity. Fault-injected HTTP
+responses verify UI recovery without claiming real external-service outages.
+The existing fixture can instead use DeepSeek with `AWAKEN_UIUX_LIVE=1` and
+`DEEPSEEK_API_KEY`; missing live credentials fail, and traces are disabled to
+keep provider ingress secrets out of recorded requests.
+
+Vault credential forms submit the standard `auth` union, clear secret drafts
+on auth-type changes and dismissal, and never reuse an invisible prior token.
+
+Presentation uses shared `ui-stack`, focus-managed Dialog/Confirm and unsaved
+navigation guards. Long URLs wrap, discovery schemas scroll locally, server
+search filters existing backend rows, and status/errors are announced. A pending
+inspection or debug operation freezes account selection; changing identity
+clears previous inspection evidence. The shared chat renders messages, results
+and actionable approvals; internal spans/usage receipts remain in Session Trace
+instead of appearing as raw protocol names or stale approval warnings. Failed writes preserve the draft and expose
+revision reload inside the dialog. Saving a new Agent retains its first-run
+Vault selection while switching to another Agent resets that transient state.
+
+Run `pnpm -C web test:ux:mcp`; set `AWAKEN_UIUX_BROWSERS` to a comma-separated
+list of `chromium,firefox,webkit` for the engine matrix. Phone/tablet/desktop and
+reflow-width cases cover Chinese/English, dark/light, focus containment, touch
+controls and WCAG A/AA automated checks. This does not replace physical-device,
+manual screen-reader or representative-user studies.
