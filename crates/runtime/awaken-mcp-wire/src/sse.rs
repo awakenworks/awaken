@@ -11,9 +11,10 @@
 #[derive(Default)]
 pub struct SseParser {
     /// Bytes received but not yet terminated by a newline.
-    line_buf: String,
+    line_buf: Vec<u8>,
     /// `data:` lines accumulated for the event currently being built.
     data: Vec<String>,
+    invalid_event: bool,
 }
 
 impl SseParser {
@@ -26,7 +27,14 @@ impl SseParser {
     /// `data:` lines joined by newlines. Non-`data` fields (`event:`, `id:`,
     /// `retry:`, comments) are ignored.
     pub fn push(&mut self, chunk: &str) -> Vec<String> {
-        self.line_buf.push_str(chunk);
+        self.push_bytes(chunk.as_bytes())
+    }
+
+    /// Transport frames may divide a UTF-8 codepoint anywhere. Decode only
+    /// complete lines; an invalid line rejects its event rather than inventing
+    /// replacement characters in customer text or protocol identities.
+    pub fn push_bytes(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.line_buf.extend_from_slice(chunk);
         let mut events = Vec::new();
         while let Some((pos, terminator_len)) = next_line_ending(&self.line_buf) {
             let end = pos
@@ -36,14 +44,18 @@ impl SseParser {
                 end > pos && end <= self.line_buf.len(),
                 "SSE line terminator must consume one or two bytes"
             );
-            let raw: String = self.line_buf.drain(..end).collect();
-            let line = &raw[..pos];
+            let raw: Vec<u8> = self.line_buf.drain(..end).collect();
+            let Ok(line) = std::str::from_utf8(&raw[..pos]) else {
+                self.invalid_event = true;
+                continue;
+            };
             if line.is_empty() {
                 // Blank line: dispatch the accumulated event, if any.
-                if !self.data.is_empty() {
+                if !self.data.is_empty() && !self.invalid_event {
                     events.push(self.data.join("\n"));
-                    self.data.clear();
                 }
+                self.data.clear();
+                self.invalid_event = false;
             } else if let Some(value) = line.strip_prefix("data:") {
                 // A single optional leading space after the colon is stripped.
                 self.data
@@ -64,8 +76,7 @@ impl SseParser {
 
 /// Locate LF, CRLF, or bare CR without consuming a CR at the end of a chunk:
 /// the next chunk may begin with LF and the pair is one terminator.
-fn next_line_ending(input: &str) -> Option<(usize, usize)> {
-    let bytes = input.as_bytes();
+fn next_line_ending(bytes: &[u8]) -> Option<(usize, usize)> {
     for (index, byte) in bytes.iter().copied().enumerate() {
         match byte {
             b'\n' => return Some((index, 1)),
@@ -80,6 +91,32 @@ fn next_line_ending(input: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_utf8_byte_boundaries_preserve_events_and_invalid_input_never_becomes_text() {
+        // U1 valid multibyte data split at EVERY byte -> exact same payload;
+        // U2 one-byte chunks -> same result; U3 invalid/truncated UTF-8 -> no
+        // invented text; U4 next valid event survives a rejected predecessor.
+        let data = "data: {\"text\":\"预算五万元🙂\"}\r\n\r\n";
+        let expected = vec!["{\"text\":\"预算五万元🙂\"}".to_owned()];
+        for split in 0..=data.len() {
+            let mut parser = SseParser::new();
+            let mut events = parser.push_bytes(&data.as_bytes()[..split]);
+            events.extend(parser.push_bytes(&data.as_bytes()[split..]));
+            assert_eq!(events, expected, "U1 byte {split}");
+        }
+        let mut parser = SseParser::new();
+        let events: Vec<_> = data
+            .as_bytes()
+            .chunks(1)
+            .flat_map(|b| parser.push_bytes(b))
+            .collect();
+        assert_eq!(events, expected, "U2");
+        assert!(parser.push_bytes(b"data: \xff\n\n").is_empty(), "U3");
+        assert_eq!(parser.push_bytes(data.as_bytes()), expected, "U4");
+        assert!(parser.push_bytes(b"data: \xe4").is_empty());
+        assert!(parser.finish().is_empty(), "U3 truncated EOF");
+    }
 
     #[test]
     fn single_event_yields_its_data() {

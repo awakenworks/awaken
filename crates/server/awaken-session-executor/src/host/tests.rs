@@ -11596,6 +11596,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
                 },
             }),
             native_wiring: Some(McpWiring {
+                notification_transports: Vec::new(),
                 plugins: Vec::new(),
                 tool_ids: vec![format!("docs-generation-{number}")],
                 skill_registries: Vec::new(),
@@ -11822,6 +11823,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
             },
         }),
         native_wiring: Some(McpWiring {
+            notification_transports: Vec::new(),
             plugins: Vec::new(),
             tool_ids: Vec::new(),
             skill_registries: Vec::new(),

@@ -22,6 +22,7 @@ use awaken_session_contract::{McpProbe, McpProbeStatus};
 
 use crate::host::HostError;
 
+mod input;
 mod prompt_skills;
 
 /// Native Worker-side MCP calls may legitimately outlive control-plane
@@ -286,6 +287,7 @@ impl McpProbe for ExtMcpProbe {
 /// ids are also retained for the Session permission gate.
 #[derive(Clone)]
 pub(crate) struct McpWiring {
+    pub notification_transports: Vec<(String, Arc<dyn awaken_ext_mcp::McpToolTransport>)>,
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub tool_ids: Vec<String>,
     pub skill_registries: Vec<Arc<dyn awaken_ext_skills::SkillRegistry>>,
@@ -887,6 +889,7 @@ impl McpWiring {
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            notification_transports: Vec::new(),
             plugins: Vec::new(),
             tool_ids: Vec::new(),
             skill_registries: Vec::new(),
@@ -1026,6 +1029,9 @@ async fn append_connected(
             .map(|tool| tool.executable().id().to_string()),
     );
     wiring.plugins.push(Arc::new(plugin));
+    wiring
+        .notification_transports
+        .push((server.name.clone(), transport));
     wiring.call_fences.push(call_fence);
     Ok(())
 }

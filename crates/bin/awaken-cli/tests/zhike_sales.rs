@@ -1,6 +1,9 @@
-//! Zhike sales acceptance through the real Control/Session/Runtime composition.
-//! Only the telephone/chat provider is simulated. The ignored variant uses a
-//! real explicitly materialized DeepSeek executor with the identical scenario.
+//! Zhike component and provider-push scenarios through Control/Session/Runtime.
+//! The direct-input scenario is NOT MCP inbound or Flow Issue acceptance.
+//! `provider_push` owns the scenario where customer inputs originate on MCP.
+
+#[path = "fixtures/zhike_push.rs"]
+mod provider_push;
 
 use async_trait::async_trait;
 use awaken_runtime_contract::llm::{
