@@ -2,6 +2,9 @@
 
 - Status: Proposed
 - Date: 2026-07-16
+- Amended 2026-09-13: the implemented flat Agent configuration has an optional
+  `max_steps`, defaulting to no additional ceiling. Existing finite publications
+  retain their exact limit. See [Managed defaults](../design/anthropic-alignment-and-sessions.md#defaults-outside-the-managed-vocabulary).
 - Amended 2026-08-01 by [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md):
   the proposed `hand` Agent field, `declared_hand`, deployment
   `hand_connections`, and `ToolExecutorProvider` bridge are retired. Environment
@@ -217,7 +220,7 @@ pub struct NativeSpec {
     pub tools: ToolSelection,           // tool_ids / patterns / overrides — OUR catalog (ADR-0053)
     pub plugins: PluginSelection,       // plugin_ids / plugin_config — OUR in-process runtime exts
     pub context_policy: ContextPolicy,  // OUR loop's context trim (ACP's peer is AcpSpec.compact_window)
-    pub max_steps: usize,               // OUR loop's step budget
+    pub max_steps: Option<usize>,       // optional additional loop-step ceiling
     pub multiagent: Option<MultiagentSpec>,
 }
 pub enum HandRequirement { InProcess, Delegated(HandPlacement) }

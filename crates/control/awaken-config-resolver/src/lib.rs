@@ -947,7 +947,7 @@ mod tests {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint("fp".into()),
                 instructions: String::new(),
-                max_steps: 8,
+                max_steps: Some(8),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("anthropic", "claude-opus-4-8", "genai"),

@@ -143,7 +143,9 @@ pub use snapshot::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-pub use snapshot_builder::{DEFAULT_MAX_STEPS, ExecutableAgentSnapshotBuilder};
+pub use snapshot_builder::{
+    DEFAULT_MAX_STEPS, ExecutableAgentSnapshotBuilder, deserialize_max_steps,
+};
 pub use tokio_util::sync::CancellationToken;
 pub use tool::{
     RawTool, RawToolRegistry, Tool, ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit,

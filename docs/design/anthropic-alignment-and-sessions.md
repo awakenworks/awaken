@@ -119,6 +119,34 @@ may report the additional exact backend only through
 `sandbox_trusted_host_enabled = true`; a Session still has to freeze an explicit
 TrustedHost Environment policy before placement can select it.
 
+## Defaults outside the Managed vocabulary
+
+The official Managed Agent DTO has no `max_steps`. Standard creates use the
+canonical Runtime default of no additional step ceiling. Native config authoring
+may set `max_steps` to a positive integer or explicitly clear it with `null`;
+zero is rejected. Managed updates preserve those existing private controls and
+Managed responses never add them. Template selection preserves authored limits;
+new Console drafts and the administrative drafting tool share the no-ceiling
+default. Internal grader/compaction Agents retain their explicit finite limits.
+
+`AgentConfig` and `ResolvedSpec` remain the only configuration and execution
+owners. Positive numeric JSON remains byte-identical for old fingerprints;
+existing finite publications and Sessions retain their frozen values. Removing a
+limit is a new configuration revision/publication, not a reinterpretation of old
+data. Snapshot recovery consumes the frozen optional value, never a live default.
+Native execution applies its step ceiling only when present. ACP projects that
+same optional value into its existing request/tool-call controls; omission removes
+only Awaken's additional limit and makes no promise about a CLI's own limits.
+
+Official controls (Session `budget`, Outcome `max_iterations`) retain their own
+semantics. Authorization, ownership fencing, cancellation and error recovery are
+independent of step limits. No new infinite-run status, metadata convention,
+compatibility configuration store, or adapter-specific execution loop is added.
+Optional private behavior stays inactive by default; required provider/environment
+configuration still resolves through publication and fails explicitly if missing.
+Tests own the decision tables for numeric/null/invalid inputs, >16-step execution,
+finite exhaustion, cancellation, ACP projection and restart compatibility.
+
 ## Managed model and coordinator compatibility
 
 The public model object is translated through the existing provider-neutral
@@ -289,7 +317,7 @@ Anthropic Outcome is a product specialization:
 | `user.define_outcome` | command adapted to `outcome::Definition` and the Outcome Runtime Extension |
 | outcome evaluation span | projection of durable Outcome Evaluation records |
 | `satisfied`, `needs_revision`, etc. | product mapping of `outcome::EvaluationResult` |
-| max iterations | Outcome extension policy plus the Runtime Step ceiling as a runaway backstop |
+| max iterations | Outcome extension policy; an explicitly configured Runtime Step ceiling is independent |
 
 The Outcome Extension owns Iterations, Worker/Grader Runs, and recovery over
 durable Worker Thread state. Runtime Core records neutral Run facts; the product

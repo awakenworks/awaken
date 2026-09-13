@@ -179,7 +179,7 @@ fn activation(primary: &str, fallbacks: &[&str]) -> RunActivation {
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
-                max_steps: 16,
+                max_steps: Some(16),
                 delegation_limits: Default::default(),
                 model_binding: binding(primary),
                 model_candidates: fallbacks.iter().map(|m| binding(m)).collect(),

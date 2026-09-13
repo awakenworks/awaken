@@ -100,7 +100,6 @@ export default function AgentQuickstart({
       name: template.name,
       description: app.t(template.description, template.descriptionZh),
       system: template.system,
-      max_steps: template.maxSteps,
       tools: agentToolset
         ? withSelectedAgentTools(
             config.tools,

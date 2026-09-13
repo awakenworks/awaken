@@ -85,7 +85,7 @@ impl RunActivation {
                     model_candidates: Vec::new(),
                     catalog_fingerprint: CatalogFingerprint("fp".into()),
                     instructions: String::new(),
-                    max_steps: 4,
+                    max_steps: Some(4),
                     delegation_limits: Default::default(),
                     model_binding: crate::resolved::ResolvedModelCandidate::host(
                         ModelBinding::new("prov", binding_model_ref, "backend"),

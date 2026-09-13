@@ -228,7 +228,7 @@ mod tests {
             .collect();
         assert_eq!(tool_ids.len(), CODING_TOOLS.len());
         // A sensible step ceiling and non-empty coding instructions.
-        assert_eq!(spec.max_steps, 40);
+        assert_eq!(spec.max_steps, Some(40));
         assert!(spec.instructions.contains("coding"));
     }
 

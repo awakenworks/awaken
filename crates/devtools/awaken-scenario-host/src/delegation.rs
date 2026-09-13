@@ -137,7 +137,7 @@ pub async fn build_delegation_router_with_deployment(
         &AgentConfig {
             id: "assistant".into(),
             instructions: String::new(),
-            max_steps: 20,
+            max_steps: Some(20),
             model_binding: ModelSelection::Pinned(primary.binding().clone()),
             tool_ids: tool_catalog
                 .iter()

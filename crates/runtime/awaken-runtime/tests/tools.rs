@@ -247,7 +247,7 @@ fn activation() -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
-                max_steps: 16,
+                max_steps: Some(16),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new(
@@ -1754,7 +1754,7 @@ async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
 /// Same fixture as `activation`, but with the agent's step ceiling overridden.
 fn activation_with_steps(max_steps: usize) -> RunActivation {
     let mut activation = activation();
-    activation.snapshot.resolved_spec.max_steps = max_steps;
+    activation.snapshot.resolved_spec.max_steps = Some(max_steps);
     activation
 }
 

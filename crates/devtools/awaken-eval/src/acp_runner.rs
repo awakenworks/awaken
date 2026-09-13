@@ -75,7 +75,7 @@ impl ToolFreeAcpRunner {
                 resolved_spec: ResolvedSpec {
                     catalog_fingerprint: fingerprint.clone(),
                     instructions: instructions.into(),
-                    max_steps,
+                    max_steps: Some(max_steps),
                     delegation_limits: Default::default(),
                     model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                         ModelBinding::new("eval", "weakest", "acp:eval"),

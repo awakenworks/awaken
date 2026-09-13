@@ -39,7 +39,7 @@ pub(crate) fn test_activation(thread: &str, run: &str) -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: "test".to_string(),
-                max_steps: 1,
+                max_steps: Some(1),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("provider", "model", "backend"),

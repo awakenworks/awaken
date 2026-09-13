@@ -1828,3 +1828,36 @@ test("validation issues are field-routed to their section", async ({ page, reque
   await expect(page.getByRole("tab", { name: "Build", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tab", { name: "Instructions", exact: true })).toHaveAttribute("aria-selected", "true");
 });
+
+
+test("optional step limit preserves finite drafts and clears without a template default", async ({ page, request }) => {
+  // Cause/effect table: U1 existing finite draft -> exact field/readback;
+  // U2 template applied -> finite value preserved; U3 empty field + save/reload
+  // -> null/no ceiling; U4 new blank draft -> empty field, not hidden 8/16.
+  const id = `step-limit-${Date.now()}`;
+  const created = await request.put(await workspaceApiPath(request, `/v1/config/agents/${id}`), {
+    data: { id, name: "Step limit review", system: "Complete the task.", max_steps: 5 },
+  });
+  expect(created.ok(), await created.text()).toBe(true);
+  await page.goto(`/w/default/agents/${id}?stage=build&section=instructions`);
+  await page.getByText("Advanced step limit", { exact: true }).click();
+  const field = page.getByRole("spinbutton", { name: "Awaken step limit · optional" });
+  await expect(field).toHaveValue("5");
+  await page.getByRole("tab", { name: "Quickstart", exact: true }).click();
+  await page.getByRole("button", { name: /Task assistant Turn one/ }).click();
+  await openBuild(page, "Instructions");
+  await page.getByText("Advanced step limit", { exact: true }).click();
+  await expect(field).toHaveValue("5");
+  await field.fill("");
+  const saved = page.waitForResponse((response) => response.request().method() === "PUT"
+    && isApiRequest(response.url(), `/v1/config/agents/${id}`));
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  expect((await saved).ok()).toBe(true);
+  await expect.poll(async () => (await (await request.get(await workspaceApiPath(request, `/v1/config/agents/${id}`))).json()).max_steps).toBeNull();
+  await page.reload();
+  await page.getByText("Advanced step limit", { exact: true }).click();
+  await expect(field).toHaveValue("");
+  await page.goto("/w/default/agents/new?stage=build&section=instructions");
+  await page.getByText("Advanced step limit", { exact: true }).click();
+  await expect(field).toHaveValue("");
+});

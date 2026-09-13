@@ -885,7 +885,7 @@ pub(crate) fn activation() -> RunActivation {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint("fp".into()),
                 instructions: "be helpful".into(),
-                max_steps: 8,
+                max_steps: Some(8),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("prov", "model", "acp:claude"),
@@ -5607,4 +5607,28 @@ async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
         assert!(probe.resumes.lock().unwrap().is_empty());
         assert_eq!(committed.commits.lock().unwrap().len(), 1);
     }
+}
+
+#[tokio::test]
+async fn absent_step_limit_does_not_cap_opaque_acp_calls() {
+    // A1 absent ceiling + >16 distinct calls -> accepted; A2 refinements remain
+    // uncharged. The finite rejection rule stays in opaque_acp_tool_loop above.
+    let mut appender =
+        CollectingAppender::new(RunId("uncapped".into()), "0".into(), 0, None, None, None)
+            .with_tool_call_limit(None);
+    for seq in 1..=25 {
+        appender
+            .append(
+                seq,
+                &AcpProjectedEvent::ToolCall {
+                    id: format!("call-{seq}"),
+                    name: "read".into(),
+                    input: serde_json::json!({}),
+                },
+            )
+            .await
+            .expect("A1 no implicit ceiling");
+    }
+    assert_eq!(appender.messages.len(), 25);
+    assert_eq!(appender.tool_call_count, 25);
 }

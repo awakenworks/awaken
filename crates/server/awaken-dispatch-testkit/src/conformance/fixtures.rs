@@ -15,7 +15,7 @@ fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: CatalogFingerprint(format!("{ns}-fingerprint")),
                 instructions: "conformance".to_string(),
-                max_steps: 4,
+                max_steps: Some(4),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("provider", "model", "backend"),

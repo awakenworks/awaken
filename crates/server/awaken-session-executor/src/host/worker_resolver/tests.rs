@@ -2726,7 +2726,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
                 model_candidates: Vec::new(),
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: "test".to_string(),
-                max_steps: 1,
+                max_steps: Some(1),
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                     ModelBinding::new("provider", "model", "backend"),
