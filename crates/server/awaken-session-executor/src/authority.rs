@@ -196,6 +196,7 @@ where
 #[derive(Clone)]
 pub(crate) struct ScriptedStateQueries {
     state: Arc<std::sync::Mutex<Result<Vec<StateCommand>, String>>>,
+    latest_run_reads: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -203,6 +204,7 @@ impl ScriptedStateQueries {
     pub(crate) fn new(state: Result<Vec<StateCommand>, String>) -> Self {
         Self {
             state: Arc::new(std::sync::Mutex::new(state)),
+            latest_run_reads: Default::default(),
         }
     }
 
@@ -211,6 +213,11 @@ impl ScriptedStateQueries {
             .state
             .lock()
             .expect("scripted authoritative state mutex poisoned") = state;
+    }
+
+    pub(crate) fn latest_run_reads(&self) -> usize {
+        self.latest_run_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -230,6 +237,8 @@ impl LocalCommitQueries<awaken_store_inmem::MemoryCommitCoordinator> for Scripte
         store: &awaken_store_inmem::MemoryCommitCoordinator,
         thread_id: &ThreadId,
     ) -> Result<Option<RunRecord>, String> {
+        self.latest_run_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         ProjectedQueries
             .authoritative_latest_run(store, thread_id)
             .await

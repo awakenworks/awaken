@@ -68,7 +68,7 @@ impl ManagedState {
                 "system.message must be final and immediately follow user.message, user.tool_result, or user.custom_tool_result",
             )));
         }
-        let (links, child_snapshots) = self.coordinated_projection_prefix(session_id).await?;
+        let (links, child_snapshots) = self.coordinated_projection_prefix(session_id, None).await?;
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
         let persisted_session = self
             .application

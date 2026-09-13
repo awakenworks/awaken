@@ -598,6 +598,7 @@ impl SessionRuntime for RehydrateFake {
     async fn coordinated_threads(
         &self,
         _session_id: &str,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         self.reads
             .on_read("coordination")

@@ -1066,6 +1066,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
     async fn coordinated_threads(
         &self,
         session_id: &str,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<
         Vec<awaken_session_contract::CoordinatedThreadLink>,
         awaken_session_contract::RunError,

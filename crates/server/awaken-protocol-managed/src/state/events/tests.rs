@@ -403,7 +403,7 @@ async fn interrupt_freezes_a_committed_child_before_the_managed_projection_catch
         "IC1/C1 only the primary projection is visible"
     );
     let (links, snapshots) = state
-        .coordinated_projection_prefix(&session.id)
+        .coordinated_projection_prefix(&session.id, None)
         .await
         .expect("IC1 committed coordinated prefix");
     let targets = ManagedState::interrupt_targets(&session.id, None, &links, &snapshots)
@@ -1205,6 +1205,7 @@ struct LifecycleRuntime {
     projection_version_changes: Arc<AtomicUsize>,
     split_message_reads: Arc<AtomicUsize>,
     split_pending_reads: Arc<AtomicUsize>,
+    coordinated_roots: Arc<Mutex<Vec<Option<u64>>>>,
 }
 
 impl LifecycleRuntime {
@@ -1233,6 +1234,21 @@ impl LifecycleRuntime {
 
 #[async_trait]
 impl SessionRuntime for LifecycleRuntime {
+    async fn coordinated_threads(
+        &self,
+        session_id: &str,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
+        if let Some(root) = observed_root {
+            assert_eq!(root.thread_id.0, session_id, "query reuses its own root");
+        }
+        self.coordinated_roots
+            .lock()
+            .unwrap()
+            .push(observed_root.map(|root| root.thread_version));
+        Ok(Vec::new())
+    }
+
     async fn session_run_state(
         &self,
         session_id: &str,
@@ -4404,6 +4420,11 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     // and leaves the entire warm frame unchanged. Cold reads and lifecycle
     // delivery keep the strict bounded-retry behavior in the adjacent budget
     // table, so this fallback cannot acknowledge an undelivered lifecycle fact.
+    // C4 the initial relation read borrows the already selected root; usage
+    // and final relation reads still request fresh truth. E3 even with C4, both
+    // root observations remain and a changed final version discards the private
+    // candidate. This catches both a lost reuse argument and reusing the old
+    // root for final validation instead of observing current truth.
     let runtime = LifecycleRuntime::default();
     let state = ManagedState::new(runtime.clone());
     let session = state
@@ -4437,6 +4458,7 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     );
     let (_, mut live) = state.stream_subscribe(&session.id).unwrap();
     runtime.reads.reset();
+    runtime.coordinated_roots.lock().unwrap().clear();
     runtime
         .projection_version_changes
         .store(usize::MAX, Ordering::SeqCst);
@@ -4458,6 +4480,21 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
         runtime.reads.count("recovery"),
         2,
         "E2 one candidate reads the root prefix before and after its other sources"
+    );
+    let roots = runtime.coordinated_roots.lock().unwrap();
+    assert_eq!(
+        roots.len(),
+        3,
+        "E3 initial, usage and final relation queries"
+    );
+    assert!(
+        roots[0].is_some(),
+        "E3 initial query borrows the observed root"
+    );
+    assert_eq!(
+        &roots[1..],
+        &[None, None],
+        "E3 usage and final validation retain fresh reads"
     );
     assert!(
         matches!(

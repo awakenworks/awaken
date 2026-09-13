@@ -610,7 +610,7 @@ impl SharedHost {
                 "Session child capacity must be greater than zero",
             ));
         }
-        let links = self.coordinated_threads(session_id).await?;
+        let links = self.coordinated_threads(session_id, None).await?;
         if intent == CoordinatedRunIntent::FollowUp
             && !links.iter().any(|link| {
                 link.thread_id == *thread_id

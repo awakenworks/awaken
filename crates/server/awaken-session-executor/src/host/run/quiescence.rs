@@ -189,7 +189,7 @@ impl SharedHost {
         // malformed projection data may make enrichment fail, but it can never
         // prevent cancellation of already-admitted Session children.
         coordinated_thread_ids.extend(
-            self.coordinated_threads(thread)
+            self.coordinated_threads(thread, None)
                 .await?
                 .into_iter()
                 .map(|link| link.thread_id),
