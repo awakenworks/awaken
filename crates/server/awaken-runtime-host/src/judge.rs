@@ -199,7 +199,8 @@ mod tests {
         // table: R1=C1+C2=>E1; R2=C3=>E2; R3=C4=>E2. This prevents a crash from
         // stranding an unfenced legacy Judge Sandbox without weakening the
         // provider's foreign-root fail-closed invariant.
-        let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS).expect("literal model reference");
+        let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
+            .expect("literal model reference");
         assert!(
             crate::provisioning::environment_free_inference(&inference_only),
             "R1/E1"
@@ -322,7 +323,8 @@ mod tests {
         let input = grading_input("grader-workspace-conflict");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         host.register_thread_workspace(&thread.0, "workspace-b");
-        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
+            .expect("literal model reference");
         let result = HostAgentGrader {
             host: host.as_ref(),
             worker_cancel: Arc::new(std::sync::Mutex::new(None)),
