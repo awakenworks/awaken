@@ -23,13 +23,13 @@ impl ManagedState {
                     "run-context-compacted",
                     ManagedMultiagentEventProvenance::RunState { run_id: &run.id.0 },
                 );
-                if !record.events.iter().any(|event| event.id == id) {
+                if !record.has_event_id(&id) {
                     if thread_id != record.session.id {
                         record
                             .event_thread_owners
                             .insert(id.clone(), thread_id.to_string());
                     }
-                    record.events.push(Event {
+                    record.append_event_once(Event {
                         id,
                         kind: OutboundKind::ThreadContextCompacted {},
                         processed_at: None,
@@ -67,7 +67,7 @@ impl ManagedState {
                     "model-request-end",
                     provenance(),
                 );
-                if record.events.iter().any(|event| event.id == end_id) {
+                if record.has_event_id(&end_id) {
                     continue;
                 }
                 if thread_id != record.session.id {

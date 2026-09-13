@@ -446,11 +446,6 @@ fn append_durable_outcome_projections(
     record: &mut SessionRecord,
     projections: &[AnchoredOutcomeProjection],
 ) {
-    let mut event_ids = record
-        .events
-        .iter()
-        .map(|event| event.id.clone())
-        .collect::<std::collections::HashSet<_>>();
     for projection in projections {
         match &projection.terminal {
             CommittedOutcomeProjection::Completed(report) => {
@@ -499,13 +494,11 @@ fn append_durable_outcome_projections(
                                 iteration: iteration.iteration,
                             },
                         );
-                        if event_ids.insert(id.clone()) {
-                            record.events.push(Event {
-                                id,
-                                kind,
-                                processed_at: None,
-                            });
-                        }
+                        record.append_event_once(Event {
+                            id,
+                            kind,
+                            processed_at: None,
+                        });
                     }
 
                     let evaluation = project::outcome_evaluation(iteration);
@@ -530,15 +523,13 @@ fn append_durable_outcome_projections(
                         outcome_id: &projection.outcome_id,
                     },
                 );
-                if event_ids.insert(id.clone()) {
-                    record.events.push(Event {
-                        id,
-                        kind: OutboundKind::SessionError {
-                            error: SessionError::classify(&failure.code, failure.message.clone()),
-                        },
-                        processed_at: None,
-                    });
-                }
+                record.append_event_once(Event {
+                    id,
+                    kind: OutboundKind::SessionError {
+                        error: SessionError::classify(&failure.code, failure.message.clone()),
+                    },
+                    processed_at: None,
+                });
             }
         }
     }

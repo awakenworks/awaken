@@ -117,6 +117,16 @@ The shared normalization policy also governs the prior-prefix observation check.
 This removes repeated whole-history pagination scans, while the preceding
 committed-source refresh retains its existing independent consistency work.
 
+The same published `EventPageIndex` is also the candidate reducer's Event-id
+membership authority. A cloned candidate extends its copy-on-write index only
+over Events appended since the published prefix; deterministic append-once
+paths no longer rescan the complete history, and Outcome and coordination
+projectors no longer build private duplicate id sets. Any interval replacement
+that removes Events immediately rebuilds the index from the sole candidate
+vector, and successful publication rebuilds it again after canonical ordering.
+The index remains disposable and derived: it cannot create, remove or authorize
+an Event independently of the candidate vector and its source checkpoint.
+
 Session inbound visibility and processing completion are distinct observations
 of the same retained command. While a User Run is Running, the Session application
 may anchor its exact committed input Message under the existing root CAS. This

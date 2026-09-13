@@ -129,13 +129,11 @@ impl ManagedState {
                         .event_thread_owners
                         .insert(id.clone(), owner.to_string());
                 }
-                if !record.events.iter().any(|event| event.id == id) {
-                    record.events.push(Event {
-                        id,
-                        kind: projected.kind,
-                        processed_at: None,
-                    });
-                }
+                record.append_event_once(Event {
+                    id,
+                    kind: projected.kind,
+                    processed_at: None,
+                });
             }
         }
         Ok(())

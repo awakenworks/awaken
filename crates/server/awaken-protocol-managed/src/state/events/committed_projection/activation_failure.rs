@@ -50,15 +50,13 @@ impl ManagedState {
             "activation-failed-error",
             ManagedMultiagentEventProvenance::ParentTerminal,
         );
-        if !record.events.iter().any(|event| event.id == id) {
-            record.events.push(Event {
-                id,
-                kind: OutboundKind::SessionError {
-                    error: SessionError::classify(persisted.execution.as_str(), message),
-                },
-                processed_at: None,
-            });
-        }
+        record.append_event_once(Event {
+            id,
+            kind: OutboundKind::SessionError {
+                error: SessionError::classify(persisted.execution.as_str(), message),
+            },
+            processed_at: None,
+        });
         Ok(())
     }
 }

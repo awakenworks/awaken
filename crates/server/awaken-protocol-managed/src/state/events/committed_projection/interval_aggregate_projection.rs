@@ -8,13 +8,11 @@ use super::*;
 
 impl ManagedState {
     pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, id: String) {
-        if record.events.iter().all(|event| event.id != id) {
-            record.events.push(Event {
-                id,
-                kind: OutboundKind::SessionStatusRunning {},
-                processed_at: None,
-            });
-        }
+        record.append_event_once(Event {
+            id,
+            kind: OutboundKind::SessionStatusRunning {},
+            processed_at: None,
+        });
     }
 
     pub(super) fn append_terminal_thread_running_once(
@@ -29,13 +27,8 @@ impl ManagedState {
                 cursor: terminal.cursor.0,
             },
         );
-        if record.events.iter().all(|event| event.id != id) {
-            record.events.push(primary_thread_status_event(
-                record,
-                id,
-                PrimaryThreadStatusProjection::Running,
-            ));
-        }
+        let event = primary_thread_status_event(record, id, PrimaryThreadStatusProjection::Running);
+        record.append_event_once(event);
     }
 
     pub(super) fn replace_interval_aggregate_projections(
@@ -172,6 +165,7 @@ impl ManagedState {
             record
                 .events
                 .retain(|event| !replaced_ids.contains(&event.id));
+            record.rebuild_event_page_index();
         }
 
         let mut prior_close = 0;
