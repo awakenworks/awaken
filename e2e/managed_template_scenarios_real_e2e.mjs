@@ -24,6 +24,7 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
   FILES_BETA, hasEndTurn, provisionProviderTestModel, spawnProduction, stopServer,
   waitForPort, waitForValue, waitForSessionEventReceipt, cleanupFixtureTree,
+  retryableReadStatus,
 } from './harness.mjs';
 import { withoutAmbientProviderKeys } from './process_environment.mjs';
 import { aggregateUsage, makeEvaluation, emitEvaluation } from './llm_eval_metrics.mjs';
@@ -222,9 +223,26 @@ async function main() {
     const recovered = clientFor(base);
     for (const row of rows.filter((r) => r.pass)) {
       try {
-        const persisted = await recovered.beta.sessions.retrieve(row.session_id, { betas: BETAS });
+        // Restart-read decision table: R1 the HTTP listener is ready but its
+        // rebuildable Agent/Environment projections are still converging ->
+        // retry only the idempotent public read; R2 the projection converges ->
+        // return the exact durable Session; R3 a non-retryable response or the
+        // bound expires -> fail with that exact error. The canonical helper
+        // owns retry classification and never repeats the completed model work.
+        const retryReadError = (error) => retryableReadStatus(error) !== null;
+        const persisted = await waitForValue(
+          () => recovered.beta.sessions.retrieve(row.session_id, { betas: BETAS }),
+          () => true,
+          'Session root survives restart',
+          { timeoutMs: 30_000, retryReadError },
+        );
         assert.equal(persisted.agent.id, row.agent_id);
-        const events = await eventsList(recovered, row.session_id);
+        const events = await waitForValue(
+          () => eventsList(recovered, row.session_id),
+          () => true,
+          'Session events survive restart',
+          { timeoutMs: 30_000, retryReadError },
+        );
         assert.equal(events.filter((e) => e.type === 'span.model_request_end').length, row.model_requests, 'recovery must not repeat model work');
         for (const output of row.output_files ?? []) {
           const bytes = Buffer.from(await (await recovered.beta.files.download(output.id, { betas: BETAS })).arrayBuffer());
@@ -247,7 +265,10 @@ async function main() {
   } finally {
     if (server) await stopServer(server);
     // No reusable credential material or seal key belongs in result artifacts.
-    cleanupFixtureTree(data);
+    // Preserve the canonical fixture tree only when an operator explicitly
+    // requests post-failure inspection. Ordinary and CI runs retain the one
+    // cleanup path shared by every outcome above.
+    if (!process.env.AWAKEN_E2E_KEEP_TMP) cleanupFixtureTree(data);
   }
 }
 main().catch((error) => { console.error(`E2E FAIL: ${error.message}`); process.exitCode = 1; });

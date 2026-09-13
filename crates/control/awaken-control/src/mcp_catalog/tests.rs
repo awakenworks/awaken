@@ -369,3 +369,191 @@ async fn documented_mcp_operations_are_mounted_on_the_real_router() {
         }
     }
 }
+
+#[tokio::test]
+async fn supervised_catalog_refresh_uses_one_sync_path_and_stops_with_lifecycle() {
+    // Cause/effect graph: C1 configured Workspace, C2 reachable catalog,
+    // C3 lifecycle active, C4 catalog revision advances, C5 response becomes
+    // malformed, C6 another Workspace has no source. Effects: E1 immediate
+    // refresh commits revision 2, E2 later tick commits revision 3 through the
+    // same sync operation, E3 malformed content retains revision 3 and the task
+    // recovers at revision 4, E4 the unconfigured Workspace is untouched, E5
+    // lifecycle shutdown stops further HTTP requests. Rules: B1=C1+C2+C3=>E1;
+    // B2=B1+C4+tick=>E2; B3=B2+C5=>E3; B4=C6=>E4; B5=!C3=>E5. The injected
+    // interval changes scheduling only; production retains its five-minute value.
+    use awaken_agent_config::mcp_config::{
+        McpCatalogSnapshot, McpConfiguration, McpConfigurationRepository,
+    };
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let remote_revision = Arc::new(AtomicU64::new(2));
+    let malformed = Arc::new(AtomicBool::new(false));
+    let requests_for_server = requests.clone();
+    let revision_for_server = remote_revision.clone();
+    let malformed_for_server = malformed.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let requests = requests_for_server.clone();
+            let revision = revision_for_server.load(Ordering::SeqCst);
+            let malformed = malformed_for_server.load(Ordering::SeqCst);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut input = [0_u8; 4096];
+                let _ = socket.read(&mut input).await.unwrap();
+                requests.fetch_add(1, Ordering::SeqCst);
+                let body = if malformed {
+                    "{malformed".to_owned()
+                } else {
+                    serde_json::to_string(&McpCatalogSnapshot {
+                        schema_version: 1,
+                        revision,
+                        servers: vec![],
+                    })
+                    .unwrap()
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+        }
+    });
+
+    let harness = Harness::new();
+    let mut configuration = McpConfiguration::new(
+        "background".into(),
+        McpCatalogSnapshot {
+            schema_version: 1,
+            revision: 1,
+            servers: vec![],
+        },
+    );
+    configuration.catalog_url = Some(format!("http://{address}/catalog.json"));
+    configuration.advance(0).unwrap();
+    harness
+        .store
+        .put_mcp_configuration(0, &configuration)
+        .unwrap();
+    let mut unconfigured = McpConfiguration::new(
+        "unconfigured".into(),
+        McpCatalogSnapshot {
+            schema_version: 1,
+            revision: 1,
+            servers: vec![],
+        },
+    );
+    unconfigured.advance(0).unwrap();
+    harness
+        .store
+        .put_mcp_configuration(0, &unconfigured)
+        .unwrap();
+    let service = McpCatalogService::new(
+        harness.store.clone(),
+        Arc::new(VaultState::new(
+            Arc::new(InMemorySecretStore::new()),
+            Arc::new(InMemoryCredentialRepo::new()),
+        )),
+    );
+    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    service.supervise_with_interval(&lifecycle, std::time::Duration::from_millis(25));
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if harness
+                .store
+                .get_mcp_configuration("background")
+                .unwrap()
+                .is_some_and(|value| value.catalog.revision == 2)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("B1 immediate refresh");
+    remote_revision.store(3, Ordering::SeqCst);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if harness
+                .store
+                .get_mcp_configuration("background")
+                .unwrap()
+                .is_some_and(|value| value.catalog.revision == 3)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("B2 scheduled refresh");
+    malformed.store(true, Ordering::SeqCst);
+    let before_failure = requests.load(Ordering::SeqCst);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while requests.load(Ordering::SeqCst) == before_failure {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("B3 malformed refresh attempted");
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    assert_eq!(
+        harness
+            .store
+            .get_mcp_configuration("background")
+            .unwrap()
+            .unwrap()
+            .catalog
+            .revision,
+        3,
+        "B3 last accepted catalog retained"
+    );
+    assert!(lifecycle.is_healthy(), "B3 refresh failure is recoverable");
+    malformed.store(false, Ordering::SeqCst);
+    remote_revision.store(4, Ordering::SeqCst);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if harness
+                .store
+                .get_mcp_configuration("background")
+                .unwrap()
+                .is_some_and(|value| value.catalog.revision == 4)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("B3 next valid refresh recovers");
+    assert_eq!(
+        harness
+            .store
+            .get_mcp_configuration("unconfigured")
+            .unwrap()
+            .unwrap(),
+        unconfigured,
+        "B4"
+    );
+    lifecycle
+        .shutdown(std::time::Duration::from_secs(1))
+        .await
+        .unwrap();
+    let after_shutdown = requests.load(Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+    assert_eq!(requests.load(Ordering::SeqCst), after_shutdown, "B5");
+    assert!(lifecycle.is_healthy());
+    server.abort();
+    let _ = server.await;
+}

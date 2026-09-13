@@ -371,8 +371,8 @@ test("Quickstart publishes, starts a durable Session, and hands its exact SDK co
   // Quickstart placement cause/effect table: C1=the Agent has a recursive/self
   // delegate, C2=the selected Environment is self-hosted, C3=a Worker is live.
   // R1 C1+!C2 rejects before pretending a deferred cloud Sandbox can delegate;
-  // R2 C1+C2+C3 publishes, realizes the Sandbox, accepts the first message, and
-  // navigates to the exact durable Session; R3 blank draft id + selected Starter
+  // R2 C1+C2+C3 publishes, realizes the Sandbox, accepts and completes the first
+  // message, and navigates to the exact durable Session; R3 blank draft id + selected Starter
   // fills the Starter id but an authored replacement remains authoritative; R4
   // post-Quickstart provenance exposes exact Agent/Environment SDK coordinates
   // and dismissal removes guidance only. This browser scenario owns R2-R4; the
@@ -448,6 +448,23 @@ test("Quickstart publishes, starts a durable Session, and hands its exact SDK co
   expect(stored.environment_id).toBe(environment.id);
   expect(stored.agent.id).toBe(id);
   expect(stored.agent.version).toBe(createSessionBody.agent.version);
+  // Lifecycle cleanup table: Q1 discovery and inference share the canonical
+  // fake wire -> the initial receipt reaches end_turn and releases Worker
+  // capacity; Q2 a malformed/nonterminal fake response -> this test fails here
+  // instead of leaking an active Session into later MCP debugging tests.
+  await expect.poll(async () => {
+    const response = await request.get(
+      await workspaceApiPath(request, `/v1/sessions/${session.id}/events`),
+      { headers: MANAGED_HEADERS },
+    );
+    if (!response.ok()) return false;
+    const events = (await response.json()).data as Array<{
+      type?: string;
+      stop_reason?: { type?: string };
+    }>;
+    return events.some((event) =>
+      event.type === "session.status_idle" && event.stop_reason?.type === "end_turn");
+  }, { timeout: 30_000, message: "Quickstart Session releases Worker capacity" }).toBe(true);
   await page.goto(sdkPath);
   const managedExample = page.locator("#protocol-managed .code-block");
   await expect(managedExample).toContainText(`agent: "${id}"`);
