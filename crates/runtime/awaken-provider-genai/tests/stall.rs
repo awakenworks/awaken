@@ -18,6 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 enum StreamFixture {
     HttpFailure {
         status: u16,
+        complete_body: bool,
         requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     },
     Boundary {
@@ -49,10 +50,16 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                 // Drain the request head; the response does not depend on it.
                 let mut buf = [0u8; 8192];
                 let _ = socket.read(&mut buf).await;
-                if let StreamFixture::HttpFailure { status, requests } = &fixture {
+                if let StreamFixture::HttpFailure {
+                    status,
+                    complete_body,
+                    requests,
+                } = &fixture
+                {
                     requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let declared_length = if *complete_body { 2 } else { 102 };
                     let response = format!(
-                        "HTTP/1.1 {status} Failure\r\nlocation: http://{addr}/repeated\r\nretry-after: 0\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                        "HTTP/1.1 {status} Failure\r\nlocation: http://{addr}/repeated\r\nretry-after: 0\r\ncontent-length: {declared_length}\r\nconnection: close\r\n\r\n{{}}"
                     );
                     socket
                         .write_all(response.as_bytes())
@@ -187,15 +194,15 @@ async fn production_model_clients_do_not_redirect_or_retry_ambiguous_http_respon
         atomic::{AtomicUsize, Ordering},
     };
     // H1 redirect 307/308; H2 retryable status 429/503; H3 Anthropic/OpenAI
-    // streaming and nonstreaming + Responses. All H1/H2 * H3 make exactly one
-    // HTTP request. Redirects and the separate Responses adapter retain Unknown;
-    // genai's structured, fully consumed 429/503 body proves exact return and
-    // permits the Runtime-owned retry. This exercises production construction.
+    // streaming and nonstreaming + Responses. Every row makes exactly one HTTP
+    // request. A fully consumed 4xx/5xx error body proves exact return; redirects
+    // and the adjacent truncated-body matrix remain Unknown.
     for status in [307, 308, 429, 503] {
         for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
             let requests = Arc::new(AtomicUsize::new(0));
             let base = spawn_sse_server(StreamFixture::HttpFailure {
                 status,
+                complete_body: true,
                 requests: requests.clone(),
             })
             .await;
@@ -232,9 +239,9 @@ async fn production_model_clients_do_not_redirect_or_retry_ambiguous_http_respon
                 1,
                 "{status}/{kind}/{streaming}"
             );
-            let expected = if status >= 429 && kind != 2 {
+            let expected = if status >= 400 {
                 ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
-                    ResponseEnvelope::CompleteBody,
+                    ResponseEnvelope::CompleteErrorBody,
                 ))
             } else {
                 ModelExecutionEvidence::Unknown
@@ -245,6 +252,63 @@ async fn production_model_clients_do_not_redirect_or_retry_ambiguous_http_respon
                 "{status}/{kind}/{streaming}"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn truncated_http_error_bodies_never_mint_termination_evidence() {
+    use awaken_provider_genai::OpenAiResponsesExecutor;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    // Causes: C1 final HTTP status is visible, C2 declared body is truncated,
+    // C3 each production transport/dialect path. Effects: E1 exactly one wire
+    // request, E2 failure remains Unknown. Rule R1=C1+C2+C3=>E1+E2.
+    // Constraint: neither a status line nor socket close is a response-envelope
+    // receipt; the complete-body cases are the adjacent positive matrix.
+    for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let base = spawn_sse_server(StreamFixture::HttpFailure {
+            status: 503,
+            complete_body: false,
+            requests: requests.clone(),
+        })
+        .await;
+        let executor: Box<dyn LlmExecutor> = match kind {
+            2 => Box::new(
+                OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test")
+                    .unwrap(),
+            ),
+            _ => Box::new(
+                GenaiExecutor::from_materialized_endpoint(
+                    if kind == 0 {
+                        AdapterKind::Anthropic
+                    } else {
+                        AdapterKind::OpenAI
+                    },
+                    base,
+                    "test",
+                )
+                .unwrap(),
+            ),
+        };
+        let result = if streaming {
+            executor.infer_streaming(request(), &NullSink).await
+        } else {
+            executor.infer(request()).await
+        };
+        let error = result.expect_err("truncated HTTP error cannot complete inference");
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "R1/E1: {kind}/{streaming}"
+        );
+        assert_eq!(
+            error.execution_evidence(),
+            ModelExecutionEvidence::Unknown,
+            "R1/E2: {kind}/{streaming}"
+        );
     }
 }
 

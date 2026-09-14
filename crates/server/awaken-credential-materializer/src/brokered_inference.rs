@@ -1348,12 +1348,14 @@ mod tests {
         // | F2 | Unavailable | success | same, no fallback |
         // | F3 | Lost | failure | same, original binding error retained |
         // | F4 | Unavailable | failure | same |
-        // | F5 | Current | success | one native send and exact close |
-        // F5's upstream rejects the request: close is NOT termination evidence.
+        // | F5 | Current | success | one native send, exact close, complete HTTP error => Terminated |
+        // F5's upstream returns a complete 400 response body. That exact remote
+        // invocation has ended; TCP close alone would remain Unknown and is
+        // covered by the provider transport-failure matrix.
         // The barrier fixes the crash cut without timing sleeps. This tests a
         // fresh observation, not atomic fencing of an arbitrary remote server.
         use awaken_runtime_contract::model_operation::{
-            ModelExecutionEvidence, with_model_operation_context,
+            ModelExecutionEvidence, ResponseEnvelope, TerminalReceipt, with_model_operation_context,
         };
         use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier};
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1452,8 +1454,12 @@ mod tests {
                     assert_eq!(sends.load(Ordering::SeqCst), 1, "{rule}: healthy path");
                     assert_eq!(
                         error.execution_evidence(),
-                        ModelExecutionEvidence::Unknown,
-                        "{rule}: close is not a stop receipt"
+                        ModelExecutionEvidence::Terminated(
+                            TerminalReceipt::from_response_envelope(
+                                ResponseEnvelope::CompleteErrorBody,
+                            )
+                        ),
+                        "{rule}: a complete HTTP error body proves that invocation terminated"
                     );
                 }
                 assert_eq!(client.requests.lock().unwrap().len(), 1, "{rule}");

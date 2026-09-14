@@ -9,7 +9,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, TokenUsage,
 };
 use awaken_runtime_contract::model_operation::{
-    ModelExecutionEvidence, NoDispatchProof, PreDispatchStage,
+    ModelExecutionEvidence, NoDispatchProof, PreDispatchStage, ResponseEnvelope, TerminalReceipt,
 };
 use awaken_runtime_contract::resolved::ProviderServerTool;
 #[cfg(test)]
@@ -79,7 +79,14 @@ impl OpenAiResponsesExecutor {
             .await
             .map_err(|error| Error::Provider(error.without_url().to_string()))?;
         if !status.is_success() {
-            return Err(classify_error(&format!("HTTP {status}: {text}")));
+            let classified = classify_error(&format!("HTTP {status}: {text}"));
+            return Err(if status.is_client_error() || status.is_server_error() {
+                classified.with_execution_evidence(ModelExecutionEvidence::Terminated(
+                    TerminalReceipt::from_response_envelope(ResponseEnvelope::CompleteErrorBody),
+                ))
+            } else {
+                classified
+            });
         }
         serde_json::from_str(&text)
             .map_err(|error| Error::Provider(format!("invalid Responses JSON: {error}")))
