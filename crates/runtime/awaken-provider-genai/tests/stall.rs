@@ -187,9 +187,10 @@ async fn production_model_clients_do_not_redirect_or_retry_ambiguous_http_respon
         atomic::{AtomicUsize, Ordering},
     };
     // H1 redirect 307/308; H2 retryable status 429/503; H3 Anthropic/OpenAI
-    // streaming and nonstreaming + Responses. All H1/H2 * H3 must make exactly
-    // one HTTP request and retain Unknown, even with Location and Retry-After.
-    // This exercises production construction, not a custom test HTTP client.
+    // streaming and nonstreaming + Responses. All H1/H2 * H3 make exactly one
+    // HTTP request. Redirects and the separate Responses adapter retain Unknown;
+    // genai's structured, fully consumed 429/503 body proves exact return and
+    // permits the Runtime-owned retry. This exercises production construction.
     for status in [307, 308, 429, 503] {
         for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
             let requests = Arc::new(AtomicUsize::new(0));
@@ -231,7 +232,18 @@ async fn production_model_clients_do_not_redirect_or_retry_ambiguous_http_respon
                 1,
                 "{status}/{kind}/{streaming}"
             );
-            assert_eq!(error.execution_evidence(), ModelExecutionEvidence::Unknown);
+            let expected = if status >= 429 && kind != 2 {
+                ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
+                    ResponseEnvelope::CompleteBody,
+                ))
+            } else {
+                ModelExecutionEvidence::Unknown
+            };
+            assert_eq!(
+                error.execution_evidence(),
+                expected,
+                "{status}/{kind}/{streaming}"
+            );
         }
     }
 }
