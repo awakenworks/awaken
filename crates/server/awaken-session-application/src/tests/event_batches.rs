@@ -22,6 +22,7 @@ use super::*;
 #[derive(Default)]
 struct EventBatchRuntime {
     admission_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    reservation_barriers: Mutex<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
     reserved: Mutex<BTreeMap<String, AdmitSessionRun>>,
     projected_resources: Mutex<Option<(u64, awaken_session_contract::ResolvedSessionResources)>>,
     reserved_resource_generations:
@@ -31,6 +32,7 @@ struct EventBatchRuntime {
     fail_activation_once: AtomicBool,
     activated: Mutex<BTreeMap<String, u64>>,
     states: Mutex<HashMap<String, RunState>>,
+    run_state_reads: AtomicUsize,
     latest_run: Mutex<Option<RunId>>,
     committed: Mutex<Vec<Message>>,
     recovery_projection_override: Mutex<Option<(Vec<u64>, u64)>>,
@@ -151,6 +153,11 @@ impl SessionRuntime for EventBatchRuntime {
         &self,
         command: AdmitSessionRun,
     ) -> Result<SessionRunReservation, RunError> {
+        let barriers = self.reservation_barriers.lock().unwrap().take();
+        if let Some((entered, release)) = barriers {
+            entered.wait().await;
+            release.wait().await;
+        }
         self.trace
             .lock()
             .unwrap()
@@ -239,6 +246,7 @@ impl SessionRuntime for EventBatchRuntime {
         _session_id: &str,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
+        self.run_state_reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.states.lock().unwrap().get(&run_id.0).cloned())
     }
 
@@ -577,6 +585,137 @@ fn planned_session(session_id: &str, inputs: Vec<SessionEventInput>) -> Persiste
     session
 }
 
+#[tokio::test]
+async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
+    // Cause/effect graph: C1 a just-accepted User batch is the ordinary global
+    // FIFO head; C2 an earlier User batch remains unprocessed; C3 the caller
+    // prefers the later batch. E1 C1 reserves and activates that exact Run
+    // immediately through the canonical Event driver; E2 C2+C3 performs no
+    // Run admission and leaves both durable commands queued for the lifecycle
+    // supervisor. The existing receipt/Interrupt tests own their higher-priority
+    // crossing rules, and the full Event recovery suite owns crash/replay.
+    //
+    // | Rule | Earlier User pending | Preferred batch is FIFO head | Effect |
+    // |---|---|---|---|
+    // | F1 | no | yes | reserve and activate preferred User (E1) |
+    // | F2 | yes | no | no admission or activation (E2) |
+    for earlier_pending in [false, true] {
+        let session_id = if earlier_pending {
+            "preferred-user-behind"
+        } else {
+            "preferred-user-head"
+        };
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let mut session = planned_session(
+            session_id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("first")],
+            }],
+        );
+        if !earlier_pending {
+            session.event_batches[0].events[0].processed = true;
+            session.event_batches[0].events[0].projection_anchor =
+                Some(awaken_session_contract::SessionEventProjectionAnchor {
+                    source_commit_cursor: 1,
+                });
+        }
+        create(repository.as_ref(), session).await;
+        let runtime = Arc::new(EventBatchRuntime::default());
+        let app = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let (_preferred, drive_error) = app
+            .append_and_drive_session_event_batch_idempotent(
+                session_id,
+                vec![SessionEventInput::UserMessage {
+                    content: vec![ContentBlock::text("preferred")],
+                }],
+                None,
+                None,
+                Some(("preferred-user".into(), "preferred-user-fingerprint".into())),
+            )
+            .await
+            .expect("append preferred User batch");
+        assert!(drive_error.is_none(), "F1-F2 request-local drive");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            app.lifecycle_wakeup.notified(),
+        )
+        .await
+        .expect("F1-F2 full recovery remains notified after the local attempt");
+        assert_eq!(
+            runtime.reserved.lock().unwrap().len(),
+            usize::from(!earlier_pending),
+            "F1-F2 reservation"
+        );
+        assert_eq!(
+            runtime.activated.lock().unwrap().len(),
+            usize::from(!earlier_pending),
+            "F1-F2 activation"
+        );
+        let durable = repository.get(session_id).await.unwrap();
+        assert_eq!(
+            durable.event_batches[0].events[0].processed, !earlier_pending,
+            "F1 preserves completed predecessor; F2 preserves queued predecessor"
+        );
+        assert!(
+            !durable.event_batches[1].events[0].processed,
+            "F1-F2 activation is pending until committed Runtime settlement"
+        );
+    }
+}
+
+#[tokio::test]
+async fn preferred_user_drive_failure_retains_receipt_and_recovery_wake() {
+    // Causes: C1 the root CAS accepts one FIFO-head User command; C2 its
+    // request-local activation fails before an effect. Effects: E1 return the
+    // exact accepted batch and the retryable drive error; E2 retain the command
+    // unprocessed; E3 notify the sole lifecycle supervisor after the failed
+    // attempt. This is the failure row excluded from F1 above. Periodic recovery
+    // remains the crash-between-accept-and-drive fallback and owns no second
+    // receipt or execution path.
+    let session_id = "preferred-user-drive-failure";
+    let repository: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(repository.as_ref(), persisted(session_id, false, "idle")).await;
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.fail_activation_once.store(true, Ordering::SeqCst);
+    let app = application_with_runtime(
+        runtime,
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let (accepted, drive_error) = app
+        .append_and_drive_session_event_batch_idempotent(
+            session_id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("retry through recovery")],
+            }],
+            None,
+            None,
+            Some(("failure-key".into(), "failure-fingerprint".into())),
+        )
+        .await
+        .expect("E1 accepted receipt survives local drive failure");
+    assert!(drive_error.is_some(), "E1 exact drive failure is reported");
+    assert_eq!(accepted.events.len(), 1, "E1 exact receipt");
+    assert!(
+        !repository.get(session_id).await.unwrap().event_batches[0].events[0].processed,
+        "E2"
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        app.lifecycle_wakeup.notified(),
+    )
+    .await
+    .expect("E3");
+}
+
 async fn finalize_applied_user_dispatch(
     app: &SessionApplication,
     runtime: &EventBatchRuntime,
@@ -674,8 +813,14 @@ fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSessi
 
 #[tokio::test]
 async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo() {
-    // A running command can expose durable progress only after its exact input
-    // exists. Anchoring alone must neither complete it nor activate queued work.
+    // Causes: C1 the current User input is absent/present; C2 model admission
+    // wakes the root; C3 the Run is Running/terminal; C4 Dispatch-Applied has
+    // not settled the command. Effects: E1 only present input gains its anchor;
+    // E2 neither state publishes processed or activates queued work; E3 the
+    // terminal pre-Dispatch scan observes state once and remains Pending.
+    // Decision rules: M1 absent+Running=>E2; M2 present+Running=>E1+E2;
+    // M3 present+terminal+C4=>E2+E3. Dispatch settlement is the adjacent
+    // `finalize_applied_user_dispatch` path and remains the sole success row.
     for has_input in [false, true] {
         let session_id = if has_input {
             "running-anchored"
@@ -806,9 +951,15 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
                 "subsequent requests must not wake recovery for an already anchored input"
             );
             runtime.end(&run_id);
+            let reads_before_terminal_drive = runtime.run_state_reads.load(Ordering::SeqCst);
             app.drive_session_event_batches(session_id, None)
                 .await
                 .unwrap();
+            assert_eq!(
+                runtime.run_state_reads.load(Ordering::SeqCst) - reads_before_terminal_drive,
+                1,
+                "terminal truth before Dispatch settlement remains Pending without reselecting the same command"
+            );
             let ended = repository.get(session_id).await.unwrap();
             assert!(
                 !ended.event_batches[0].events[0].processed,
@@ -4369,6 +4520,75 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
         before_completed,
         "A5/E3 no root CAS"
     );
+}
+
+#[tokio::test]
+async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
+    // Cause/effect graph: C1 revision R and Environment binding A are recovered
+    // into Runtime; C2 reservation pauses; C3 another owner commits binding B at
+    // R+1; C4 reservation resumes. Effects: E1 no activity receipt/epoch is
+    // committed against R+1; E2 no Run is activated with projection A; E3 the
+    // caller gets a retryable admission failure and the durable Session remains
+    // Idle on binding B. Exact activity receipt replay is excluded because it is
+    // stronger committed recovery truth and is covered by A2 above.
+    //
+    // | Rule | Projected revision | Root at activity CAS | Effect |
+    // |---|---|---|---|
+    // | P1 | R | R | ordinary admission (existing A1) |
+    // | P2 | R | R+1 | E1-E3, no stale execution |
+    let session_id = "projection-revision-race";
+    let repository: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let mut session = persisted(session_id, false, "idle");
+    session.environment.set_resident("binding-a");
+    create(repository.as_ref(), session).await;
+    let entered = Arc::new(tokio::sync::Barrier::new(2));
+    let release = Arc::new(tokio::sync::Barrier::new(2));
+    let runtime = Arc::new(EventBatchRuntime::default());
+    *runtime.reservation_barriers.lock().unwrap() = Some((entered.clone(), release.clone()));
+    let app = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let admission = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            app.admit_session_user_run(SessionUserRunCommand {
+                session_id: session_id.into(),
+                agent_id: "agent".into(),
+                operation_id: "projection-race-operation".into(),
+                run_id: RunId("projection-race-run".into()),
+                content: vec![ContentBlock::text("do not execute stale projection")],
+                accompanying_system: None,
+                data_subject_id: None,
+                traceparent: None,
+            })
+            .await
+        })
+    };
+    entered.wait().await;
+    let mut replacement = repository.get(session_id).await.unwrap();
+    replacement.environment.set_resident("binding-b");
+    app.commit_session_snapshot("workspace", replacement, "test-binding-change", Vec::new())
+        .await
+        .expect("C3 commits the successor root");
+    release.wait().await;
+
+    let error = admission
+        .await
+        .expect("P2 admission task")
+        .expect_err("P2 stale projection must retry");
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "P2/E3"
+    );
+    let durable = repository.get(session_id).await.unwrap();
+    assert_eq!(durable.environment.binding(), Some("binding-b"), "P2/E3");
+    assert_eq!(durable.execution, SessionExecutionState::Idle, "P2/E1");
+    assert!(durable.active_activity_epochs.is_empty(), "P2/E1");
+    assert!(runtime.activated.lock().unwrap().is_empty(), "P2/E2");
 }
 
 #[test]

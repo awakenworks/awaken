@@ -372,10 +372,47 @@ impl SessionApplication {
                     traceparent,
                     idempotency,
                 },
+                true,
             )
             .await?;
         batch.require_accepted()?;
         Ok(batch)
+    }
+
+    /// Accept through the same root CAS, then perform the request-local drive
+    /// before notifying the full recovery sweep. This removes a duplicate race
+    /// between the synchronous driver and its own wake while retaining the
+    /// periodic recovery authority if this future is lost after acceptance.
+    pub async fn append_and_drive_session_event_batch_idempotent(
+        &self,
+        session_id: &str,
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+        idempotency: Option<(String, String)>,
+    ) -> Result<(SessionEventBatch, Option<RunError>), RunError> {
+        let batch = self
+            .resolve_session_event_batch(
+                session_id,
+                EventBatchAdmission::Accept {
+                    inputs,
+                    data_subject_id,
+                    traceparent,
+                    idempotency,
+                },
+                false,
+            )
+            .await?;
+        batch.require_accepted()?;
+        let drive_error = self
+            .drive_session_event_batches(session_id, Some(&batch.batch_id))
+            .await
+            .err();
+        // The full sweep remains the one retry owner. Waking after the local
+        // attempt preserves queued predecessors and retryable failures without
+        // racing this request's append/admission/activation root mutations.
+        self.wake_lifecycle_supervisor();
+        Ok((batch, drive_error))
     }
 
     /// Resolve response loss without replaying execution. If acceptance already
@@ -415,6 +452,7 @@ impl SessionApplication {
                     key: key.clone(),
                     request_fingerprint: request_fingerprint.clone(),
                 },
+                true,
             )
             .await;
         match result {
@@ -440,6 +478,7 @@ impl SessionApplication {
         &self,
         session_id: &str,
         admission: EventBatchAdmission,
+        wake_after_accept: bool,
     ) -> Result<SessionEventBatch, RunError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
@@ -557,7 +596,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(_) => {
-                    if !batch.admission_closed {
+                    if !batch.admission_closed && wake_after_accept {
                         self.wake_lifecycle_supervisor();
                     }
                     return Ok(batch);
@@ -600,36 +639,42 @@ impl SessionApplication {
         };
         // Shared bounded iteration owns only scheduling; this selector retains
         // per-Session FIFO, root CAS, Runtime admission and interruption order.
-        let completed = super::recovery_sweep::map_candidates(candidates, |candidate| async move {
-            let mut result = EventBatchReconciliation::default();
-            if !candidate.interests.event_batches {
-                return result;
-            }
-            let session = match self.session_repository().get(&candidate.session_id).await {
-                Ok(session) => session,
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => return result,
-                Err(error) => {
-                    result
-                        .failures
-                        .push((candidate.session_id.clone(), error.to_string()));
+        let completed = super::recovery_sweep::map_candidates(
+            candidates,
+            super::recovery_sweep::EVENT_RECOVERY_CONCURRENCY,
+            |candidate| async move {
+                let mut result = EventBatchReconciliation::default();
+                if !candidate.interests.event_batches {
                     return result;
                 }
-            };
-            if !session.needs_event_reconciliation() {
-                return result;
-            }
-            result.pending = 1;
-            let session_id = session.session_id.clone();
-            match self
-                .reconcile_session_event_batches(&session_id, None, Some(session))
-                .await
-            {
-                Ok(true) => result.settled = 1,
-                Ok(false) => {}
-                Err(error) => result.failures.push((session_id, error.to_string())),
-            }
-            result
-        })
+                let session = match self.session_repository().get(&candidate.session_id).await {
+                    Ok(session) => session,
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                        return result;
+                    }
+                    Err(error) => {
+                        result
+                            .failures
+                            .push((candidate.session_id.clone(), error.to_string()));
+                        return result;
+                    }
+                };
+                if !session.needs_event_reconciliation() {
+                    return result;
+                }
+                result.pending = 1;
+                let session_id = session.session_id.clone();
+                match self
+                    .reconcile_session_event_batches(&session_id, None, Some(session))
+                    .await
+                {
+                    Ok(true) => result.settled = 1,
+                    Ok(false) => {}
+                    Err(error) => result.failures.push((session_id, error.to_string())),
+                }
+                result
+            },
+        )
         .await;
         for result in completed {
             report.pending += result.pending;
@@ -1201,11 +1246,13 @@ impl SessionApplication {
             )
             .await?;
         }
-        Ok(Some(if state == RunState::Running {
-            EventBatchProgress::Pending
-        } else {
-            EventBatchProgress::Advanced
-        }))
+        // Running and terminal Runtime observations both wait here. Running
+        // still needs its eventual terminal boundary; terminal truth still
+        // needs the Dispatch-Applied callback that alone joins the commit
+        // anchor, activity removal and processed marker. Returning Advanced
+        // for that pre-callback window would immediately select the same
+        // unprocessed command again and hot-loop the bounded supervisor slice.
+        Ok(Some(EventBatchProgress::Pending))
     }
 
     async fn observe_session_event(
@@ -1473,11 +1520,69 @@ fn preceding_event_runtime_target(
         })
 }
 
+/// Select the next command through the durable aggregate's ordinary priority
+/// and FIFO rules. Request-local acceleration must compare against this exact
+/// result rather than implementing another ordering rule.
+fn select_normal_session_event(session: &PersistedSession) -> Option<SelectedSessionEvent> {
+    let select = |predicate: fn(&SessionEventCommand) -> bool| {
+        session.event_batches.iter().find_map(|batch| {
+            batch.events.iter().find_map(|entry| {
+                (!entry.processed && predicate(&entry.event)).then(|| SelectedSessionEvent {
+                    batch_id: batch.batch_id.clone(),
+                    event: entry.event.clone(),
+                    traceparent: batch.traceparent.clone(),
+                    processed_anchor: None,
+                    superseded_tool_reply: None,
+                })
+            })
+        })
+    };
+    select(|event| {
+        matches!(
+            event,
+            SessionEventCommand::ToolReply { .. }
+                | SessionEventCommand::DefineOutcome { .. }
+                | SessionEventCommand::Interrupt { .. }
+        )
+    })
+    .or_else(|| {
+        session.event_batches.iter().find_map(|batch| {
+            batch
+                .events
+                .windows(2)
+                .find(|pair| {
+                    pair[0].processed
+                        && matches!(&pair[0].event, SessionEventCommand::ToolReply { .. })
+                        && !pair[1].processed
+                        && matches!(&pair[1].event, SessionEventCommand::SystemMessage { .. })
+                })
+                .map(|pair| SelectedSessionEvent {
+                    batch_id: batch.batch_id.clone(),
+                    event: pair[1].event.clone(),
+                    traceparent: batch.traceparent.clone(),
+                    processed_anchor: None,
+                    superseded_tool_reply: None,
+                })
+        })
+    })
+    .or_else(|| {
+        select(|event| {
+            !matches!(
+                event,
+                SessionEventCommand::ToolReply { .. }
+                    | SessionEventCommand::DefineOutcome { .. }
+                    | SessionEventCommand::Interrupt { .. }
+            )
+        })
+    })
+}
+
 /// One eligibility selector over retained provenance. Normal selection keeps
 /// ToolReply, DefineOutcome, and Interrupt receipt commands in their original
 /// relative order while letting them cross queued User entries. A request-local
 /// preferred batch narrows that same authority to its ToolReply/Interrupt
-/// receipt. Only after an exact ToolReply delivery has failed may recovery select
+/// receipt, or starts its User command only when the ordinary selector confirms
+/// it is already the global FIFO head. Only after an exact ToolReply delivery has failed may recovery select
 /// a later retained Interrupt that includes the failed reply's exact Thread
 /// target; it must rediscover the same unprocessed failed operation in a fresh
 /// root before crossing it. An already-processed Interrupt supplies its root
@@ -1559,7 +1664,7 @@ fn select_session_event(
             .event_batches
             .iter()
             .find(|batch| batch.batch_id == batch_id)?;
-        return batch.events.iter().find_map(|entry| {
+        if let Some(receipt) = batch.events.iter().find_map(|entry| {
             (!entry.processed
                 && matches!(
                     &entry.event,
@@ -1572,60 +1677,15 @@ fn select_session_event(
                 processed_anchor: None,
                 superseded_tool_reply: None,
             })
+        }) {
+            return Some(receipt);
+        }
+        return select_normal_session_event(session).filter(|selected| {
+            selected.batch_id == batch_id
+                && matches!(&selected.event, SessionEventCommand::UserMessage { .. })
         });
     }
-
-    let select = |predicate: fn(&SessionEventCommand) -> bool| {
-        session.event_batches.iter().find_map(|batch| {
-            batch.events.iter().find_map(|entry| {
-                (!entry.processed && predicate(&entry.event)).then(|| SelectedSessionEvent {
-                    batch_id: batch.batch_id.clone(),
-                    event: entry.event.clone(),
-                    traceparent: batch.traceparent.clone(),
-                    processed_anchor: None,
-                    superseded_tool_reply: None,
-                })
-            })
-        })
-    };
-    select(|event| {
-        matches!(
-            event,
-            SessionEventCommand::ToolReply { .. }
-                | SessionEventCommand::DefineOutcome { .. }
-                | SessionEventCommand::Interrupt { .. }
-        )
-    })
-    .or_else(|| {
-        session.event_batches.iter().find_map(|batch| {
-            batch
-                .events
-                .windows(2)
-                .find(|pair| {
-                    pair[0].processed
-                        && matches!(&pair[0].event, SessionEventCommand::ToolReply { .. })
-                        && !pair[1].processed
-                        && matches!(&pair[1].event, SessionEventCommand::SystemMessage { .. })
-                })
-                .map(|pair| SelectedSessionEvent {
-                    batch_id: batch.batch_id.clone(),
-                    event: pair[1].event.clone(),
-                    traceparent: batch.traceparent.clone(),
-                    processed_anchor: None,
-                    superseded_tool_reply: None,
-                })
-        })
-    })
-    .or_else(|| {
-        select(|event| {
-            !matches!(
-                event,
-                SessionEventCommand::ToolReply { .. }
-                    | SessionEventCommand::DefineOutcome { .. }
-                    | SessionEventCommand::Interrupt { .. }
-            )
-        })
-    })
+    select_normal_session_event(session)
 }
 
 fn mutation_run_error(error: SessionMutationError) -> RunError {

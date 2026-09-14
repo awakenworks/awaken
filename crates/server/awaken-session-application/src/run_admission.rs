@@ -11,7 +11,7 @@ use awaken_session_contract::{
     AdmitSessionRun, AdmittedSessionRun, ControlSessionCreationInputs, McpAttachmentOrigin,
     Pending, RunApplication, RunApplicationError, RunError, RunResume, SessionBaselineState,
     SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
-    SessionRepositoryError, SessionRunActivityReceiptPlan, SessionRunDelivery,
+    SessionRepositoryError, SessionRevision, SessionRunActivityReceiptPlan, SessionRunDelivery,
     SessionToolConfiguration, StepOutcome, session_run_activity_operation_id,
     session_run_activity_receipt_plan,
 };
@@ -252,7 +252,8 @@ impl SessionApplication {
                 .as_deref()
                 .or(expected_owner)
                 .ok_or_else(|| RunError::bad_request("Session was not found"))?;
-            self.admit_run_session(owner_scope, &session_id, &agent_id)
+            let projected_revision = self
+                .admit_run_session(owner_scope, &session_id, &agent_id)
                 .await?;
             let reservation = self.runtime().reserve_session_run(command).await?;
             let delivery = |session_activity_epoch| SessionRunDelivery {
@@ -266,7 +267,11 @@ impl SessionApplication {
                     reservation_replayed,
                 } => {
                     let session_activity_epoch = self
-                        .begin_activity_for_operation(&session_id, &operation)
+                        .begin_activity_for_operation_at_revision(
+                            &session_id,
+                            &operation,
+                            projected_revision,
+                        )
                         .await
                         .map_err(crate::SessionActivityError::run_error)?
                         .1;
@@ -490,7 +495,7 @@ impl SessionApplication {
         &self,
         workspace_id: &str,
         thread_id: &str,
-    ) -> Result<(), RunApplicationError> {
+    ) -> Result<SessionRevision, RunApplicationError> {
         let recovered = self
             .recover_session_projection(thread_id, Some(workspace_id))
             .await
@@ -536,7 +541,7 @@ impl SessionApplication {
                 ),
             ));
         }
-        Ok(())
+        Ok(recovered.session.revision)
     }
 
     pub async fn create_profiled_session(
@@ -961,7 +966,7 @@ impl SessionApplication {
         workspace_id: &str,
         thread_id: &str,
         agent_id: &str,
-    ) -> Result<(), RunApplicationError> {
+    ) -> Result<SessionRevision, RunApplicationError> {
         self.create_profiled_session(CreateProfiledSessionCommand {
             owner_scope: workspace_id.to_string(),
             session_id: thread_id.to_string(),
@@ -984,7 +989,7 @@ impl SessionApplication {
         })
         .await
         .map_err(creation_error)
-        .map(|_| ())
+        .map(|session| session.revision)
     }
 
     pub async fn admit_run_session(
@@ -992,7 +997,7 @@ impl SessionApplication {
         workspace_id: &str,
         thread_id: &str,
         agent_id: &str,
-    ) -> Result<(), RunApplicationError> {
+    ) -> Result<SessionRevision, RunApplicationError> {
         match self.session(thread_id).await {
             Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
             Err(SessionRepositoryError::NotFound) => {
@@ -1000,7 +1005,7 @@ impl SessionApplication {
                     .create_default_run_session(workspace_id, thread_id, agent_id)
                     .await
                 {
-                    Ok(()) => Ok(()),
+                    Ok(revision) => Ok(revision),
                     // Concurrent first Runs race only at the durable create fence;
                     // every loser adopts the exact winner through the same recovery.
                     Err(error)
