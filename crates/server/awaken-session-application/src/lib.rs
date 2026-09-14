@@ -86,6 +86,7 @@ struct SessionRecoveryCandidate {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SessionRecoveryInterests {
+    resources: bool,
     event_batches: bool,
     environment_continuation: bool,
     local_realization: bool,
@@ -94,6 +95,7 @@ struct SessionRecoveryInterests {
 impl Default for SessionRecoveryInterests {
     fn default() -> Self {
         Self {
+            resources: true,
             event_batches: true,
             environment_continuation: true,
             local_realization: true,
@@ -106,7 +108,7 @@ impl SessionRecoveryInterests {
     /// A true hint still requires the phase's ordinary fresh root read before
     /// any effect. A concurrent transition after this prefix retains its wake
     /// permit and is reconsidered by the next cycle.
-    fn from_session(session: &PersistedSession) -> Self {
+    fn from_session(session: &PersistedSession, audit_resource_references: bool) -> Self {
         let environment_continuation = !session.is_terminal()
             && (matches!(
                 session.environment,
@@ -125,6 +127,8 @@ impl SessionRecoveryInterests {
                 !environment_requires_external_owner(baseline.runtime_placement)
             });
         Self {
+            resources: session.needs_resource_reconciliation()
+                || (audit_resource_references && session.resources.has_references()),
             event_batches: session.needs_event_reconciliation(),
             environment_continuation,
             local_realization,
@@ -140,12 +144,21 @@ struct SessionRecoveryCandidates {
 
 impl From<SessionRecoveryScan> for SessionRecoveryCandidates {
     fn from(scan: SessionRecoveryScan) -> Self {
+        Self::from_scan(scan, true)
+    }
+}
+
+impl SessionRecoveryCandidates {
+    fn from_scan(scan: SessionRecoveryScan, audit_resource_references: bool) -> Self {
         Self {
             sessions: scan
                 .sessions
                 .into_iter()
                 .map(|scoped| {
-                    let interests = SessionRecoveryInterests::from_session(&scoped.session);
+                    let interests = SessionRecoveryInterests::from_session(
+                        &scoped.session,
+                        audit_resource_references,
+                    );
                     SessionRecoveryCandidate {
                         workspace_id: scoped.workspace_id,
                         session_id: scoped.session.session_id,
