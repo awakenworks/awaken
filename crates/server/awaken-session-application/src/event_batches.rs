@@ -1479,11 +1479,69 @@ fn preceding_event_runtime_target(
         })
 }
 
+/// Select the next command through the durable aggregate's ordinary priority
+/// and FIFO rules. Request-local acceleration must compare against this exact
+/// result rather than implementing another ordering rule.
+fn select_normal_session_event(session: &PersistedSession) -> Option<SelectedSessionEvent> {
+    let select = |predicate: fn(&SessionEventCommand) -> bool| {
+        session.event_batches.iter().find_map(|batch| {
+            batch.events.iter().find_map(|entry| {
+                (!entry.processed && predicate(&entry.event)).then(|| SelectedSessionEvent {
+                    batch_id: batch.batch_id.clone(),
+                    event: entry.event.clone(),
+                    traceparent: batch.traceparent.clone(),
+                    processed_anchor: None,
+                    superseded_tool_reply: None,
+                })
+            })
+        })
+    };
+    select(|event| {
+        matches!(
+            event,
+            SessionEventCommand::ToolReply { .. }
+                | SessionEventCommand::DefineOutcome { .. }
+                | SessionEventCommand::Interrupt { .. }
+        )
+    })
+    .or_else(|| {
+        session.event_batches.iter().find_map(|batch| {
+            batch
+                .events
+                .windows(2)
+                .find(|pair| {
+                    pair[0].processed
+                        && matches!(&pair[0].event, SessionEventCommand::ToolReply { .. })
+                        && !pair[1].processed
+                        && matches!(&pair[1].event, SessionEventCommand::SystemMessage { .. })
+                })
+                .map(|pair| SelectedSessionEvent {
+                    batch_id: batch.batch_id.clone(),
+                    event: pair[1].event.clone(),
+                    traceparent: batch.traceparent.clone(),
+                    processed_anchor: None,
+                    superseded_tool_reply: None,
+                })
+        })
+    })
+    .or_else(|| {
+        select(|event| {
+            !matches!(
+                event,
+                SessionEventCommand::ToolReply { .. }
+                    | SessionEventCommand::DefineOutcome { .. }
+                    | SessionEventCommand::Interrupt { .. }
+            )
+        })
+    })
+}
+
 /// One eligibility selector over retained provenance. Normal selection keeps
 /// ToolReply, DefineOutcome, and Interrupt receipt commands in their original
 /// relative order while letting them cross queued User entries. A request-local
 /// preferred batch narrows that same authority to its ToolReply/Interrupt
-/// receipt. Only after an exact ToolReply delivery has failed may recovery select
+/// receipt, or starts its User command only when the ordinary selector confirms
+/// it is already the global FIFO head. Only after an exact ToolReply delivery has failed may recovery select
 /// a later retained Interrupt that includes the failed reply's exact Thread
 /// target; it must rediscover the same unprocessed failed operation in a fresh
 /// root before crossing it. An already-processed Interrupt supplies its root
@@ -1565,7 +1623,7 @@ fn select_session_event(
             .event_batches
             .iter()
             .find(|batch| batch.batch_id == batch_id)?;
-        return batch.events.iter().find_map(|entry| {
+        if let Some(receipt) = batch.events.iter().find_map(|entry| {
             (!entry.processed
                 && matches!(
                     &entry.event,
@@ -1578,60 +1636,15 @@ fn select_session_event(
                 processed_anchor: None,
                 superseded_tool_reply: None,
             })
+        }) {
+            return Some(receipt);
+        }
+        return select_normal_session_event(session).filter(|selected| {
+            selected.batch_id == batch_id
+                && matches!(&selected.event, SessionEventCommand::UserMessage { .. })
         });
     }
-
-    let select = |predicate: fn(&SessionEventCommand) -> bool| {
-        session.event_batches.iter().find_map(|batch| {
-            batch.events.iter().find_map(|entry| {
-                (!entry.processed && predicate(&entry.event)).then(|| SelectedSessionEvent {
-                    batch_id: batch.batch_id.clone(),
-                    event: entry.event.clone(),
-                    traceparent: batch.traceparent.clone(),
-                    processed_anchor: None,
-                    superseded_tool_reply: None,
-                })
-            })
-        })
-    };
-    select(|event| {
-        matches!(
-            event,
-            SessionEventCommand::ToolReply { .. }
-                | SessionEventCommand::DefineOutcome { .. }
-                | SessionEventCommand::Interrupt { .. }
-        )
-    })
-    .or_else(|| {
-        session.event_batches.iter().find_map(|batch| {
-            batch
-                .events
-                .windows(2)
-                .find(|pair| {
-                    pair[0].processed
-                        && matches!(&pair[0].event, SessionEventCommand::ToolReply { .. })
-                        && !pair[1].processed
-                        && matches!(&pair[1].event, SessionEventCommand::SystemMessage { .. })
-                })
-                .map(|pair| SelectedSessionEvent {
-                    batch_id: batch.batch_id.clone(),
-                    event: pair[1].event.clone(),
-                    traceparent: batch.traceparent.clone(),
-                    processed_anchor: None,
-                    superseded_tool_reply: None,
-                })
-        })
-    })
-    .or_else(|| {
-        select(|event| {
-            !matches!(
-                event,
-                SessionEventCommand::ToolReply { .. }
-                    | SessionEventCommand::DefineOutcome { .. }
-                    | SessionEventCommand::Interrupt { .. }
-            )
-        })
-    })
+    select_normal_session_event(session)
 }
 
 fn mutation_run_error(error: SessionMutationError) -> RunError {

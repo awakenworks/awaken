@@ -577,6 +577,87 @@ fn planned_session(session_id: &str, inputs: Vec<SessionEventInput>) -> Persiste
     session
 }
 
+#[tokio::test]
+async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
+    // Cause/effect graph: C1 a just-accepted User batch is the ordinary global
+    // FIFO head; C2 an earlier User batch remains unprocessed; C3 the caller
+    // prefers the later batch. E1 C1 reserves and activates that exact Run
+    // immediately through the canonical Event driver; E2 C2+C3 performs no
+    // Run admission and leaves both durable commands queued for the lifecycle
+    // supervisor. The existing receipt/Interrupt tests own their higher-priority
+    // crossing rules, and the full Event recovery suite owns crash/replay.
+    //
+    // | Rule | Earlier User pending | Preferred batch is FIFO head | Effect |
+    // |---|---|---|---|
+    // | F1 | no | yes | reserve and activate preferred User (E1) |
+    // | F2 | yes | no | no admission or activation (E2) |
+    for earlier_pending in [false, true] {
+        let session_id = if earlier_pending {
+            "preferred-user-behind"
+        } else {
+            "preferred-user-head"
+        };
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let mut session = planned_session(
+            session_id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("first")],
+            }],
+        );
+        if !earlier_pending {
+            session.event_batches[0].events[0].processed = true;
+            session.event_batches[0].events[0].projection_anchor =
+                Some(awaken_session_contract::SessionEventProjectionAnchor {
+                    source_commit_cursor: 1,
+                });
+        }
+        create(repository.as_ref(), session).await;
+        let runtime = Arc::new(EventBatchRuntime::default());
+        let app = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let preferred = app
+            .append_session_event_batch_idempotent(
+                session_id,
+                vec![SessionEventInput::UserMessage {
+                    content: vec![ContentBlock::text("preferred")],
+                }],
+                None,
+                None,
+                Some(("preferred-user".into(), "preferred-user-fingerprint".into())),
+            )
+            .await
+            .expect("append preferred User batch");
+
+        app.drive_session_event_batches(session_id, Some(&preferred.batch_id))
+            .await
+            .expect("request-local preferred drive remains best effort");
+        assert_eq!(
+            runtime.reserved.lock().unwrap().len(),
+            usize::from(!earlier_pending),
+            "F1-F2 reservation"
+        );
+        assert_eq!(
+            runtime.activated.lock().unwrap().len(),
+            usize::from(!earlier_pending),
+            "F1-F2 activation"
+        );
+        let durable = repository.get(session_id).await.unwrap();
+        assert_eq!(
+            durable.event_batches[0].events[0].processed, !earlier_pending,
+            "F1 preserves completed predecessor; F2 preserves queued predecessor"
+        );
+        assert!(
+            !durable.event_batches[1].events[0].processed,
+            "F1-F2 activation is pending until committed Runtime settlement"
+        );
+    }
+}
+
 async fn finalize_applied_user_dispatch(
     app: &SessionApplication,
     runtime: &EventBatchRuntime,

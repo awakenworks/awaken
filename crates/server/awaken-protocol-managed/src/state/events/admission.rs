@@ -614,9 +614,10 @@ impl ManagedState {
 
         // Retryable dependency failure after the root CAS cannot revoke an
         // acknowledged command. The lifecycle supervisor owns every later retry;
-        // this best-effort drive considers only reply/interrupt commands in the
-        // just-admitted batch. It cannot race an older DefineOutcome and block
-        // this request behind that Outcome's external execution.
+        // this best-effort drive considers reply/interrupt commands or a User
+        // command that the canonical selector proves is already the global FIFO
+        // head. It cannot race an older User/DefineOutcome or block this request
+        // behind that Outcome's external execution.
         if drive == ValidatedEventBatchDrive::PreferredBatch
             && let Err(error) = self
                 .application
