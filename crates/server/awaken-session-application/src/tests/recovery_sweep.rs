@@ -35,6 +35,7 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
                 event_batches: false,
                 environment_continuation: false,
                 local_realization: false,
+                dispatch_projection: false,
             },
         }],
         quarantined: Vec::new(),

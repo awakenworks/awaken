@@ -92,6 +92,7 @@ struct SessionRecoveryInterests {
     event_batches: bool,
     environment_continuation: bool,
     local_realization: bool,
+    dispatch_projection: bool,
 }
 
 impl Default for SessionRecoveryInterests {
@@ -101,6 +102,7 @@ impl Default for SessionRecoveryInterests {
             event_batches: true,
             environment_continuation: true,
             local_realization: true,
+            dispatch_projection: true,
         }
     }
 }
@@ -128,12 +130,18 @@ impl SessionRecoveryInterests {
             && session.frozen_baseline().is_none_or(|baseline| {
                 !environment_requires_external_owner(baseline.runtime_placement)
             });
+        let dispatch_projection = !session.is_terminal()
+            && session.needs_initial_realization_recovery()
+            && session.frozen_baseline().is_some_and(|baseline| {
+                environment_requires_external_owner(baseline.runtime_placement)
+            });
         Self {
             resources: session.needs_resource_reconciliation()
                 || (audit_resource_references && session.resources.has_references()),
             event_batches: session.needs_event_reconciliation(),
             environment_continuation,
             local_realization,
+            dispatch_projection,
         }
     }
 }
