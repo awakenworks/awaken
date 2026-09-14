@@ -13,7 +13,6 @@
 //! with one `healthcheck` work item so the queue is exercisable end to end.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -223,7 +222,6 @@ async fn create_env(
 }
 
 fn environment_command_id(headers: &HeaderMap) -> Result<String, WireError> {
-    static NEXT_UNKEYED: AtomicU64 = AtomicU64::new(0);
     match headers.get("idempotency-key") {
         Some(value) => {
             let value = value
@@ -236,11 +234,63 @@ fn environment_command_id(headers: &HeaderMap) -> Result<String, WireError> {
             }
             Ok(format!("managed:{value}"))
         }
-        None => Ok(format!(
-            "managed-unkeyed:{}:{}",
-            std::process::id(),
-            NEXT_UNKEYED.fetch_add(1, Ordering::Relaxed)
-        )),
+        // An unkeyed request is a new command. The identity must therefore be
+        // unique across active-active Control replicas and process restarts;
+        // process ids and local counters both repeat across those boundaries.
+        None => Ok(format!("managed-unkeyed:{}", uuid::Uuid::now_v7().simple())),
+    }
+}
+
+#[cfg(test)]
+mod command_identity_tests {
+    use super::*;
+
+    #[test]
+    fn environment_command_identity_follows_keyed_and_unkeyed_decision_table() {
+        // Cause/effect graph: C1 an explicit valid Idempotency-Key denotes one
+        // retryable command; C2 a second request omits the key; C3 another
+        // independent request also omits it; C4 the explicit key is invalid.
+        // E1 C1 maps deterministically into the Managed namespace; E2 C2/C3
+        // mint different globally scoped command identities so active-active
+        // replicas cannot collapse distinct creates; E3 C4 rejects before the
+        // Environment application or store is called.
+        //
+        // | Rule | Header | Request relation | Effect |
+        // |---|---|---|---|
+        // | I1 | valid key | exact retry | stable managed key (E1) |
+        // | I2 | absent | two independent creates | distinct UUIDs (E2) |
+        // | I3 | empty | invalid command identity | 400 (E3) |
+        let mut keyed = HeaderMap::new();
+        keyed.insert("idempotency-key", "create-1".parse().unwrap());
+        assert_eq!(
+            environment_command_id(&keyed).unwrap(),
+            "managed:create-1",
+            "I1/E1"
+        );
+        assert_eq!(
+            environment_command_id(&keyed).unwrap(),
+            "managed:create-1",
+            "I1/E1 exact retry"
+        );
+
+        let first = environment_command_id(&HeaderMap::new()).unwrap();
+        let second = environment_command_id(&HeaderMap::new()).unwrap();
+        assert_ne!(first, second, "I2/E2");
+        for identity in [first, second] {
+            let encoded = identity
+                .strip_prefix("managed-unkeyed:")
+                .expect("I2/E2 unkeyed namespace");
+            let parsed = uuid::Uuid::parse_str(encoded).expect("I2/E2 UUID identity");
+            assert_eq!(parsed.get_version_num(), 7, "I2/E2 UUIDv7");
+        }
+
+        let mut empty = HeaderMap::new();
+        empty.insert("idempotency-key", "".parse().unwrap());
+        assert_eq!(
+            environment_command_id(&empty).unwrap_err().0,
+            StatusCode::BAD_REQUEST,
+            "I3/E3"
+        );
     }
 }
 
