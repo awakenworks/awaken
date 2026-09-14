@@ -12,8 +12,15 @@ use awaken_runtime_contract::llm::DEFAULT_MODEL_ATTEMPT_WATCHDOG;
 use awaken_runtime_contract::llm::Error;
 use awaken_runtime_contract::resilience::Classify;
 
-/// Backoff never exceeds this, regardless of attempt count.
+/// Generic and overload backoff never exceeds this.
 const MAX_BACKOFF_MS: u64 = 8_000;
+
+/// A provider that omits Retry-After still needs enough time for existing
+/// long-running requests to release account concurrency. Derive the larger
+/// base from the configured generic base so zero-delay tests remain hermetic.
+const RATE_LIMIT_BACKOFF_MULTIPLIER: u64 = 30;
+const RATE_LIMIT_MAX_BACKOFF_MS: u64 = 60_000;
+const RATE_LIMIT_MIN_RETRIES: usize = 12;
 
 /// A server `Retry-After` longer than the computed backoff is adopted verbatim,
 /// but never beyond this cap.
@@ -23,7 +30,9 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 /// engine's inference call; tests inject a fast policy to keep suites quick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmRetryPolicy {
-    /// Extra attempts after the first failure (2 means up to 3 calls).
+    /// Extra attempts after the first failure (2 means up to 3 calls). A
+    /// nonzero budget enables the bounded rate-limit-specific floor below;
+    /// zero remains an absolute disable.
     pub max_retries: usize,
     /// Exponential backoff base for a generic retryable error.
     pub backoff_base_ms: u64,
@@ -46,17 +55,33 @@ impl Default for LlmRetryPolicy {
 }
 
 impl LlmRetryPolicy {
+    /// Keep the caller's explicit zero as an absolute retry disable. Otherwise
+    /// an exact rate-limit response gets a longer bounded availability budget;
+    /// all other classes retain the configured generic budget.
+    pub(crate) fn retry_limit(&self, err: &Error) -> usize {
+        if self.max_retries > 0 && matches!(err.classification(), Error::RateLimited { .. }) {
+            self.max_retries.max(RATE_LIMIT_MIN_RETRIES)
+        } else {
+            self.max_retries
+        }
+    }
+
     /// How long to wait before retry number `retry` (0-based): the jittered
     /// exponential backoff for the error class, or the server's `Retry-After`
     /// when that is longer (adopted verbatim, capped at [`MAX_RETRY_AFTER`]).
+    /// Rate limiting uses its own larger cap; generic and overload errors keep
+    /// [`MAX_BACKOFF_MS`].
     pub(crate) fn delay_before_retry(&self, err: &Error, retry: usize) -> Duration {
-        let base = match err.classification() {
-            Error::Overloaded { .. } => self.overloaded_backoff_base_ms,
-            _ => self.backoff_base_ms,
+        let (base, cap) = match err.classification() {
+            Error::RateLimited { .. } => (
+                self.backoff_base_ms
+                    .saturating_mul(RATE_LIMIT_BACKOFF_MULTIPLIER),
+                RATE_LIMIT_MAX_BACKOFF_MS,
+            ),
+            Error::Overloaded { .. } => (self.overloaded_backoff_base_ms, MAX_BACKOFF_MS),
+            _ => (self.backoff_base_ms, MAX_BACKOFF_MS),
         };
-        let exp = base
-            .saturating_mul(1u64 << retry.min(32) as u32)
-            .min(MAX_BACKOFF_MS);
+        let exp = base.saturating_mul(1u64 << retry.min(32) as u32).min(cap);
         let backoff = jitter_backoff(exp);
         // The retry-after hint via the unified failure Disposition (E3-1): for a
         // retryable error this is exactly `err.retry_after()` — a Quota signal
@@ -183,6 +208,49 @@ mod tests {
         let tiny = Duration::from_millis(1);
         assert!(
             policy.delay_before_retry(&overloaded(Some(tiny)), 0) >= Duration::from_millis(1_000)
+        );
+    }
+
+    #[test]
+    fn rate_limit_without_hint_gets_a_long_bounded_budget() {
+        // Causes: C1 generic/overload/rate-limit error; C2 retry budget is
+        // zero/nonzero; C3 no Retry-After. Effects: E1 generic limits remain
+        // unchanged; E2 explicit zero disables every retry; E3 rate limiting
+        // gets twelve extra attempts and a nominal 15-60s exponential backoff
+        // (equal-jitter waits remain within half-to-full of each nominal value).
+        // Rules R1=C1(generic)=>E1, R2=C2(zero)=>E2,
+        // R3=C1(rate)+C2(nonzero)+C3=>E3. UsageLimit never reaches this policy
+        // because the engine's existing is_retryable gate remains authoritative.
+        let policy = LlmRetryPolicy::default();
+        let limited = Error::RateLimited {
+            message: "concurrency limit".into(),
+            retry_after: None,
+        };
+        assert_eq!(
+            policy.retry_limit(&Error::Provider("500".into())),
+            2,
+            "R1/E1"
+        );
+        assert_eq!(
+            policy.retry_limit(&limited),
+            RATE_LIMIT_MIN_RETRIES,
+            "R3/E3"
+        );
+        assert_eq!(
+            LlmRetryPolicy {
+                max_retries: 0,
+                ..policy.clone()
+            }
+            .retry_limit(&limited),
+            0,
+            "R2/E2"
+        );
+        let first = policy.delay_before_retry(&limited, 0).as_millis() as u64;
+        let saturated = policy.delay_before_retry(&limited, 8).as_millis() as u64;
+        assert!((7_500..=15_000).contains(&first), "R3/E3 first={first}");
+        assert!(
+            (30_000..=RATE_LIMIT_MAX_BACKOFF_MS).contains(&saturated),
+            "R3/E3 saturated={saturated}"
         );
     }
 }
