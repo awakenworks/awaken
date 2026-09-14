@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   auditLoadResults,
+  descendingReceiptObservation,
   loadShape,
   disposeFixtureSessions,
   nativeCrashHistoryErrors,
+  validateFleetEnvironmentIds,
 } from './distributed_control_driver.ts';
 
 const response = (marker: string) => ({ type: 'agent.message', content: [{ type: 'text', text: `ADR71-PROVIDER:${marker}` }] });
@@ -23,6 +25,41 @@ test('load audit crosses latency and complete-history failures independently', (
       assert.equal(audit.errors.some((error) => error.includes('Provider response')), copies !== 1);
     }
   }
+});
+
+test('fleet load uses one unique Environment concurrency lane per Session', () => {
+  // Causes: F1 count matches concurrency; F2 ids are nonempty; F3 ids are
+  // unique. Effect: only F1+F2+F3 enters Session creation. Shared ids are the
+  // separate one-active WorkQueue safety topology and cannot masquerade as a
+  // fleet-throughput test. Rules cover success and each independent rejection.
+  for (let concurrency=1; concurrency<=12; concurrency+=1) {
+    const exact=Array.from({length:concurrency},(_,index)=>`e${index}`);
+    assert.deepEqual(validateFleetEnvironmentIds(exact,concurrency),exact);
+    assert.throws(()=>validateFleetEnvironmentIds(exact.slice(1),concurrency),/one Environment/);
+    if (concurrency>1) {
+      assert.throws(()=>validateFleetEnvironmentIds(exact.map((id,index)=>index===1 ? exact[0] : id),concurrency),/must be unique/);
+    }
+    assert.throws(()=>validateFleetEnvironmentIds(exact.map((id,index)=>index===0 ? '' : id),concurrency),/must be nonempty/);
+  }
+});
+
+test('descending receipt window preserves chronological post-receipt delta', () => {
+  // Causes: R1 receipt present and processed; R2 present but pending; R3 absent;
+  // newer events are returned newest-first. Effects: R1 returns only the later
+  // events in chronological order; R2/R3 cannot satisfy completion. The live
+  // helper falls back to complete history for R3, retaining exactness.
+  for (let laterCount=0; laterCount<=10; laterCount+=1) {
+    const later=Array.from({length:laterCount},(_,index)=>({id:`later-${index}`}));
+    const receipt={id:'receipt',processed_at:'now',type:'user.message'};
+    const page=[...later].reverse().concat(receipt,{id:'old'});
+    const before=structuredClone(page);
+    assert.deepEqual(descendingReceiptObservation(page,'receipt').delta,later, `R1/${laterCount}`);
+    assert.deepEqual(page,before, `R1/${laterCount} input remains immutable`);
+    assert.deepEqual(descendingReceiptObservation(
+      page.map(event=>event.id==='receipt' ? {...event,processed_at:null} : event),'receipt',
+    ).delta,[], `R2/${laterCount}`);
+  }
+  assert.equal(descendingReceiptObservation([{id:'idle'}],'receipt').receiptEvent,undefined, 'R3');
 });
 
 test('load audit rejects absent samples, invalid measurements and hidden history', () => {
