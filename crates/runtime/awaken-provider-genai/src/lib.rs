@@ -27,6 +27,7 @@ use genai::chat::{
 pub use genai::adapter::AdapterKind;
 
 mod anthropic_content;
+mod error_classification;
 mod inference_options;
 mod model_discovery;
 pub use model_discovery::{ModelDiscoveryError, discover_model_ids};
@@ -36,6 +37,7 @@ mod stop_reason;
 pub use stop_reason::map_stop_reason;
 mod transcript_projection;
 
+use error_classification::classify_genai_error;
 use transcript_projection::{
     NeutralPartKind, ProviderPartKind, ReasoningFoldAction, ReplayRowState, ResponseTransport,
     ThinkingProjection, TranscriptDialect, decide_reasoning_fold, project_part_kind,
@@ -255,7 +257,7 @@ impl LlmExecutor for GenaiExecutor {
         )
         .await
         .map_err(|_| Error::Timeout("model stream timed out".to_string()))?
-        .map_err(|err| classify_error(&err.to_string()))?;
+        .map_err(classify_genai_error)?;
 
         let mut stream = stream_response.stream;
         // The SDK capture is the sole response accumulator. This adapter keeps
@@ -309,7 +311,7 @@ impl LlmExecutor for GenaiExecutor {
                 }
             };
             let mut made_progress = false;
-            match event.map_err(|err| classify_error(&err.to_string()))? {
+            match event.map_err(classify_genai_error)? {
                 // Live text: forward each chunk as it arrives (valid UTF-8 by type).
                 ChatStreamEvent::Chunk(chunk) if !chunk.content.is_empty() => {
                     sink.on_text(&chunk.content).await;
@@ -432,7 +434,7 @@ impl GenaiExecutor {
         .await
         // A local timeout cannot prove that the remote operation stopped.
         .map_err(|_| Error::Timeout("model call timed out".to_string()))?
-        .map_err(|err| classify_error(&err.to_string()))?;
+        .map_err(classify_genai_error)?;
 
         // `exec_chat` resolves only once the provider's complete response body
         // was received and decoded; the local timeout above and any transport
@@ -1328,63 +1330,6 @@ pub fn map_usage(usage: &Usage) -> TokenUsage {
         completion_tokens: usage.completion_tokens.unwrap_or(0).max(0) as u64,
         cache_read_tokens,
         cache_creation_tokens,
-    }
-}
-
-#[cfg(test)]
-mod classify_tests {
-    use std::time::Duration;
-
-    use super::{DEFAULT_IDLE_TIMEOUT, classify_error};
-
-    #[test]
-    fn default_stream_idle_window_allows_long_reasoning_prefill() {
-        // Test design — Causes: valid model prefill may remain silent for sixty
-        // seconds. Effects: the default idle window remains at least 300 seconds.
-        // Constraints/invariants: silence timeout must not misclassify that known
-        // healthy interval. Decision rule D1: default>=120s=>prefill boundary safe.
-        // A live DeepSeek reasoning response produced no SSE event for just over
-        // sixty seconds and was incorrectly terminated as a transport stall.
-        // Preserve at least five minutes for valid model-side prefill/reasoning;
-        // explicit test/host overrides retain the fast-stall path.
-        assert!(DEFAULT_IDLE_TIMEOUT >= Duration::from_secs(300));
-    }
-
-    #[test]
-    fn a_hard_usage_limit_is_recognised_and_not_retryable() {
-        for msg in [
-            "You have exceeded your current quota",
-            "429 insufficient_quota",
-            r#"402 Payment Required: {"error":{"message":"Insufficient Balance","type":"unknown_error","code":"invalid_request_error"}}"#,
-            "Your credit balance is too low",
-            "weekly limit reached",
-            "monthly spending limit exceeded",
-        ] {
-            let e = classify_error(msg);
-            assert_eq!(e.code(), "usage_limit", "for {msg:?}");
-            // Recognised, surfaced — never auto-retried (a hard limit cannot clear).
-            assert!(!e.is_retryable(), "hard limit must not be retried: {msg:?}");
-        }
-    }
-
-    #[test]
-    fn a_transient_rate_limit_stays_rate_limited_not_usage_limit() {
-        let e = classify_error("429 Too Many Requests: rate limit exceeded");
-        assert_eq!(e.code(), "rate_limited");
-        assert!(e.is_retryable());
-    }
-
-    #[test]
-    fn a_reauth_signal_is_login_required_before_generic_unauthorized() {
-        for msg in [
-            "Session expired, please log in",
-            "invalid_grant",
-            "token has expired",
-        ] {
-            assert_eq!(classify_error(msg).code(), "login_required", "for {msg:?}");
-        }
-        // A plain 401 with no re-auth phrasing stays a generic unauthorized.
-        assert_eq!(classify_error("401 Unauthorized").code(), "unauthorized");
     }
 }
 
