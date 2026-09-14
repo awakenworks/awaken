@@ -265,6 +265,46 @@ async function sendAndWaitForAgentMarker(
   return { ...observation, elapsed: observedAt - started, admissionMs: acceptedAt - started, observationMs: observedAt - acceptedAt };
 }
 
+export function descendingReceiptObservation(events: any[], receiptId: string) {
+  const receiptIndex = events.findIndex((event) => event.id === receiptId);
+  const receiptEvent = receiptIndex < 0 ? undefined : events[receiptIndex];
+  return {
+    events,
+    receiptEvent,
+    delta: receiptEvent?.processed_at ? events.slice(0, receiptIndex).reverse() : [],
+  };
+}
+
+async function waitForRecentSessionEventReceipt(
+  client: Anthropic,
+  sessionId: string,
+  receiptId: string,
+  marker: string,
+  timeoutMs: number,
+) {
+  return waitForValue(
+    async () => {
+      const page = await client.beta.sessions.events.list(sessionId, {
+        betas: BETAS, order: 'desc', limit: 50,
+      });
+      const recent = descendingReceiptObservation(page.data, receiptId);
+      if (recent.receiptEvent) return recent;
+      const events = await listSessionEvents(client, sessionId);
+      const receiptIndex = events.findIndex((event: any) => event.id === receiptId);
+      const receiptEvent = receiptIndex < 0 ? undefined : events[receiptIndex];
+      return {
+        events,
+        receiptEvent,
+        delta: receiptEvent?.processed_at ? events.slice(receiptIndex + 1) : [],
+      };
+    },
+    (observation: any) => Boolean(observation.receiptEvent?.processed_at)
+      && hasCompletedProviderMarker(observation.delta, marker),
+    `Event ${marker} receipt to reach its exact Provider marker and later idle`,
+    { timeoutMs, pollMs: 500, retryReadError: (error: unknown) => retryableReadStatus(error) !== null },
+  );
+}
+
 function providerResponseCounts(events: any[]) {
   const responses = events
     .filter((event: any) => event.type === 'agent.message')
@@ -561,8 +601,8 @@ async function verifyNativeCrash(
   console.log(`OK Native crash recovery ${marker}`);
 }
 
-async function createParallelSessions(client: Anthropic, environmentId: string, count: number) {
-  return Promise.all(Array.from({ length: count }, async () => {
+async function createParallelSessions(client: Anthropic, environmentIds: string[]) {
+  return Promise.all(environmentIds.map(async (environmentId) => {
     const session = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: environmentId,
@@ -571,6 +611,25 @@ async function createParallelSessions(client: Anthropic, environmentId: string, 
     assert.ok(session.id, JSON.stringify(session));
     return session.id as string;
   }));
+}
+
+export function validateFleetEnvironmentIds(environmentIds: string[], concurrency: number) {
+  assert.equal(environmentIds.length, concurrency, 'fleet load requires one Environment per Session');
+  assert.equal(new Set(environmentIds).size, concurrency, 'fleet load Environment ids must be unique');
+  assert.ok(environmentIds.every((id) => typeof id === 'string' && id.length > 0),
+    'fleet load Environment ids must be nonempty');
+  return environmentIds;
+}
+
+async function createFleetSessions(client: Anthropic, concurrency: number) {
+  const environments = await Promise.all(Array.from({ length: concurrency }, (_, index) =>
+    client.beta.environments.create({
+      name: `adr71-load-${index}`, config: { type: 'cloud' }, betas: BETAS,
+    })));
+  const environmentIds = validateFleetEnvironmentIds(
+    environments.map((environment) => environment.id), concurrency,
+  );
+  return createParallelSessions(client, environmentIds);
 }
 
 export async function disposeFixtureSessions(
@@ -603,7 +662,7 @@ async function batch(
   const client = clientFor(base);
   const markers = Array.from({ length: count }, (_, index) => `${prefix}-${index}`);
   const auxiliarySessions = await createParallelSessions(
-    client, environmentId, Math.max(0, count - 1),
+    client, Array.from({ length: Math.max(0, count - 1) }, () => environmentId),
   );
   const sessions = [
     originalSessionId,
@@ -675,13 +734,15 @@ export function loadShape(environment: Record<string, string | undefined>) {
   return { count, concurrency, rounds };
 }
 
-async function load(base: string, environmentId: string) {
-  // Cause/effect graph: C1 a new Resource-bearing K8s Session has no reusable
-  // Pod because its projected mounts are Session-specific -> first execution
-  // includes bounded Pod/material cold start; C2 every Session has completed one
-  // cold start -> its live environment is resident; C3 bounded concurrent writes
-  // below admission limits -> zero HTTP errors; C4 active/active Coordinator and
-  // Worker dispatch -> unique Run ids and exactly-once outputs. Effects are E1 a
+async function load(base: string) {
+  // Cause/effect graph: C1 each new Resource-bearing K8s Session owns a distinct
+  // Environment Work lane and has no reusable Pod because its projected mounts
+  // are Session-specific -> first execution includes bounded Pod/material cold
+  // start; C2 every Session has completed one cold start -> its live environment
+  // is resident; C3 bounded concurrent writes below admission limits -> zero HTTP
+  // errors; C4 active/active Coordinator and Worker dispatch -> unique Run ids and
+  // exactly-once outputs. A shared Environment belongs to the separate one-active
+  // WorkQueue safety contract and is rejected by the fleet planner. Effects are E1 a
   // separately bounded cold-start result and E2 the steady-state completed-turn
   // p95. Every latency starts before one SDK send and ends only when that exact
   // receipt's Provider marker and later idle are durable. The admission response
@@ -703,7 +764,7 @@ async function load(base: string, environmentId: string) {
   const p95Limit = Number(process.env.ADR71_TURN_P95_MS ?? 5_000);
   const coldStartLimit = Number(process.env.ADR71_COLD_START_MAX_MS ?? 30_000);
   const managed = clientFor(base);
-  const sessions = await createParallelSessions(managed, environmentId, concurrency);
+  const sessions = await createFleetSessions(managed, concurrency);
   const coldMarkers = sessions.map((_, index) => `ADR71-COLD-${Date.now()}-${index}`);
   const coldObservations = await Promise.all(sessions.map((sessionId, index) =>
     sendAndWaitForAgentMarker(managed, sessionId, coldMarkers[index], coldStartLimit)));
@@ -729,12 +790,22 @@ async function load(base: string, environmentId: string) {
     const samples: { marker: string; admissionMs: number; observationMs: number }[] = [];
     async function runClient(clientIndex: number) {
       for (let index = clientIndex; index < markers.length; index += concurrency) {
-        const observation = await sendAndWaitForAgentMarker(
-          managed, sessions[clientIndex], markers[index], 300_000,
+        const started = performance.now();
+        const receipt = await managed.beta.sessions.events.send(sessions[clientIndex], {
+          events: [{ type: 'user.message', content: [{ type: 'text', text: markers[index] }] }],
+          betas: BETAS,
+        });
+        const acceptedAt = performance.now();
+        assert.equal(receipt.data?.length, 1, `one exact Event receipt for ${markers[index]}`);
+        const receiptId = receipt.data?.[0]?.id;
+        assert.equal(typeof receiptId, 'string', `SDK receipt id for ${markers[index]}`);
+        await waitForRecentSessionEventReceipt(
+          managed, sessions[clientIndex], receiptId, markers[index], 300_000,
         );
-        latencies.push(observation.elapsed);
-        samples.push({ marker: markers[index], admissionMs: observation.admissionMs, observationMs: observation.observationMs });
-        histories[clientIndex] = observation.events;
+        const observedAt = performance.now();
+        const elapsed = observedAt - started;
+        latencies.push(elapsed);
+        samples.push({ marker: markers[index], admissionMs: acceptedAt - started, observationMs: observedAt - acceptedAt });
       }
     }
     // A failed Session stops its own dependent sends. Join the independent
@@ -777,7 +848,7 @@ async function main() {
     case 'verify-native-crash': return verifyNativeCrash(base, args[0], args[1], args[2]);
     case 'batch': return batch(base, args[0], args[1], args[2], Number(args[3]));
     case 'dispose-batch': return disposeBatch(base, args[0]);
-    case 'load': return load(base, args[0]);
+    case 'load': return load(base);
     default: throw new Error(`unknown mode ${mode}`);
   }
 }
