@@ -583,27 +583,39 @@ impl ManagedState {
                     return Ok(None);
                 }
                 let drive = validated.drive;
-                self.application
-                    .append_session_event_batch_idempotent(
-                        session_id,
-                        validated.inputs,
-                        data_subject_id,
-                        traceparent,
-                        idempotency_key.clone().zip(request_fingerprint.clone()),
-                    )
-                    .await
-                    .map(|batch| Some((batch, drive)))
-                    .map_err(|error| {
-                        if error.code == "idempotency_conflict" {
-                            StateError::IdempotencyMismatch
-                        } else {
-                            StateError::Run(error)
-                        }
-                    })
+                let append = if drive == ValidatedEventBatchDrive::PreferredBatch {
+                    self.application
+                        .append_and_drive_session_event_batch_idempotent(
+                            session_id,
+                            validated.inputs,
+                            data_subject_id,
+                            traceparent,
+                            idempotency_key.clone().zip(request_fingerprint.clone()),
+                        )
+                        .await
+                } else {
+                    self.application
+                        .append_session_event_batch_idempotent(
+                            session_id,
+                            validated.inputs,
+                            data_subject_id,
+                            traceparent,
+                            idempotency_key.clone().zip(request_fingerprint.clone()),
+                        )
+                        .await
+                        .map(|batch| (batch, None))
+                };
+                append.map(Some).map_err(|error| {
+                    if error.code == "idempotency_conflict" {
+                        StateError::IdempotencyMismatch
+                    } else {
+                        StateError::Run(error)
+                    }
+                })
             }
             .await
         };
-        let (accepted, drive) = match admission {
+        let (accepted, drive_error) = match admission {
             Ok(Some(accepted)) => accepted,
             Ok(None) => return Ok(SendEventsResponse { data: Vec::new() }),
             Err(error) => match classify_retry().await? {
@@ -614,15 +626,11 @@ impl ManagedState {
 
         // Retryable dependency failure after the root CAS cannot revoke an
         // acknowledged command. The lifecycle supervisor owns every later retry;
-        // this best-effort drive considers only reply/interrupt commands in the
-        // just-admitted batch. It cannot race an older DefineOutcome and block
-        // this request behind that Outcome's external execution.
-        if drive == ValidatedEventBatchDrive::PreferredBatch
-            && let Err(error) = self
-                .application
-                .drive_session_event_batches(session_id, Some(&accepted.batch_id))
-                .await
-        {
+        // this best-effort drive considers reply/interrupt commands or a User
+        // command that the canonical selector proves is already the global FIFO
+        // head. It cannot race an older User/DefineOutcome or block this request
+        // behind that Outcome's external execution.
+        if let Some(error) = drive_error {
             tracing::warn!(
                 %session_id,
                 batch_id = %accepted.batch_id,

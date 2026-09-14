@@ -262,8 +262,10 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
     // Outcome or one child, every listed read ordinal, both writer schedules.
     // This covers control-flow cuts, not arbitrary topology/SQL refinement.
     // Usage now reuses the initial relationship set. Its redundant coordination
-    // read is absent; every remaining actual cut and the final fresh relation
-    // fence are still exercised, and an unexpected extra read fails R0.
+    // read is absent. Final validation now selects its fresh root before the
+    // relation query: root-only projection reuses that exact fence, while a
+    // child prefix retains the later root read after its child snapshot. Every
+    // remaining actual cut is exercised, and an unexpected read fails R0.
     let mut checked_rules = 0;
     for with_child in [false, true] {
         let expected = if with_child {
@@ -276,6 +278,7 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                 "usage",
                 "child_usage",
                 "session",
+                "root_snapshot",
                 "coordination",
                 "child_snapshot",
                 "root_snapshot",
@@ -290,8 +293,8 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                 "lifecycle",
                 "usage",
                 "session",
-                "coordination",
                 "root_snapshot",
+                "coordination",
                 "session",
             ]
         };
@@ -407,7 +410,7 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
         }
     }
     assert_eq!(
-        checked_rules, 44,
+        checked_rules, 46,
         "R1-R2 every read cut and competing-writer schedule executes"
     );
 }

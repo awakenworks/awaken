@@ -125,102 +125,198 @@ impl Phase {
 
 #[tokio::test]
 async fn recovery_sweeps_isolate_slow_sessions_with_a_bounded_owned_sweep() {
-    // Cause/effect graph: C1 one/four independent root reads are held; C2
+    // Cause/effect graph: C1 one/all-budget independent root reads are held; C2
     // another keyset candidate is ready; C3 a held read completes; C4 the
-    // caller is cancelled. R1 one held + five ready => every ready root is
-    // inspected before the held root completes. R2 four held => no fifth
-    // read until C3; then that freed slot admits the remaining roots. R3
+    // caller is cancelled; C5 phase is Event or Resource. R1 one held plus a
+    // full budget of ready roots => every ready root is inspected before the
+    // held root completes. R2 every phase slot held => no next read until C3;
+    // then that freed slot admits the remaining root. R3
     // cancellation drops all held futures; releasing their gates afterwards
-    // cannot resume recovery. Each keyset identity occurs once; the original
-    // per-Session FIFO/CAS and effect tests own intra-root ordering/replay.
+    // cannot resume recovery. R4 C5=Event selects the fleet-sized local command
+    // budget; R5 C5=Resource retains the lower external-effect budget. Each
+    // keyset identity occurs once; the original per-Session FIFO/CAS and effect
+    // tests own intra-root ordering/replay.
     // These are scheduling barriers, not machine-speed assertions.
     // The same decision table runs through both actual phase entrypoints.
-    for (phase, held) in [Phase::Events, Phase::Resources]
-        .into_iter()
-        .flat_map(|phase| [1, 4].map(|held| (phase, held)))
-    {
-        let durable = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
-        );
-        let ids = (0..6).map(|n| format!("sweep-{n}")).collect::<Vec<_>>();
-        for id in &ids {
-            create(durable.as_ref(), persisted(id, true, "idle")).await;
-        }
-        let observed = Arc::new(FaultingSessionRepository::new(durable));
-        let gates = (0..held)
-            .map(|index| {
-                let gate = Arc::new(tokio::sync::Semaphore::new(0));
-                observed
-                    .paused_gets
-                    .lock()
-                    .unwrap()
-                    .insert(ids[index].clone(), gate.clone());
-                gate
-            })
-            .collect::<Vec<_>>();
-        let app = Arc::new(application(
-            observed.clone(),
-            Arc::new(RecordingEnvironmentSource::default()),
-        ));
-        let candidates = SessionRecoveryCandidates {
-            sessions: ids
-                .iter()
-                .map(|id| SessionRecoveryCandidate {
-                    workspace_id: "test".into(),
-                    session_id: id.clone(),
-                    interests: SessionRecoveryInterests::default(),
-                })
-                .collect(),
-            quarantined: Vec::new(),
+    for phase in [Phase::Events, Phase::Resources] {
+        let bound = match phase {
+            Phase::Events => crate::recovery_sweep::EVENT_RECOVERY_CONCURRENCY,
+            Phase::Resources => crate::recovery_sweep::RESOURCE_RECOVERY_CONCURRENCY,
         };
-        let task = tokio::spawn(async move { phase.reconcile(&app, &candidates).await });
-        let wait_for_read = |id: String| {
-            let observed = observed.clone();
-            async move {
-                tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                    loop {
-                        if observed.observed_gets.lock().unwrap().contains(&id) {
-                            break;
+        for held in [1, bound] {
+            let durable = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            );
+            let ids = (0..=bound)
+                .map(|n| format!("sweep-{n}"))
+                .collect::<Vec<_>>();
+            for id in &ids {
+                create(durable.as_ref(), persisted(id, true, "idle")).await;
+            }
+            let observed = Arc::new(FaultingSessionRepository::new(durable));
+            let gates = (0..held)
+                .map(|index| {
+                    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+                    observed
+                        .paused_gets
+                        .lock()
+                        .unwrap()
+                        .insert(ids[index].clone(), gate.clone());
+                    gate
+                })
+                .collect::<Vec<_>>();
+            let app = Arc::new(application(
+                observed.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            ));
+            let candidates = SessionRecoveryCandidates {
+                sessions: ids
+                    .iter()
+                    .map(|id| SessionRecoveryCandidate {
+                        workspace_id: "test".into(),
+                        session_id: id.clone(),
+                        interests: SessionRecoveryInterests::default(),
+                    })
+                    .collect(),
+                quarantined: Vec::new(),
+            };
+            let task = tokio::spawn(async move { phase.reconcile(&app, &candidates).await });
+            let wait_for_read = |id: String| {
+                let observed = observed.clone();
+                async move {
+                    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                        loop {
+                            if observed.observed_gets.lock().unwrap().contains(&id) {
+                                break;
+                            }
+                            observed.get_entered.notified().await;
                         }
-                        observed.get_entered.notified().await;
-                    }
-                })
-                .await
-                .expect("an independent root must reach its read barrier");
-            }
-        };
-        wait_for_read(ids[held - 1].clone()).await;
-        if held == 4 {
-            assert_eq!(observed.observed_gets.lock().unwrap().len(), 4, "R2 bound");
-            gates[0].add_permits(1);
-        }
-        wait_for_read(ids[5].clone()).await;
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if observed.completed_gets.lock().unwrap().contains(&ids[5]) {
-                    break;
+                    })
+                    .await
+                    .expect("an independent root must reach its read barrier");
                 }
-                observed.get_entered.notified().await;
+            };
+            wait_for_read(ids[held - 1].clone()).await;
+            if held == bound {
+                assert_eq!(
+                    observed.observed_gets.lock().unwrap().len(),
+                    bound,
+                    "R2/R4-R5 bound"
+                );
+                gates[0].add_permits(1);
             }
-        })
-        .await
-        .expect("R1/R2 ready root must finish its read");
-        let before = observed.completed_gets.lock().unwrap().clone();
-        task.abort();
-        assert!(
-            task.await.unwrap_err().is_cancelled(),
-            "R3 joined cancellation"
-        );
-        for gate in gates {
-            gate.add_permits(1);
+            wait_for_read(ids[bound].clone()).await;
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if observed
+                        .completed_gets
+                        .lock()
+                        .unwrap()
+                        .contains(&ids[bound])
+                    {
+                        break;
+                    }
+                    observed.get_entered.notified().await;
+                }
+            })
+            .await
+            .expect("R1/R2 ready root must finish its read");
+            let before = observed.completed_gets.lock().unwrap().clone();
+            task.abort();
+            assert!(
+                task.await.unwrap_err().is_cancelled(),
+                "R3 joined cancellation"
+            );
+            for gate in gates {
+                gate.add_permits(1);
+            }
+            tokio::task::yield_now().await;
+            assert_eq!(
+                *observed.completed_gets.lock().unwrap(),
+                before,
+                "R3 no detached reads"
+            );
         }
-        tokio::task::yield_now().await;
-        assert_eq!(
-            *observed.completed_gets.lock().unwrap(),
-            before,
-            "R3 no detached reads"
-        );
     }
+}
+
+#[tokio::test]
+async fn event_sweep_keeps_the_measured_fleet_and_existing_session_in_one_wave() {
+    // Cause/effect graph: C1 the public load topology owns twelve independent
+    // fleet Sessions; C2 the preceding fault journey retains one additional
+    // reconcilable Session; C3 all thirteen Event-root reads are held. Effect:
+    // E1 every read enters before any held read is released, so the existing
+    // Session cannot create a second scheduling wave for one measured client.
+    // Decision table: F1=C1 only and F2=C2 only are strict subsets covered by
+    // the generic bound test; F3=C1+C2+C3=>E1 is this regression. Resource
+    // effects keep their separate four-slot rule and are outside F3.
+    const FLEET_SESSIONS: usize = 12;
+    const EXISTING_SESSIONS: usize = 1;
+    let count = FLEET_SESSIONS + EXISTING_SESSIONS;
+    assert!(
+        crate::recovery_sweep::EVENT_RECOVERY_CONCURRENCY >= count,
+        "F3 requires one Event wave for the measured topology"
+    );
+    let durable =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let ids = (0..count)
+        .map(|index| format!("fleet-wave-{index}"))
+        .collect::<Vec<_>>();
+    for id in &ids {
+        create(durable.as_ref(), persisted(id, true, "idle")).await;
+    }
+    let observed = Arc::new(FaultingSessionRepository::new(durable));
+    let gates = ids
+        .iter()
+        .map(|id| {
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            observed
+                .paused_gets
+                .lock()
+                .unwrap()
+                .insert(id.clone(), gate.clone());
+            gate
+        })
+        .collect::<Vec<_>>();
+    let app = Arc::new(application(
+        observed.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let candidates = SessionRecoveryCandidates {
+        sessions: ids
+            .iter()
+            .map(|id| SessionRecoveryCandidate {
+                workspace_id: "test".into(),
+                session_id: id.clone(),
+                interests: SessionRecoveryInterests::default(),
+            })
+            .collect(),
+        quarantined: Vec::new(),
+    };
+    let task = tokio::spawn(async move { app.reconcile_event_batches_from(&candidates).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if observed.observed_gets.lock().unwrap().len() == count {
+                break;
+            }
+            observed.get_entered.notified().await;
+        }
+    })
+    .await
+    .expect("F3/E1 all thirteen roots enter one Event wave");
+    task.abort();
+    assert!(
+        task.await.unwrap_err().is_cancelled(),
+        "F3 joined cancellation"
+    );
+    for gate in gates {
+        gate.add_permits(1);
+    }
+    tokio::task::yield_now().await;
+    assert!(
+        observed.completed_gets.lock().unwrap().is_empty(),
+        "F3 cancellation leaves no detached root read"
+    );
 }
 
 #[tokio::test]
