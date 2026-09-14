@@ -533,7 +533,7 @@ async fn infer_with_retry_inner(
                     RETRY_ACTIVE_STATE,
                     retryable,
                     u32::try_from(attempt).unwrap_or(u32::MAX),
-                    u32::try_from(policy.max_retries).unwrap_or(u32::MAX),
+                    u32::try_from(policy.retry_limit(&err)).unwrap_or(u32::MAX),
                 );
                 if retry_decision == RetryDecision::Retry {
                     // R1/R3/R4 collapse: continue from the combined text (empty ⇒
