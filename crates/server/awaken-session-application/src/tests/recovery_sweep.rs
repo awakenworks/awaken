@@ -8,13 +8,13 @@ enum Phase {
 
 #[tokio::test]
 async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
-    // Cause/effect graph: C1 the atomic repository scan classified Event,
-    // Environment-continuation and local-realization work absent; C2 the root
+    // Cause/effect graph: C1 the atomic repository scan classified Resource,
+    // Event, Environment-continuation and local-realization work absent; C2 the root
     // remains available; C3 a later mutation may enqueue work after this
-    // prefix. Effects: E1 all three phase schedulers perform zero duplicate
+    // prefix. Effects: E1 all four phase schedulers perform zero duplicate
     // root reads; E2 no effect or settlement is reported; E3 C3 is deliberately
     // outside this candidate and is retained by the supervisor wake/deadline.
-    // Decision table: H1=(!event,!continuation,!local)=>E1,E2; each true-hint
+    // Decision table: H1=(!resource,!event,!continuation,!local)=>E1,E2; each true-hint
     // row is owned by the existing phase success/failure tests, which require a
     // fresh root before effects. A false hint can skip scheduling only; it
     // carries no payload, receipt or durable cursor.
@@ -31,6 +31,7 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
             workspace_id: "test".into(),
             session_id: "hint-skip".into(),
             interests: SessionRecoveryInterests {
+                resources: false,
                 event_batches: false,
                 environment_continuation: false,
                 local_realization: false,
@@ -39,6 +40,9 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
         quarantined: Vec::new(),
     };
 
+    let resources = app.reconcile_resource_activations_from(&candidates).await;
+    assert!(resources.settled.is_empty(), "H1/E2 resources");
+    assert!(resources.failures.is_empty(), "H1/E2 resources");
     let events = app.reconcile_event_batches_from(&candidates).await;
     assert_eq!((events.pending, events.settled), (0, 0), "H1/E2 events");
     assert_eq!(
@@ -51,6 +55,38 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
     assert!(realizations.settled.is_empty(), "H1/E2 realization");
     assert!(realizations.failures.is_empty(), "H1/E2 realization");
     assert!(observed.observed_gets.lock().unwrap().is_empty(), "H1/E1");
+}
+
+#[test]
+fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
+    // Causes: C1 a stable active File reference exists; C2 recovery is an
+    // external wake or scheduled audit; C3 a new Resource generation is pending.
+    // Effects: R1 C1+external => no duplicate reference read; R2 C1+scheduled =>
+    // audit the existing retention edge; R3 C3+either => reconcile immediately.
+    // The hint carries no Resource payload or receipt. Every admitted phase still
+    // reloads the root and uses the existing reference/effect authority.
+    let mut stable = persisted("resource-interest", true, "idle");
+    stable.resources =
+        awaken_session_contract::SessionResourceState::from_active(file_resources("stable"));
+    assert!(!stable.needs_resource_reconciliation(), "R1 precondition");
+    assert!(stable.resources.has_references(), "R1 precondition");
+    assert!(
+        !SessionRecoveryInterests::from_session(&stable, false).resources,
+        "R1"
+    );
+    assert!(
+        SessionRecoveryInterests::from_session(&stable, true).resources,
+        "R2"
+    );
+    stable
+        .resources
+        .prepare("resource-interest", file_resources("pending"))
+        .unwrap();
+    assert!(stable.needs_resource_reconciliation(), "R3 precondition");
+    assert!(
+        SessionRecoveryInterests::from_session(&stable, false).resources,
+        "R3"
+    );
 }
 
 impl Phase {

@@ -1376,60 +1376,72 @@ impl SessionApplication {
         // Different Sessions already reconcile concurrently across replicas.
         // Reuse the same bounded, owned sweep as Event recovery while retaining
         // every reference/Resource authority check and each root's effect order.
-        let completed = super::recovery_sweep::map_candidates(candidates, |candidate| async move {
-            let mut result = SessionReconciliation::default();
-            let owner_scope = &candidate.workspace_id;
-            let session = match self.session_repository().get(&candidate.session_id).await {
-                Ok(session) => session,
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => return result,
-                Err(error) => {
+        let resource_candidates = SessionRecoveryCandidates {
+            sessions: candidates
+                .sessions
+                .iter()
+                .filter(|candidate| candidate.interests.resources)
+                .cloned()
+                .collect(),
+            quarantined: candidates.quarantined.clone(),
+        };
+        let completed =
+            super::recovery_sweep::map_candidates(&resource_candidates, |candidate| async move {
+                let mut result = SessionReconciliation::default();
+                let owner_scope = &candidate.workspace_id;
+                let session = match self.session_repository().get(&candidate.session_id).await {
+                    Ok(session) => session,
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                        return result;
+                    }
+                    Err(error) => {
+                        result.failures.push(SessionReconciliationFailure {
+                            session_id: candidate.session_id.clone(),
+                            message: error.to_string(),
+                        });
+                        return result;
+                    }
+                };
+                let session_id = session.session_id.clone();
+                if let Err(error) = self
+                    .synchronize_resource_references(owner_scope, &session)
+                    .await
+                {
                     result.failures.push(SessionReconciliationFailure {
-                        session_id: candidate.session_id.clone(),
+                        session_id,
                         message: error.to_string(),
                     });
                     return result;
                 }
-            };
-            let session_id = session.session_id.clone();
-            if let Err(error) = self
-                .synchronize_resource_references(owner_scope, &session)
-                .await
-            {
-                result.failures.push(SessionReconciliationFailure {
-                    session_id,
-                    message: error.to_string(),
-                });
-                return result;
-            }
-            if (!session.is_terminal()
-                && self.requires_external_realization(&session)
-                && !session.resources.has_repository_retirements())
-                || !session.needs_resource_reconciliation()
-            {
-                return result;
-            }
-            match self
-                .reconcile_persisted_resources(owner_scope, session)
-                .await
-            {
-                Ok(session) => result.settled.push(session),
-                Err(SessionPreparationError::NotFound) => {
-                    // An eager terminal-cleanup actor may commit the delete
-                    // tombstone after this scan captured its candidate. The
-                    // missing aggregate is then the authoritative successful
-                    // outcome, not a retryable reconciliation failure. Repair
-                    // the disposable reference projection from that truth.
-                    self.repair_resource_references(owner_scope, &session_id)
-                        .await;
+                if (!session.is_terminal()
+                    && self.requires_external_realization(&session)
+                    && !session.resources.has_repository_retirements())
+                    || !session.needs_resource_reconciliation()
+                {
+                    return result;
                 }
-                Err(error) => result.failures.push(SessionReconciliationFailure {
-                    session_id,
-                    message: error.to_string(),
-                }),
-            }
-            result
-        })
-        .await;
+                match self
+                    .reconcile_persisted_resources(owner_scope, session)
+                    .await
+                {
+                    Ok(session) => result.settled.push(session),
+                    Err(SessionPreparationError::NotFound) => {
+                        // An eager terminal-cleanup actor may commit the delete
+                        // tombstone after this scan captured its candidate. The
+                        // missing aggregate is then the authoritative successful
+                        // outcome, not a retryable reconciliation failure. Repair
+                        // the disposable reference projection from that truth.
+                        self.repair_resource_references(owner_scope, &session_id)
+                            .await;
+                    }
+                    Err(error) => result.failures.push(SessionReconciliationFailure {
+                        session_id,
+                        message: error.to_string(),
+                    }),
+                }
+                result
+            })
+            .await;
         for result in completed {
             report.settled.extend(result.settled);
             report.failures.extend(result.failures);
