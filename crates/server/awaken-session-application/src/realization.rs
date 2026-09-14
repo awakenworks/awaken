@@ -232,13 +232,25 @@ impl SessionApplication {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn reconcile_pending_session_state(
         self: std::sync::Arc<Self>,
+    ) -> SessionRecoveryCycle {
+        self.reconcile_pending_session_state_for(SessionRecoveryTrigger::Scheduled)
+            .await
+    }
+
+    async fn reconcile_pending_session_state_for(
+        self: std::sync::Arc<Self>,
+        trigger: SessionRecoveryTrigger,
     ) -> SessionRecoveryCycle {
         let cycle_started = std::time::Instant::now();
         let candidates =
             match super::scan_all_reconcilable_sessions(self.session_repository()).await {
-                Ok(scan) => super::SessionRecoveryCandidates::from(scan),
+                Ok(scan) => super::SessionRecoveryCandidates::from_scan(
+                    scan,
+                    trigger == SessionRecoveryTrigger::Scheduled,
+                ),
                 Err(error) => {
                     tracing::warn!(error = ?error, "Session recovery candidate scan failed");
                     return SessionRecoveryCycle {
@@ -508,7 +520,11 @@ impl SessionApplication {
             // a default worker stack before the first User batch is admitted.
             let application = std::sync::Arc::clone(&self);
             let mut recovery_task = tokio::task::JoinSet::new();
-            recovery_task.spawn(async move { application.reconcile_pending_session_state().await });
+            recovery_task.spawn(async move {
+                application
+                    .reconcile_pending_session_state_for(recovery_trigger)
+                    .await
+            });
             let cycle = recovery_task
                 .join_next()
                 .await
