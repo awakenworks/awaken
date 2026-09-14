@@ -712,12 +712,14 @@ impl SessionApplication {
             quarantined: candidates.quarantined.clone(),
             ..Default::default()
         };
-        let local_candidates = candidates
+        let realization_candidates = candidates
             .sessions
             .iter()
-            .filter(|candidate| candidate.interests.local_realization)
+            .filter(|candidate| {
+                candidate.interests.local_realization || candidate.interests.dispatch_projection
+            })
             .collect::<Vec<_>>();
-        if local_candidates.is_empty() {
+        if realization_candidates.is_empty() {
             return report;
         }
         let admission = match self.refresh_executable_projections().await {
@@ -730,7 +732,7 @@ impl SessionApplication {
                 return report;
             }
         };
-        for candidate in local_candidates {
+        for candidate in realization_candidates {
             let session = match admission
                 .enter(|| self.session_repository().get(&candidate.session_id))
                 .await
@@ -764,7 +766,29 @@ impl SessionApplication {
                         now,
                     )
             });
-            if session.is_terminal() || self.requires_external_realization(session) {
+            if session.is_terminal() {
+                continue;
+            }
+            if self.requires_external_realization(session) {
+                // Worker placement keeps the durable Session as authority and
+                // the Coordinator projection as a disposable cache. Creation
+                // can commit the root before projection I/O fails or its reply
+                // is lost; rebuild that same projection while initial
+                // realization remains unfinished. Resident/idle Sessions do
+                // not need periodic reinstall, and live effects remain solely
+                // Worker-owned.
+                if session.needs_initial_realization_recovery() {
+                    match self
+                        .install_dispatch_projection(&candidate.workspace_id, session)
+                        .await
+                    {
+                        Ok(()) => report.settled.push(session.clone()),
+                        Err(error) => report.failures.push(SessionReconciliationFailure {
+                            session_id: candidate.session_id.clone(),
+                            message: error.to_string(),
+                        }),
+                    }
+                }
                 continue;
             }
             if !environment_admits_realization_effects(&session.environment) {
