@@ -1064,6 +1064,46 @@ struct InvalidResponseThenToolLlm {
     requests: std::sync::Mutex<Vec<ChatRequest>>,
 }
 
+struct RateLimitedThenSuccessLlm {
+    attempts: std::sync::atomic::AtomicUsize,
+    failures: usize,
+}
+
+#[async_trait]
+impl LlmExecutor for RateLimitedThenSuccessLlm {
+    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+        unreachable!("rate-limit recovery path is streaming-only")
+    }
+
+    async fn infer_streaming(
+        &self,
+        _request: ChatRequest,
+        _sink: &dyn DeltaSink,
+    ) -> LlmResult<ChatResponse> {
+        let attempt = self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if attempt < self.failures {
+            return Err(LlmError::RateLimited {
+                message: "provider concurrency limit".into(),
+                retry_after: None,
+            }
+            .with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+                    awaken_runtime_contract::model_operation::TerminalReceipt::from_response_envelope(
+                        awaken_runtime_contract::model_operation::ResponseEnvelope::CompleteErrorBody,
+                    ),
+                ),
+            ));
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::text("capacity recovered"),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 #[async_trait]
 impl LlmExecutor for InvalidResponseThenToolLlm {
     async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
@@ -1734,6 +1774,50 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
     assert_eq!(
         *sink.chunks.lock().unwrap(),
         vec!["The ans".to_string(), "wer is 42".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn confirmed_rate_limit_uses_the_extended_budget_without_widening_generic_retries() {
+    // Causes: C1 three complete 429 responses with terminal receipts; C2 the
+    // configured generic retry budget is one; C3 the fourth call succeeds.
+    // Effects: E1 Runtime reaches the fourth call through the rate-limit-only
+    // budget; E2 retry_count is three; E3 the final response is returned once.
+    // Rule R1=C1+C2+C3=>E1+E2+E3. Unknown execution remains blocked by the
+    // adjacent negative recovery tests; a zero policy remains absolute in the
+    // retry decision-table unit test.
+    let provider = Arc::new(RateLimitedThenSuccessLlm {
+        attempts: Default::default(),
+        failures: 3,
+    });
+    let llm: Arc<dyn LlmExecutor> = provider.clone();
+    let observed = infer_with_retry_observed(
+        &llm,
+        one_step_request(),
+        &policy(1),
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
+        None,
+    )
+    .await
+    .expect("checkpoint retirement is not configured");
+    let response = observed.result.expect("R1/E1 capacity recovered");
+    assert_eq!(
+        response.output.text_content(),
+        "capacity recovered",
+        "R1/E3"
+    );
+    assert_eq!(observed.observation.retry_count, 3, "R1/E2");
+    assert_eq!(
+        provider.attempts.load(std::sync::atomic::Ordering::SeqCst),
+        4,
+        "R1/E1"
     );
 }
 
