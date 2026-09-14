@@ -600,36 +600,42 @@ impl SessionApplication {
         };
         // Shared bounded iteration owns only scheduling; this selector retains
         // per-Session FIFO, root CAS, Runtime admission and interruption order.
-        let completed = super::recovery_sweep::map_candidates(candidates, |candidate| async move {
-            let mut result = EventBatchReconciliation::default();
-            if !candidate.interests.event_batches {
-                return result;
-            }
-            let session = match self.session_repository().get(&candidate.session_id).await {
-                Ok(session) => session,
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => return result,
-                Err(error) => {
-                    result
-                        .failures
-                        .push((candidate.session_id.clone(), error.to_string()));
+        let completed = super::recovery_sweep::map_candidates(
+            candidates,
+            super::recovery_sweep::EVENT_RECOVERY_CONCURRENCY,
+            |candidate| async move {
+                let mut result = EventBatchReconciliation::default();
+                if !candidate.interests.event_batches {
                     return result;
                 }
-            };
-            if !session.needs_event_reconciliation() {
-                return result;
-            }
-            result.pending = 1;
-            let session_id = session.session_id.clone();
-            match self
-                .reconcile_session_event_batches(&session_id, None, Some(session))
-                .await
-            {
-                Ok(true) => result.settled = 1,
-                Ok(false) => {}
-                Err(error) => result.failures.push((session_id, error.to_string())),
-            }
-            result
-        })
+                let session = match self.session_repository().get(&candidate.session_id).await {
+                    Ok(session) => session,
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                        return result;
+                    }
+                    Err(error) => {
+                        result
+                            .failures
+                            .push((candidate.session_id.clone(), error.to_string()));
+                        return result;
+                    }
+                };
+                if !session.needs_event_reconciliation() {
+                    return result;
+                }
+                result.pending = 1;
+                let session_id = session.session_id.clone();
+                match self
+                    .reconcile_session_event_batches(&session_id, None, Some(session))
+                    .await
+                {
+                    Ok(true) => result.settled = 1,
+                    Ok(false) => {}
+                    Err(error) => result.failures.push((session_id, error.to_string())),
+                }
+                result
+            },
+        )
         .await;
         for result in completed {
             report.pending += result.pending;

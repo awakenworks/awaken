@@ -1385,8 +1385,10 @@ impl SessionApplication {
                 .collect(),
             quarantined: candidates.quarantined.clone(),
         };
-        let completed =
-            super::recovery_sweep::map_candidates(&resource_candidates, |candidate| async move {
+        let completed = super::recovery_sweep::map_candidates(
+            &resource_candidates,
+            super::recovery_sweep::RESOURCE_RECOVERY_CONCURRENCY,
+            |candidate| async move {
                 let mut result = SessionReconciliation::default();
                 let owner_scope = &candidate.workspace_id;
                 let session = match self.session_repository().get(&candidate.session_id).await {
@@ -1440,8 +1442,9 @@ impl SessionApplication {
                     }),
                 }
                 result
-            })
-            .await;
+            },
+        )
+        .await;
         for result in completed {
             report.settled.extend(result.settled);
             report.failures.extend(result.failures);
