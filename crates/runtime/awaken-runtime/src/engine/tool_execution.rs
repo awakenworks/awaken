@@ -328,24 +328,21 @@ pub(crate) async fn gate_decision(
     };
     let mut allowed_on = None;
     if let Some(narrowing) = &context.tool_permission_policy {
-        let decision = narrowing
-            .evaluate_with_basis(&ctx)
-            .await
-            .into_gate_decision();
+        let decision = narrowing.evaluate(&ctx).await.into_gate_decision();
         if !matches!(decision.outcome, GateOutcome::Allow) {
             return decision;
         }
         allowed_on = decision.basis;
     }
     if let Some(gate) = runtime.gate() {
-        let host = gate.gate_with_basis(&ctx, state).await;
+        let host = gate.gate(&ctx, state).await;
         if !matches!(host.outcome, GateOutcome::Allow) {
             return host;
         }
         allowed_on = allowed_on.or(host.basis);
     }
     for gate in env.tool_gates() {
-        let decision = gate.gate_with_basis(&ctx, state).await;
+        let decision = gate.gate(&ctx, state).await;
         if !matches!(decision.outcome, GateOutcome::Allow) {
             return decision;
         }

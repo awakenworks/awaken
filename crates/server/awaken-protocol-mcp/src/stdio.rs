@@ -313,15 +313,15 @@ mod tests {
     #[tokio::test]
     async fn a_suspend_gate_fails_closed_over_stdio() {
         use awaken_agent_contract::agent::state::Store;
-        use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+        use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 
         struct SuspendGate;
         #[async_trait]
         impl ToolGateHook for SuspendGate {
-            async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-                GateOutcome::RequireConfirmation {
+            async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+                GateDecision::without_basis(GateOutcome::RequireConfirmation {
                     correlation_id: "t".into(),
-                }
+                })
             }
         }
 

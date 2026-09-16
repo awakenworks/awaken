@@ -18,7 +18,7 @@ use awaken_protocol_mcp::export::{ProgressRawTool, ToolExportSource};
 use awaken_protocol_mcp::{
     McpExportedTool, McpHttpConfig, McpToolService, SharedExports, StaticExports, router,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde_json::json;
@@ -241,10 +241,10 @@ struct SuspendGate;
 
 #[async_trait]
 impl ToolGateHook for SuspendGate {
-    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-        GateOutcome::RequireConfirmation {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::RequireConfirmation {
             correlation_id: "ticket-1".to_string(),
-        }
+        })
     }
 }
 

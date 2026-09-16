@@ -17,7 +17,7 @@ use awaken_runtime_contract::execution::{RunAttemptExecutor, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint, Plugin,
     PluginManifest,
@@ -76,10 +76,10 @@ impl RawTool for EchoTool {
 struct SuspendGate;
 #[async_trait::async_trait]
 impl ToolGateHook for SuspendGate {
-    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-        GateOutcome::RequireConfirmation {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::RequireConfirmation {
             correlation_id: TICKET_ID.to_string(),
-        }
+        })
     }
 }
 

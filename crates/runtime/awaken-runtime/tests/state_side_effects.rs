@@ -28,7 +28,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginManifest, ToolConcurrencyConstraint,
 };
@@ -206,8 +206,8 @@ impl ToolGateHook for AllowGate {
         &self,
         _ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
-    ) -> GateOutcome {
-        GateOutcome::Allow
+    ) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::Allow)
     }
 }
 
@@ -217,18 +217,18 @@ impl ToolGateHook for ImmediateGate {
         &self,
         call: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
-    ) -> GateOutcome {
+    ) -> GateDecision {
         if call.tool_id != self.tool_id {
-            return GateOutcome::Allow;
+            return GateDecision::without_basis(GateOutcome::Allow);
         }
-        match self.decision {
+        GateDecision::without_basis(match self.decision {
             ImmediateDecision::Block => GateOutcome::Block {
                 reason: "policy denied the call".to_string(),
             },
             ImmediateDecision::SetResult => {
                 GateOutcome::SetResult(ToolOutput::ok(&call.call_id, "provided by gate"))
             }
-        }
+        })
     }
 }
 

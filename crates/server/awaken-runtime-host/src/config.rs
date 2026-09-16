@@ -921,14 +921,14 @@ mod tests {
         );
         assert!(
             matches!(
-                plain.evaluate(&call("read")).await,
+                plain.evaluate(&call("read")).await.verdict,
                 ToolPermissionVerdict::Allow
             ),
             "T1 an observing call runs unattended"
         );
         assert!(
             matches!(
-                plain.evaluate(&call("bash")).await,
+                plain.evaluate(&call("bash")).await.verdict,
                 ToolPermissionVerdict::RequireConfirmation { .. }
             ),
             "T2 a modifying call reaches a person, never a refusal"
@@ -948,7 +948,7 @@ mod tests {
         );
         assert!(
             matches!(
-                overridden.evaluate(&call("bash")).await,
+                overridden.evaluate(&call("bash")).await.verdict,
                 ToolPermissionVerdict::Allow
             ),
             "T3 an explicit authored policy outranks the evaluator"
@@ -1010,7 +1010,7 @@ mod tests {
         for (rule, tool) in [("H1", "read"), ("H2", "bash")] {
             assert!(
                 matches!(
-                    asks.evaluate(&call(tool)).await,
+                    asks.evaluate(&call(tool)).await.verdict,
                     ToolPermissionVerdict::RequireConfirmation { .. }
                 ),
                 "{rule} `{tool}` must reach the evaluator and ask"
@@ -1026,7 +1026,7 @@ mod tests {
         for (rule, tool) in [("H3", "read"), ("H4", "bash")] {
             assert!(
                 matches!(
-                    denies.evaluate(&call(tool)).await,
+                    denies.evaluate(&call(tool)).await.verdict,
                     ToolPermissionVerdict::Deny { .. }
                 ),
                 "{rule} `{tool}` must be decided by the evaluator"
@@ -1225,7 +1225,12 @@ mod tests {
                 arguments: serde_json::json!({}),
             };
             assert_eq!(
-                policy.evaluate(&call).await.kind().gate_outcome_kind(),
+                policy
+                    .evaluate(&call)
+                    .await
+                    .verdict
+                    .kind()
+                    .gate_outcome_kind(),
                 expected,
                 "{tool_id}"
             );
@@ -1315,9 +1320,9 @@ mod tests {
                 .gate(&call, &awaken_agent_contract::agent::state::Store::new())
                 .await;
             let acp = authorization.policy.evaluate(&call).await;
-            assert_eq!(native.kind(), expected, "{rule}/E1 {tool_id}");
+            assert_eq!(native.outcome.kind(), expected, "{rule}/E1 {tool_id}");
             assert_eq!(
-                acp.kind().gate_outcome_kind(),
+                acp.verdict.kind().gate_outcome_kind(),
                 expected,
                 "{rule}/E2 {tool_id}"
             );
@@ -1404,12 +1409,12 @@ mod tests {
                                 .await;
                             let acp = authorization.policy.evaluate(&call).await;
                             assert_eq!(
-                                native.kind(),
+                                native.outcome.kind(),
                                 expected,
                                 "Native: {default:?} {exact:?} {server}"
                             );
                             assert_eq!(
-                                acp.kind().gate_outcome_kind(),
+                                acp.verdict.kind().gate_outcome_kind(),
                                 expected,
                                 "ACP: {default:?} {exact:?} {server}"
                             );
@@ -1456,9 +1461,13 @@ mod tests {
                 .gate(&call, &awaken_agent_contract::agent::state::Store::new())
                 .await;
             let acp = authorization.policy.evaluate(&call).await;
-            assert_eq!(native.kind(), expected, "{rule}/E1-E3 Native {tool_id}");
             assert_eq!(
-                acp.kind().gate_outcome_kind(),
+                native.outcome.kind(),
+                expected,
+                "{rule}/E1-E3 Native {tool_id}"
+            );
+            assert_eq!(
+                acp.verdict.kind().gate_outcome_kind(),
                 expected,
                 "{rule}/E1-E3 ACP {tool_id}"
             );
@@ -1604,9 +1613,13 @@ mod tests {
                 .gate(&call, &awaken_agent_contract::agent::state::Store::new())
                 .await;
             let acp = authorization.policy.evaluate(&call).await;
-            assert_eq!(native.kind(), expected, "{rule}/E1-E3 Native {tool_id}");
             assert_eq!(
-                acp.kind().gate_outcome_kind(),
+                native.outcome.kind(),
+                expected,
+                "{rule}/E1-E3 Native {tool_id}"
+            );
+            assert_eq!(
+                acp.verdict.kind().gate_outcome_kind(),
                 expected,
                 "{rule}/E1-E3 ACP {tool_id}"
             );
@@ -1629,7 +1642,7 @@ mod tests {
         for id in awaken_ext_background_task::management_tool_ids() {
             assert!(
                 matches!(
-                    baseline.evaluate(&call(id)).await,
+                    baseline.evaluate(&call(id)).await.verdict,
                     ToolPermissionVerdict::Allow
                 ),
                 "B1 {id}"
@@ -1637,7 +1650,10 @@ mod tests {
         }
         assert!(
             matches!(
-                baseline.evaluate(&call("mcp__phone__StartCall")).await,
+                baseline
+                    .evaluate(&call("mcp__phone__StartCall"))
+                    .await
+                    .verdict,
                 ToolPermissionVerdict::RequireConfirmation { .. }
             ),
             "B2"
@@ -1655,7 +1671,7 @@ mod tests {
         let policy = RuleBasedToolPermissionPolicy::new(denied);
         assert!(
             matches!(
-                policy.evaluate(&call("run_in_background")).await,
+                policy.evaluate(&call("run_in_background")).await.verdict,
                 ToolPermissionVerdict::Deny { .. }
             ),
             "B3"

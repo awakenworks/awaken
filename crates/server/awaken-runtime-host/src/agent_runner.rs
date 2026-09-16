@@ -172,13 +172,13 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         assert_eq!(
-            gate.gate(&call("web_search"), &state).await,
+            gate.gate(&call("web_search"), &state).await.outcome,
             GateOutcome::Allow,
             "R1/E1"
         );
         assert!(
             matches!(
-                gate.gate(&call("web_fetch"), &state).await,
+                gate.gate(&call("web_fetch"), &state).await.outcome,
                 GateOutcome::RequireConfirmation { .. }
             ),
             "R2/E2"
@@ -189,11 +189,9 @@ mod tests {
             &[],
             &plain.resolved_spec.plugin_config.agent.toolsets,
         );
+        let unlisted = baseline.gate.gate(&call("web_search"), &state).await;
         assert!(
-            matches!(
-                baseline.gate.gate(&call("web_search"), &state).await,
-                GateOutcome::RequireConfirmation { .. }
-            ),
+            matches!(unlisted.outcome, GateOutcome::RequireConfirmation { .. }),
             "R3"
         );
     }
@@ -569,7 +567,8 @@ mod tests {
                     call_id: "child-bash".into(),
                     arguments: serde_json::json!({}),
                 })
-                .await,
+                .await
+                .verdict,
             awaken_runtime_contract::permission::ToolPermissionVerdict::Allow,
             "A1/E3"
         );

@@ -1761,6 +1761,15 @@ async fn a_recorded_ask_is_reported_even_though_the_transcript_shows_a_result() 
 /// | P7 | none (historical row) | allow | - | absent (E2) |
 /// | P8 | bypass (outside the closed vocabulary) | deny | - | absent, decision still deny (E2) |
 /// | P9 | auto | ask | none (inconsistent row) | absent (E2) |
+/// | P10 | auto | ask | outside the closed vocabulary | absent, decision still ask (E2) |
+///
+/// P10 is the open-registry case the SDK names explicitly: `reason_code` is a
+/// `string` whose documented set is not exhaustive, so another producer — a
+/// newer replica writing the same durable audit, a platform evaluator — may
+/// record grounds this version has no label for. Reading that row must still
+/// report what the gate decided and simply decline to name grounds it cannot
+/// project. This is what makes the producer-side vocabulary safe to keep
+/// closed: the reader, not the enum, carries the forward compatibility.
 #[tokio::test]
 async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events() {
     const ROWS: &[(&str, &[AuditedPermissionRow], &str, Option<&str>)] = &[
@@ -1845,6 +1854,15 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
             &[
                 ("builtin-1", "ask", Some("auto"), None),
                 ("mc1", "ask", Some("auto"), None),
+            ],
+            "ask",
+            None,
+        ),
+        (
+            "P10",
+            &[
+                ("builtin-1", "ask", Some("auto"), Some("rate_limited")),
+                ("mc1", "ask", Some("auto"), Some("rate_limited")),
             ],
             "ask",
             None,

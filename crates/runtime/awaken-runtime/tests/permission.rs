@@ -131,8 +131,8 @@ impl CompactBackend for CountingCompactBackend {
 struct FixedPolicy(ToolPermissionVerdict);
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for FixedPolicy {
-    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
-        self.0.clone()
+    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
+        ToolPermissionRuling::without_basis(self.0.clone())
     }
 }
 
@@ -488,15 +488,15 @@ struct RecordingDenyCanonical {
 }
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for RecordingDenyCanonical {
-    async fn evaluate(&self, ctx: &ToolCall) -> ToolPermissionVerdict {
+    async fn evaluate(&self, ctx: &ToolCall) -> ToolPermissionRuling {
         self.seen.lock().unwrap().push(ctx.tool_id.clone());
-        if ctx.tool_id == "echo" {
+        ToolPermissionRuling::without_basis(if ctx.tool_id == "echo" {
             ToolPermissionVerdict::Deny {
                 reason: "canonical echo denied".to_string(),
             }
         } else {
             ToolPermissionVerdict::Allow
-        }
+        })
     }
 }
 
@@ -619,10 +619,10 @@ struct AskByCall;
 
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for AskByCall {
-    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
-        ToolPermissionVerdict::RequireConfirmation {
+    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
+        ToolPermissionRuling::without_basis(ToolPermissionVerdict::RequireConfirmation {
             correlation_id: format!("permission-{}", call.call_id),
-        }
+        })
     }
 }
 
@@ -1096,11 +1096,7 @@ async fn tool_batch_handoff_preserves_the_remaining_calls_and_publication_barrie
 struct BasisPolicy(ToolPermissionRuling);
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for BasisPolicy {
-    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
-        self.0.verdict.clone()
-    }
-
-    async fn evaluate_with_basis(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
+    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
         self.0.clone()
     }
 }

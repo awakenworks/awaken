@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{
-    GateDecision, GateOutcome, ToolCall, ToolGateHook, ToolPermissionPolicy,
+    GateDecision, ToolCall, ToolGateHook, ToolPermissionPolicy,
 };
 
 /// A [`ToolGateHook`] backed by a [`ToolPermissionPolicy`].
@@ -33,17 +33,10 @@ impl ToolGateHook for PermissionGate {
         "permission"
     }
 
-    async fn gate(&self, call: &ToolCall, state: &Store) -> GateOutcome {
-        self.gate_with_basis(call, state).await.outcome
-    }
-
-    async fn gate_with_basis(&self, call: &ToolCall, _state: &Store) -> GateDecision {
+    async fn gate(&self, call: &ToolCall, _state: &Store) -> GateDecision {
         // allow → execute; deny → a model-visible block; ask → await on a decision
         // ticket the operator resumes (ADR-0030 D1/D2). The policy that decided
         // rides along unchanged for the audit fact (D4).
-        self.policy
-            .evaluate_with_basis(call)
-            .await
-            .into_gate_decision()
+        self.policy.evaluate(call).await.into_gate_decision()
     }
 }

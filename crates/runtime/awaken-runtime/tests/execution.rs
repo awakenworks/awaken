@@ -28,7 +28,7 @@ use awaken_runtime_contract::llm::{
     ModelRequestAdmissionRequest, ModelRequestGate, ModelRequestObservation, StopReason,
     ThreadUsage, TokenUsage, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     ADVISOR_FAILURE_NOTICE, ADVISOR_TOOL_ID, ADVISOR_UNAVAILABLE_NOTICE, CatalogFingerprint,
     ContextPolicy, ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolKind,
@@ -1010,11 +1010,11 @@ impl ToolGateHook for SuspendAdvisorGate {
         &self,
         call: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
-    ) -> GateOutcome {
+    ) -> GateDecision {
         assert_eq!(call.tool_id, ADVISOR_TOOL_ID, "D4/C1");
-        GateOutcome::RequireConfirmation {
+        GateDecision::without_basis(GateOutcome::RequireConfirmation {
             correlation_id: "advisor-approval".into(),
-        }
+        })
     }
 }
 

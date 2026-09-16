@@ -244,10 +244,13 @@ async fn gate_denies_write_before_read() {
     let contributions = p.resolve();
     let gate = &contributions.tool_gates[0];
     let store = Store::new();
-    let outcome = gate
+    let decision = gate
         .gate(&ctx("Write", json!({"file_path": "a.rs"})), &store)
         .await;
-    match outcome {
+    // A state-machine gate decides on committed state, not on an authored
+    // permission policy, so it names no basis.
+    assert_eq!(decision.basis, None);
+    match decision.outcome {
         GateOutcome::Block { reason } => assert_eq!(reason, "Read a.rs before writing."),
         other => panic!("expected block, got {other:?}"),
     }
@@ -260,10 +263,11 @@ async fn gate_allows_write_after_read() {
     let gate = &contributions.tool_gates[0];
     let mut store = Store::new();
     read_state(&mut store, "a.rs");
-    let outcome = gate
+    let decision = gate
         .gate(&ctx("Write", json!({"file_path": "a.rs"})), &store)
         .await;
-    assert_eq!(outcome, GateOutcome::Allow);
+    assert_eq!(decision.outcome, GateOutcome::Allow);
+    assert_eq!(decision.basis, None);
 }
 
 #[tokio::test]
@@ -274,12 +278,15 @@ async fn gate_allows_read_and_ignores_keyless_call() {
     let store = Store::new();
     assert_eq!(
         gate.gate(&ctx("Read", json!({"file_path": "a.rs"})), &store)
-            .await,
+            .await
+            .outcome,
         GateOutcome::Allow
     );
     // No file_path ⇒ machine does not apply ⇒ allow.
     assert_eq!(
-        gate.gate(&ctx("Write", json!({"other": 1})), &store).await,
+        gate.gate(&ctx("Write", json!({"other": 1})), &store)
+            .await
+            .outcome,
         GateOutcome::Allow
     );
 }
@@ -296,6 +303,7 @@ async fn gate_suspends_on_ask() {
     match gate
         .gate(&ctx("Write", json!({"file_path": "a.rs"})), &store)
         .await
+        .outcome
     {
         GateOutcome::RequireConfirmation { correlation_id } => {
             assert_eq!(correlation_id, "fsm-call-1")

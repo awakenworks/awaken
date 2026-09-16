@@ -237,7 +237,9 @@ impl AwakenMcpHost {
         call: &ToolCall,
     ) -> Option<CallToolResult> {
         let gate = self.gate.read().expect("MCP gate lock").clone()?;
-        match gate.gate(call, &context.store).await {
+        // This surface reports the outcome only; the basis rides the audit
+        // fact the runtime commits, not an MCP tool result.
+        match gate.gate(call, &context.store).await.outcome {
             GateOutcome::Allow => None,
             GateOutcome::Block { reason } => Some(call_result(&ToolOutput::error(
                 call.call_id.clone(),
@@ -334,6 +336,7 @@ fn to_mcp_content(block: &ContentBlock) -> ToolContent {
 mod tests {
     use super::*;
     use crate::export::{ProgressRawTool, SharedExports, StaticExports};
+    use awaken_runtime_contract::permission::GateDecision;
     use awaken_runtime_contract::resolved::ToolDescriptor;
     use awaken_runtime_contract::tool::RawTool;
     use std::sync::Mutex;
@@ -661,10 +664,10 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for DenyGate {
-        async fn gate(&self, ctx: &ToolCall, _state: &Store) -> GateOutcome {
-            GateOutcome::Block {
+        async fn gate(&self, ctx: &ToolCall, _state: &Store) -> GateDecision {
+            GateDecision::without_basis(GateOutcome::Block {
                 reason: format!("{} is not allowed here", ctx.tool_id),
-            }
+            })
         }
     }
 
@@ -692,8 +695,11 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for SetResultGate {
-        async fn gate(&self, ctx: &ToolCall, _state: &Store) -> GateOutcome {
-            GateOutcome::SetResult(ToolOutput::ok(ctx.call_id.clone(), "supplied by the gate"))
+        async fn gate(&self, ctx: &ToolCall, _state: &Store) -> GateDecision {
+            GateDecision::without_basis(GateOutcome::SetResult(ToolOutput::ok(
+                ctx.call_id.clone(),
+                "supplied by the gate",
+            )))
         }
     }
 
@@ -721,11 +727,11 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for ScheduleGate {
-        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-            GateOutcome::Schedule {
+        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+            GateDecision::without_basis(GateOutcome::Schedule {
                 correlation_id: "corr-1".to_string(),
                 action_kind: None,
-            }
+            })
         }
     }
 
@@ -756,10 +762,10 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for ConfirmGate {
-        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-            GateOutcome::RequireConfirmation {
+        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+            GateDecision::without_basis(GateOutcome::RequireConfirmation {
                 correlation_id: "approval-1".to_string(),
-            }
+            })
         }
     }
 
@@ -802,8 +808,8 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for AllowGate {
-        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-            GateOutcome::Allow
+        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+            GateDecision::without_basis(GateOutcome::Allow)
         }
     }
 

@@ -283,7 +283,9 @@ impl RawTool for PermissionGuardedAcpTool {
         if self.grants.consume(&call.tool_id, &call.arguments) {
             return self.inner.invoke(call).await;
         }
-        match self.policy.evaluate(&call).await {
+        // The exported ACP tool reports only the outcome; the basis belongs to
+        // the audit fact, not to a tool error string.
+        match self.policy.evaluate(&call).await.verdict {
             ToolPermissionVerdict::Allow => self.inner.invoke(call).await,
             ToolPermissionVerdict::Deny { reason } => Err(ToolError::Execution(format!(
                 "TOOL_PERMISSION_BLOCKED: {reason}"
@@ -500,12 +502,14 @@ mod tests {
 
     struct AskPolicy;
 
+    use awaken_runtime_contract::permission::ToolPermissionRuling;
+
     #[async_trait::async_trait]
     impl ToolPermissionPolicy for AskPolicy {
-        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
-            ToolPermissionVerdict::RequireConfirmation {
+        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
+            ToolPermissionRuling::without_basis(ToolPermissionVerdict::RequireConfirmation {
                 correlation_id: format!("approval:{}", call.call_id),
-            }
+            })
         }
     }
 
