@@ -9,7 +9,7 @@ use super::{SessionRecoveryCandidate, SessionRecoveryCandidates};
 /// Event batches contain local durable commands whose per-Session ordering and
 /// effect fencing remain inside the canonical driver. A wider bound prevents a
 /// fleet-sized burst from being serialized into artificial waves here.
-pub(super) const EVENT_RECOVERY_CONCURRENCY: usize = 12;
+pub(super) const EVENT_RECOVERY_CONCURRENCY: usize = 16;
 
 /// Resource reconciliation may cross external effect boundaries, so it retains
 /// the earlier conservative fan-out independently of Event throughput.

@@ -4432,10 +4432,13 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     // delivery keep the strict bounded-retry behavior in the adjacent budget
     // table, so this fallback cannot acknowledge an undelivered lifecycle fact.
     // C4 initial relations borrow the selected root and usage reuses those
-    // relations; final relations request fresh truth. E3 even with C4, both
-    // root observations remain and a changed final version discards the private
-    // candidate. This catches both a lost reuse argument and reusing the old
-    // root for final validation instead of observing current truth.
+    // relations; C5 the final fresh root has no coordinated children. E3 both
+    // root observations remain, the final root is lent to its root-only
+    // relationship projection, and a changed final version discards the
+    // private candidate. A nonempty final relationship/child set selects the
+    // separate trailing-root row tested by the closed predicate table below.
+    // This catches both a lost reuse argument and reusing the initial root for
+    // final validation instead of observing current truth.
     let runtime = LifecycleRuntime::default();
     let state = ManagedState::new(runtime.clone());
     let session = state
@@ -4502,10 +4505,9 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
         roots[0].is_some(),
         "E3 initial query borrows the observed root"
     );
-    assert_eq!(
-        &roots[1..],
-        &[None],
-        "E3 final validation retains a fresh read"
+    assert!(
+        roots[1].is_some() && roots[1] != roots[0],
+        "E3 final root-only validation borrows its distinct fresh read"
     );
     assert!(
         matches!(
@@ -4514,6 +4516,23 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
         ),
         "E2 stale observation must not manufacture a publication"
     );
+}
+
+#[test]
+fn coordinated_projection_validation_retains_only_required_trailing_root_reads() {
+    // Causes: C1 final coordinated links are empty/nonempty; C2 final child
+    // snapshots are empty/nonempty. Effects: E1 root-only validation reuses its
+    // fresh selected root; E2 any coordinated evidence requires a trailing root
+    // after child reads. The four Boolean rows close the decision table.
+    for links in 0..=1 {
+        for children in 0..=1 {
+            assert_eq!(
+                committed_projection::projection_validation_needs_trailing_root(links, children),
+                links != 0 || children != 0,
+                "C1={links} C2={children}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

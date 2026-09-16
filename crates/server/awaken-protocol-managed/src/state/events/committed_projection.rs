@@ -28,6 +28,13 @@ struct CanonicalizationEvidence<'a> {
     child_pending: &'a std::collections::HashMap<String, Pending>,
 }
 
+pub(super) const fn projection_validation_needs_trailing_root(
+    coordinated_links: usize,
+    child_snapshots: usize,
+) -> bool {
+    coordinated_links != 0 || child_snapshots != 0
+}
+
 impl ManagedState {
     fn append_root_terminal_error(
         record: &mut SessionRecord,
@@ -333,8 +340,15 @@ impl ManagedState {
         {
             // Validation owns no published payload. Release these second full
             // snapshots before constructing the candidate's wire events.
-            let (final_links, final_child_snapshots) =
-                self.coordinated_projection_prefix(session_id, None).await?;
+            // Select the fresh validation root once and lend that exact prefix
+            // to relationship projection. A root-only Session performs no
+            // asynchronous child reads afterwards, so this same complete root
+            // is also its final fence. A coordinated Session retains the later
+            // trailing root read that closes over every child snapshot.
+            let validation_root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
+            let (final_links, final_child_snapshots) = self
+                .coordinated_projection_prefix(session_id, validation_root_snapshot.as_ref())
+                .await?;
             if links != final_links
                 || child_snapshots.len() != final_child_snapshots.len()
                 || child_snapshots.iter().any(|(thread_id, initial)| {
@@ -351,7 +365,14 @@ impl ManagedState {
                 );
                 return Ok(publication::ProjectionRefreshBuild::Retry);
             }
-            let final_root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
+            let final_root_snapshot = if projection_validation_needs_trailing_root(
+                final_links.len(),
+                final_child_snapshots.len(),
+            ) {
+                self.recovery_snapshot(session_id, session_id).await?
+            } else {
+                validation_root_snapshot
+            };
             if !same_thread_projection_prefix(root_snapshot.as_ref(), final_root_snapshot.as_ref())
             {
                 tracing::debug!(
