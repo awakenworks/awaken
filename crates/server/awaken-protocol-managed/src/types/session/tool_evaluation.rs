@@ -16,7 +16,7 @@ use super::EvaluatedPermission;
 /// The SDK's per-call `evaluation` on Agent tool-use events
 /// (`BetaManagedAgentsAgentToolEvaluation`): which resolved `permission_policy`
 /// produced `evaluated_permission`, and for `auto` the judgement itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolEvaluation {
     AlwaysAllow,
@@ -29,8 +29,8 @@ pub enum ToolEvaluation {
 /// The server's per-invocation judgement under the `auto` policy
 /// (`BetaManagedAgentsAgentAutoEvaluatedPermission`). Its `type` always equals
 /// the event's flat `evaluated_permission`; the reason code is the audit's
-/// closed vocabulary rendered as the SDK's open registry string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// open registry code, rendered as the SDK's registry string unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AutoEvaluatedPermission {
     Allow,
@@ -45,7 +45,7 @@ pub enum AutoEvaluatedPermission {
 /// call, read back from the audit trail. Its two halves reach the wire as the
 /// event's `evaluated_permission` and `evaluation`; the pair itself is not a
 /// shape the SDK declares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedPermission {
     pub decision: EvaluatedPermission,
     pub evaluation: Option<ToolEvaluation>,
@@ -113,7 +113,7 @@ mod tests {
         // | always_ask | {"type":"always_ask"} |
         // | auto/allow | {"type":"auto","evaluated_permission":{"type":"allow"}} |
         // | auto/ask | {"type":"auto","evaluated_permission":{"type":"ask","reason_code":"indeterminate"}} |
-        // | auto/deny | {"type":"auto","evaluated_permission":{"type":"deny","reason_code":"judged_high_risk"}} |
+        // | auto/deny | {"type":"auto","evaluated_permission":{"type":"deny","reason_code":"high_risk"}} |
         assert_eq!(
             wire(ToolEvaluation::AlwaysAllow),
             serde_json::json!({"type":"always_allow"})
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(
             wire(ToolEvaluation::Auto {
                 evaluated_permission: AutoEvaluatedPermission::Ask {
-                    reason_code: PermissionReasonCode::Indeterminate
+                    reason_code: PermissionReasonCode::INDETERMINATE
                 }
             }),
             serde_json::json!({
@@ -142,12 +142,12 @@ mod tests {
         assert_eq!(
             wire(ToolEvaluation::Auto {
                 evaluated_permission: AutoEvaluatedPermission::Deny {
-                    reason_code: PermissionReasonCode::JudgedHighRisk
+                    reason_code: PermissionReasonCode::HIGH_RISK
                 }
             }),
             serde_json::json!({
                 "type":"auto",
-                "evaluated_permission":{"type":"deny","reason_code":"judged_high_risk"}
+                "evaluated_permission":{"type":"deny","reason_code":"high_risk"}
             })
         );
     }
@@ -168,7 +168,7 @@ mod tests {
         // | R2 | always_ask | ask | - | E1 always_ask |
         // | R3 | auto | allow | - | E1 auto/allow |
         // | R4 | auto | ask | indeterminate | E1 auto/ask |
-        // | R5 | auto | deny | judged_high_risk | E1 auto/deny |
+        // | R5 | auto | deny | high_risk | E1 auto/deny |
         // | R6 | none (C4) | any | - | E2 |
         // | R7 | rule (C5) | any | - | E2 |
         // | R8 | always_allow | deny (not C2) | - | E2 |
@@ -212,10 +212,10 @@ mod tests {
                 "R4",
                 Some(P::Auto),
                 D::Ask,
-                Some(C::Indeterminate),
+                Some(C::INDETERMINATE),
                 Some(ToolEvaluation::Auto {
                     evaluated_permission: AutoEvaluatedPermission::Ask {
-                        reason_code: C::Indeterminate,
+                        reason_code: C::INDETERMINATE,
                     },
                 }),
             ),
@@ -223,10 +223,10 @@ mod tests {
                 "R5",
                 Some(P::Auto),
                 D::Deny,
-                Some(C::JudgedHighRisk),
+                Some(C::HIGH_RISK),
                 Some(ToolEvaluation::Auto {
                     evaluated_permission: AutoEvaluatedPermission::Deny {
-                        reason_code: C::JudgedHighRisk,
+                        reason_code: C::HIGH_RISK,
                     },
                 }),
             ),

@@ -118,12 +118,12 @@ fn text() -> Vec<ContentBlock> {
 fn samples() -> Vec<Event> {
     let auto_deny = ToolEvaluation::Auto {
         evaluated_permission: AutoEvaluatedPermission::Deny {
-            reason_code: PermissionReasonCode::JudgedHighRisk,
+            reason_code: PermissionReasonCode::HIGH_RISK,
         },
     };
     let auto_ask = ToolEvaluation::Auto {
         evaluated_permission: AutoEvaluatedPermission::Ask {
-            reason_code: PermissionReasonCode::Indeterminate,
+            reason_code: PermissionReasonCode::INDETERMINATE,
         },
     };
     vec![

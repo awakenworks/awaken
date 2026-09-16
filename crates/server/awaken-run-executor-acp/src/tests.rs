@@ -3046,7 +3046,7 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
             correlation_id: "tk".into(),
         },
         basis: Some(PermissionBasis::auto(Some(
-            PermissionReasonCode::Indeterminate,
+            PermissionReasonCode::INDETERMINATE,
         ))),
     });
 
@@ -3066,14 +3066,14 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
             "c2",
             "ask",
             PermissionPolicy::Auto,
-            Some(PermissionReasonCode::Indeterminate),
+            Some(PermissionReasonCode::INDETERMINATE),
         ),
     ] {
         let audit = Arc::new(PermissionAudit::default());
         let resolver = NeutralPermissionResolver {
             policy: Arc::new(RulingPolicy(ToolPermissionRuling {
                 verdict: policy.0.verdict.clone(),
-                basis: policy.0.basis,
+                basis: policy.0.basis.clone(),
             })),
             grant_observer: None,
             audit: None,

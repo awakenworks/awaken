@@ -201,6 +201,7 @@ pub fn classify_run_lifecycle_record(
         | AuditKind::RunAwaiting
         | AuditKind::RunResumed
         | AuditKind::PermissionDecided
+        | AuditKind::PermissionConfirmed
         | AuditKind::ResumeApplied
         | AuditKind::Continuation => None,
     }

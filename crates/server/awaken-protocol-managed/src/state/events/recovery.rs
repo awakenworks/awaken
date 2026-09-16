@@ -563,7 +563,7 @@ impl ManagedState {
                         ..
                     } => {
                         *evaluated_permission = Some(recorded.decision);
-                        *evaluation = recorded.evaluation;
+                        *evaluation = recorded.evaluation.clone();
                     }
                     _ => {}
                 }

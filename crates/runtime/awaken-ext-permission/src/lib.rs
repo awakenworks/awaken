@@ -133,8 +133,8 @@ impl AutoDecision {
     pub const fn reason_code(self) -> Option<PermissionReasonCode> {
         match self {
             Self::Allow => None,
-            Self::Deny => Some(PermissionReasonCode::JudgedHighRisk),
-            Self::Indeterminate => Some(PermissionReasonCode::Indeterminate),
+            Self::Deny => Some(PermissionReasonCode::HIGH_RISK),
+            Self::Indeterminate => Some(PermissionReasonCode::INDETERMINATE),
         }
     }
 

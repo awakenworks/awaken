@@ -916,7 +916,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
     // not judge; C3 an authored pattern rule matched; C4 nothing matched and
     // the ruleset default decided; C5 the toolset disabled the tool. Effects:
     // E1 the ruling's basis names the requirement; E2 an `auto` refusal carries
-    // `judged_high_risk` and an `auto` ask carries `indeterminate`, an `auto`
+    // `high_risk` and an `auto` ask carries `indeterminate`, an `auto`
     // allow carries none; E3 an authored rule, the authored default and a
     // disablement all name `rule` — an instruction outside the toolset policy
     // vocabulary.
@@ -926,7 +926,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
     // | B1 | always_allow | (ignored) | Allow | always_allow | - |
     // | B2 | always_ask | (ignored) | Ask | always_ask | - |
     // | B3 | auto | allow | Allow | auto | - |
-    // | B4 | auto | deny | Deny | auto | judged_high_risk |
+    // | B4 | auto | deny | Deny | auto | high_risk |
     // | B5 | auto | indeterminate | Ask | auto | indeterminate |
     // | B6 | authored `Read` allow rule | - | Allow | rule | - |
     // | B7 | ruleset default deny | - | Deny | rule | - |
@@ -980,7 +980,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
         "B4",
         auto(AutoDecision::Deny).evaluate(&auto_call()).await,
         is_deny,
-        PermissionBasis::auto(Some(PermissionReasonCode::JudgedHighRisk)),
+        PermissionBasis::auto(Some(PermissionReasonCode::HIGH_RISK)),
     );
     expect(
         "B5",
@@ -988,7 +988,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
             .evaluate(&auto_call())
             .await,
         is_ask,
-        PermissionBasis::auto(Some(PermissionReasonCode::Indeterminate)),
+        PermissionBasis::auto(Some(PermissionReasonCode::INDETERMINATE)),
     );
 
     let authored = RuleBasedToolPermissionPolicy::new(ruleset(

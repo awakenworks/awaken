@@ -45,6 +45,8 @@ pub awaken_agent_contract::agent::awaiting::PermissionDecision::Allow
 pub awaken_agent_contract::agent::awaiting::PermissionDecision::Allow::note: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::agent::awaiting::PermissionDecision::Deny
 pub awaken_agent_contract::agent::awaiting::PermissionDecision::Deny::reason: core::option::Option<alloc::string::String>
+impl core::convert::From<&awaken_agent_contract::agent::awaiting::PermissionDecision> for awaken_agent_contract::audit::permission::PermissionConfirmation
+pub fn awaken_agent_contract::audit::permission::PermissionConfirmation::from(&awaken_agent_contract::agent::awaiting::PermissionDecision) -> Self
 pub enum awaken_agent_contract::agent::awaiting::RemoteInputReason
 pub awaken_agent_contract::agent::awaiting::RemoteInputReason::ExternalEvent
 pub awaken_agent_contract::agent::awaiting::RemoteInputReason::UserInput
@@ -396,6 +398,7 @@ pub mod awaken_agent_contract::audit::kind
 pub enum awaken_agent_contract::audit::kind::Kind
 pub awaken_agent_contract::audit::kind::Kind::Continuation
 pub awaken_agent_contract::audit::kind::Kind::ModelRequestCompleted
+pub awaken_agent_contract::audit::kind::Kind::PermissionConfirmed
 pub awaken_agent_contract::audit::kind::Kind::PermissionDecided
 pub awaken_agent_contract::audit::kind::Kind::ResumeApplied
 pub awaken_agent_contract::audit::kind::Kind::RunAwaiting
@@ -418,6 +421,13 @@ pub awaken_agent_contract::audit::model_request::TokenUsage::prompt_tokens: u64
 impl awaken_agent_contract::audit::model_request::TokenUsage
 pub fn awaken_agent_contract::audit::model_request::TokenUsage::saturating_add(self, Self) -> Self
 pub mod awaken_agent_contract::audit::permission
+pub enum awaken_agent_contract::audit::permission::PermissionConfirmation
+pub awaken_agent_contract::audit::permission::PermissionConfirmation::Allow
+pub awaken_agent_contract::audit::permission::PermissionConfirmation::Deny
+impl awaken_agent_contract::audit::permission::PermissionConfirmation
+pub const fn awaken_agent_contract::audit::permission::PermissionConfirmation::as_str(self) -> &'static str
+impl core::convert::From<&awaken_agent_contract::agent::awaiting::PermissionDecision> for awaken_agent_contract::audit::permission::PermissionConfirmation
+pub fn awaken_agent_contract::audit::permission::PermissionConfirmation::from(&awaken_agent_contract::agent::awaiting::PermissionDecision) -> Self
 pub enum awaken_agent_contract::audit::permission::PermissionPolicy
 pub awaken_agent_contract::audit::permission::PermissionPolicy::AlwaysAllow
 pub awaken_agent_contract::audit::permission::PermissionPolicy::AlwaysAsk
@@ -427,11 +437,12 @@ impl awaken_agent_contract::audit::permission::PermissionPolicy
 pub const fn awaken_agent_contract::audit::permission::PermissionPolicy::as_str(self) -> &'static str
 impl core::convert::From<awaken_agent_contract::toolset::ToolPermissionRequirement> for awaken_agent_contract::audit::permission::PermissionPolicy
 pub fn awaken_agent_contract::audit::permission::PermissionPolicy::from(awaken_agent_contract::toolset::ToolPermissionRequirement) -> Self
-pub enum awaken_agent_contract::audit::permission::PermissionReasonCode
-pub awaken_agent_contract::audit::permission::PermissionReasonCode::Indeterminate
-pub awaken_agent_contract::audit::permission::PermissionReasonCode::JudgedHighRisk
+pub struct awaken_agent_contract::audit::permission::PermissionReasonCode(_)
 impl awaken_agent_contract::audit::permission::PermissionReasonCode
-pub const fn awaken_agent_contract::audit::permission::PermissionReasonCode::as_str(self) -> &'static str
+pub const awaken_agent_contract::audit::permission::PermissionReasonCode::HIGH_RISK: Self
+pub const awaken_agent_contract::audit::permission::PermissionReasonCode::INDETERMINATE: Self
+pub fn awaken_agent_contract::audit::permission::PermissionReasonCode::as_str(&self) -> &str
+pub fn awaken_agent_contract::audit::permission::PermissionReasonCode::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub mod awaken_agent_contract::audit::record
 pub struct awaken_agent_contract::audit::record::Record
 pub awaken_agent_contract::audit::record::Record::kind: awaken_agent_contract::audit::kind::Kind
@@ -443,6 +454,10 @@ pub enum awaken_agent_contract::audit::run_event::RunEvent
 pub awaken_agent_contract::audit::run_event::RunEvent::Continuation
 pub awaken_agent_contract::audit::run_event::RunEvent::Continuation::detail: serde_json::value::Value
 pub awaken_agent_contract::audit::run_event::RunEvent::ModelRequestCompleted(awaken_agent_contract::audit::model_request::ModelRequestObservation)
+pub awaken_agent_contract::audit::run_event::RunEvent::PermissionConfirmed
+pub awaken_agent_contract::audit::run_event::RunEvent::PermissionConfirmed::call_id: alloc::string::String
+pub awaken_agent_contract::audit::run_event::RunEvent::PermissionConfirmed::result: awaken_agent_contract::audit::permission::PermissionConfirmation
+pub awaken_agent_contract::audit::run_event::RunEvent::PermissionConfirmed::tool_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::call_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::decision: alloc::string::String

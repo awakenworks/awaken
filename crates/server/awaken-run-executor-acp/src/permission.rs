@@ -64,8 +64,11 @@ impl PermissionAudit {
                     .audit_decision()
                     .as_str()
                     .to_string(),
-                policy: ruling.basis.map(|basis| basis.policy),
-                reason_code: ruling.basis.and_then(|basis| basis.reason_code),
+                policy: ruling.basis.as_ref().map(|basis| basis.policy),
+                reason_code: ruling
+                    .basis
+                    .as_ref()
+                    .and_then(|basis| basis.reason_code.clone()),
             }
             .into();
         self.0

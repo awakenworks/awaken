@@ -32,6 +32,11 @@ pub enum Kind {
     /// A protected tool call passed the permission gate; the payload records the
     /// decision (allow/deny/ask) for audit (ADR-0030).
     PermissionDecided,
+    /// A person answered a call the gate had routed to them; the payload
+    /// records their `allow`/`deny`. A distinct fact from the gate's decision:
+    /// the decision says what the authored policy concluded, the confirmation
+    /// records how the wait it opened was answered (ADR-0030 D5).
+    PermissionConfirmed,
     /// One durable ingress operation consumed its exact committed resume
     /// authority. The operation id is the existing PendingInput message id;
     /// this receipt distinguishes exact replay after the active ticket is gone.

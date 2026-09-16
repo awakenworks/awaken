@@ -314,8 +314,14 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
             .any(|m| m.role == Role::Tool && m.text_content().contains("blocked"))
     );
     assert!(commit.committed().events.iter().any(|event| {
-        event.kind == EventKind::PermissionDecided && event.payload["decision"] == "denied"
+        event.kind == EventKind::PermissionConfirmed && event.payload["result"] == "deny"
     }));
+    assert!(
+        !commit.committed().events.iter().any(|event| {
+            event.kind == EventKind::PermissionDecided && event.payload["decision"] == "denied"
+        }),
+        "a person's refusal is a confirmation, never a second gate decision"
+    );
 }
 
 #[tokio::test]

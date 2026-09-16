@@ -75,8 +75,11 @@ pub(super) fn permission_audit(call: &ToolCall, decision: &GateDecision) -> Even
         tool_id: call.tool_id.clone(),
         call_id: call.call_id.clone(),
         decision: decision.outcome.decision_label().to_string(),
-        policy: decision.basis.map(|basis| basis.policy),
-        reason_code: decision.basis.and_then(|basis| basis.reason_code),
+        policy: decision.basis.as_ref().map(|basis| basis.policy),
+        reason_code: decision
+            .basis
+            .as_ref()
+            .and_then(|basis| basis.reason_code.clone()),
     }
     .into()
 }

@@ -61,12 +61,14 @@ Keeping the enum minimal avoids redundant authorization paths.
 
 Each gate decision stages a `PermissionDecided` event (tool id, call id, decision,
 and — when an authored policy decided — the closed `policy` it came from:
-`always_allow` | `always_ask` | `auto` | `rule`, plus for `auto` the closed
-`reason_code`: `judged_high_risk` on a refusal, `indeterminate` on an ask, none on
+`always_allow` | `always_ask` | `auto` | `rule`, plus for `auto` the
+`reason_code`: `high_risk` on a refusal, `indeterminate` on an ask, none on
 an allow) into the attempt's checkpoint, committed through the one finish boundary
-with the run's other facts (G1). `policy`/`reason_code` are additive: a row a
-narrowing, a plugin gate or a person decided carries neither, and rows written
-before the vocabulary existed still decode. Managed projects them as the SDK's
+with the run's other facts (G1). `reason_code` is an open registry, as the SDK
+declares it: a reader keeps a code it has no name for rather than failing or
+dropping it. `policy`/`reason_code` are additive: a row a narrowing or a plugin
+gate decided carries neither, and rows written before the vocabulary existed
+still decode. Managed projects them as the SDK's
 per-call `evaluation` beside the flat `evaluated_permission`. Authorization is therefore explainable from committed
 truth, not a durable write outside the commit path. No gate means no protected
 call and no audit.
@@ -87,10 +89,12 @@ second repository. A permission ticket accepts only
 `ResumeResult::Permission(PermissionDecision)`; free-form input or a tool result
 cannot approve a tool. Before an approved tool is entered, one commit atomically
 clears the ticket, moves the Run to `Running`, moves the call to
-`Executing { attempt }`, and records `PermissionDecided=approved`.
+`Executing { attempt }`, and records `PermissionConfirmed { result: allow }`.
 Failure or fencing of that commit prevents executor entry. Denial completes the
-call with a blocked result and records `PermissionDecided=denied`, without entering
-the executor.
+call with a blocked result and records `PermissionConfirmed { result: deny }`,
+without entering the executor. The person's answer is its own fact, not a second
+`PermissionDecided`: the decision states what the gate concluded on which basis
+(D4), and the confirmation states how the wait that decision opened was answered.
 
 This is intentionally Run-scoped state stored in the thread commit log, not
 Thread-scoped domain state: the embedded `run_id` prevents an older Run's active

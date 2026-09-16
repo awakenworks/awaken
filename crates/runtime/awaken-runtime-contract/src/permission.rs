@@ -18,7 +18,7 @@ pub use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionR
 /// The authored policy a permission verdict came from, with the grounds of an
 /// `auto` judgement (ADR-0030 D4). This is what the audit fact records beside
 /// the decision and what the Managed `evaluation` object is projected from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionBasis {
     pub policy: PermissionPolicy,
     /// Present only for an `auto` judgement that did not allow.
@@ -497,7 +497,7 @@ mod tests {
                 correlation_id: "perm-1".into(),
             },
             basis: Some(PermissionBasis::auto(Some(
-                PermissionReasonCode::Indeterminate,
+                PermissionReasonCode::INDETERMINATE,
             ))),
         }
         .into_gate_decision();
@@ -512,7 +512,7 @@ mod tests {
             b2.basis,
             Some(PermissionBasis {
                 policy: PermissionPolicy::Auto,
-                reason_code: Some(PermissionReasonCode::Indeterminate),
+                reason_code: Some(PermissionReasonCode::INDETERMINATE),
             }),
             "B2"
         );
