@@ -56,6 +56,7 @@ impl<T> Page<T> {
 pub const DEFAULT_ID_PAGE_SIZE: usize = 20;
 pub const MAX_ID_PAGE_SIZE: usize = 1_000;
 
+/// SDK: none — adapter error for id-cursor pagination; not a wire body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum IdPageError {
     #[error("before_id and after_id cannot be used together")]

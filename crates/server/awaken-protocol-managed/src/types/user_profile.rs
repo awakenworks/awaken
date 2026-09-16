@@ -18,6 +18,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// How the entity behind a profile relates to the API-key owner.
+///
+/// SDK: none — the `user-profiles-2026-03-24` `relationship` field, which SDK 0.125.0 no longer declares; served only under that beta header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -28,6 +30,7 @@ pub enum Relationship {
     Internal,
 }
 
+/// SDK: inline — `BetaUserProfile.access_type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessType {
@@ -147,12 +150,14 @@ pub enum UserProfile {
     Current(CurrentUserProfile),
 }
 
+/// `BetaUserProfileTrustGrant`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TrustGrant {
     pub status: TrustGrantStatus,
 }
 
+/// SDK: inline — `BetaUserProfileTrustGrant.status`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustGrantStatus {

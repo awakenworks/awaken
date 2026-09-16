@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+/// SDK: inline — `BetaManagedAgentsMemoryVersion.type`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MemoryVersionObjectType {
@@ -12,6 +13,8 @@ pub enum MemoryVersionObjectType {
 /// Authenticated request attribution stamped by the owning IAM edge. This is
 /// request context, not a second identity model; its value is the Resources
 /// domain's canonical actor type.
+///
+/// SDK: none — the actor the IAM edge attaches to a request; not serialized.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedMemoryActor(pub awaken_resource_contract::MemoryActor);
 
