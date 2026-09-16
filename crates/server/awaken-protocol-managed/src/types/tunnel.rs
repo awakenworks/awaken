@@ -59,6 +59,7 @@ pub struct CertificateCreateParams {
     pub ca_certificate_pem: String,
 }
 
+/// `TunnelListParams`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct TunnelListQuery {
     #[serde(flatten)]

@@ -7,6 +7,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// It is deliberately neither serializable nor printable. The state adapter
 /// consumes it into the canonical credential Vault before a Session snapshot is
 /// persisted, and the wrapped value is zeroized when this request DTO is dropped.
+///
+/// SDK: inline — `BetaManagedAgentsGitHubRepositoryResourceParams.authorization_token` (also `ResourceUpdateParams.authorization_token`).
 #[derive(Clone)]
 pub struct RepositoryAuthorizationToken(awaken_agent_contract::RedactedString);
 
@@ -40,6 +42,7 @@ impl std::fmt::Debug for RepositoryAuthorizationToken {
     }
 }
 
+/// SDK: inline — `BetaManagedAgentsMemoryStoreResourceParam.access`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceAccess {
@@ -49,6 +52,8 @@ pub enum ResourceAccess {
 
 /// The official Managed Agents resource union. Repository authorization is a
 /// write-only ingress field and unknown fields fail closed.
+///
+/// SDK: inline — an element of `SessionCreateParams.resources` (GitHub repository, file or memory store resource params).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResourceInput {
@@ -115,6 +120,7 @@ impl ResourceInput {
     }
 }
 
+/// SDK: inline — `BetaManagedAgentsGitHubRepositoryResourceParams.checkout`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RepositoryCheckout {
@@ -180,6 +186,7 @@ pub struct ResourceAddParams {
     pub mount_path: Option<String>,
 }
 
+/// SDK: inline — `ResourceAddParams.type`.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileResourceKind {
@@ -212,12 +219,15 @@ pub struct ResourceUpdateParams {
 
 /// Complete desired Resource set for one Session. Absence from this list is a
 /// removal; callers never need to sequence remote delete/add operations.
+///
+/// SDK: none — Awaken Resource Manifest extension (full-set replace with If-Match); the Managed API has no such endpoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceManifestReplaceParams {
     pub resources: Vec<ResourceInput>,
 }
 
+/// SDK: none — phase of the Awaken Resource Manifest extension.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceManifestPhase {
@@ -225,6 +235,7 @@ pub enum ResourceManifestPhase {
     Applying,
 }
 
+/// SDK: none — response of the Awaken Resource Manifest extension.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SessionResourceManifest {
     pub desired_revision: u64,
@@ -233,6 +244,7 @@ pub struct SessionResourceManifest {
     pub resources: Vec<SessionResource>,
 }
 
+/// `BetaManagedAgentsDeleteSessionResource`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DeletedSessionResource {
     pub id: String,

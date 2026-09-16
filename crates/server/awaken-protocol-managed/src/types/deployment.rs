@@ -189,6 +189,8 @@ pub enum PausedReason {
 /// Error kinds that stop future scheduled fires until an operator unpauses the
 /// deployment. This is the exact SDK paused-reason union; transient rate limits
 /// and request validation failures deliberately do not appear here.
+///
+/// `BetaManagedAgentsDeploymentPausedReasonError`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PausedReasonError {

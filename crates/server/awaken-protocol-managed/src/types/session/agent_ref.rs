@@ -7,6 +7,8 @@ use super::ModelConfig;
 use crate::types::agent::{AgentMcpServer, AgentSkill};
 
 /// The resolved `model` axis of an `agent_with_overrides` session reference.
+///
+/// SDK: none — the model override after resolution (absent or set); not serialized.
 #[derive(Debug, Clone)]
 pub enum ModelOverride {
     Absent,
@@ -15,6 +17,8 @@ pub enum ModelOverride {
 
 /// The two exact object forms accepted by the Managed SDK. The discriminator is
 /// mandatory and closed; plain references cannot accidentally carry overrides.
+///
+/// SDK: inline — the object arms of `SessionCreateParams.agent` (`BetaManagedAgentsAgentParams` | `BetaManagedAgentsAgentWithOverridesParams`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentRefObject {

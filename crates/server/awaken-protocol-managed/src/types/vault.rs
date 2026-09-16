@@ -61,6 +61,8 @@ pub struct ListQuery {
 
 /// The outbound-host substitution scope of an env-var credential
 /// (`BetaManagedAgentsCredentialNetworking*`), tagged by `type`.
+///
+/// `BetaManagedAgentsCredentialNetworkingParams`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CredentialNetworking {
@@ -79,6 +81,8 @@ pub struct CredentialInjectionLocation {
 /// Create/update spelling of `injection_location`. Presence is tracked on each
 /// field so create can default an explicitly supplied object's missing member
 /// to `false`, while update can merge each omitted member independently.
+///
+/// `BetaManagedAgentsInjectionLocationParams`.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialInjectionLocationParams {
@@ -94,6 +98,8 @@ pub struct CredentialInjectionLocationParams {
 /// into the credential aggregate's named client-secret slot, never echoed —
 /// every response projection stays tag-only
 /// ([`TokenEndpointAuthResponse`]).
+///
+/// SDK: inline — `BetaManagedAgentsMCPOAuthRefreshParams.token_endpoint_auth`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TokenEndpointAuthParams {
@@ -105,6 +111,8 @@ pub enum TokenEndpointAuthParams {
 /// The secret-free token-endpoint auth projection
 /// (`BetaManagedAgentsTokenEndpointAuth{None,Basic,Post}Response`): the scheme
 /// tag only — the SDK response types carry no `client_secret`.
+///
+/// SDK: inline — `BetaManagedAgentsMCPOAuthRefreshResponse.token_endpoint_auth`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TokenEndpointAuthResponse {
@@ -149,6 +157,8 @@ pub struct McpOauthRefreshResponse {
 /// shape. None of them ever carries secret material: env-var projects the
 /// variable name + networking scope, `static_bearer` only the server URL, and
 /// `mcp_oauth` the server URL + secret-free refresh configuration.
+///
+/// SDK: inline — `BetaManagedAgentsCredential.auth`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CredentialAuth {
@@ -233,6 +243,8 @@ pub enum CredentialCreateParams {
 
 /// Accept both the historical flat body and the official SDK's `{ auth: ... }`
 /// body, then normalize immediately into the one creation model above.
+///
+/// `CredentialCreateParams` body; also accepts the older flat Awaken body.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum CredentialCreateWire {
@@ -346,6 +358,8 @@ pub struct CredentialUpdateParams {
 /// The typed `auth` patch of a credential update, one variant per SDK
 /// `*UpdateParams`. Every field is optional; secret fields are write-only and
 /// re-sealed under the credential's existing `SecretRef` when present.
+///
+/// SDK: inline — `CredentialUpdateParams.auth`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CredentialUpdateAuth {
@@ -395,6 +409,8 @@ pub struct McpOauthRefreshUpdate {
 /// OPTIONAL — omitting it switches/keeps the scheme against the *already-sealed*
 /// client secret, while supplying it re-seals. `None` is accepted too (lenient;
 /// the SDK's update type does not send it) and drops the confidential binding.
+///
+/// SDK: inline — `BetaManagedAgentsMCPOAuthRefreshUpdateParams.token_endpoint_auth` (also accepts `none`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TokenEndpointAuthUpdate {

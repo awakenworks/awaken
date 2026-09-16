@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+/// SDK: inline — `BetaFileMetadata.type` (also `FileMetadata.type`).
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FileObjectType {
@@ -10,6 +11,7 @@ pub enum FileObjectType {
     File,
 }
 
+/// SDK: inline — `BetaDeletedFile.type` (also `DeletedFile.type`).
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DeletedFileObjectType {
@@ -17,6 +19,7 @@ pub enum DeletedFileObjectType {
     FileDeleted,
 }
 
+/// SDK: inline — `BetaFileScope.type`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FileScopeObjectType {
@@ -94,6 +97,8 @@ impl FileListParams {
 /// adopts the GA cursor and `ids[]` pagination vocabulary. A distinct DTO keeps
 /// both it and top-level GA fail-closed without selecting behavior by SDK
 /// version.
+///
+/// `FileListParams` from `client.beta.files.list` (`page`, `limit`, `ids[]`, `scope_id`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BetaFileCursorListParams {
     pub page: Option<String>,
@@ -115,6 +120,8 @@ impl BetaFileCursorListParams {
 }
 
 /// `BetaFileListParams` from `client.beta.files.list`.
+///
+/// SDK: none — the pre-cursor beta Files list query (`before_id`/`after_id`); SDK 0.125.0 no longer declares it, so it is kept only for older clients.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -164,6 +171,8 @@ pub struct BetaFileMetadata {
 /// Post-GA Beta Files response. It deliberately combines the Beta-only scope
 /// with the GA expiry field exactly as the official SDK does; neither the
 /// legacy capability projection nor the top-level GA projection is widened.
+///
+/// `BetaFileMetadata`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BetaFileCursorMetadata {
@@ -202,6 +211,8 @@ pub struct DeletedFile {
 
 /// Parsed GA multipart expiry input. Multipart itself is decoded by axum, but
 /// this strong value preserves the SDK's exact numeric range before mutation.
+///
+/// SDK: inline — `FileUploadParams.expires_in_seconds`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileExpirySeconds(u64);
 

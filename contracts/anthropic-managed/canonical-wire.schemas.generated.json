@@ -50,7 +50,7 @@
     "BetaFileListParams": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "description": "`BetaFileListParams` from `client.beta.files.list`.",
+      "description": "`BetaFileListParams` from `client.beta.files.list`.\n\nSDK: none — the pre-cursor beta Files list query (`before_id`/`after_id`); SDK 0.125.0 no longer declares it, so it is kept only for older clients.",
       "properties": {
         "after_id": {
           "default": null,
@@ -106,12 +106,14 @@
           "type": "object"
         },
         "FileObjectType": {
+          "description": "SDK: inline — `BetaFileMetadata.type` (also `FileMetadata.type`).",
           "enum": [
             "file"
           ],
           "type": "string"
         },
         "FileScopeObjectType": {
+          "description": "SDK: inline — `BetaFileScope.type`.",
           "enum": [
             "session"
           ],
@@ -312,6 +314,7 @@
           ]
         },
         "MemoryVersionObjectType": {
+          "description": "SDK: inline — `BetaManagedAgentsMemoryVersion.type`.",
           "enum": [
             "memory_version"
           ],
@@ -415,7 +418,7 @@
     "BetaSelfHostedWork": {
       "$defs": {
         "WorkData": {
-          "description": "A work item's payload — `BetaHealthCheckWorkData | BetaSessionWorkData`. A fresh\nenvironment is seeded with a `healthcheck`; a session assigned to a self-hosted\nenvironment is enqueued as `session` work (its `id` is the session id).",
+          "description": "A work item's payload — `BetaHealthCheckWorkData | BetaSessionWorkData`. A fresh\nenvironment is seeded with a `healthcheck`; a session assigned to a self-hosted\nenvironment is enqueued as `session` work (its `id` is the session id).\n\nSDK: inline — `BetaSelfHostedWork.data` (`BetaSessionWorkData` | `BetaHealthCheckWorkData`).",
           "oneOf": [
             {
               "properties": {
@@ -452,6 +455,7 @@
           ]
         },
         "WorkObjectType": {
+          "description": "SDK: inline — `BetaSelfHostedWork.type`.",
           "enum": [
             "work"
           ],
@@ -473,7 +477,7 @@
       "description": "`Work`.",
       "properties": {
         "acknowledged_at": {
-          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",
+          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
           "type": [
             "string",
             "null"
@@ -492,7 +496,7 @@
           "type": "string"
         },
         "latest_heartbeat_at": {
-          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",
+          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
           "type": [
             "string",
             "null"
@@ -505,14 +509,14 @@
           "type": "object"
         },
         "secret": {
-          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",
+          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
           "type": [
             "string",
             "null"
           ]
         },
         "started_at": {
-          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",
+          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
           "type": [
             "string",
             "null"
@@ -522,14 +526,14 @@
           "$ref": "#/$defs/WorkState"
         },
         "stop_requested_at": {
-          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",
+          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
           "type": [
             "string",
             "null"
           ]
         },
         "stopped_at": {
-          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",
+          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
           "type": [
             "string",
             "null"
@@ -560,6 +564,7 @@
     "BetaSelfHostedWorkHeartbeatResponse": {
       "$defs": {
         "WorkHeartbeatObjectType": {
+          "description": "SDK: inline — `BetaSelfHostedWorkHeartbeatResponse.type`.",
           "enum": [
             "work_heartbeat"
           ],
@@ -611,6 +616,7 @@
     "BetaSelfHostedWorkQueueStats": {
       "$defs": {
         "WorkQueueStatsObjectType": {
+          "description": "SDK: inline — `BetaSelfHostedWorkQueueStats.type`.",
           "enum": [
             "work_queue_stats"
           ],
@@ -626,7 +632,7 @@
           "type": "integer"
         },
         "oldest_queued_at": {
-          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",
+          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
           "type": [
             "string",
             "null"
@@ -641,7 +647,7 @@
           "$ref": "#/$defs/WorkQueueStatsObjectType"
         },
         "workers_polling": {
-          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.",
+          "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
           "format": "int64",
           "type": [
             "integer",
@@ -696,6 +702,7 @@
     "BetaSkill": {
       "$defs": {
         "SkillObjectType": {
+          "description": "SDK: inline — `Skill.type` (also `BetaSkill.type`).",
           "enum": [
             "skill"
           ],
@@ -779,6 +786,7 @@
     "BetaSkillVersion": {
       "$defs": {
         "SkillVersionObjectType": {
+          "description": "SDK: inline — `SkillVersion.type` (also `BetaSkillVersion.type`).",
           "enum": [
             "skill_version"
           ],
@@ -876,6 +884,7 @@
     "DeletedFile": {
       "$defs": {
         "DeletedFileObjectType": {
+          "description": "SDK: inline — `BetaDeletedFile.type` (also `DeletedFile.type`).",
           "enum": [
             "file_deleted"
           ],
@@ -902,6 +911,7 @@
     "DeletedSkill": {
       "$defs": {
         "DeletedSkillObjectType": {
+          "description": "SDK: inline — `DeletedSkill.type`.",
           "enum": [
             "skill_deleted"
           ],
@@ -928,6 +938,7 @@
     "DeletedSkillVersion": {
       "$defs": {
         "DeletedSkillVersionObjectType": {
+          "description": "SDK: inline — `DeletedSkillVersion.type`.",
           "enum": [
             "skill_version_deleted"
           ],
@@ -990,6 +1001,7 @@
     "FileMetadata": {
       "$defs": {
         "FileObjectType": {
+          "description": "SDK: inline — `BetaFileMetadata.type` (also `FileMetadata.type`).",
           "enum": [
             "file"
           ],
@@ -1046,6 +1058,7 @@
     "Skill": {
       "$defs": {
         "SkillObjectType": {
+          "description": "SDK: inline — `Skill.type` (also `BetaSkill.type`).",
           "enum": [
             "skill"
           ],
@@ -1178,6 +1191,7 @@
     "SkillVersion": {
       "$defs": {
         "SkillVersionObjectType": {
+          "description": "SDK: inline — `SkillVersion.type` (also `BetaSkillVersion.type`).",
           "enum": [
             "skill_version"
           ],

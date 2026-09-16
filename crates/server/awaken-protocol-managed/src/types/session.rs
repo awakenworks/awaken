@@ -28,12 +28,14 @@ pub use model_config::{
 use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 
+/// SDK: inline — `BetaManagedAgentsBudgetLimit.max_list_cost`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonetaryAmount {
     pub amount: String,
     pub currency: Currency,
 }
 
+/// SDK: inline — the currency of `BetaManagedAgentsBudgetLimit.max_list_cost`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Currency {
     USD,
@@ -235,6 +237,7 @@ pub struct SessionMultiagentCoordinator {
     pub agents: Vec<SessionMultiagentRosterEntry>,
 }
 
+/// SDK: inline — `BetaManagedAgentsSessionMultiagentCoordinator.agents`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum SessionMultiagentRosterEntry {
@@ -299,6 +302,8 @@ impl From<&SessionAgent> for SessionThreadAgent {
 /// complete frozen execution snapshot; advisor consultations use only the
 /// two-field advisor identity and must never be padded with fabricated Agent
 /// fields.
+///
+/// SDK: inline — `BetaManagedAgentsSessionThread.agent`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum SessionThreadAgentValue {
@@ -532,6 +537,7 @@ pub struct DeletedSession {
     pub kind: &'static str,
 }
 
+/// `BetaManagedAgentsOutcomeEvaluationResource`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct OutcomeEvaluation {
     pub completed_at: Option<String>,
@@ -545,6 +551,8 @@ pub struct OutcomeEvaluation {
 }
 
 /// A client's `user.tool_confirmation` decision.
+///
+/// SDK: inline — `BetaManagedAgentsUserToolConfirmationEventParams.result`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmResult {
@@ -553,6 +561,8 @@ pub enum ConfirmResult {
 }
 
 /// The SDK's closed permission decision attached to Agent tool-use events.
+///
+/// SDK: inline — `BetaManagedAgentsAgentToolUseEvent.evaluated_permission` (also on the MCP tool-use event).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluatedPermission {
@@ -561,6 +571,7 @@ pub enum EvaluatedPermission {
     Deny,
 }
 
+/// SDK: inline — `BetaManagedAgentsUserDefineOutcomeEventParams.rubric`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OutcomeRubric {
@@ -571,6 +582,8 @@ pub enum OutcomeRubric {
 /// Inbound events a client posts to `POST /v1/sessions/{id}/events`. M1 acts on
 /// `user.message`; the rest deserialize (so the batch is accepted) and are
 /// wired in later milestones.
+///
+/// `BetaManagedAgentsEventParams`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum InboundEvent {
@@ -691,6 +704,8 @@ impl SessionCreateParams {
 }
 
 /// `POST .../events` request body.
+///
+/// `EventSendParams` body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendEventsRequest {
@@ -698,6 +713,8 @@ pub struct SendEventsRequest {
 }
 
 /// `POST .../events` response.
+///
+/// `BetaManagedAgentsSendSessionEvents`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SendEventsResponse {
     /// The exact accepted inbound Events. This intentionally reuses the same
@@ -707,6 +724,8 @@ pub struct SendEventsResponse {
 }
 
 /// Why a session went idle — a tagged object, never a string.
+///
+/// SDK: inline — `BetaManagedAgentsSessionStatusIdleEvent.stop_reason`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StopReason {
@@ -723,6 +742,7 @@ pub enum StopReason {
     clippy::large_enum_variant,
     reason = "the enum mirrors the fixed Managed Agents event wire; boxing one variant would add an internal ownership shape without changing the serialized protocol"
 )]
+/// SDK: inline — the `BetaManagedAgentsSessionEvent` variant payloads without `id`/`processed_at`, which `Event` flattens around them.
 pub enum OutboundKind {
     #[serde(rename = "user.message")]
     UserMessage { content: Vec<ContentBlock> },
@@ -1023,6 +1043,8 @@ impl OutboundKind {
 
 /// A committed public event: `id` + `type` + kind fields + `processed_at`. This
 /// is what a receipt references, a list returns, and the SSE stream delivers.
+///
+/// `BetaManagedAgentsSessionEvent`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Event {
     pub id: String,
@@ -1057,6 +1079,8 @@ impl Event {
 /// frames carry incremental `content_delta` text. The delta type is
 /// `content_delta` (NOT the Messages-API `content_block_delta`), so the SDK's
 /// live-preview accumulator — not its Messages-API accumulator — reconciles it.
+///
+/// SDK: inline — the preview arms of `BetaManagedAgentsStreamSessionEvents` (`BetaManagedAgentsStartEvent` | `BetaManagedAgentsDeltaEvent`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum PreviewFrame {
@@ -1081,6 +1105,8 @@ impl PreviewFrame {
 /// The `event` on an `event_start`: the `type` + `id` of the buffered event this
 /// preview announces. Its `id` equals the buffered event's `id`, so a client
 /// reconciles the accumulated preview against the committed event by id.
+///
+/// `BetaManagedAgentsStartEventPreview`.
 #[derive(Debug, Clone, Serialize)]
 pub struct PreviewTarget {
     #[serde(rename = "type")]
@@ -1090,6 +1116,8 @@ pub struct PreviewTarget {
 
 /// The `delta` on an `event_delta` — always `content_delta` with an `index` and a
 /// text `content` block: the incremental slice of the previewed message.
+///
+/// `BetaManagedAgentsDeltaContent`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum PreviewDelta {
@@ -1102,6 +1130,8 @@ pub enum PreviewDelta {
 
 /// The incremental content on a `content_delta`. Text only — awaken's live stream
 /// carries text deltas; tool use, tool results, and thinking are never previewed.
+///
+/// `BetaManagedAgentsTextBlock`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum PreviewContent {
@@ -1118,6 +1148,7 @@ pub enum PreviewContent {
     clippy::large_enum_variant,
     reason = "committed and preview frames intentionally share one SSE envelope; the size difference is bounded and boxing would only add allocation"
 )]
+/// `BetaManagedAgentsStreamSessionEvents`.
 pub enum StreamFrame {
     Committed(Event),
     Preview(PreviewFrame),
@@ -1142,6 +1173,8 @@ impl StreamFrame {
 }
 
 /// `GET .../events` response.
+///
+/// `BetaManagedAgentsSessionEventsPageCursor`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ListEventsResponse {
     pub data: Vec<Event>,

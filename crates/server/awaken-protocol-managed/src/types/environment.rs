@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// SDK: inline — `BetaLimitedNetworkParams.allowed_hosts` (one validated element).
 #[derive(Debug, Clone, Serialize)]
 #[serde(transparent)]
 pub struct AllowedHost(String);
@@ -48,6 +49,7 @@ impl<'de> Deserialize<'de> for AllowedHost {
     }
 }
 
+/// SDK: inline — one element of the `BetaPackagesParams.apt`/`cargo`/`gem`/`go`/`npm`/`pip` lists.
 #[derive(Debug, Clone, Serialize)]
 #[serde(transparent)]
 pub struct PackageSpec(String);
@@ -77,6 +79,7 @@ impl<'de> Deserialize<'de> for PackageSpec {
     }
 }
 
+/// SDK: inline — `EnvironmentCreateParams.config` (`BetaCloudConfigParams` | `BetaSelfHostedConfigParams`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentConfigParams {
@@ -95,6 +98,7 @@ impl Default for EnvironmentConfigParams {
     }
 }
 
+/// SDK: inline — `BetaCloudConfigParams.networking` (`BetaUnrestrictedNetwork` | `BetaLimitedNetworkParams`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudNetworkingParams {
@@ -133,6 +137,7 @@ pub struct PackagesParams {
     pub kind: Option<PackagesKind>,
 }
 
+/// SDK: inline — `BetaPackagesParams.type`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackagesKind {
@@ -175,6 +180,7 @@ pub struct EnvironmentUpdateParams {
     pub scope: Option<EnvironmentScope>,
 }
 
+/// SDK: inline — `EnvironmentUpdateParams.config`; each field tracks absent vs null.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentConfigUpdateParams {
@@ -187,6 +193,7 @@ pub enum EnvironmentConfigUpdateParams {
     SelfHosted {},
 }
 
+/// SDK: inline — `BetaCloudConfigParams.networking` in `EnvironmentUpdateParams.config`; tracks absent vs null.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudNetworkingUpdateParams {
@@ -203,6 +210,7 @@ pub enum CloudNetworkingUpdateParams {
     },
 }
 
+/// `BetaPackagesParams` as a partial update (null clears, omission keeps).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackagesUpdateParams {
@@ -222,6 +230,7 @@ pub struct PackagesUpdateParams {
     pub kind: Option<PackagesKind>,
 }
 
+/// SDK: inline — `EnvironmentCreateParams.scope`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentScope {
@@ -295,6 +304,8 @@ pub struct DeletedEnvironment {
 /// A work item's payload — `BetaHealthCheckWorkData | BetaSessionWorkData`. A fresh
 /// environment is seeded with a `healthcheck`; a session assigned to a self-hosted
 /// environment is enqueued as `session` work (its `id` is the session id).
+///
+/// SDK: inline — `BetaSelfHostedWork.data` (`BetaSessionWorkData` | `BetaHealthCheckWorkData`).
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type")]
@@ -319,6 +330,7 @@ pub enum WorkState {
     Stopped,
 }
 
+/// SDK: inline — `BetaSelfHostedWork.type`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum WorkObjectType {
@@ -326,6 +338,7 @@ pub enum WorkObjectType {
     Work,
 }
 
+/// SDK: inline — `BetaSelfHostedWorkQueueStats.type`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum WorkQueueStatsObjectType {
@@ -333,6 +346,7 @@ pub enum WorkQueueStatsObjectType {
     WorkQueueStats,
 }
 
+/// SDK: inline — `BetaSelfHostedWorkHeartbeatResponse.type`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum WorkHeartbeatObjectType {
@@ -343,6 +357,8 @@ pub enum WorkHeartbeatObjectType {
 /// A response field that is required on the wire while its value may be JSON
 /// `null`. Keeping this distinct from `Option<T>` prevents generated schemas
 /// from confusing Anthropic's `field: T | null` with `field?: T | null`.
+///
+/// SDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(inline))]
