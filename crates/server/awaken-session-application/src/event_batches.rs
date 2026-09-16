@@ -1246,11 +1246,13 @@ impl SessionApplication {
             )
             .await?;
         }
-        Ok(Some(if state == RunState::Running {
-            EventBatchProgress::Pending
-        } else {
-            EventBatchProgress::Advanced
-        }))
+        // Running and terminal Runtime observations both wait here. Running
+        // still needs its eventual terminal boundary; terminal truth still
+        // needs the Dispatch-Applied callback that alone joins the commit
+        // anchor, activity removal and processed marker. Returning Advanced
+        // for that pre-callback window would immediately select the same
+        // unprocessed command again and hot-loop the bounded supervisor slice.
+        Ok(Some(EventBatchProgress::Pending))
     }
 
     async fn observe_session_event(

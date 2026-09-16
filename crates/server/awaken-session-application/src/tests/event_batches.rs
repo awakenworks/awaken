@@ -32,6 +32,7 @@ struct EventBatchRuntime {
     fail_activation_once: AtomicBool,
     activated: Mutex<BTreeMap<String, u64>>,
     states: Mutex<HashMap<String, RunState>>,
+    run_state_reads: AtomicUsize,
     latest_run: Mutex<Option<RunId>>,
     committed: Mutex<Vec<Message>>,
     recovery_projection_override: Mutex<Option<(Vec<u64>, u64)>>,
@@ -245,6 +246,7 @@ impl SessionRuntime for EventBatchRuntime {
         _session_id: &str,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
+        self.run_state_reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.states.lock().unwrap().get(&run_id.0).cloned())
     }
 
@@ -811,8 +813,14 @@ fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSessi
 
 #[tokio::test]
 async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo() {
-    // A running command can expose durable progress only after its exact input
-    // exists. Anchoring alone must neither complete it nor activate queued work.
+    // Causes: C1 the current User input is absent/present; C2 model admission
+    // wakes the root; C3 the Run is Running/terminal; C4 Dispatch-Applied has
+    // not settled the command. Effects: E1 only present input gains its anchor;
+    // E2 neither state publishes processed or activates queued work; E3 the
+    // terminal pre-Dispatch scan observes state once and remains Pending.
+    // Decision rules: M1 absent+Running=>E2; M2 present+Running=>E1+E2;
+    // M3 present+terminal+C4=>E2+E3. Dispatch settlement is the adjacent
+    // `finalize_applied_user_dispatch` path and remains the sole success row.
     for has_input in [false, true] {
         let session_id = if has_input {
             "running-anchored"
@@ -943,9 +951,15 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
                 "subsequent requests must not wake recovery for an already anchored input"
             );
             runtime.end(&run_id);
+            let reads_before_terminal_drive = runtime.run_state_reads.load(Ordering::SeqCst);
             app.drive_session_event_batches(session_id, None)
                 .await
                 .unwrap();
+            assert_eq!(
+                runtime.run_state_reads.load(Ordering::SeqCst) - reads_before_terminal_drive,
+                1,
+                "terminal truth before Dispatch settlement remains Pending without reselecting the same command"
+            );
             let ended = repository.get(session_id).await.unwrap();
             assert!(
                 !ended.event_batches[0].events[0].processed,
