@@ -12,6 +12,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci/_provider_environment.sh
 awaken_unset_ambient_api_keys
+awaken_append_repo_tools
 
 groups=(static docs rust api contracts formal reliability postgres kubernetes k3d frontend e2e sandbox)
 requested_group=all
@@ -85,6 +86,7 @@ run static "hook-glob generator self-test" python3 scripts/ci/generate_hooks.py 
 run static "hook-glob generation" python3 scripts/ci/generate_hooks.py --check
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
+run static "formal-product-ledger" python3 scripts/ci/check_feature_coverage.py --require-complete
 run static "managed-wire-naming self-test" python3 scripts/ci/check_managed_wire_naming.py --self-test
 run static "managed-wire-naming" python3 scripts/ci/check_managed_wire_naming.py
 run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --selftest
@@ -94,6 +96,10 @@ run static "degrading-defaults" python3 scripts/ci/check_degrading_defaults.py
 run static "coverage checker tests" python3 scripts/ci/test_changed_e2e_line_coverage.py
 run static "LCOV export tests" python3 scripts/ci/test_export_homogeneous_lcov.py
 run static "provider-environment self-test" scripts/ci/_provider_environment.sh --self-test
+# The runner below imports e2e/node_modules. Report an uninstalled root as an
+# uninstalled root: its absence otherwise surfaces as ERR_MODULE_NOT_FOUND,
+# which reads as a broken import in this repository.
+run static "node dependencies" python3 scripts/ci/check_node_dependencies.py
 run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "command deadline tests" python3 scripts/ci/test_deadline.py
 run static "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
@@ -116,6 +122,11 @@ run static "reliability evidence contract" python3 scripts/ci/check_reliability.
 run static "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
 run static "public API gate tests" python3 scripts/ci/test_public_api.py
 run static "Rust gate control-flow self-test" scripts/ci/check-rust.sh --self-test
+# The bootstrap owns the qualified Kani package. Its publication rules run
+# here as well as in the formal group, because a machine that cannot run the
+# formal group is exactly the one those rules exist to keep working.
+run static "Kani bootstrap publication rules" python3 scripts/ci/test_bootstrap_kani.py
+run static "prerequisite doctor self-test" scripts/ci/doctor.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
 run static "sandbox image provenance self-test" python3 scripts/release/awaken_sandbox_image_provenance.py self-test
 run static "sandbox image release checker self-test" python3 scripts/ci/check_sandbox_image_release.py --self-test
