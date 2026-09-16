@@ -620,8 +620,8 @@ async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
             repository.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
         );
-        let preferred = app
-            .append_session_event_batch_idempotent(
+        let (_preferred, drive_error) = app
+            .append_and_drive_session_event_batch_idempotent(
                 session_id,
                 vec![SessionEventInput::UserMessage {
                     content: vec![ContentBlock::text("preferred")],
@@ -632,10 +632,13 @@ async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
             )
             .await
             .expect("append preferred User batch");
-
-        app.drive_session_event_batches(session_id, Some(&preferred.batch_id))
-            .await
-            .expect("request-local preferred drive remains best effort");
+        assert!(drive_error.is_none(), "F1-F2 request-local drive");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            app.lifecycle_wakeup.notified(),
+        )
+        .await
+        .expect("F1-F2 full recovery remains notified after the local attempt");
         assert_eq!(
             runtime.reserved.lock().unwrap().len(),
             usize::from(!earlier_pending),
@@ -656,6 +659,53 @@ async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
             "F1-F2 activation is pending until committed Runtime settlement"
         );
     }
+}
+
+#[tokio::test]
+async fn preferred_user_drive_failure_retains_receipt_and_recovery_wake() {
+    // Causes: C1 the root CAS accepts one FIFO-head User command; C2 its
+    // request-local activation fails before an effect. Effects: E1 return the
+    // exact accepted batch and the retryable drive error; E2 retain the command
+    // unprocessed; E3 notify the sole lifecycle supervisor after the failed
+    // attempt. This is the failure row excluded from F1 above. Periodic recovery
+    // remains the crash-between-accept-and-drive fallback and owns no second
+    // receipt or execution path.
+    let session_id = "preferred-user-drive-failure";
+    let repository: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(repository.as_ref(), persisted(session_id, false, "idle")).await;
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.fail_activation_once.store(true, Ordering::SeqCst);
+    let app = application_with_runtime(
+        runtime,
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let (accepted, drive_error) = app
+        .append_and_drive_session_event_batch_idempotent(
+            session_id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("retry through recovery")],
+            }],
+            None,
+            None,
+            Some(("failure-key".into(), "failure-fingerprint".into())),
+        )
+        .await
+        .expect("E1 accepted receipt survives local drive failure");
+    assert!(drive_error.is_some(), "E1 exact drive failure is reported");
+    assert_eq!(accepted.events.len(), 1, "E1 exact receipt");
+    assert!(
+        !repository.get(session_id).await.unwrap().event_batches[0].events[0].processed,
+        "E2"
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        app.lifecycle_wakeup.notified(),
+    )
+    .await
+    .expect("E3");
 }
 
 async fn finalize_applied_user_dispatch(

@@ -372,10 +372,47 @@ impl SessionApplication {
                     traceparent,
                     idempotency,
                 },
+                true,
             )
             .await?;
         batch.require_accepted()?;
         Ok(batch)
+    }
+
+    /// Accept through the same root CAS, then perform the request-local drive
+    /// before notifying the full recovery sweep. This removes a duplicate race
+    /// between the synchronous driver and its own wake while retaining the
+    /// periodic recovery authority if this future is lost after acceptance.
+    pub async fn append_and_drive_session_event_batch_idempotent(
+        &self,
+        session_id: &str,
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+        idempotency: Option<(String, String)>,
+    ) -> Result<(SessionEventBatch, Option<RunError>), RunError> {
+        let batch = self
+            .resolve_session_event_batch(
+                session_id,
+                EventBatchAdmission::Accept {
+                    inputs,
+                    data_subject_id,
+                    traceparent,
+                    idempotency,
+                },
+                false,
+            )
+            .await?;
+        batch.require_accepted()?;
+        let drive_error = self
+            .drive_session_event_batches(session_id, Some(&batch.batch_id))
+            .await
+            .err();
+        // The full sweep remains the one retry owner. Waking after the local
+        // attempt preserves queued predecessors and retryable failures without
+        // racing this request's append/admission/activation root mutations.
+        self.wake_lifecycle_supervisor();
+        Ok((batch, drive_error))
     }
 
     /// Resolve response loss without replaying execution. If acceptance already
@@ -415,6 +452,7 @@ impl SessionApplication {
                     key: key.clone(),
                     request_fingerprint: request_fingerprint.clone(),
                 },
+                true,
             )
             .await;
         match result {
@@ -440,6 +478,7 @@ impl SessionApplication {
         &self,
         session_id: &str,
         admission: EventBatchAdmission,
+        wake_after_accept: bool,
     ) -> Result<SessionEventBatch, RunError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
@@ -557,7 +596,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(_) => {
-                    if !batch.admission_closed {
+                    if !batch.admission_closed && wake_after_accept {
                         self.wake_lifecycle_supervisor();
                     }
                     return Ok(batch);
