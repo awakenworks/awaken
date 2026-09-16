@@ -72,13 +72,19 @@ impl WorkerBootstrap {
                 if authorizer.pod().worker_id() != self.worker_id {
                     return Err("Worker Pod projection changed after bootstrap resolution".into());
                 }
-                let ca = match security {
-                    WorkerUpstreamSecurity::Local => None,
+                return match security {
+                    WorkerUpstreamSecurity::Local => {
+                        let worker_id = authorizer.pod().worker_id();
+                        Ok(
+                            awaken_worker_transport_security::WorkerUpstream::new(server)
+                                .with_worker_id(worker_id)
+                                .with_request_authorizer(Arc::new(authorizer)),
+                        )
+                    }
                     WorkerUpstreamSecurity::Remote {
                         server_ca_certificate,
-                    } => server_ca_certificate,
+                    } => authorizer.into_remote_upstream(&server, server_ca_certificate),
                 };
-                return authorizer.into_remote_upstream(&server, ca);
             }
             #[cfg(not(feature = "container-k8s"))]
             {
@@ -584,7 +590,7 @@ mod tests {
     #[test]
     fn pod_bootstrap_freezes_projected_identity_and_never_falls_back_to_signing() {
         // P1 supported feature + complete projection => derive exact Worker ID
-        // and use the existing HTTPS upstream with a rotating Pod bearer. P2
+        // and use the existing local or HTTPS upstream with a rotating Pod bearer. P2
         // unsupported feature/missing metadata/mismatched authored ID => reject.
         // P3 signer and Pod token together => reject even after public config
         // mutation. P4 metadata replacement after resolve => reject; rotating
@@ -663,11 +669,22 @@ mod tests {
                 "Bearer fixture-token",
                 "P1"
             );
-            assert!(
-                worker
-                    .upstream("http://coordinator", WorkerUpstreamSecurity::Local)
-                    .is_err(),
-                "P1 still HTTPS"
+            let local = worker
+                .upstream("http://coordinator", WorkerUpstreamSecurity::Local)
+                .expect("P1 local AllInOne keeps Pod-bound authorization");
+            let local_request = local
+                .authorize_request(
+                    "POST",
+                    "/v1/worker/register",
+                    local.client().post("http://coordinator/v1/worker/register"),
+                )
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(
+                local_request.headers()["authorization"],
+                "Bearer fixture-token",
+                "P1"
             );
             let mut mismatch = input();
             mismatch.worker_id = Some("foreign".into());
