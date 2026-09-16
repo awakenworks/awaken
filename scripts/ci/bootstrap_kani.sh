@@ -17,11 +17,29 @@ readonly script_dir="$(cd "$(dirname "$0")" && pwd)"
 readonly backend_patch="$script_dir/patches/cbmc-smt-type-dependencies.patch"
 readonly compiler_patch="$script_dir/patches/kani-wide-niche.patch"
 readonly cache_root="${AWAKEN_KANI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/awaken-kani}"
+# The qualification fixtures run the real solver, and the receipt records which
+# one. A non-login shell does not see the bundled Z3, and its absence showed up
+# as six failed SMT assertions rather than as a missing tool.
+source "$script_dir/_provider_environment.sh"
+awaken_append_repo_tools
 # Keep the unmodified source cache intact, including any in-flight proof runs.
 source_dir="$cache_root/$kani_revision-${kani_patch_sha256:0:12}"
 qualification_sha256="$(sha256sum "$0" "$script_dir/fixtures/cbmc_recursive_alias.c" "$script_dir/fixtures/kani_wide_niche.rs" |
   cut -d ' ' -f 1 | sha256sum | cut -d ' ' -f 1)"
-backend_key="cbmc-$cbmc_revision-${cbmc_patch_sha256:0:12}-$(printf '%s' "$cbmc_build_options" | sha256sum | cut -c 1-12)-${qualification_sha256:0:12}"
+# The cache directory names the *artifact*: exactly the three inputs that decide
+# the bytes of cbmc/goto-cc/goto-instrument. The judgement that those bytes are
+# trustworthy is a separate fact, recorded in `qualified.txt` inside the
+# directory and still bound to `qualification_sha256`. Folding the judgement
+# into the directory name made every edit of this script — a comment, a locale
+# fix — discard a built CBMC and demand a rebuild that needs cmake and ninja,
+# so a machine without them lost the whole formal gate. Now a changed procedure
+# invalidates the receipt and re-runs the qualification fixtures against the
+# backend that is already there; only a changed revision, patch or build option
+# rebuilds.
+derive_backend_key() {
+  printf 'cbmc-%s-%s-%s' "$1" "${2:0:12}" "$(printf '%s' "$3" | sha256sum | cut -c 1-12)"
+}
+backend_key="$(derive_backend_key "$cbmc_revision" "$cbmc_patch_sha256" "$cbmc_build_options")"
 backend_dir="${AWAKEN_KANI_BACKEND_DIR:-$cache_root/$backend_key/bin}"
 backend_dir="$(readlink -m "$backend_dir")"
 backend_root="$(dirname "$backend_dir")"
@@ -66,34 +84,65 @@ verify_kani_source() {
 
 # Paths as well as dereferenced bytes form the package identity: retargeting a
 # symlink, even to equal bytes, cannot silently change an invocation's backend.
-backend_identity() {
+#
+# What the built artifact is. Every line here is either an input that decides
+# the bytes or an observation of the bytes themselves; nothing about how those
+# bytes were judged. This is what `built.txt` records, and matching it is what
+# lets a bootstrap skip the expensive build.
+build_identity() {
   local name path digest configuration source_path
-  source_path="$(readlink -e "$cbmc_source")" || return 1
-  configuration="$(sha256sum "$backend_root/build/CMakeCache.txt")" || return 1
+  source_path="$(readlink -e "$cbmc_source")" || {
+    echo "Kani backend is incomplete: no CBMC source at $cbmc_source" >&2
+    return 1
+  }
+  configuration="$(sha256sum "$backend_root/build/CMakeCache.txt")" || {
+    echo "Kani backend is incomplete: no CMake configuration at $backend_root/build" >&2
+    return 1
+  }
   printf '%s\n' "backend_source=$source_path" \
     "cbmc_revision=$cbmc_revision" "cbmc_patch_sha256=$cbmc_patch_sha256" \
-    "cbmc_build_options=$cbmc_build_options" "goto_release=$kani_backend_version" \
-    "qualification_sha256=$qualification_sha256"
+    "cbmc_build_options=$cbmc_build_options" "goto_release=$kani_backend_version"
   for name in cbmc goto-cc goto-instrument; do
-    path="$(readlink -e "$backend_dir/$name")" || return 1
-    [ -x "$path" ] || { echo "Kani backend is incomplete: $name" >&2; return 1; }
+    path="$(readlink -e "$backend_dir/$name")" || {
+      echo "Kani backend is incomplete: $name is missing from $backend_dir" >&2
+      return 1
+    }
+    [ -x "$path" ] || { echo "Kani backend is incomplete: $name is not executable" >&2; return 1; }
     digest="$(sha256sum "$path")" || return 1
     printf '%s\n' "${name}_path=$path" "${name}_sha256=${digest%% *}"
   done
-  path="$(command -v z3)" || return 1
+  printf '%s\n' "configuration_sha256=${configuration%% *}"
+}
+
+# What makes those bytes trusted: the build fact, then the procedure that
+# judged it and the external solver and fixture that procedure ran. The build
+# fact is an exact prefix, so a receipt always names the artifact it blessed.
+backend_identity() {
+  local path digest
+  build_identity || return 1
+  path="$(command -v z3)" || {
+    echo "Kani backend is incomplete: z3 is not on PATH (the tlapm bundle ships one under" >&2
+    echo "  \$HOME/.local/share/awaken-formal/tools/tlapm/lib/tlapm/backends/bin)" >&2
+    return 1
+  }
   path="$(readlink -e "$path")" || return 1
   digest="$(sha256sum "$path")" || return 1
-  printf '%s\n' "qualification_z3_path=$path" "qualification_z3_sha256=${digest%% *}"
+  printf '%s\n' "qualification_sha256=$qualification_sha256" \
+    "qualification_z3_path=$path" "qualification_z3_sha256=${digest%% *}"
   digest="$(sha256sum "$script_dir/fixtures/cbmc_recursive_alias.c")" || return 1
-  printf '%s\n' "configuration_sha256=${configuration%% *}" "fixture_sha256=${digest%% *}"
+  printf '%s\n' "fixture_sha256=${digest%% *}"
 }
 
 verify_backend() {
   verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch"
   local identity name selected
-  identity="$(backend_identity)" || { echo "Kani backend is incomplete" >&2; exit 1; }
-  if [ ! -f "$backend_root/qualified.txt" ] ||
-     [ "$(cat "$backend_root/qualified.txt")" != "$identity" ]; then
+  identity="$(backend_identity)" || exit 1
+  if [ ! -f "$backend_root/qualified.txt" ]; then
+    echo "Kani backend was built but never qualified: $backend_root" >&2
+    echo "  run scripts/ci/bootstrap_kani.sh to re-run the qualification fixtures" >&2
+    exit 1
+  fi
+  if [ "$(cat "$backend_root/qualified.txt")" != "$identity" ]; then
     echo "Kani backend differs from its qualified cache: $backend_root" >&2
     exit 1
   fi
@@ -123,7 +172,13 @@ verify_kani_build() {
   fi
 }
 
-if [ "${1:-}" = "--paths" ] && [ "$#" -eq 1 ]; then
+if [ "${1:-}" = "--build-identity" ] && [ "$#" -eq 1 ]; then
+  # Read-only companion to --verify-source: print what this package's build
+  # receipt says, so "differs from its build receipt" can be diffed against the
+  # recorded file instead of guessed at. Claims nothing about qualification.
+  build_identity
+  exit $?
+elif [ "${1:-}" = "--paths" ] && [ "$#" -eq 1 ]; then
   # Selection is read-only and does not claim qualification. The runner invokes
   # --verify-source before any proof, using these frozen physical directories.
   printf '%s\n' "$(readlink -m "${AWAKEN_KANI_SOURCE_DIR:-$cache_root/current}")" "$backend_dir"
@@ -139,15 +194,31 @@ elif [ "${1:-}" = "--verify-source" ] && [ "$#" -eq 2 ]; then
   backend_identity
   exit 0
 elif [ "$#" -ne 0 ]; then
-  echo "usage: bootstrap_kani.sh [--paths | --verify-source PATH]" >&2
+  echo "usage: bootstrap_kani.sh [--build-identity | --paths | --verify-source PATH]" >&2
   exit 1
 fi
 
 # An explicitly selected backend must already be qualified. Bootstrap never
 # imports an arbitrary binary or mutates a selected external package in place.
-if [ -f "$backend_root/qualified.txt" ] || [ -n "${AWAKEN_KANI_BACKEND_DIR:-}" ]; then
+#
+# Its own cache is different. A receipt that no longer matches was written by a
+# different qualification procedure, and the answer is to judge again rather
+# than to refuse: the artifact is still here, and re-running the fixtures costs
+# seconds. Refusing was what removed the formal gate from any machine without
+# cmake the moment this script was edited.
+if [ -n "${AWAKEN_KANI_BACKEND_DIR:-}" ]; then
+  verify_backend
+elif [ -f "$backend_root/qualified.txt" ] &&
+     [ "$(cat "$backend_root/qualified.txt")" = "$(backend_identity 2>/dev/null)" ]; then
   verify_backend
 else
+  if [ -f "$backend_root/qualified.txt" ]; then
+    echo "Re-qualifying: the CBMC package was judged by a different procedure" >&2
+    # Withdraw the claim before re-judging: between here and publication this
+    # package is exactly as unqualified as a fresh one, and every rule below
+    # treats it that way.
+    rm -f -- "$backend_root/qualified.txt"
+  fi
   # A symlink cannot redirect the only writable, unqualified build destination.
   if [ "$backend_root" != "$(readlink -m "$cache_root")/$backend_key" ]; then
     echo "Refusing to build through a redirected backend package" >&2
@@ -160,41 +231,68 @@ else
   # These are exclusively owned unqualified outputs. Unlink destinations before
   # any writer opens them, preserving old targets of symlinks and hard links.
   rm -f -- "$backend_root"/{qualified.pending,unit.log,z3.log,vla1.log,Pointer_Arithmetic1.log,Pointer_Arithmetic17.log,leaf.log,internal.log,leaf.goto,internal.goto}
-  released_backend="$HOME/.kani/kani-$kani_backend_version/bin"
-  if [ ! -x "$released_backend/goto-cc" ] || [ ! -x "$released_backend/goto-instrument" ]; then
-    cargo install --locked kani-verifier --version "$kani_backend_version"
-    cargo kani setup
+  # The artifact and the judgement are separate facts. When a build receipt is
+  # already here and still describes exactly these bytes, this procedure has
+  # nothing to rebuild: it re-runs the qualification fixtures below against the
+  # backend that exists. A receipt that no longer describes the bytes is not a
+  # reason to refuse — the bytes are what is missing, and refusing would wedge
+  # the package against every later attempt, which is precisely the failure a
+  # half-finished earlier run leaves behind. Such a receipt is discarded and the
+  # package is rebuilt. Nothing is trusted either way: the qualification
+  # fixtures below still run against whatever bytes end up published.
+  reusable=0
+  if [ -f "$backend_root/built.txt" ] && [ -d "$cbmc_source/.git" ]; then
+    verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch"
+    if [ "$(cat "$backend_root/built.txt")" = "$(build_identity 2>/dev/null)" ]; then
+      reusable=1
+    else
+      echo "Rebuilding: the CBMC package no longer matches its build receipt" >&2
+      rm -f -- "$backend_root/built.txt"
+    fi
   fi
-  for name in goto-cc goto-instrument; do
-    [ -x "$released_backend/$name" ] || { echo "Missing released $name" >&2; exit 1; }
-  done
-  if [ ! -d "$cbmc_source/.git" ]; then
-    mkdir -p "$backend_root"
-    mkdir -p "$cbmc_source"
-    git -C "$cbmc_source" init
-    git -C "$cbmc_source" remote add origin https://github.com/diffblue/cbmc.git
-    git -C "$cbmc_source" fetch --depth 1 origin "$cbmc_revision"
-    git -C "$cbmc_source" checkout --detach "$cbmc_revision"
+  if [ "$reusable" -eq 1 ]; then
+    echo "Reusing the qualified-source CBMC build at $backend_root"
+  else
+    # The released GOTO tools are only needed to produce the package.
+    released_backend="$HOME/.kani/kani-$kani_backend_version/bin"
+    if [ ! -x "$released_backend/goto-cc" ] || [ ! -x "$released_backend/goto-instrument" ]; then
+      cargo install --locked kani-verifier --version "$kani_backend_version"
+      cargo kani setup
+    fi
+    for name in goto-cc goto-instrument; do
+      [ -x "$released_backend/$name" ] || { echo "Missing released $name" >&2; exit 1; }
+    done
+    if [ ! -d "$cbmc_source/.git" ]; then
+      mkdir -p "$backend_root"
+      mkdir -p "$cbmc_source"
+      git -C "$cbmc_source" init
+      git -C "$cbmc_source" remote add origin https://github.com/diffblue/cbmc.git
+      git -C "$cbmc_source" fetch --depth 1 origin "$cbmc_revision"
+      git -C "$cbmc_source" checkout --detach "$cbmc_revision"
+    fi
+    verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch" allow-clean
+    if git -C "$cbmc_source" diff --quiet; then
+      git -C "$cbmc_source" apply --check "$backend_patch"
+      git -C "$cbmc_source" apply "$backend_patch"
+    fi
+    verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch"
+    # Only this unqualified, canonically derived build directory is disposable.
+    # A failed attempt must not leave extra CMake flags in the next build.
+    rm -rf -- "$backend_root/build"
+    read -r -a build_options <<< "$cbmc_build_options"
+    cmake -S "$cbmc_source" -B "$backend_root/build" "${build_options[@]}"
+    cmake --build "$backend_root/build" --target cbmc unit -j 2
+    mkdir -p "$backend_dir"
+    # Replace owned destination links rather than following them into an older
+    # package; this also prevents an unqualified hard link from changing it.
+    cp --remove-destination -L "$backend_root/build/bin/cbmc" "$backend_dir/cbmc"
+    for name in goto-cc goto-instrument; do
+      cp --remove-destination -L "$released_backend/$name" "$backend_dir/$name"
+    done
+    # The bytes exist and came from the reviewed source. Record that fact before
+    # any fixture runs: what the fixtures decide is trust, not existence.
+    build_identity > "$backend_root/built.txt"
   fi
-  verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch" allow-clean
-  if git -C "$cbmc_source" diff --quiet; then
-    git -C "$cbmc_source" apply --check "$backend_patch"
-    git -C "$cbmc_source" apply "$backend_patch"
-  fi
-  verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch"
-  # Only this unqualified, canonically derived build directory is disposable.
-  # A failed attempt must not leave extra CMake flags in the next build.
-  rm -rf -- "$backend_root/build"
-  read -r -a build_options <<< "$cbmc_build_options"
-  cmake -S "$cbmc_source" -B "$backend_root/build" "${build_options[@]}"
-  cmake --build "$backend_root/build" --target cbmc unit -j 2
-  mkdir -p "$backend_dir"
-  # Replace owned destination links rather than following them into an older
-  # package; this also prevents an unqualified hard link from changing it.
-  cp --remove-destination -L "$backend_root/build/bin/cbmc" "$backend_dir/cbmc"
-  for name in goto-cc goto-instrument; do
-    cp --remove-destination -L "$released_backend/$name" "$backend_dir/$name"
-  done
   # The reviewed patch owns its semantic tests, including opt-in real Z3 SAT,
   # UNSAT and typed model reads. A zero exit is required before publication.
   "$backend_root/build/bin/unit" '[smt2]' | tee "$backend_root/unit.log"

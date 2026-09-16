@@ -31,6 +31,7 @@ coverage_anthropic_key="${ANTHROPIC_API_KEY:-}"
 coverage_kimi_key="${KIMI_API_KEY:-}"
 source scripts/ci/_provider_environment.sh
 awaken_unset_ambient_api_keys
+awaken_append_repo_tools
 
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
   coverage_python=python3

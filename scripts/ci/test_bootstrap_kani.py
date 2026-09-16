@@ -81,7 +81,8 @@ class BootstrapTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.scripts = self.root / "scripts/ci"
-        for relative in ("bootstrap_kani.sh", "patches/kani-wide-niche.patch",
+        for relative in ("bootstrap_kani.sh", "_provider_environment.sh",
+                         "patches/kani-wide-niche.patch",
                          "fixtures/kani_wide_niche.rs", "patches/cbmc-smt-type-dependencies.patch",
                          "fixtures/cbmc_recursive_alias.c"):
             target = self.scripts / relative
@@ -415,6 +416,101 @@ class BootstrapTests(unittest.TestCase):
                                          BACKEND_B=str(self.cache / "backend-B/bin")))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), [str(self.cache / "A"), str(self.cache / "backend-A/bin"), "A"])
+
+
+    def test_cache_names_the_artifact_and_the_receipt_names_the_judgement(self):
+        """The build and its qualification are separate facts.
+
+        | Rule | what changed                          | Effect                            |
+        |------|---------------------------------------|-----------------------------------|
+        | Q1   | the qualification procedure only      | same package; cmake is never run  |
+        | Q2   | the cbmc revision                     | a different package; cmake runs   |
+        | Q3   | nothing                               | the package is reused             |
+        | Q4   | one published backend binary's bytes  | rebuilt, never reused or blessed  |
+        | Q5   | (always)                              | qualified.txt extends built.txt   |
+
+        Folding the procedure into the package name made Q1 behave like Q2, so
+        editing a comment in the bootstrap discarded a built CBMC and demanded a
+        rebuild that needs cmake and ninja. Q1 is therefore asserted on the
+        instrumented `cmake`: not merely that the run succeeds, but that the
+        expensive tool is not reached at all.
+        """
+
+        self.assertEqual(self.run_bootstrap().returncode, 0)
+        package = self.backend()
+        built = (package / "built.txt").read_text()
+        qualified = (package / "qualified.txt").read_text()
+        self.assertTrue(
+            qualified.startswith(built),
+            "Q5 the qualification receipt must open with the build receipt verbatim",
+        )
+        self.assertNotEqual(qualified, built, "Q5 the receipt must add the judgement")
+        self.assertIn("qualification_sha256=", qualified)
+        self.assertNotIn("qualification_sha256=", built, "Q1 the build fact is procedure-free")
+
+        # Q1: rewrite a comment in the procedure. The package must be the same
+        # directory, its build receipt must still hold, and cmake must not run.
+        script = self.scripts / "bootstrap_kani.sh"
+        script.write_text(script.read_text().replace(
+            "#!/usr/bin/env bash\n", "#!/usr/bin/env bash\n# an edit that changes no artifact\n", 1))
+        self.calls.write_text("")
+        self.assertEqual(self.run_bootstrap().returncode, 0)
+        self.assertEqual(self.backend(), package, "Q1 the package must not be renamed")
+        rebuilt_tools = [line for line in self.calls.read_text().splitlines()
+                         if line.startswith("cmake")]
+        self.assertEqual(rebuilt_tools, [], "Q1 an edited procedure must not rebuild")
+        self.assertEqual((package / "built.txt").read_text(), built, "Q1 the build fact is unchanged")
+        self.assertNotEqual(
+            (package / "qualified.txt").read_text(), qualified,
+            "Q1 a changed procedure must produce a new judgement",
+        )
+
+        # Q3: an untouched tree reuses the package and still does not rebuild.
+        self.calls.write_text("")
+        self.assertEqual(self.run_bootstrap().returncode, 0)
+        reused_tools = [line for line in self.calls.read_text().splitlines()
+                        if line.startswith("cmake")]
+        self.assertEqual(reused_tools, [], "Q3 an unchanged package is reused")
+
+        # Q4: replace a published binary. The receipt no longer describes these
+        # bytes, so they are not reused. Refusing instead would wedge the
+        # package against every later attempt, which is the failure a
+        # half-finished earlier run leaves behind; the answer is to rebuild from
+        # the reviewed source, and the substituted bytes must not survive it.
+        (package / "qualified.txt").unlink()
+        substituted = "#!/bin/sh\nexit 0\n"
+        (package / "bin/cbmc").write_text(substituted)
+        self.calls.write_text("")
+        rebuilt = self.run_bootstrap()
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+        self.assertIn("no longer matches its build receipt", rebuilt.stderr)
+        self.assertIn("cmake --build", self.calls.read_text(), "Q4 a mismatch must rebuild")
+        self.assertNotEqual(
+            (package / "bin/cbmc").read_text(), substituted,
+            "Q4 the substituted bytes must not survive the rebuild",
+        )
+        self.assertTrue(
+            (package / "qualified.txt").read_text().startswith((package / "built.txt").read_text()),
+            "Q4 the new judgement names the newly built bytes",
+        )
+
+    def test_a_changed_artifact_input_builds_a_different_package(self):
+        """Q2: the inputs that decide the bytes still name the cache directory."""
+
+        self.assertEqual(self.run_bootstrap().returncode, 0)
+        first = self.backend()
+        script = self.scripts / "bootstrap_kani.sh"
+        source = script.read_text()
+        revision = re.search(r'readonly cbmc_revision="([^"]+)"', source)[1]
+        replacement = "0" * len(revision)
+        script.write_text(source.replace(revision, replacement))
+        self.calls.write_text("")
+        result = self.run_bootstrap(CBMC_PINNED_REVISION=replacement)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        packages = sorted(path.name for path in self.cache.glob("cbmc-*"))
+        self.assertEqual(len(packages), 2, f"Q2 a new artifact needs its own package: {packages}")
+        self.assertIn("cmake", self.calls.read_text(), "Q2 a changed artifact input must rebuild")
+        self.assertTrue((first / "qualified.txt").exists(), "Q2 the previous package is untouched")
 
 
 if __name__ == "__main__":

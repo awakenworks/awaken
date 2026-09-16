@@ -17,6 +17,12 @@ import sys
 
 from formal_profile import resolve_obligations
 
+# An obligation may cite any repository path and this checker asserts that each
+# cited path still exists and still carries its named evidence, so the honest
+# trigger is the whole staged set — the same sentinel check_formal_coverage.py
+# uses for the same reason.
+INPUT_GLOBS: tuple[str, ...] = ("**/*",)
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FEATURES = ROOT / "formal" / "features.json"

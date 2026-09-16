@@ -56,6 +56,18 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
 
+    # The ledger above proves each obligation carries evidence; this one proves
+    # the product still consumes it. An obligation whose prefix no requirement
+    # owns reddens every later commit by everyone, so it must fail the commit
+    # that introduces it. It reads three JSON files and the paths they cite:
+    # 0.05s, no solver, no toolchain.
+    formal-product-ledger:
+      # >>> generated glob from check_feature_coverage.py INPUT_GLOBS — do not edit
+      # no glob: check_feature_coverage.py reads every staged file, so this command
+      # must keep the whole staged set as its trigger.
+      # <<< generated glob
+      run: python3 scripts/ci/check_feature_coverage.py --require-complete
+
     # Source-surface classification is incremental here: only staged production
     # Rust is lexed, so the trigger can honestly include every crates/**/*.rs
     # file the checker reads. The global coverage ratio still needs the whole

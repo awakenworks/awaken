@@ -358,8 +358,11 @@ fi
 export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow: secret
 echo "-> AWAKEN_TEST_DATABASE_URL configured for ephemeral Postgres :$PORT"
 
-MINIO_IMAGE="minio/minio:RELEASE.2024-12-18T13-15-44Z"
-MC_IMAGE="minio/mc:RELEASE.2024-11-21T17-21-54Z"
+# Exact, reviewed tags. A runner that cannot reach Docker Hub may point these at
+# a mirror holding the same digests; the tag stays exact either way, because a
+# floating tag would let the object substrate change under the recovery drill.
+MINIO_IMAGE="${AWAKEN_CI_OBJECT_IMAGE:-minio/minio:RELEASE.2024-12-18T13-15-44Z}"
+MC_IMAGE="${AWAKEN_CI_OBJECT_CLIENT_IMAGE:-minio/mc:RELEASE.2024-11-21T17-21-54Z}"
 export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow: secret (throwaway fixture identity)
 FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow: secret (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
@@ -375,7 +378,13 @@ if ! pg_run_with_deadline object-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   --tmpfs /data:rw,nosuid,nodev,noexec,size=4g \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
   -p 127.0.0.1::9000 "$MINIO_IMAGE" server /data --address :9000 >/dev/null; then
-  echo "✗ Docker could not create the ephemeral object store" >&2
+  # Docker renders an unreachable registry, a rate limit and a genuinely private
+  # repository with the same "pull access denied" text, so name the image and
+  # the override rather than letting the reader conclude it is a permission
+  # problem. The image is only absent here because it was never pulled.
+  echo "✗ Docker could not create the ephemeral object store from $MINIO_IMAGE" >&2
+  echo "  if the pull failed, check registry reachability (docker's \"access denied\" also" >&2
+  echo "  covers network and rate-limit failures), or set AWAKEN_CI_OBJECT_IMAGE to a mirror" >&2
   exit 1
 fi
 if ! OBJECT_PORT="$(published_port "$(pg_run_with_deadline object-port "$PG_OPERATION_TIMEOUT_SECONDS" docker port "$OBJECT_NAME" 9000/tcp)")"; then
