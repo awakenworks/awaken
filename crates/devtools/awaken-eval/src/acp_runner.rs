@@ -11,7 +11,9 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_run_executor_acp::{AcpLaunch, AcpRunExecutor, Codec, SubprocessChannelSource};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
+use awaken_runtime_contract::permission::{
+    ToolCall, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
+};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
 };
@@ -25,10 +27,10 @@ struct DenyAllTools;
 
 #[async_trait]
 impl ToolPermissionPolicy for DenyAllTools {
-    async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
-        ToolPermissionVerdict::Deny {
+    async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
+        ToolPermissionRuling::without_basis(ToolPermissionVerdict::Deny {
             reason: "evaluation run is tool-free".into(),
-        }
+        })
     }
 }
 

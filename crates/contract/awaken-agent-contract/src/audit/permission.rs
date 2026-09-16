@@ -1,11 +1,14 @@
-//! The closed vocabularies a permission audit fact carries beside its decision.
+//! The vocabularies a permission audit fact carries beside its decision.
 //!
 //! A `PermissionDecided` fact records *what* the gate decided (`allow`, `ask`,
-//! `deny`, …). These two enums record *which authored policy* decided it and,
-//! for the `auto` policy, the grounds of the judgement. They are the producer
-//! side of the Managed Agents `evaluation` object on tool-use events; the
-//! projection reads them back from the committed payload, so both stay closed
-//! and serialize as stable snake_case labels.
+//! `deny`, …). These types record *which authored policy* decided it and, for
+//! the `auto` policy, the grounds of the judgement. They are the producer side
+//! of the Managed Agents `evaluation` object on tool-use events, and the
+//! projection reads them back from the committed payload. The policy is a
+//! closed vocabulary; the reason code is an open registry, because the SDK
+//! declares it one and a reader must carry a code it has no name for.
+
+use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
@@ -56,24 +59,71 @@ impl From<ToolPermissionRequirement> for PermissionPolicy {
 
 /// The grounds of an `auto` judgement that did not allow the call.
 ///
-/// Closed: the evaluator port has exactly two non-allow conclusions, and each
-/// maps to one code. An `auto` allow carries no reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionReasonCode {
-    /// The evaluator judged the call too risky to run at all; it was refused.
-    JudgedHighRisk,
-    /// The evaluator reached no conclusion; the call went to a person.
-    Indeterminate,
-}
+/// An open registry, as the Managed Agents SDK declares `reason_code`: a
+/// `string` whose documented values are not exhaustive, which clients must
+/// tolerate. The codes named here are the ones the shipped evaluator produces;
+/// a durable row written by a newer producer may carry one this version has no
+/// name for, and reading it must keep that code rather than fail or drop it.
+/// Equality is by label, so a decoded `"indeterminate"` is
+/// [`PermissionReasonCode::INDETERMINATE`]. An `auto` allow carries no reason.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PermissionReasonCode(Cow<'static, str>);
 
 impl PermissionReasonCode {
+    /// The evaluator judged the call too risky to run at all; it was refused.
+    pub const HIGH_RISK: Self = Self(Cow::Borrowed("high_risk"));
+    /// The evaluator reached no conclusion; the call went to a person.
+    pub const INDETERMINATE: Self = Self(Cow::Borrowed("indeterminate"));
+
+    /// A code from the open registry that this type does not name.
+    #[must_use]
+    pub fn new(code: impl Into<String>) -> Self {
+        Self(Cow::Owned(code.into()))
+    }
+
+    /// The stable audit label.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A person's answer to a call the gate routed to them.
+///
+/// Recorded as its own `PermissionConfirmed` fact rather than as another
+/// `PermissionDecided` row: the decision states what the gate concluded and on
+/// which authored basis, and a person answering the wait is a different actor
+/// making a different kind of statement. Folding the answer into the decision
+/// stream made a reader that counts or projects decisions see a second,
+/// policy-less "decision" for one call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionConfirmation {
+    /// The person allowed the call; it proceeds to execution.
+    Allow,
+    /// The person refused the call; it completes blocked, never executed.
+    Deny,
+}
+
+impl PermissionConfirmation {
     /// The stable audit label.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::JudgedHighRisk => "judged_high_risk",
-            Self::Indeterminate => "indeterminate",
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+        }
+    }
+}
+
+impl From<&crate::agent::awaiting::PermissionDecision> for PermissionConfirmation {
+    /// Every answer a permission ticket accepts is exactly one confirmation;
+    /// the note or reason text stays with the tool result, not the audit label.
+    fn from(decision: &crate::agent::awaiting::PermissionDecision) -> Self {
+        match decision {
+            crate::agent::awaiting::PermissionDecision::Allow { .. } => Self::Allow,
+            crate::agent::awaiting::PermissionDecision::Deny { .. } => Self::Deny,
         }
     }
 }
@@ -84,14 +134,14 @@ mod tests {
 
     #[test]
     fn every_policy_and_reason_serializes_as_its_stable_label() {
-        // Decision table (closed vocabularies, one label each):
+        // Decision table (one label each):
         // | Value | wire |
         // | AlwaysAllow | "always_allow" |
         // | AlwaysAsk | "always_ask" |
         // | Auto | "auto" |
         // | Rule | "rule" |
-        // | JudgedHighRisk | "judged_high_risk" |
-        // | Indeterminate | "indeterminate" |
+        // | HIGH_RISK | "high_risk" |
+        // | INDETERMINATE | "indeterminate" |
         for policy in [
             PermissionPolicy::AlwaysAllow,
             PermissionPolicy::AlwaysAsk,
@@ -106,10 +156,10 @@ mod tests {
             );
         }
         for reason in [
-            PermissionReasonCode::JudgedHighRisk,
-            PermissionReasonCode::Indeterminate,
+            PermissionReasonCode::HIGH_RISK,
+            PermissionReasonCode::INDETERMINATE,
         ] {
-            let wire = serde_json::to_value(reason).unwrap();
+            let wire = serde_json::to_value(&reason).unwrap();
             assert_eq!(wire, serde_json::Value::String(reason.as_str().into()));
             assert_eq!(
                 serde_json::from_value::<PermissionReasonCode>(wire).unwrap(),
@@ -132,6 +182,91 @@ mod tests {
         assert_eq!(
             PermissionPolicy::from(ToolPermissionRequirement::Auto),
             PermissionPolicy::Auto
+        );
+    }
+
+    #[test]
+    fn a_reason_code_outside_the_named_set_decodes_and_round_trips() {
+        // Causes: C1 the label is one this version names; C2 the label is a
+        // registry code this version has never heard of; C3 the value is not a
+        // string at all. Effects: E1 it decodes; E2 it re-encodes to the exact
+        // label; E3 it equals the named constant exactly when the label does;
+        // E4 decoding fails.
+        //
+        // | Rule | input | E1 | E2 | E3 | E4 |
+        // |---|---|---|---|---|---|
+        // | O1 (C1) | "indeterminate" | T | T | == INDETERMINATE | F |
+        // | O2 (C2) | "exfiltration_risk" | T | T | != any named | F |
+        // | O3 (C3) | 7 | F | - | - | T |
+        let known: PermissionReasonCode =
+            serde_json::from_value(serde_json::json!("indeterminate")).expect("O1/E1");
+        assert_eq!(known, PermissionReasonCode::INDETERMINATE, "O1/E3");
+        assert_eq!(
+            serde_json::to_value(&known).unwrap(),
+            serde_json::json!("indeterminate"),
+            "O1/E2"
+        );
+
+        let unknown: PermissionReasonCode =
+            serde_json::from_value(serde_json::json!("exfiltration_risk")).expect("O2/E1");
+        assert_eq!(unknown.as_str(), "exfiltration_risk");
+        assert_eq!(
+            unknown,
+            PermissionReasonCode::new("exfiltration_risk"),
+            "O2/E3"
+        );
+        assert_ne!(unknown, PermissionReasonCode::HIGH_RISK, "O2/E3");
+        assert_ne!(unknown, PermissionReasonCode::INDETERMINATE, "O2/E3");
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap(),
+            serde_json::json!("exfiltration_risk"),
+            "O2/E2"
+        );
+
+        assert!(
+            serde_json::from_value::<PermissionReasonCode>(serde_json::json!(7)).is_err(),
+            "O3/E4"
+        );
+    }
+
+    #[test]
+    fn a_person_answer_is_exactly_one_confirmation_label() {
+        // | Rule | ticket answer | confirmation | wire |
+        // |---|---|---|---|
+        // | C1 | Allow { note } | Allow | "allow" |
+        // | C2 | Deny { reason } | Deny | "deny" |
+        // | C3 | any other label | decode error | - |
+        use crate::agent::awaiting::PermissionDecision;
+        for (rule, answer, expected) in [
+            (
+                "C1",
+                PermissionDecision::Allow {
+                    note: Some("ok".into()),
+                },
+                PermissionConfirmation::Allow,
+            ),
+            (
+                "C2",
+                PermissionDecision::Deny {
+                    reason: Some("no".into()),
+                },
+                PermissionConfirmation::Deny,
+            ),
+        ] {
+            let confirmation = PermissionConfirmation::from(&answer);
+            assert_eq!(confirmation, expected, "{rule}");
+            let wire = serde_json::to_value(confirmation).unwrap();
+            assert_eq!(wire, serde_json::json!(expected.as_str()), "{rule}");
+            assert_eq!(
+                serde_json::from_value::<PermissionConfirmation>(wire).unwrap(),
+                expected,
+                "{rule}"
+            );
+        }
+        assert!(
+            serde_json::from_value::<PermissionConfirmation>(serde_json::json!("approved"))
+                .is_err(),
+            "C3"
         );
     }
 }

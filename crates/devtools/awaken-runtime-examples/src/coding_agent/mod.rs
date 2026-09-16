@@ -249,6 +249,7 @@ mod tests {
                         arguments: serde_json::json!({}),
                     })
                     .await
+                    .verdict
             }
         };
         // Read-only tools are pre-allowed (no prompt).

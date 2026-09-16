@@ -18,7 +18,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, HookReaction, IdBound, PhaseContext, PhaseHook,
     PhaseHookPoint, Plugin, PluginManifest,
@@ -278,10 +278,10 @@ struct ConfirmTool;
 
 #[async_trait::async_trait]
 impl ToolGateHook for ConfirmTool {
-    async fn gate(&self, call: &ToolCall, _: &Store) -> GateOutcome {
-        GateOutcome::RequireConfirmation {
+    async fn gate(&self, call: &ToolCall, _: &Store) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::RequireConfirmation {
             correlation_id: format!("confirm-{}", call.call_id),
-        }
+        })
     }
 }
 
@@ -490,10 +490,10 @@ impl ToolGateHook for NarrowGate {
     fn id(&self) -> &str {
         "narrow"
     }
-    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-        GateOutcome::Block {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::Block {
             reason: "plugin policy forbids echo".to_string(),
-        }
+        })
     }
 }
 
@@ -523,10 +523,10 @@ struct DenyHostGate;
 
 #[async_trait::async_trait]
 impl ToolGateHook for DenyHostGate {
-    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-        GateOutcome::Block {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::Block {
             reason: "host denied".to_string(),
-        }
+        })
     }
 }
 
@@ -541,9 +541,9 @@ impl ToolGateHook for RecordingGate {
     fn id(&self) -> &str {
         "recgate"
     }
-    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
         self.consulted.fetch_add(1, Ordering::SeqCst);
-        GateOutcome::Allow
+        GateDecision::without_basis(GateOutcome::Allow)
     }
 }
 

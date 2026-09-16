@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::{FoldStateKey, StateKey, Store};
-use awaken_runtime_contract::permission::{GateOutcome, ToolCall, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolCall, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, ContextMessages, Contributions, HookReaction, IdBound, PhaseContext,
     PhaseHook, PhaseHookPoint, PhaseKind, Plugin, PluginConfigError, PluginManifest, RunEndContext,
@@ -226,18 +226,18 @@ impl ToolGateHook for StateMachineGate {
         STATE_MACHINE_PLUGIN_ID
     }
 
-    async fn gate(&self, ctx: &ToolCall, state: &Store) -> GateOutcome {
+    async fn gate(&self, ctx: &ToolCall, state: &Store) -> GateDecision {
         let thread = ThreadInstances::load_or_default(state);
         let run = RunInstances::load_or_default(state);
         let evals = gate_evaluate(&self.machines, &thread, &run, &ctx.tool_id, &ctx.arguments);
-        match gate_decision(&evals) {
+        GateDecision::without_basis(match gate_decision(&evals) {
             Some(v) if v.action == ViolationAction::Deny => GateOutcome::Block { reason: v.reason },
             Some(v) if v.action == ViolationAction::Ask => GateOutcome::RequireConfirmation {
                 correlation_id: format!("fsm-{}", ctx.call_id),
             },
             // Warn and no-violation both allow; a warn surfaces at advance.
             _ => GateOutcome::Allow,
-        }
+        })
     }
 }
 

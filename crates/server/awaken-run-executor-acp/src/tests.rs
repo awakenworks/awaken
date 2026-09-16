@@ -45,9 +45,9 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
     }
     #[async_trait]
     impl ToolPermissionPolicy for ExactPolicy {
-        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
             assert_eq!(call.tool_id, self.expected);
-            ToolPermissionVerdict::Allow
+            ToolPermissionRuling::without_basis(ToolPermissionVerdict::Allow)
         }
     }
 
@@ -186,7 +186,7 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
     }
     #[async_trait]
     impl ToolPermissionPolicy for AliasPolicy {
-        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
             let behavior = if call.tool_id.starts_with("mcp__pilot__") {
                 self.pilot
             } else if call.tool_id.starts_with("mcp__browser__") {
@@ -194,7 +194,7 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
             } else {
                 "ask"
             };
-            match behavior {
+            ToolPermissionRuling::without_basis(match behavior {
                 "allow" => ToolPermissionVerdict::Allow,
                 "deny" => ToolPermissionVerdict::Deny {
                     reason: "denied by alias policy".into(),
@@ -202,7 +202,7 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
                 _ => ToolPermissionVerdict::RequireConfirmation {
                     correlation_id: format!("confirm:{}", call.call_id),
                 },
-            }
+            })
         }
     }
 
@@ -2932,8 +2932,8 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
     struct FixedPolicy(ToolPermissionVerdict);
     #[async_trait]
     impl ToolPermissionPolicy for FixedPolicy {
-        async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
-            self.0.clone()
+        async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
+            ToolPermissionRuling::without_basis(self.0.clone())
         }
     }
 
@@ -3001,14 +3001,8 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
     struct RulingPolicy(ToolPermissionRuling);
     #[async_trait]
     impl ToolPermissionPolicy for RulingPolicy {
-        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
-            self.0.verdict.clone()
-        }
-        async fn evaluate_with_basis(&self, _call: &ToolCall) -> ToolPermissionRuling {
-            ToolPermissionRuling {
-                verdict: self.0.verdict.clone(),
-                basis: self.0.basis,
-            }
+        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
+            self.0.clone()
         }
     }
 
@@ -3052,7 +3046,7 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
             correlation_id: "tk".into(),
         },
         basis: Some(PermissionBasis::auto(Some(
-            PermissionReasonCode::Indeterminate,
+            PermissionReasonCode::INDETERMINATE,
         ))),
     });
 
@@ -3072,14 +3066,14 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
             "c2",
             "ask",
             PermissionPolicy::Auto,
-            Some(PermissionReasonCode::Indeterminate),
+            Some(PermissionReasonCode::INDETERMINATE),
         ),
     ] {
         let audit = Arc::new(PermissionAudit::default());
         let resolver = NeutralPermissionResolver {
             policy: Arc::new(RulingPolicy(ToolPermissionRuling {
                 verdict: policy.0.verdict.clone(),
-                basis: policy.0.basis,
+                basis: policy.0.basis.clone(),
             })),
             grant_observer: None,
             audit: None,
@@ -3157,8 +3151,8 @@ async fn per_run_permission_is_an_intersection_with_acp_authority() {
     struct FixedPolicy(ToolPermissionVerdict);
     #[async_trait]
     impl ToolPermissionPolicy for FixedPolicy {
-        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
-            self.0.clone()
+        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
+            ToolPermissionRuling::without_basis(self.0.clone())
         }
     }
 
@@ -3312,15 +3306,15 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
     struct AskPolicy;
     #[async_trait]
     impl ToolPermissionPolicy for AskPolicy {
-        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
             let changed = call.arguments == serde_json::json!({"cmd":"echo changed"});
             assert!(
                 changed || call.arguments == serde_json::json!({"cmd":"echo ok"}),
                 "AR0 permission input supersedes placeholder"
             );
-            ToolPermissionVerdict::RequireConfirmation {
+            ToolPermissionRuling::without_basis(ToolPermissionVerdict::RequireConfirmation {
                 correlation_id: if changed { "approval-2" } else { "approval-1" }.to_string(),
-            }
+            })
         }
     }
 

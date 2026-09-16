@@ -75,8 +75,11 @@ pub(super) fn permission_audit(call: &ToolCall, decision: &GateDecision) -> Even
         tool_id: call.tool_id.clone(),
         call_id: call.call_id.clone(),
         decision: decision.outcome.decision_label().to_string(),
-        policy: decision.basis.map(|basis| basis.policy),
-        reason_code: decision.basis.and_then(|basis| basis.reason_code),
+        policy: decision.basis.as_ref().map(|basis| basis.policy),
+        reason_code: decision
+            .basis
+            .as_ref()
+            .and_then(|basis| basis.reason_code.clone()),
     }
     .into()
 }
@@ -328,24 +331,21 @@ pub(crate) async fn gate_decision(
     };
     let mut allowed_on = None;
     if let Some(narrowing) = &context.tool_permission_policy {
-        let decision = narrowing
-            .evaluate_with_basis(&ctx)
-            .await
-            .into_gate_decision();
+        let decision = narrowing.evaluate(&ctx).await.into_gate_decision();
         if !matches!(decision.outcome, GateOutcome::Allow) {
             return decision;
         }
         allowed_on = decision.basis;
     }
     if let Some(gate) = runtime.gate() {
-        let host = gate.gate_with_basis(&ctx, state).await;
+        let host = gate.gate(&ctx, state).await;
         if !matches!(host.outcome, GateOutcome::Allow) {
             return host;
         }
         allowed_on = allowed_on.or(host.basis);
     }
     for gate in env.tool_gates() {
-        let decision = gate.gate_with_basis(&ctx, state).await;
+        let decision = gate.gate(&ctx, state).await;
         if !matches!(decision.outcome, GateOutcome::Allow) {
             return decision;
         }
