@@ -22,6 +22,7 @@ use super::*;
 #[derive(Default)]
 struct EventBatchRuntime {
     admission_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    reservation_barriers: Mutex<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
     reserved: Mutex<BTreeMap<String, AdmitSessionRun>>,
     projected_resources: Mutex<Option<(u64, awaken_session_contract::ResolvedSessionResources)>>,
     reserved_resource_generations:
@@ -151,6 +152,11 @@ impl SessionRuntime for EventBatchRuntime {
         &self,
         command: AdmitSessionRun,
     ) -> Result<SessionRunReservation, RunError> {
+        let barriers = self.reservation_barriers.lock().unwrap().take();
+        if let Some((entered, release)) = barriers {
+            entered.wait().await;
+            release.wait().await;
+        }
         self.trace
             .lock()
             .unwrap()
@@ -4500,6 +4506,75 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
         before_completed,
         "A5/E3 no root CAS"
     );
+}
+
+#[tokio::test]
+async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
+    // Cause/effect graph: C1 revision R and Environment binding A are recovered
+    // into Runtime; C2 reservation pauses; C3 another owner commits binding B at
+    // R+1; C4 reservation resumes. Effects: E1 no activity receipt/epoch is
+    // committed against R+1; E2 no Run is activated with projection A; E3 the
+    // caller gets a retryable admission failure and the durable Session remains
+    // Idle on binding B. Exact activity receipt replay is excluded because it is
+    // stronger committed recovery truth and is covered by A2 above.
+    //
+    // | Rule | Projected revision | Root at activity CAS | Effect |
+    // |---|---|---|---|
+    // | P1 | R | R | ordinary admission (existing A1) |
+    // | P2 | R | R+1 | E1-E3, no stale execution |
+    let session_id = "projection-revision-race";
+    let repository: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let mut session = persisted(session_id, false, "idle");
+    session.environment.set_resident("binding-a");
+    create(repository.as_ref(), session).await;
+    let entered = Arc::new(tokio::sync::Barrier::new(2));
+    let release = Arc::new(tokio::sync::Barrier::new(2));
+    let runtime = Arc::new(EventBatchRuntime::default());
+    *runtime.reservation_barriers.lock().unwrap() = Some((entered.clone(), release.clone()));
+    let app = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let admission = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            app.admit_session_user_run(SessionUserRunCommand {
+                session_id: session_id.into(),
+                agent_id: "agent".into(),
+                operation_id: "projection-race-operation".into(),
+                run_id: RunId("projection-race-run".into()),
+                content: vec![ContentBlock::text("do not execute stale projection")],
+                accompanying_system: None,
+                data_subject_id: None,
+                traceparent: None,
+            })
+            .await
+        })
+    };
+    entered.wait().await;
+    let mut replacement = repository.get(session_id).await.unwrap();
+    replacement.environment.set_resident("binding-b");
+    app.commit_session_snapshot("workspace", replacement, "test-binding-change", Vec::new())
+        .await
+        .expect("C3 commits the successor root");
+    release.wait().await;
+
+    let error = admission
+        .await
+        .expect("P2 admission task")
+        .expect_err("P2 stale projection must retry");
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "P2/E3"
+    );
+    let durable = repository.get(session_id).await.unwrap();
+    assert_eq!(durable.environment.binding(), Some("binding-b"), "P2/E3");
+    assert_eq!(durable.execution, SessionExecutionState::Idle, "P2/E1");
+    assert!(durable.active_activity_epochs.is_empty(), "P2/E1");
+    assert!(runtime.activated.lock().unwrap().is_empty(), "P2/E2");
 }
 
 #[test]

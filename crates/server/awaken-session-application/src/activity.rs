@@ -6,7 +6,7 @@ use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, RunError,
     SessionEventDispatchSettlementEffect, SessionEventProjectionAnchor, SessionExecutionState,
-    SessionRuntimeInterval, SessionRuntimeIntervalObservation,
+    SessionRevision, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
 };
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
@@ -58,6 +58,19 @@ enum SessionActivityOpenPlan {
     BudgetReached,
     EpochExhausted,
     Conflict,
+}
+
+/// A fresh activity may consume only the root revision whose complete Runtime
+/// projection was recovered immediately before reservation. Exact activity
+/// receipt replay is checked first and remains independent recovery truth.
+const fn activity_projection_revision_matches(
+    current_revision: u64,
+    projected_revision: Option<u64>,
+) -> bool {
+    match projected_revision {
+        None => true,
+        Some(projected) => projected == current_revision,
+    }
 }
 
 /// The sole finite admission decision for the root activity mutation. Runtime
@@ -200,6 +213,12 @@ fn session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed() 
         );
         assert!(continue_await || budget_admits);
     }
+    let current_revision: u64 = kani::any();
+    let projected_revision = kani::any::<bool>().then_some(kani::any());
+    assert_eq!(
+        activity_projection_revision_matches(current_revision, projected_revision),
+        projected_revision.is_none_or(|projected| projected == current_revision)
+    );
     let removed = kani::any();
     let last = kani::any();
     let running = kani::any();
@@ -512,8 +531,26 @@ impl SessionApplication {
         session_id: &str,
         operation_id: &str,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
-        self.begin_activity_for_operation_with_policy(session_id, operation_id, false, None)
+        self.begin_activity_for_operation_with_policy(session_id, operation_id, false, None, None)
             .await
+    }
+
+    /// Open a fresh activity only while the Session root still matches the
+    /// complete execution projection recovered before Runtime reservation.
+    pub(crate) async fn begin_activity_for_operation_at_revision(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        projected_revision: SessionRevision,
+    ) -> Result<(PersistedSession, u64), SessionActivityError> {
+        self.begin_activity_for_operation_with_policy(
+            session_id,
+            operation_id,
+            false,
+            None,
+            Some(projected_revision),
+        )
+        .await
     }
 
     /// Read only the exact committed activity receipt for crash recovery. This
@@ -554,6 +591,7 @@ impl SessionApplication {
             operation_id,
             true,
             prior_activity_epoch,
+            None,
         )
         .await
     }
@@ -564,6 +602,7 @@ impl SessionApplication {
         operation_id: &str,
         continue_committed_await: bool,
         prior_activity_epoch: Option<u64>,
+        projected_revision: Option<SessionRevision>,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
         if operation_id.trim().is_empty() {
             return Err(SessionActivityError::Unavailable(
@@ -578,12 +617,47 @@ impl SessionApplication {
             return Ok(committed);
         }
 
-        self.ensure_environment_resident(session_id, now_unix_ms())
-            .await
-            .map_err(|error| match error {
-                super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
-                error => SessionActivityError::Unavailable(error.to_string()),
-            })?;
+        let projected_revision = match projected_revision {
+            Some(projected_revision) => {
+                let projected_root = self
+                    .session_repository()
+                    .get(session_id)
+                    .await
+                    .map_err(repository_failure)
+                    .map_err(SessionActivityError::mutation)?;
+                if !activity_projection_revision_matches(
+                    projected_root.revision.0,
+                    Some(projected_revision.0),
+                ) {
+                    return Err(SessionActivityError::Conflict);
+                }
+                let continuation_may_advance =
+                    !crate::realization::environment_admits_realization_effects(
+                        &projected_root.environment,
+                    );
+                let resident = self
+                    .ensure_environment_resident(session_id, now_unix_ms())
+                    .await
+                    .map_err(|error| match error {
+                        super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
+                        error => SessionActivityError::Unavailable(error.to_string()),
+                    })?;
+                Some(if continuation_may_advance {
+                    resident.revision
+                } else {
+                    projected_revision
+                })
+            }
+            None => {
+                self.ensure_environment_resident(session_id, now_unix_ms())
+                    .await
+                    .map_err(|error| match error {
+                        super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
+                        error => SessionActivityError::Unavailable(error.to_string()),
+                    })?;
+                None
+            }
+        };
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             if let Some(committed) = self
                 .replayed_activity_operation(session_id, &record)
@@ -609,6 +683,12 @@ impl SessionApplication {
                 .await?
             {
                 return Ok(committed);
+            }
+            if !activity_projection_revision_matches(
+                session.revision.0,
+                projected_revision.map(|revision| revision.0),
+            ) {
+                return Err(SessionActivityError::Conflict);
             }
             let epoch = session
                 .revision
