@@ -22,8 +22,8 @@ data:
     worker_max_concurrent = 10
     no_browser = true
     identity_mode = "self-managed"
-    worker_request_credential_file = "/etc/awaken-auth/worker-trust.json"
-    worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
+    worker_kubernetes_identity_directory = "/var/run/awaken-worker-identity"
+    worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-product", audience = "awaken-worker", provider_id = "k3d-awaken-product" }
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
     k8s_namespace = "awaken-system"
@@ -81,6 +81,28 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: awaken-product-runtime
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: awaken-product-token-review
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: awaken-product-token-review
+subjects:
+  - kind: ServiceAccount
+    name: awaken-product
+    namespace: awaken-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: awaken-product-token-review
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -190,8 +212,8 @@ spec:
             - name: config
               mountPath: /etc/awaken
               readOnly: true
-            - name: worker-auth
-              mountPath: /etc/awaken-auth
+            - name: worker-identity
+              mountPath: /var/run/awaken-worker-identity
               readOnly: true
             - name: data
               mountPath: /var/lib/awaken
@@ -201,9 +223,21 @@ spec:
         - name: config
           configMap:
             name: awaken-product-config
-        - name: worker-auth
-          secret:
-            secretName: awaken-product-worker-auth
+        - name: worker-identity
+          projected:
+            sources:
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef: { fieldPath: metadata.namespace }
+                    - path: name
+                      fieldRef: { fieldPath: metadata.name }
+                    - path: uid
+                      fieldRef: { fieldPath: metadata.uid }
+              - serviceAccountToken:
+                  path: token
+                  audience: awaken-worker
+                  expirationSeconds: 3600
         - name: data
           persistentVolumeClaim:
             claimName: awaken-product-data
