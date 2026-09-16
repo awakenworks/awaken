@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool, parse_tool_args_or_error_output,
@@ -137,23 +137,30 @@ impl SkillAllowedToolsGate {
 
 #[async_trait]
 impl ToolGateHook for SkillAllowedToolsGate {
-    async fn gate(&self, call: &ToolCall, state: &Store) -> GateOutcome {
+    async fn gate(&self, call: &ToolCall, state: &Store) -> GateDecision {
+        // The inner gate decides first and its decision is returned whole: the
+        // basis it named belongs to the policy that refused, and this gate has
+        // no standing to restate it. Only where the inner gate allowed does the
+        // skill intersection speak, and that is not an authored permission
+        // policy, so it names no basis of its own.
         let platform = self.inner.gate(call, state).await;
-        if platform != GateOutcome::Allow {
+        if platform.outcome != GateOutcome::Allow {
             return platform;
         }
-        if matches!(call.tool_id.as_str(), SKILL_LIST_TOOL_ID | SKILL_TOOL_ID)
-            || self.active.allows(&call.tool_id)
-        {
-            GateOutcome::Allow
-        } else {
-            GateOutcome::Block {
-                reason: format!(
-                    "tool `{}` is outside the active skill allowed_tools intersection",
-                    call.tool_id
-                ),
-            }
-        }
+        GateDecision::without_basis(
+            if matches!(call.tool_id.as_str(), SKILL_LIST_TOOL_ID | SKILL_TOOL_ID)
+                || self.active.allows(&call.tool_id)
+            {
+                GateOutcome::Allow
+            } else {
+                GateOutcome::Block {
+                    reason: format!(
+                        "tool `{}` is outside the active skill allowed_tools intersection",
+                        call.tool_id
+                    ),
+                }
+            },
+        )
     }
 }
 
@@ -165,7 +172,9 @@ impl RecordingGate {
 
 #[async_trait]
 impl ToolGateHook for RecordingGate {
-    async fn gate(&self, ctx: &ToolCall, state: &Store) -> GateOutcome {
+    async fn gate(&self, ctx: &ToolCall, state: &Store) -> GateDecision {
+        // Observation only: the inner gate's decision, basis included, passes
+        // through untouched.
         for key in ["path", "pattern"] {
             if let Some(path) = ctx.arguments.get(key).and_then(|v| v.as_str()) {
                 self.activations.record(path);
@@ -1145,8 +1154,8 @@ mod tests {
     struct AllowGate;
     #[async_trait]
     impl ToolGateHook for AllowGate {
-        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-            GateOutcome::Allow
+        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+            GateDecision::without_basis(GateOutcome::Allow)
         }
     }
 
@@ -1168,7 +1177,8 @@ mod tests {
                 &ctx("read", serde_json::json!({ "path": "src/main.rs" })),
                 &state
             )
-            .await,
+            .await
+            .outcome,
             GateOutcome::Allow
         );
         gate.gate(
@@ -1195,26 +1205,35 @@ mod tests {
         let state = Store::new();
 
         assert_eq!(
-            gate.gate(&ctx("bash", serde_json::json!({})), &state).await,
+            gate.gate(&ctx("bash", serde_json::json!({})), &state)
+                .await
+                .outcome,
             GateOutcome::Allow
         );
         active.narrow(&["read".into(), "mcp__github__*".into()]);
         assert_eq!(
-            gate.gate(&ctx("read", serde_json::json!({})), &state).await,
+            gate.gate(&ctx("read", serde_json::json!({})), &state)
+                .await
+                .outcome,
             GateOutcome::Allow
         );
         assert!(matches!(
-            gate.gate(&ctx("bash", serde_json::json!({})), &state).await,
+            gate.gate(&ctx("bash", serde_json::json!({})), &state)
+                .await
+                .outcome,
             GateOutcome::Block { .. }
         ));
         active.narrow(&["read".into(), "bash".into()]);
         assert!(matches!(
-            gate.gate(&ctx("bash", serde_json::json!({})), &state).await,
+            gate.gate(&ctx("bash", serde_json::json!({})), &state)
+                .await
+                .outcome,
             GateOutcome::Block { .. }
         ));
         assert_eq!(
             gate.gate(&ctx(SKILL_TOOL_ID, serde_json::json!({})), &state)
-                .await,
+                .await
+                .outcome,
             GateOutcome::Allow
         );
     }
@@ -1224,17 +1243,18 @@ mod tests {
         struct DenyGate;
         #[async_trait]
         impl ToolGateHook for DenyGate {
-            async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
-                GateOutcome::Block {
+            async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+                GateDecision::without_basis(GateOutcome::Block {
                     reason: "platform policy".into(),
-                }
+                })
             }
         }
 
         let gate = SkillAllowedToolsGate::new(Arc::new(DenyGate), ActiveSkillTools::new());
         assert_eq!(
             gate.gate(&ctx("read", serde_json::json!({})), &Store::new())
-                .await,
+                .await
+                .outcome,
             GateOutcome::Block {
                 reason: "platform policy".into(),
             }

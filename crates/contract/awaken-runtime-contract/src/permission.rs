@@ -18,7 +18,7 @@ pub use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionR
 /// The authored policy a permission verdict came from, with the grounds of an
 /// `auto` judgement (ADR-0030 D4). This is what the audit fact records beside
 /// the decision and what the Managed `evaluation` object is projected from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionBasis {
     pub policy: PermissionPolicy,
     /// Present only for an `auto` judgement that did not allow.
@@ -159,18 +159,14 @@ impl ToolPermissionVerdict {
 /// external system; it returns only a decision, never executes the tool.
 #[async_trait]
 pub trait ToolPermissionPolicy: Send + Sync {
-    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict;
-
     /// The verdict together with the authored policy that produced it.
     ///
-    /// The default states no basis: a policy that does not decide from the
-    /// authored vocabulary (a per-Run narrowing, a fixed host policy) has none
-    /// to name, and inventing one here would put a policy label on a decision
-    /// nobody authored. A policy that does decide from that vocabulary
-    /// overrides this and must return the verdict `evaluate` would.
-    async fn evaluate_with_basis(&self, call: &ToolCall) -> ToolPermissionRuling {
-        ToolPermissionRuling::without_basis(self.evaluate(call).await)
-    }
+    /// One method, so a verdict and the basis it was reached on cannot be
+    /// answered separately and disagree. A policy that does not decide from the
+    /// authored vocabulary — a per-Run narrowing, a fixed host policy, a test
+    /// double — says so by name with [`ToolPermissionRuling::without_basis`],
+    /// which is a stated answer rather than a silent default.
+    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling;
 }
 
 /// Serializable, per-Run restriction on the tool authority configured by the
@@ -220,10 +216,10 @@ impl DenyAllTools {
 
 #[async_trait]
 impl ToolPermissionPolicy for DenyAllTools {
-    async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
-        ToolPermissionVerdict::Deny {
+    async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
+        ToolPermissionRuling::without_basis(ToolPermissionVerdict::Deny {
             reason: self.reason.clone(),
-        }
+        })
     }
 }
 
@@ -405,18 +401,15 @@ pub trait ToolGateHook: Send + Sync {
         "gate"
     }
 
-    /// Decide one tool call against the run's read-only state. Most gates ignore
-    /// `state`; a state machine gate reads it to enforce a precondition.
-    async fn gate(&self, call: &ToolCall, state: &Store) -> GateOutcome;
-
-    /// The outcome together with the authored policy that produced it. The
-    /// default states no basis, which is exact for every gate that is not
-    /// backed by an authored permission policy (a plugin precondition gate
-    /// decides on state, not on policy). The permission-backed gate overrides
-    /// this and must return the outcome `gate` would.
-    async fn gate_with_basis(&self, call: &ToolCall, state: &Store) -> GateDecision {
-        GateDecision::without_basis(self.gate(call, state).await)
-    }
+    /// Decide one tool call against the run's read-only state, together with the
+    /// authored policy that produced the outcome. Most gates ignore `state`; a
+    /// state machine gate reads it to enforce a precondition.
+    ///
+    /// One method, so an outcome and its basis cannot be answered separately
+    /// and disagree. A gate that is not backed by an authored permission policy
+    /// — a plugin precondition gate decides on state, not on policy — says so
+    /// by name with [`GateDecision::without_basis`].
+    async fn gate(&self, call: &ToolCall, state: &Store) -> GateDecision;
 }
 
 #[cfg(test)]
@@ -504,7 +497,7 @@ mod tests {
                 correlation_id: "perm-1".into(),
             },
             basis: Some(PermissionBasis::auto(Some(
-                PermissionReasonCode::Indeterminate,
+                PermissionReasonCode::INDETERMINATE,
             ))),
         }
         .into_gate_decision();
@@ -519,7 +512,7 @@ mod tests {
             b2.basis,
             Some(PermissionBasis {
                 policy: PermissionPolicy::Auto,
-                reason_code: Some(PermissionReasonCode::Indeterminate),
+                reason_code: Some(PermissionReasonCode::INDETERMINATE),
             }),
             "B2"
         );
@@ -545,17 +538,17 @@ mod tests {
         struct FixedDeny;
         #[async_trait]
         impl ToolPermissionPolicy for FixedDeny {
-            async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
-                ToolPermissionVerdict::Deny {
+            async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
+                ToolPermissionRuling::without_basis(ToolPermissionVerdict::Deny {
                     reason: "fixed".into(),
-                }
+                })
             }
         }
         struct StateGate;
         #[async_trait]
         impl ToolGateHook for StateGate {
-            async fn gate(&self, _call: &ToolCall, _state: &Store) -> GateOutcome {
-                GateOutcome::SetResult(ToolOutput::ok("c1", "cached"))
+            async fn gate(&self, _call: &ToolCall, _state: &Store) -> GateDecision {
+                GateDecision::without_basis(GateOutcome::SetResult(ToolOutput::ok("c1", "cached")))
             }
         }
         let call = ToolCall {
@@ -563,14 +556,14 @@ mod tests {
             call_id: "c1".into(),
             arguments: serde_json::json!({}),
         };
-        let ruling = FixedDeny.evaluate_with_basis(&call).await;
+        let ruling = FixedDeny.evaluate(&call).await;
         assert_eq!(
             ruling,
             ToolPermissionRuling::without_basis(ToolPermissionVerdict::Deny {
                 reason: "fixed".into()
             })
         );
-        let decision = StateGate.gate_with_basis(&call, &Store::default()).await;
+        let decision = StateGate.gate(&call, &Store::default()).await;
         assert_eq!(decision.basis, None);
         assert_eq!(decision.outcome.decision_label(), "set_result");
     }

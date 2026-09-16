@@ -10,7 +10,7 @@ use crate::agent::run::RunState;
 use crate::audit::draft::Draft;
 use crate::audit::kind::Kind;
 use crate::audit::model_request::ModelRequestObservation;
-use crate::audit::permission::{PermissionPolicy, PermissionReasonCode};
+use crate::audit::permission::{PermissionConfirmation, PermissionPolicy, PermissionReasonCode};
 
 /// A committed run fact, carrying its own typed data. Lowers to a [`Draft`] for
 /// the durable event log.
@@ -41,15 +41,24 @@ pub enum RunEvent {
     ///
     /// `policy` names the authored policy that decided and `reason_code` the
     /// grounds of an `auto` judgement; both are absent when no authored policy
-    /// decided (a per-Run narrowing, a plugin gate, a person answering a
-    /// ticket). Both are additive on the wire so rows written before they
-    /// existed still decode.
+    /// decided (a per-Run narrowing, a plugin gate). Both are additive on the
+    /// wire so rows written before they existed still decode. A person's answer
+    /// to the wait an `ask` opened is not a decision of the gate; it is
+    /// [`RunEvent::PermissionConfirmed`].
     PermissionDecided {
         tool_id: String,
         call_id: String,
         decision: String,
         policy: Option<PermissionPolicy>,
         reason_code: Option<PermissionReasonCode>,
+    },
+    /// A person answered a permission ticket for this call (ADR-0030 D5).
+    /// Committed with the transition the answer drives, so an allowed call is
+    /// never entered and a denied call never completes without it.
+    PermissionConfirmed {
+        tool_id: String,
+        call_id: String,
+        result: PermissionConfirmation,
     },
     /// A stable durable-ingress operation consumed this Run's resume ticket.
     /// The correlation detects a different operation attempting to answer the
@@ -114,6 +123,18 @@ impl From<RunEvent> for Draft {
                 }
                 (Kind::PermissionDecided, payload)
             }
+            RunEvent::PermissionConfirmed {
+                tool_id,
+                call_id,
+                result,
+            } => (
+                Kind::PermissionConfirmed,
+                serde_json::json!({
+                    "tool_id": tool_id,
+                    "call_id": call_id,
+                    "result": result.as_str(),
+                }),
+            ),
             RunEvent::ResumeApplied {
                 operation_id,
                 correlation_id,
@@ -159,6 +180,18 @@ mod tests {
         assert_eq!(
             d.payload,
             serde_json::json!({ "tool_id": "echo", "call_id": "c1", "decision": "allow" })
+        );
+
+        let d: Draft = RunEvent::PermissionConfirmed {
+            tool_id: "echo".into(),
+            call_id: "c1".into(),
+            result: PermissionConfirmation::Deny,
+        }
+        .into();
+        assert_eq!(d.kind, Kind::PermissionConfirmed);
+        assert_eq!(
+            d.payload,
+            serde_json::json!({ "tool_id": "echo", "call_id": "c1", "result": "deny" })
         );
 
         let d: Draft = RunEvent::ResumeApplied {
@@ -332,7 +365,7 @@ mod tests {
             call_id: "c2".into(),
             decision: "ask".into(),
             policy: Some(PermissionPolicy::Auto),
-            reason_code: Some(PermissionReasonCode::Indeterminate),
+            reason_code: Some(PermissionReasonCode::INDETERMINATE),
         }
         .into();
         assert_eq!(
@@ -362,16 +395,18 @@ mod tests {
     fn permission_decided_payloads_round_trip_old_and_new_rows() {
         // The reader side of the additive contract: a historical row (no
         // policy) and a current row (policy + reason) both decode through the
-        // same optional fields, and an unknown policy label is rejected rather
-        // than silently read as another member of the closed vocabulary.
+        // same optional fields, an unknown policy label is rejected rather
+        // than silently read as another member of the closed vocabulary, and a
+        // reason code outside the named registry is kept as written.
         //
         // | Row | payload | policy | reason_code |
         // |---|---|---|---|
         // | R1 historical | {decision} | None | None |
-        // | R2 auto deny | {decision, policy: auto, reason_code: judged_high_risk} | Auto | JudgedHighRisk |
+        // | R2 auto deny | {decision, policy: auto, reason_code: high_risk} | Auto | HIGH_RISK |
         // | R3 auto allow | {decision, policy: auto} | Auto | None |
         // | R4 rule | {decision, policy: rule} | Rule | None |
         // | R5 unknown | {decision, policy: bypass} | decode error | - |
+        // | R6 open registry | {decision, policy: auto, reason_code: rate_limited} | Auto | rate_limited, kept |
         #[derive(serde::Deserialize)]
         struct Row {
             decision: String,
@@ -395,7 +430,7 @@ mod tests {
             call_id: "c".into(),
             decision: "deny".into(),
             policy: Some(PermissionPolicy::Auto),
-            reason_code: Some(PermissionReasonCode::JudgedHighRisk),
+            reason_code: Some(PermissionReasonCode::HIGH_RISK),
         }
         .into();
         let r2 = read(r2.payload).unwrap();
@@ -404,7 +439,7 @@ mod tests {
             (
                 "deny",
                 Some(PermissionPolicy::Auto),
-                Some(PermissionReasonCode::JudgedHighRisk)
+                Some(PermissionReasonCode::HIGH_RISK)
             ),
             "R2"
         );
@@ -423,5 +458,29 @@ mod tests {
             read(serde_json::json!({ "decision": "allow", "policy": "bypass" })).is_err(),
             "R5"
         );
+
+        // The reason code is an open registry: a code a newer producer wrote
+        // decodes, and lowering it again writes the exact label back.
+        let r6 = read(serde_json::json!({
+            "decision": "ask", "policy": "auto", "reason_code": "rate_limited"
+        }))
+        .expect("R6 an unnamed registry code still decodes");
+        assert_eq!(
+            (r6.policy, r6.reason_code.clone()),
+            (
+                Some(PermissionPolicy::Auto),
+                Some(PermissionReasonCode::new("rate_limited"))
+            ),
+            "R6"
+        );
+        let relowered: Draft = RunEvent::PermissionDecided {
+            tool_id: "t".into(),
+            call_id: "c".into(),
+            decision: r6.decision,
+            policy: r6.policy,
+            reason_code: r6.reason_code,
+        }
+        .into();
+        assert_eq!(relowered.payload["reason_code"], "rate_limited", "R6");
     }
 }

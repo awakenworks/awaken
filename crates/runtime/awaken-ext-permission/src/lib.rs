@@ -133,8 +133,8 @@ impl AutoDecision {
     pub const fn reason_code(self) -> Option<PermissionReasonCode> {
         match self {
             Self::Allow => None,
-            Self::Deny => Some(PermissionReasonCode::JudgedHighRisk),
-            Self::Indeterminate => Some(PermissionReasonCode::Indeterminate),
+            Self::Deny => Some(PermissionReasonCode::HIGH_RISK),
+            Self::Indeterminate => Some(PermissionReasonCode::INDETERMINATE),
         }
     }
 
@@ -686,11 +686,7 @@ impl RuleBasedToolPermissionPolicy {
 
 #[async_trait]
 impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
-    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
-        self.evaluate_with_basis(call).await.verdict
-    }
-
-    async fn evaluate_with_basis(&self, call: &ToolCall) -> ToolPermissionRuling {
+    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
         // Resolution order, outermost first: a matching `deny` rule is absolute;
         // otherwise the most specific rule the author wrote decides; only where
         // the author stated no fixed answer does `auto` evaluate; and a call
@@ -930,14 +926,17 @@ mod tests {
             arguments: args,
         };
         assert!(matches!(
-            policy.evaluate(&ctx("Read", json!({}))).await,
+            policy.evaluate(&ctx("Read", json!({}))).await.verdict,
             ToolPermissionVerdict::Allow
         ));
         assert!(matches!(
-            policy.evaluate(&ctx("Bash", json!({"c": "x rm y"}))).await,
+            policy
+                .evaluate(&ctx("Bash", json!({"c": "x rm y"})))
+                .await
+                .verdict,
             ToolPermissionVerdict::Deny { .. }
         ));
-        match policy.evaluate(&ctx("Other", json!({}))).await {
+        match policy.evaluate(&ctx("Other", json!({}))).await.verdict {
             ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
                 assert_eq!(correlation_id, "perm-c1")
             }
@@ -1005,7 +1004,7 @@ mod tests {
                         .expect("a fixed requirement compiles into a rule")
                         .behavior
                     };
-                    let actual = policy.evaluate(&call).await;
+                    let actual = policy.evaluate(&call).await.verdict;
                     match (expected, actual) {
                         (ToolPermissionBehavior::Allow, ToolPermissionVerdict::Allow) => {}
                         (ToolPermissionBehavior::Deny, ToolPermissionVerdict::Deny { .. }) => {}
@@ -1045,7 +1044,7 @@ mod tests {
             };
             assert_eq!(
                 matches!(
-                    policy.evaluate(&call).await,
+                    policy.evaluate(&call).await.verdict,
                     ToolPermissionVerdict::Deny { .. }
                 ),
                 scope == "secret"
@@ -1063,7 +1062,7 @@ mod tests {
             };
             assert!(
                 matches!(
-                    policy.evaluate(&call).await,
+                    policy.evaluate(&call).await.verdict,
                     ToolPermissionVerdict::Deny { .. }
                 ),
                 "{tool_id}"

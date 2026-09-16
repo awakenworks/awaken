@@ -1111,11 +1111,13 @@ impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
         &self,
         ctx: &awaken_runtime_contract::permission::ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
-    ) -> awaken_runtime_contract::permission::GateOutcome {
-        awaken_runtime_contract::permission::GateOutcome::Schedule {
-            correlation_id: format!("sched-{}", ctx.call_id),
-            action_kind: None,
-        }
+    ) -> awaken_runtime_contract::permission::GateDecision {
+        awaken_runtime_contract::permission::GateDecision::without_basis(
+            awaken_runtime_contract::permission::GateOutcome::Schedule {
+                correlation_id: format!("sched-{}", ctx.call_id),
+                action_kind: None,
+            },
+        )
     }
 }
 

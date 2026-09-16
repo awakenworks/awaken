@@ -165,8 +165,9 @@ enum CommittedEvidence {
     /// A terminal run whose committed audit records one permission decision
     /// per row, each as the raw payload the audit table holds: the decision
     /// label plus the optional `policy` / `reason_code` labels. Raw on
-    /// purpose, so a historical row (no policy) and a label outside the closed
-    /// vocabulary are both representable exactly as they would be on disk.
+    /// purpose, so a historical row (no policy), a policy outside the closed
+    /// vocabulary and a reason code outside the named registry are all
+    /// representable exactly as they would be on disk.
     PermissionDecisions(&'static [AuditedPermissionRow]),
 }
 
@@ -1753,7 +1754,7 @@ async fn a_recorded_ask_is_reported_even_though_the_transcript_shows_a_result() 
 /// | Rule | policy | decision | reason_code | evaluation |
 /// |---|---|---|---|---|
 /// | P1 | auto | ask | indeterminate | {"type":"auto","evaluated_permission":{"type":"ask","reason_code":"indeterminate"}} |
-/// | P2 | auto | deny | judged_high_risk | {"type":"auto","evaluated_permission":{"type":"deny","reason_code":"judged_high_risk"}} |
+/// | P2 | auto | deny | high_risk | {"type":"auto","evaluated_permission":{"type":"deny","reason_code":"high_risk"}} |
 /// | P3 | auto | allow | - | {"type":"auto","evaluated_permission":{"type":"allow"}} |
 /// | P4 | always_allow | allow | - | {"type":"always_allow"} |
 /// | P5 | always_ask | ask | - | {"type":"always_ask"} |
@@ -1761,6 +1762,15 @@ async fn a_recorded_ask_is_reported_even_though_the_transcript_shows_a_result() 
 /// | P7 | none (historical row) | allow | - | absent (E2) |
 /// | P8 | bypass (outside the closed vocabulary) | deny | - | absent, decision still deny (E2) |
 /// | P9 | auto | ask | none (inconsistent row) | absent (E2) |
+/// | P10 | auto | ask | a registry code this version does not name | {"type":"auto","evaluated_permission":{"type":"ask","reason_code":"rate_limited"}} (E1) |
+///
+/// P10 is the open-registry case the SDK names explicitly: `reason_code` is a
+/// `string` whose documented set is not exhaustive and which clients must
+/// tolerate, so another producer — a newer replica writing the same durable
+/// audit, a platform evaluator — may record grounds this version has no name
+/// for. Reading that row reports the decision and the grounds exactly as
+/// recorded; dropping the `evaluation` because the code is unfamiliar would
+/// hide an answer the SDK obliges every client to accept.
 #[tokio::test]
 async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events() {
     const ROWS: &[(&str, &[AuditedPermissionRow], &str, Option<&str>)] = &[
@@ -1778,12 +1788,12 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P2",
             &[
-                ("builtin-1", "deny", Some("auto"), Some("judged_high_risk")),
-                ("mc1", "deny", Some("auto"), Some("judged_high_risk")),
+                ("builtin-1", "deny", Some("auto"), Some("high_risk")),
+                ("mc1", "deny", Some("auto"), Some("high_risk")),
             ],
             "deny",
             Some(
-                r#"{"type":"auto","evaluated_permission":{"type":"deny","reason_code":"judged_high_risk"}}"#,
+                r#"{"type":"auto","evaluated_permission":{"type":"deny","reason_code":"high_risk"}}"#,
             ),
         ),
         (
@@ -1848,6 +1858,17 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
             ],
             "ask",
             None,
+        ),
+        (
+            "P10",
+            &[
+                ("builtin-1", "ask", Some("auto"), Some("rate_limited")),
+                ("mc1", "ask", Some("auto"), Some("rate_limited")),
+            ],
+            "ask",
+            Some(
+                r#"{"type":"auto","evaluated_permission":{"type":"ask","reason_code":"rate_limited"}}"#,
+            ),
         ),
     ];
     for (rule, rows, expected_decision, expected_evaluation) in ROWS {

@@ -1175,8 +1175,10 @@ impl ManagedState {
 /// inferring one. An unrecognized decision label is skipped: a value this
 /// version does not understand must not be flattened into `allow`. The policy
 /// and reason code are additive fields: a row written before they existed has
-/// none, and a label outside the closed vocabularies reads as none too, so the
+/// none, and a policy label outside the closed vocabulary reads as none, so the
 /// decision is still reported while the `evaluation` it cannot name is absent.
+/// The reason code is an open registry and is carried as recorded, including a
+/// code this version has no name for.
 fn harvest_permission_decisions<'a>(
     snapshots: impl Iterator<
         Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,

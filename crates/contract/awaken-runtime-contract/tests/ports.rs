@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::permission::{
-    GateOutcome, ToolGateHook, ToolPermissionPolicy, ToolPermissionVerdict,
+    GateDecision, GateOutcome, ToolGateHook, ToolPermissionPolicy, ToolPermissionRuling,
+    ToolPermissionVerdict,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutor, ToolOutput};
 
@@ -25,8 +26,8 @@ struct AllowAll;
 
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for AllowAll {
-    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
-        ToolPermissionVerdict::Allow
+    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
+        ToolPermissionRuling::without_basis(ToolPermissionVerdict::Allow)
     }
 }
 
@@ -40,14 +41,8 @@ impl ToolGateHook for PolicyGate {
         &self,
         ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
-    ) -> GateOutcome {
-        match self.0.evaluate(ctx).await {
-            ToolPermissionVerdict::Allow => GateOutcome::Allow,
-            ToolPermissionVerdict::Deny { reason } => GateOutcome::Block { reason },
-            ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
-                GateOutcome::RequireConfirmation { correlation_id }
-            }
-        }
+    ) -> GateDecision {
+        self.0.evaluate(ctx).await.into_gate_decision()
     }
 }
 
@@ -76,7 +71,7 @@ async fn policy_backed_gate_allows() {
         arguments: serde_json::json!({}),
     };
     let state = awaken_agent_contract::agent::state::Store::new();
-    assert_eq!(gate.gate(&ctx, &state).await, GateOutcome::Allow);
+    assert_eq!(gate.gate(&ctx, &state).await.outcome, GateOutcome::Allow);
 }
 
 #[test]

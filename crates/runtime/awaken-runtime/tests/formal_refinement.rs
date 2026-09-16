@@ -35,7 +35,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolKind,
 };
@@ -272,10 +272,10 @@ struct SuspendGate;
 
 #[async_trait::async_trait]
 impl ToolGateHook for SuspendGate {
-    async fn gate(&self, _: &ToolCall, _: &Store) -> GateOutcome {
-        GateOutcome::RequireConfirmation {
+    async fn gate(&self, _: &ToolCall, _: &Store) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::RequireConfirmation {
             correlation_id: "formal-approval".to_string(),
-        }
+        })
     }
 }
 
@@ -283,10 +283,10 @@ struct BlockGate;
 
 #[async_trait::async_trait]
 impl ToolGateHook for BlockGate {
-    async fn gate(&self, _: &ToolCall, _: &Store) -> GateOutcome {
-        GateOutcome::Block {
+    async fn gate(&self, _: &ToolCall, _: &Store) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::Block {
             reason: "formal policy denial".to_string(),
-        }
+        })
     }
 }
 

@@ -527,6 +527,7 @@ async fn port_deny_reason_names_the_tool() {
     match policy
         .evaluate(&policy_ctx("Bash", "c-9", json!({"command": "rm -rf /"})))
         .await
+        .verdict
     {
         ToolPermissionVerdict::Deny { reason } => {
             assert!(
@@ -551,6 +552,7 @@ async fn port_ask_ticket_is_correlated_to_the_call_id() {
         match policy
             .evaluate(&policy_ctx("WebFetch", call_id, json!({})))
             .await
+            .verdict
         {
             ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
                 assert_eq!(correlation_id, format!("perm-{call_id}"));
@@ -567,7 +569,10 @@ async fn port_allow_maps_to_allow_decision() {
         vec![rule("Read", ToolPermissionBehavior::Allow)],
     ));
     assert!(matches!(
-        policy.evaluate(&policy_ctx("Read", "c-1", json!({}))).await,
+        policy
+            .evaluate(&policy_ctx("Read", "c-1", json!({})))
+            .await
+            .verdict,
         ToolPermissionVerdict::Allow
     ));
 }
@@ -620,7 +625,8 @@ async fn a_disabled_mcp_toolset_denies_however_its_server_name_is_punctuated() {
                 tool_id: tool_id.clone(),
                 arguments: json!({}),
             })
-            .await;
+            .await
+            .verdict;
         assert!(
             matches!(verdict, ToolPermissionVerdict::Deny { .. }),
             "disabled toolset on {server_name:?} must deny {tool_id}, got {verdict:?}"
@@ -645,7 +651,8 @@ async fn a_toolset_never_governs_a_differently_punctuated_neighbour() {
                         tool_id,
                         arguments: json!({}),
                     })
-                    .await,
+                    .await
+                    .verdict,
                 ToolPermissionVerdict::Allow
             ),
             "the policy authored for \"a-b\" must not reach {neighbour:?}"
@@ -713,7 +720,7 @@ async fn each_auto_outcome_reaches_the_caller_unchanged() {
         let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
             .with_mcp_toolsets(&[mcp_toolset(ToolPermissionRequirement::Auto)])
             .with_auto_evaluator(std::sync::Arc::new(FixedAuto(decision)));
-        match (decision, policy.evaluate(&auto_call()).await) {
+        match (decision, policy.evaluate(&auto_call()).await.verdict) {
             (AutoDecision::Allow, ToolPermissionVerdict::Allow) => {}
             (AutoDecision::Deny, ToolPermissionVerdict::Deny { .. }) => {}
             (
@@ -740,7 +747,7 @@ async fn a_fixed_authored_policy_outranks_the_evaluator() {
         .with_auto_evaluator(std::sync::Arc::new(FixedAuto(AutoDecision::Deny)));
     assert!(
         matches!(
-            allow_policy.evaluate(&auto_call()).await,
+            allow_policy.evaluate(&auto_call()).await.verdict,
             ToolPermissionVerdict::Allow
         ),
         "F1"
@@ -751,7 +758,7 @@ async fn a_fixed_authored_policy_outranks_the_evaluator() {
         .with_auto_evaluator(std::sync::Arc::new(FixedAuto(AutoDecision::Allow)));
     assert!(
         matches!(
-            ask_policy.evaluate(&auto_call()).await,
+            ask_policy.evaluate(&auto_call()).await.verdict,
             ToolPermissionVerdict::RequireConfirmation { .. }
         ),
         "F2"
@@ -770,7 +777,7 @@ async fn an_authored_deny_rule_still_outranks_an_auto_allow() {
     .with_mcp_toolsets(&[mcp_toolset(ToolPermissionRequirement::Auto)])
     .with_auto_evaluator(std::sync::Arc::new(FixedAuto(AutoDecision::Allow)));
     assert!(matches!(
-        policy.evaluate(&auto_call()).await,
+        policy.evaluate(&auto_call()).await.verdict,
         ToolPermissionVerdict::Deny { .. }
     ));
 }
@@ -843,7 +850,7 @@ async fn a_disabled_tool_is_denied_before_the_evaluator_is_ever_consulted() {
             .with_auto_evaluator(std::sync::Arc::new(NeverAsk));
         assert!(
             matches!(
-                policy.evaluate(&auto_call()).await,
+                policy.evaluate(&auto_call()).await.verdict,
                 ToolPermissionVerdict::Deny { .. }
             ),
             "{rule}: a disabled tool is denied without consulting the evaluator"
@@ -880,8 +887,8 @@ async fn a_closed_toolset_deferral_and_an_open_toolset_auto_behave_identically()
             .with_auto_evaluator(std::sync::Arc::new(FixedAuto(decision)));
 
         for (label, verdict) in [
-            ("closed", closed.evaluate(&closed_call).await),
-            ("open", open.evaluate(&auto_call()).await),
+            ("closed", closed.evaluate(&closed_call).await.verdict),
+            ("open", open.evaluate(&auto_call()).await.verdict),
         ] {
             if expect_allow {
                 assert!(
@@ -909,7 +916,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
     // not judge; C3 an authored pattern rule matched; C4 nothing matched and
     // the ruleset default decided; C5 the toolset disabled the tool. Effects:
     // E1 the ruling's basis names the requirement; E2 an `auto` refusal carries
-    // `judged_high_risk` and an `auto` ask carries `indeterminate`, an `auto`
+    // `high_risk` and an `auto` ask carries `indeterminate`, an `auto`
     // allow carries none; E3 an authored rule, the authored default and a
     // disablement all name `rule` — an instruction outside the toolset policy
     // vocabulary.
@@ -919,7 +926,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
     // | B1 | always_allow | (ignored) | Allow | always_allow | - |
     // | B2 | always_ask | (ignored) | Ask | always_ask | - |
     // | B3 | auto | allow | Allow | auto | - |
-    // | B4 | auto | deny | Deny | auto | judged_high_risk |
+    // | B4 | auto | deny | Deny | auto | high_risk |
     // | B5 | auto | indeterminate | Ask | auto | indeterminate |
     // | B6 | authored `Read` allow rule | - | Allow | rule | - |
     // | B7 | ruleset default deny | - | Deny | rule | - |
@@ -944,7 +951,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
     expect(
         "B1",
         fixed(ToolPermissionRequirement::AlwaysAllow)
-            .evaluate_with_basis(&auto_call())
+            .evaluate(&auto_call())
             .await,
         is_allow,
         PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
@@ -952,7 +959,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
     expect(
         "B2",
         fixed(ToolPermissionRequirement::AlwaysAsk)
-            .evaluate_with_basis(&auto_call())
+            .evaluate(&auto_call())
             .await,
         is_ask,
         PermissionBasis::fixed(PermissionPolicy::AlwaysAsk),
@@ -965,27 +972,23 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
     };
     expect(
         "B3",
-        auto(AutoDecision::Allow)
-            .evaluate_with_basis(&auto_call())
-            .await,
+        auto(AutoDecision::Allow).evaluate(&auto_call()).await,
         is_allow,
         PermissionBasis::auto(None),
     );
     expect(
         "B4",
-        auto(AutoDecision::Deny)
-            .evaluate_with_basis(&auto_call())
-            .await,
+        auto(AutoDecision::Deny).evaluate(&auto_call()).await,
         is_deny,
-        PermissionBasis::auto(Some(PermissionReasonCode::JudgedHighRisk)),
+        PermissionBasis::auto(Some(PermissionReasonCode::HIGH_RISK)),
     );
     expect(
         "B5",
         auto(AutoDecision::Indeterminate)
-            .evaluate_with_basis(&auto_call())
+            .evaluate(&auto_call())
             .await,
         is_ask,
-        PermissionBasis::auto(Some(PermissionReasonCode::Indeterminate)),
+        PermissionBasis::auto(Some(PermissionReasonCode::INDETERMINATE)),
     );
 
     let authored = RuleBasedToolPermissionPolicy::new(ruleset(
@@ -999,13 +1002,13 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
     };
     expect(
         "B6",
-        authored.evaluate_with_basis(&call("Read")).await,
+        authored.evaluate(&call("Read")).await,
         is_allow,
         PermissionBasis::fixed(PermissionPolicy::Rule),
     );
     expect(
         "B7",
-        authored.evaluate_with_basis(&call("Write")).await,
+        authored.evaluate(&call("Write")).await,
         is_deny,
         PermissionBasis::fixed(PermissionPolicy::Rule),
     );
@@ -1016,7 +1019,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
         .with_mcp_toolsets(&[disabled]);
     expect(
         "B8",
-        disabled.evaluate_with_basis(&auto_call()).await,
+        disabled.evaluate(&auto_call()).await,
         is_deny,
         PermissionBasis::fixed(PermissionPolicy::Rule),
     );

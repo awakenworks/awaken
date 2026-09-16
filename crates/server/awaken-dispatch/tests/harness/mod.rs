@@ -27,7 +27,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
@@ -193,10 +193,10 @@ impl ToolGateHook for SuspendGate {
         &self,
         _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
-    ) -> GateOutcome {
-        GateOutcome::RequireConfirmation {
+    ) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::RequireConfirmation {
             correlation_id: TICKET.to_string(),
-        }
+        })
     }
 }
 
@@ -208,11 +208,11 @@ impl ToolGateHook for ScheduleGate {
         &self,
         _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
-    ) -> GateOutcome {
-        GateOutcome::Schedule {
+    ) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::Schedule {
             correlation_id: TICKET.to_string(),
             action_kind: None,
-        }
+        })
     }
 }
 

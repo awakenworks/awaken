@@ -113,10 +113,7 @@ pub(super) async fn drive_resumed(
                 AwaitReason::ToolPermission | AwaitReason::ScheduledAction
             ) =>
         {
-            Some(match decision {
-                PermissionDecision::Allow { .. } => "approved",
-                PermissionDecision::Deny { .. } => "denied",
-            })
+            Some(awaken_agent_contract::audit::permission::PermissionConfirmation::from(decision))
         }
         _ => None,
     };
@@ -181,14 +178,12 @@ pub(super) async fn drive_resumed(
                     Vec::new(),
                     approval_state,
                     vec![
-                        // A person answered the ticket: no authored policy
-                        // decided this row, so it names none.
-                        RunEvent::PermissionDecided {
+                        // A person answered the ticket: a confirmation, not a
+                        // second decision of the gate.
+                        RunEvent::PermissionConfirmed {
                             tool_id: pending.tool_id.clone(),
                             call_id: call_id.to_string(),
-                            decision: "approved".to_string(),
-                            policy: None,
-                            reason_code: None,
+                            result: awaken_agent_contract::audit::permission::PermissionConfirmation::Allow,
                         }
                         .into(),
                     ],
@@ -338,12 +333,10 @@ pub(super) async fn drive_resumed(
         (permission_decision, ticket.tool_call())
     {
         vec![
-            RunEvent::PermissionDecided {
+            RunEvent::PermissionConfirmed {
                 tool_id: pending.tool_id.clone(),
                 call_id: call_id.to_string(),
-                decision: decision.to_string(),
-                policy: None,
-                reason_code: None,
+                result: decision,
             }
             .into(),
         ]

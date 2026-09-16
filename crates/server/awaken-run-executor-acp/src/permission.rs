@@ -64,8 +64,11 @@ impl PermissionAudit {
                     .audit_decision()
                     .as_str()
                     .to_string(),
-                policy: ruling.basis.map(|basis| basis.policy),
-                reason_code: ruling.basis.and_then(|basis| basis.reason_code),
+                policy: ruling.basis.as_ref().map(|basis| basis.policy),
+                reason_code: ruling
+                    .basis
+                    .as_ref()
+                    .and_then(|basis| basis.reason_code.clone()),
             }
             .into();
         self.0
@@ -128,7 +131,7 @@ impl PermissionResolver for NarrowedPermissionResolver<'_> {
             call_id: ask.call_id.clone(),
             arguments: ask.arguments.clone(),
         };
-        let ruling = self.narrowing.evaluate_with_basis(&call).await;
+        let ruling = self.narrowing.evaluate(&call).await;
         match ruling.verdict.clone() {
             // An allowing narrowing is not the answer; the base resolver's is,
             // and it records its own.
@@ -217,7 +220,7 @@ pub(crate) async fn resolve_neutral_permission(
     };
     // The basis is asked for, not inferred: the same policy that decides also
     // names which authored policy decided, exactly as the native gate records it.
-    let ruling = policy.evaluate_with_basis(&ctx).await;
+    let ruling = policy.evaluate(&ctx).await;
     if let Some(audit) = audit {
         audit.record(&ctx, &ruling);
     }

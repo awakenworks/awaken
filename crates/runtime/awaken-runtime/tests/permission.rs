@@ -131,8 +131,8 @@ impl CompactBackend for CountingCompactBackend {
 struct FixedPolicy(ToolPermissionVerdict);
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for FixedPolicy {
-    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
-        self.0.clone()
+    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
+        ToolPermissionRuling::without_basis(self.0.clone())
     }
 }
 
@@ -212,6 +212,18 @@ fn audited_decisions(commit: &MemoryCommitCoordinator) -> Vec<String> {
         .collect()
 }
 
+/// The committed `PermissionConfirmed` results, in order: how each wait the
+/// gate opened was answered by a person. Kept apart from the gate's decisions.
+fn audited_confirmations(commit: &MemoryCommitCoordinator) -> Vec<String> {
+    commit
+        .committed()
+        .events
+        .iter()
+        .filter(|e| e.kind == EventKind::PermissionConfirmed)
+        .map(|e| e.payload["result"].as_str().unwrap_or("").to_string())
+        .collect()
+}
+
 /// Test design for tool authorization and execution selection.
 /// Decision rules: Allow -> execute once and audit allow; Deny -> do not execute
 /// and audit deny; Confirm -> await, then an allowed resume executes once; a
@@ -278,7 +290,7 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
     // invariants: approval and the delivery-operation receipt precede the effect,
     // are committed at the same boundary, and must match the durable ticket.
     // Decision rule P1: ask=>Awaiting/zero; exact allow with operation O1
-    // =>approved+ResumeApplied(O1)/one/NaturalEnd. The sibling Host decision
+    // =>confirmed(allow)+ResumeApplied(O1)/one/NaturalEnd. The sibling Host decision
     // table covers response-loss retry and changed-operation conflict.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(
@@ -322,8 +334,13 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the approved tool ran once");
     assert_eq!(
         audited_decisions(&commit),
-        vec!["ask", "approved"],
-        "the resume decision is committed before tool execution"
+        vec!["ask"],
+        "the gate decided once; a person's answer is not a second decision"
+    );
+    assert_eq!(
+        audited_confirmations(&commit),
+        vec!["allow"],
+        "the person's answer is committed as its own confirmation fact"
     );
     let committed = commit.committed();
     let receipts = committed
@@ -488,15 +505,15 @@ struct RecordingDenyCanonical {
 }
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for RecordingDenyCanonical {
-    async fn evaluate(&self, ctx: &ToolCall) -> ToolPermissionVerdict {
+    async fn evaluate(&self, ctx: &ToolCall) -> ToolPermissionRuling {
         self.seen.lock().unwrap().push(ctx.tool_id.clone());
-        if ctx.tool_id == "echo" {
+        ToolPermissionRuling::without_basis(if ctx.tool_id == "echo" {
             ToolPermissionVerdict::Deny {
                 reason: "canonical echo denied".to_string(),
             }
         } else {
             ToolPermissionVerdict::Allow
-        }
+        })
     }
 }
 
@@ -596,7 +613,13 @@ impl RawTool for PermissionEffectProbe {
                 .phase,
             ToolCallPhase::Executing { .. }
         ));
-        assert_eq!(audited_decisions(&self.commit).last().unwrap(), "approved");
+        assert_eq!(
+            audited_confirmations(&self.commit)
+                .last()
+                .map(String::as_str),
+            Some("allow"),
+            "the confirmation is durable before the approved tool is entered"
+        );
         assert!(
             self.commit
                 .committed()
@@ -619,10 +642,10 @@ struct AskByCall;
 
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for AskByCall {
-    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
-        ToolPermissionVerdict::RequireConfirmation {
+    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
+        ToolPermissionRuling::without_basis(ToolPermissionVerdict::RequireConfirmation {
             correlation_id: format!("permission-{}", call.call_id),
-        }
+        })
     }
 }
 
@@ -1096,11 +1119,7 @@ async fn tool_batch_handoff_preserves_the_remaining_calls_and_publication_barrie
 struct BasisPolicy(ToolPermissionRuling);
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for BasisPolicy {
-    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
-        self.0.verdict.clone()
-    }
-
-    async fn evaluate_with_basis(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
+    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
         self.0.clone()
     }
 }
@@ -1135,7 +1154,7 @@ async fn the_gate_audits_the_policy_and_reason_the_deciding_policy_stated() {
     // (a fixed host policy outside the authored vocabulary). Effects: E1 the
     // committed `PermissionDecided` row carries the decision label the gate
     // outcome maps to; E2 `policy` is the stated policy; E3 `reason_code` is
-    // present exactly for an `auto` refusal (`judged_high_risk`) or an `auto`
+    // present exactly for an `auto` refusal (`high_risk`) or an `auto`
     // ask (`indeterminate`); E4 with no stated basis neither key is written.
     //
     // | Rule | verdict | stated basis | decision | policy | reason_code |
@@ -1143,7 +1162,7 @@ async fn the_gate_audits_the_policy_and_reason_the_deciding_policy_stated() {
     // | G1 | Allow | always_allow | allow | always_allow | - |
     // | G2 | RequireConfirmation | always_ask | ask | always_ask | - |
     // | G3 | Allow | auto | allow | auto | - |
-    // | G4 | Deny | auto/judged_high_risk | deny | auto | judged_high_risk |
+    // | G4 | Deny | auto/high_risk | deny | auto | high_risk |
     // | G5 | RequireConfirmation | auto/indeterminate | ask | auto | indeterminate |
     // | G6 | Deny | none | deny | - | - |
     let ask = || ToolPermissionVerdict::RequireConfirmation {
@@ -1183,18 +1202,16 @@ async fn the_gate_audits_the_policy_and_reason_the_deciding_policy_stated() {
             "G4",
             ToolPermissionRuling {
                 verdict: deny(),
-                basis: Some(PermissionBasis::auto(Some(
-                    PermissionReasonCode::JudgedHighRisk,
-                ))),
+                basis: Some(PermissionBasis::auto(Some(PermissionReasonCode::HIGH_RISK))),
             },
-            ("deny", Some("auto"), Some("judged_high_risk")),
+            ("deny", Some("auto"), Some("high_risk")),
         ),
         (
             "G5",
             ToolPermissionRuling {
                 verdict: ask(),
                 basis: Some(PermissionBasis::auto(Some(
-                    PermissionReasonCode::Indeterminate,
+                    PermissionReasonCode::INDETERMINATE,
                 ))),
             },
             ("ask", Some("auto"), Some("indeterminate")),

@@ -37,18 +37,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # Key: "<trait>::<method>". Value: why the degraded call is the correct
 # behaviour for an implementation that does not override it. An entry is a
 # decision someone made and can be argued with.
-DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
-    # "No basis" is the exact answer for an implementor that does not decide
-    # from the authored permission vocabulary — a per-Run capability narrowing,
-    # a fixed host policy, a plugin precondition gate that decides on state.
-    # Naming a policy for those would put an author's label on a decision
-    # nobody authored, which is the failure this default avoids rather than
-    # causes. An implementor that DOES decide from that vocabulary overrides
-    # it; that the shipped rule policy and permission-backed gate do so is
-    # pinned by their own tests, not by this trait's shape.
-    "ToolPermissionPolicy::evaluate_with_basis": "a policy outside the authored vocabulary has no basis to name",
-    "ToolGateHook::gate_with_basis": "a gate that is not permission-backed has no basis to name",
-}
+DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {}
 
 # The shape predates the gate. Converting every instance at once would be a
 # migration, not a fix, so the untriaged remainder is ratcheted instead:

@@ -19,7 +19,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolKind,
 };
@@ -107,10 +107,10 @@ impl ToolGateHook for SuspendGate {
         &self,
         _ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
-    ) -> GateOutcome {
-        GateOutcome::RequireConfirmation {
+    ) -> GateDecision {
+        GateDecision::without_basis(GateOutcome::RequireConfirmation {
             correlation_id: "ticket-1".to_string(),
-        }
+        })
     }
 }
 
@@ -314,8 +314,14 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
             .any(|m| m.role == Role::Tool && m.text_content().contains("blocked"))
     );
     assert!(commit.committed().events.iter().any(|event| {
-        event.kind == EventKind::PermissionDecided && event.payload["decision"] == "denied"
+        event.kind == EventKind::PermissionConfirmed && event.payload["result"] == "deny"
     }));
+    assert!(
+        !commit.committed().events.iter().any(|event| {
+            event.kind == EventKind::PermissionDecided && event.payload["decision"] == "denied"
+        }),
+        "a person's refusal is a confirmation, never a second gate decision"
+    );
 }
 
 #[tokio::test]
