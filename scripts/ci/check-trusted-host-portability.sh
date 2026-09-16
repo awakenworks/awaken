@@ -7,6 +7,7 @@ source scripts/ci/_cargo_target.sh
 source scripts/ci/_provider_environment.sh
 awaken_configure_cargo_target "$PWD"
 awaken_unset_ambient_api_keys
+awaken_append_repo_tools
 
 # Gate selection table: default preserves the cross-platform contract;
 # --linux-supervision additionally REQUIRES real Linux PID namespaces/pidfd.
