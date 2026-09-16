@@ -7,6 +7,7 @@
 
 use std::ops::RangeInclusive;
 
+/// SDK: none — crate-private classifier behind the shared `initial_events` checks; never serialized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InitialEventClass {
     UserMessage,
@@ -23,6 +24,7 @@ pub(crate) trait InitialEventSpec {
     fn initial_event_class(&self) -> InitialEventClass;
 }
 
+/// SDK: none — crate-private count/outcome policy for `initial_events`; never serialized.
 pub(crate) struct InitialEventPolicy {
     pub min_count: usize,
     pub max_count: usize,

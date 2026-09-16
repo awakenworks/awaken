@@ -88,6 +88,8 @@ impl ModelConfig {
 /// The SDK's closed inference-geography vocabulary. Unsupported geography
 /// strings fail at the serde boundary instead of surviving as partially
 /// validated configuration.
+///
+/// SDK: inline — `BetaManagedAgentsModelConfig.inference_geo` (an open string in the SDK; closed here).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelInferenceGeo {
@@ -95,6 +97,7 @@ pub enum ModelInferenceGeo {
     Us,
 }
 
+/// SDK: inline — `BetaManagedAgentsModelConfig.speed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelSpeed {
@@ -103,6 +106,8 @@ pub enum ModelSpeed {
 }
 
 /// Responses use the SDK's tagged effort union (`{type: ...}`).
+///
+/// SDK: inline — `BetaManagedAgentsModelConfig.effort` (`BetaManagedAgentsEffortLow` … `Max`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelEffort {
@@ -114,6 +119,8 @@ pub enum ModelEffort {
 }
 
 /// Create/update accepts either a bare effort level or the tagged response form.
+///
+/// SDK: inline — `BetaManagedAgentsModelConfigParams.effort`.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(untagged)]
 pub enum ModelEffortInput {
@@ -121,6 +128,7 @@ pub enum ModelEffortInput {
     Tagged(ModelEffort),
 }
 
+/// SDK: inline — `BetaManagedAgentsModelConfigParams.effort` (its bare-string arm).
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelEffortLevel {

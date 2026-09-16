@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+/// SDK: inline — `Skill.type` (also `BetaSkill.type`).
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SkillObjectType {
@@ -9,6 +10,7 @@ pub enum SkillObjectType {
     Skill,
 }
 
+/// SDK: inline — `SkillVersion.type` (also `BetaSkillVersion.type`).
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SkillVersionObjectType {
@@ -16,6 +18,7 @@ pub enum SkillVersionObjectType {
     SkillVersion,
 }
 
+/// SDK: inline — `DeletedSkill.type`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DeletedSkillObjectType {
@@ -23,6 +26,7 @@ pub enum DeletedSkillObjectType {
     SkillDeleted,
 }
 
+/// SDK: inline — `DeletedSkillVersion.type`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DeletedSkillVersionObjectType {
@@ -165,6 +169,8 @@ pub struct BetaSkillVersion {
 
 /// Internal protocol union selected before projection. It is not another
 /// resource model: each variant is one official SDK response type.
+///
+/// SDK: none — crate-private untagged switch between the beta and GA skill responses, chosen by API surface.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub(crate) enum SkillWire {
@@ -172,6 +178,7 @@ pub(crate) enum SkillWire {
     Ga(Skill),
 }
 
+/// SDK: none — crate-private untagged switch between the beta and GA skill version responses.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub(crate) enum SkillVersionWire {

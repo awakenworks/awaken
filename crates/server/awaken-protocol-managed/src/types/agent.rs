@@ -16,6 +16,8 @@ use crate::types::{ModelConfig, ModelConfigParams};
 /// The one Managed MCP wire shape shared by Agent and Session requests:
 /// `{name, type:"url", url}`. Internal sandbox-stdio bindings never become a
 /// second public transport variant.
+///
+/// `BetaManagedAgentsURLMCPServerParams` on input; `BetaManagedAgentsMCPServerURLDefinition` on output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMcpServer {
     pub name: String,
@@ -61,6 +63,7 @@ impl<'de> Deserialize<'de> for AgentMcpServer {
     }
 }
 
+/// `BetaManagedAgentsSkillParams`; the response form is `BetaManagedAgentsAnthropicSkill` | `BetaManagedAgentsCustomSkill`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentSkill {
@@ -127,6 +130,7 @@ impl AgentSkill {
     }
 }
 
+/// `BetaManagedAgentsMultiagentRosterEntryParams`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MultiagentRosterEntry {
@@ -136,6 +140,7 @@ pub enum MultiagentRosterEntry {
     Advisor(AdvisorRosterEntry),
 }
 
+/// `BetaManagedAgentsAdvisorParams` (response: `BetaManagedAgentsAdvisor`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdvisorRosterEntry {
@@ -144,6 +149,7 @@ pub struct AdvisorRosterEntry {
     pub kind: AdvisorRosterEntryKind,
 }
 
+/// SDK: inline — `BetaManagedAgentsAdvisorParams.type`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum AdvisorRosterEntryKind {
     #[serde(rename = "advisor")]
@@ -235,6 +241,7 @@ pub(crate) fn managed_advisor_result_is_redacted(advisor: &str) -> bool {
     )
 }
 
+/// `BetaManagedAgentsAgentParams`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRosterReference {
@@ -245,12 +252,14 @@ pub struct AgentRosterReference {
     pub version: Option<u64>,
 }
 
+/// SDK: inline — `BetaManagedAgentsAgentParams.type`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum AgentRosterReferenceKind {
     #[serde(rename = "agent")]
     Agent,
 }
 
+/// `BetaManagedAgentsMultiagentSelfParams`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelfRosterReference {
@@ -258,12 +267,14 @@ pub struct SelfRosterReference {
     pub kind: SelfRosterReferenceKind,
 }
 
+/// SDK: inline — `BetaManagedAgentsMultiagentSelfParams.type`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum SelfRosterReferenceKind {
     #[serde(rename = "self")]
     SelfReference,
 }
 
+/// `BetaManagedAgentsMultiagentCoordinatorParams` (response: `BetaManagedAgentsMultiagentCoordinator`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MultiagentConfig {
@@ -273,6 +284,8 @@ pub enum MultiagentConfig {
 /// A client's `model` input: a bare id string or a full `{id, speed?}` config
 /// (the SDK's `string | BetaManagedAgentsModelConfig`). Normalized to the shared
 /// [`ModelConfig`] via [`ModelInput::into_config`].
+///
+/// SDK: inline — `AgentCreateParams.model` (`BetaManagedAgentsModel` | `BetaManagedAgentsModelConfigParams`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum ModelInput {
