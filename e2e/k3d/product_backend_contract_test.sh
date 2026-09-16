@@ -17,8 +17,8 @@ trap 'rm -f "$RENDERED"' EXIT
 
 # Internal-product topology cause/effect decision table.
 # Causes: C1 the product overlay renders; C2 the Awaken Service is ClusterIP and
-# no external Kubernetes route exists; C3 state/config/tmp mounts, signed Worker
-# trust projected from an externally provisioned Secret, and a bounded startup
+# no external Kubernetes route exists; C3 state/config/tmp mounts, Pod-bound
+# Worker identity/token projection, exact TokenReview authority, and a bounded startup
 # grace plus readiness/liveness probes are declared; C4 ingress is
 # restricted to namespaces explicitly labelled as an
 # Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base and
@@ -58,6 +58,8 @@ grep -q 'name: awaken-sandbox-open-egress' "$RENDERED"
 [[ "$(grep -c '^kind: ServiceAccount$' "$RENDERED")" -eq 1 ]]
 [[ "$(grep -c '^kind: Role$' "$RENDERED")" -eq 1 ]]
 [[ "$(grep -c '^kind: RoleBinding$' "$RENDERED")" -eq 1 ]]
+[[ "$(grep -c '^kind: ClusterRole$' "$RENDERED")" -eq 1 ]]
+[[ "$(grep -c '^kind: ClusterRoleBinding$' "$RENDERED")" -eq 1 ]]
 grep -q 'type: ClusterIP' "$RENDERED"
 ! grep -Eq '^kind: (Ingress|Gateway)$|type: (NodePort|LoadBalancer)|hostPort:' "$RENDERED"
 grep -q 'role = "all-in-one"' "$RENDERED"
@@ -67,7 +69,10 @@ grep -q 'role = "all-in-one"' "$RENDERED"
 grep -q 'worker_max_concurrent = 10' "$RENDERED"
 grep -q 'no_browser = true' "$RENDERED"
 grep -q 'identity_mode = "self-managed"' "$RENDERED"
-grep -q 'worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"' "$RENDERED"
+grep -q 'worker_kubernetes_identity_directory = "/var/run/awaken-worker-identity"' "$RENDERED"
+grep -q 'worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-product", audience = "awaken-worker", provider_id = "k3d-awaken-product" }' "$RENDERED"
+! grep -q 'worker_trust_credentials_file' "$RENDERED"
+! grep -q 'worker_request_credential_file' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
 grep -q 'k8s_continuation_volume = { storage_class_name = "local-path", size = "1Gi" }' "$RENDERED"
 grep -q "container_image = \"$SANDBOX_IMAGE\"" "$RENDERED"
@@ -94,8 +99,12 @@ grep -q -- '- create' <<<"$PRODUCT_OBJECT_RULE"
 grep -q -- '- update' <<<"$PRODUCT_OBJECT_RULE"
 grep -q -- '- delete' <<<"$PRODUCT_OBJECT_RULE"
 grep -q 'persistentVolumeClaim:' "$RENDERED"
-grep -q 'secretName: awaken-product-worker-auth' "$RENDERED"
-grep -q 'mountPath: /etc/awaken-auth' "$RENDERED"
+grep -q 'mountPath: /var/run/awaken-worker-identity' "$RENDERED"
+grep -q 'audience: awaken-worker' "$RENDERED"
+grep -q 'fieldPath: metadata.uid' "$RENDERED"
+TOKEN_REVIEW_RULE="$(grep -A4 -- '- authentication.k8s.io' "$RENDERED")"
+grep -q -- '- tokenreviews' <<<"$TOKEN_REVIEW_RULE"
+grep -q -- '- create' <<<"$(grep -A3 -- '- tokenreviews' "$RENDERED")"
 [[ "$(grep -c '^kind: Secret$' "$RENDERED")" -eq 0 ]]
 grep -q 'startupProbe:' "$RENDERED"
 grep -q 'failureThreshold: 180' "$RENDERED"
