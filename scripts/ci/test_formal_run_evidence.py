@@ -34,6 +34,7 @@ def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = No
                      "scripts/ci/fixtures/cbmc_recursive_alias.c", "scripts/ci/fixtures/kani_wide_niche.rs",
                      "scripts/ci/_deadline.sh", "scripts/ci/deadline.py",
                      "scripts/ci/_provider_environment.sh", "scripts/ci/check-reliability.sh",
+                     "scripts/ci/check_node_dependencies.py",
                      "rust-toolchain.toml"):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)

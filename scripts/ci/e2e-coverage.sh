@@ -125,6 +125,7 @@ fi
 # pinned TypeScript runner once for every npm/Node child in this coverage chain.
 # Use a file URL so stage tests that intentionally set cwd to the repository root
 # do not lose package resolution from e2e/node_modules (especially on Windows).
+python3 scripts/ci/check_node_dependencies.py
 pushd e2e >/dev/null
 tsx_loader_url="$(node -p "require('node:url').pathToFileURL(require.resolve('tsx')).href")"
 export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$tsx_loader_url"
