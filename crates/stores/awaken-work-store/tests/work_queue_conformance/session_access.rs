@@ -2,7 +2,7 @@
 use awaken_session_contract::work_queue::{
     HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue,
 };
-use awaken_work_store::LEASE_TTL_MS;
+use awaken_work_store::{LEASE_TTL_MS, test_session_access_digest};
 use std::collections::BTreeMap;
 
 /// Cause/effect sequence: queued healthcheck + two Sessions => FIFO/cap; an
@@ -82,12 +82,12 @@ pub async fn capability_and_metadata_contract(q: &impl WorkQueue) {
     );
     assert!(q.stop("env_a", &hc, "w").await.expect("stop").is_accepted());
     let session_claim = q
-        .claim_with_session_access("env_a", "w", "w", 1, None)
+        .claim_with_session_access("env_a", "w", "w", 1, None, &test_session_access_digest(1))
         .await
         .expect("session claim")
         .expect("queued Session");
     let token = session_claim
-        .sessions_token
+        .session_access
         .as_ref()
         .expect("Session claim token");
     let access = q
@@ -110,6 +110,7 @@ pub async fn capability_and_metadata_contract(q: &impl WorkQueue) {
             "w-replacement",
             LEASE_TTL_MS + 1,
             None,
+            &test_session_access_digest(2),
         )
         .await
         .expect("replacement claim")
@@ -117,7 +118,7 @@ pub async fn capability_and_metadata_contract(q: &impl WorkQueue) {
     let replacement_access = q
         .authenticate_session_access(
             replacement
-                .sessions_token
+                .session_access
                 .as_ref()
                 .expect("replacement token"),
             LEASE_TTL_MS + 1,

@@ -85,8 +85,10 @@ credential map or second lease registry exists.
 
 The claim of a Session Work additionally returns the official one-time
 base64url Work `secret`, whose JSON payload contains a random
-`sessions_token`. The WorkQueue stores only a domain-separated SHA-256 digest
-on the same Work row and binds it to the current owner, lease epoch, and expiry.
+`sessions_token`. The Environment execution application mints the token and
+its domain-separated SHA-256 digest; the WorkQueue receives only the digest,
+stores it on the same Work row in the claim transaction, and binds it to the
+current owner, lease epoch, and expiry.
 The token is never returned by list/retrieve, is rotated on reclaim, and is
 cleared by stop, wake, release, retirement, or expiry. HealthCheck Work never
 receives one. The outer Managed capability edge maps a current token only to

@@ -12,16 +12,14 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_agent_contract::RedactedString;
 use awaken_session_contract::work_queue::{
-    ClaimedWork, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats,
-    SessionWorkLease, SessionWorkReleaseAdmission, WorkItem, WorkLeaseMutationAdmission,
+    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats, SessionAccessDigest,
+    SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkLeaseMutationAdmission,
     WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError, WorkSessionAccess, WorkState,
     session_work_release_admission, work_lease_mutation_admission,
 };
 
-use super::session_access::issue_session_token;
-use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at, session_token_sha256};
+use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at};
 
 /// The lease TTL a heartbeat reports (seconds).
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
@@ -38,7 +36,7 @@ pub struct InMemoryWorkQueue {
 #[derive(Default)]
 struct InMemoryQueueAuthority {
     works: BTreeMap<String, WorkItem>,
-    session_token_sha256: HashMap<String, String>,
+    session_token_sha256: HashMap<String, SessionAccessDigest>,
     book: LeaseBook,
 }
 
@@ -167,8 +165,8 @@ impl InMemoryWorkQueue {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-        mint_session_access: bool,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        session_access: Option<&SessionAccessDigest>,
+    ) -> Result<Option<WorkClaim>, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
         let InMemoryQueueAuthority {
             works,
@@ -210,15 +208,15 @@ impl InMemoryWorkQueue {
         work.state = WorkState::Active;
         work.started_at = Some(OBJECT_AT.to_string());
         work.latest_heartbeat_at = None;
-        let sessions_token = (mint_session_access
-            && matches!(work.data, WorkPayload::Session { .. }))
-        .then(issue_session_token);
-        if let Some(token) = sessions_token.as_ref() {
-            session_token_sha256.insert(wid, super::session_access::session_token_sha256(token));
+        let session_access = session_access
+            .filter(|_| matches!(work.data, WorkPayload::Session { .. }))
+            .cloned();
+        if let Some(digest) = session_access.as_ref() {
+            session_token_sha256.insert(wid, digest.clone());
         }
-        Ok(Some(ClaimedWork {
+        Ok(Some(WorkClaim {
             item: work.clone(),
-            sessions_token,
+            session_access,
         }))
     }
 }
@@ -366,7 +364,7 @@ impl WorkQueue for InMemoryWorkQueue {
                 poller_id,
                 now_ms,
                 reclaim_older_than_ms,
-                false,
+                None,
             )?
             .map(|claim| claim.item))
     }
@@ -378,28 +376,28 @@ impl WorkQueue for InMemoryWorkQueue {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        session_access: &SessionAccessDigest,
+    ) -> Result<Option<WorkClaim>, WorkQueueError> {
         self.claim_inner(
             env_id,
             lease_owner,
             poller_id,
             now_ms,
             reclaim_older_than_ms,
-            true,
+            Some(session_access),
         )
     }
 
     async fn authenticate_session_access(
         &self,
-        presented: &RedactedString,
+        presented: &SessionAccessDigest,
         now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
-        let digest = session_token_sha256(presented);
         let authority = self.authority.lock().unwrap();
         let Some(work_id) = authority
             .session_token_sha256
             .iter()
-            .find_map(|(id, stored)| (stored == &digest).then_some(id))
+            .find_map(|(id, stored)| (stored == presented).then_some(id))
         else {
             return Ok(None);
         };
@@ -829,7 +827,7 @@ impl WorkQueue for InMemoryWorkQueue {
 #[cfg(all(test, not(feature = "loom")))]
 mod tests {
     use super::*;
-    use crate::{LEASE_TTL_MS, POLLER_WINDOW_MS};
+    use crate::{LEASE_TTL_MS, POLLER_WINDOW_MS, test_session_access_digest};
 
     fn q() -> InMemoryWorkQueue {
         InMemoryWorkQueue::new()
@@ -1321,11 +1319,18 @@ mod tests {
             .await
             .unwrap();
         let first = q
-            .claim_with_session_access("env", "owner-a", "poller", 0, None)
+            .claim_with_session_access(
+                "env",
+                "owner-a",
+                "poller",
+                0,
+                None,
+                &test_session_access_digest(1),
+            )
             .await
             .unwrap()
             .unwrap();
-        let first_token = first.sessions_token.expect("I1 token");
+        let first_token = first.session_access.expect("I1 token");
         let first_access = q
             .authenticate_session_access(&first_token, 1)
             .await
@@ -1335,21 +1340,25 @@ mod tests {
         assert_eq!(first_access.session_id, "sesn_1");
         assert_eq!(first_access.lease_owner, "owner-a");
         assert!(
-            q.authenticate_session_access(
-                &RedactedString::from("sk-ant-req-wrong".to_string()),
-                1,
-            )
+            q.authenticate_session_access(&test_session_access_digest(u64::MAX), 1,)
                 .await
                 .unwrap()
                 .is_none(),
             "I2"
         );
         let second = q
-            .claim_with_session_access("env", "owner-b", "poller-b", LEASE_TTL_MS, None)
+            .claim_with_session_access(
+                "env",
+                "owner-b",
+                "poller-b",
+                LEASE_TTL_MS,
+                None,
+                &test_session_access_digest(2),
+            )
             .await
             .unwrap()
             .unwrap();
-        let second_token = second.sessions_token.expect("I3 token");
+        let second_token = second.session_access.expect("I3 token");
         assert!(
             q.authenticate_session_access(&first_token, LEASE_TTL_MS)
                 .await
