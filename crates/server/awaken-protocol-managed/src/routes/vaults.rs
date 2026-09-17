@@ -71,11 +71,11 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::{ManagedJson, ManagedQuery, sha256_identity};
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire,
-    CredentialInjectionLocation, CredentialInjectionLocationParams, CredentialNetworking,
-    CredentialUpdateAuth, CredentialUpdateParams, CredentialValidation, CredentialValidationStatus,
-    DeletedCredential, DeletedVault, ListQuery, McpOauthRefreshResponse, McpProbeResult,
-    TokenEndpointAuthParams, TokenEndpointAuthResponse, TokenEndpointAuthUpdate, Vault,
-    VaultCreateParams, VaultUpdateParams,
+    CredentialInjectionLocation, CredentialInjectionLocationParams, CredentialMcpProbe,
+    CredentialNetworking, CredentialRefreshResult, CredentialUpdateAuth, CredentialUpdateParams,
+    CredentialValidation, CredentialValidationStatus, DeletedCredential, DeletedVault, ListQuery,
+    McpOauthRefreshResponse, TokenEndpointAuthParams, TokenEndpointAuthResponse,
+    TokenEndpointAuthUpdate, Vault, VaultCreateParams, VaultUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
@@ -213,6 +213,7 @@ fn create_injection_location(
 /// durable, secret-free Managed projection.
 mod mcp_inspection;
 pub use mcp_inspection::{McpCredentialChoice, McpInspectionView};
+use mcp_inspection::{oauth_refresh_access, validate_credential};
 
 pub struct VaultState {
     secrets: Arc<dyn SecretStore>,
@@ -221,6 +222,10 @@ pub struct VaultState {
     /// credentials, when the process startup wires one. `None` keeps every
     /// validation `unknown` (never a false `valid`).
     probe: Option<Arc<dyn McpProbe>>,
+    /// The OAuth refresh exchange the validate route attempts when the probe
+    /// is refused and the credential holds a refresh token. `None` reports no
+    /// attempt (`refresh: null`), never a fabricated outcome.
+    refresh_exchange: Option<Arc<dyn awaken_session_contract::CredentialRefreshExchange>>,
     material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
     rollout_target:
         RwLock<Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>>,
@@ -236,6 +241,7 @@ impl VaultState {
             secrets,
             repository,
             probe: None,
+            refresh_exchange: None,
             material_delivery: None,
             rollout_target: RwLock::new(None),
         }
@@ -519,6 +525,18 @@ impl VaultState {
         self
     }
 
+    /// Wire the OAuth refresh exchange, so validating an auth-refused
+    /// `mcp_oauth` credential that holds a refresh token attempts the exchange,
+    /// reseals the issued token, re-probes, and reports the exchange outcome.
+    #[must_use]
+    pub fn with_refresh_exchange(
+        mut self,
+        exchange: Arc<dyn awaken_session_contract::CredentialRefreshExchange>,
+    ) -> Self {
+        self.refresh_exchange = Some(exchange);
+        self
+    }
+
     /// Install the one deployment-owned plaintext delivery mechanism.
     /// Selection, revision, holder, usage and target binding remain
     /// Vault/Session facts.
@@ -743,8 +761,7 @@ impl VaultState {
         awaken_credential_vault::CredentialError,
     > {
         use awaken_credential_contract::{
-            CredentialExecutionPolicy, CredentialPurpose, CredentialRefreshAccess,
-            CredentialTarget, CredentialUsage,
+            CredentialExecutionPolicy, CredentialPurpose, CredentialTarget, CredentialUsage,
         };
 
         let target_url = target.http_url().ok_or_else(|| {
@@ -790,53 +807,7 @@ impl VaultState {
                 _ => None,
             });
         if let Some(refresh) = refresh {
-            let access_token_ref = source
-                .material_ref
-                .as_ref()
-                .ok_or_else(|| {
-                    awaken_credential_vault::CredentialError::MissingMaterialRef(
-                        source_id.0.clone(),
-                    )
-                })?
-                .0
-                .clone();
-            let refresh_token_ref = source
-                .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
-                .ok_or_else(|| {
-                    awaken_credential_vault::CredentialError::MissingMaterialRef(format!(
-                        "{}:{OAUTH_REFRESH_TOKEN_SLOT}",
-                        source_id.0
-                    ))
-                })?
-                .0
-                .clone();
-            let client_secret_ref = match refresh.token_endpoint_auth {
-                awaken_credential_contract::TokenEndpointAuth::None => None,
-                awaken_credential_contract::TokenEndpointAuth::ClientSecretBasic
-                | awaken_credential_contract::TokenEndpointAuth::ClientSecretPost => Some(
-                    source
-                        .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
-                        .ok_or_else(|| {
-                            awaken_credential_vault::CredentialError::MissingMaterialRef(format!(
-                                "{}:{OAUTH_CLIENT_SECRET_SLOT}",
-                                source_id.0
-                            ))
-                        })?
-                        .0
-                        .clone(),
-                ),
-            };
-            access = access.with_refresh(CredentialRefreshAccess::new(
-                revision,
-                refresh.token_endpoint,
-                refresh.client_id,
-                refresh.token_endpoint_auth,
-                client_secret_ref,
-                refresh_token_ref,
-                access_token_ref,
-                refresh.scope,
-                refresh.resource,
-            ));
+            access = access.with_refresh(oauth_refresh_access(&source, revision, refresh)?);
         }
         Ok(access)
     }
@@ -1842,65 +1813,6 @@ async fn update_credential(
     .await
     .map_err(managed_mutation_error)?;
     Ok(Json(VaultState::project_credential(&record)))
-}
-
-async fn validate_credential(
-    State(state): State<Arc<VaultState>>,
-    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
-    Path((vault_id, id)): Path<(String, String)>,
-) -> Result<Json<CredentialValidation>, WireError> {
-    let (mcp_server_url, has_refresh_token) = {
-        let record = state
-            .repository
-            .get_vault_credential(&workspace_id, &id)
-            .await
-            .map_err(storage_error)?
-            .filter(|c| c.vault_id == vault_id && c.lifecycle.is_active())
-            .ok_or_else(|| not_found("credential"))?;
-        let (url, has_refresh) = match &record.auth {
-            AuthRecord::McpOauth {
-                mcp_server_url,
-                refresh,
-                ..
-            } => (Some(mcp_server_url.clone()), refresh.is_some()),
-            _ => (None, false),
-        };
-        (url, has_refresh)
-    };
-    // Live probe: only an `mcp_oauth` credential (it names an MCP server to
-    // handshake with) and only when the process startup wired an `McpProbe`.
-    // The access token is materialized HERE and the port receives the resolved
-    // secret — never a vault ref (its signature enforces that). Any gap — no
-    // probe, env-var/static_bearer, a broken row, an inconclusive probe — keeps
-    // `status` `unknown`: never a false verdict. The `mcp_probe` detail is
-    // secret-free by construction (a handshake flag or an HTTP status).
-    let mut status = CredentialValidationStatus::Unknown;
-    let mut mcp_probe = None;
-    if let Some(url) = &mcp_server_url
-        && let Ok(result) = state.inspect_mcp(&workspace_id, url, Some(&id)).await
-    {
-        match result.status {
-            "valid" => {
-                status = CredentialValidationStatus::Valid;
-                mcp_probe = Some(McpProbeResult::ok());
-            }
-            "invalid" => {
-                status = CredentialValidationStatus::Invalid;
-                mcp_probe = result.http_status.map(McpProbeResult::invalid);
-            }
-            _ => {}
-        }
-    }
-    Ok(Json(CredentialValidation {
-        credential_id: id,
-        has_refresh_token,
-        mcp_probe,
-        refresh: None,
-        status,
-        object_type: "vault_credential_validation",
-        validated_at: OBJECT_AT.to_string(),
-        vault_id,
-    }))
 }
 
 #[cfg(test)]

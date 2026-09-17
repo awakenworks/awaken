@@ -244,6 +244,7 @@ pub awaken_control::ControlDependencies::managed_runtime_available: bool
 pub awaken_control::ControlDependencies::managed_tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
 pub awaken_control::ControlDependencies::mcp_config: alloc::sync::Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>
 pub awaken_control::ControlDependencies::mcp_probe: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>>
+pub awaken_control::ControlDependencies::mcp_refresh_exchange: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::CredentialRefreshExchange>>
 pub awaken_control::ControlDependencies::model_discovery: alloc::sync::Arc<dyn awaken_admin_config_api::provider_connection::ModelCatalogDiscovery>
 pub awaken_control::ControlDependencies::model_publication_resolver: alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>
 pub awaken_control::ControlDependencies::model_supply: awaken_admin_config_api::router::ModelSupplyCapabilityView

@@ -71,7 +71,7 @@
     {
       "path": "crates/contract/awaken-session-contract/src/mcp_probe.rs",
       "boundary": "external_port_contract",
-      "reason": "Defines the three-state MCP probe result and its port signature only; live handshake classification is owned by the runtime-host adapter.",
+      "reason": "Defines the three-state MCP probe result, the refresh-exchange outcome, their port signatures, and the pure scrub-then-bound projection of observed HTTP evidence; live handshake classification is owned by the runtime-host adapter and the exchange by the credential materializer.",
       "evidence": ["crates/bin/awaken-cli/tests/mcp_sessions.rs"]
     },
     {

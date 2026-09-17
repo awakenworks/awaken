@@ -28,6 +28,7 @@ impl McpProbe for Probe {
                 description: Some(bearer.expose_secret().into()),
                 input_schema: json!({"type":"object","description":bearer.expose_secret()}),
             }],
+            failure: None,
         }
     }
 }

@@ -335,6 +335,10 @@ pub awaken_session_contract::ObjectSchemaKind::Object
 pub enum awaken_session_contract::OutcomeDrive
 pub awaken_session_contract::OutcomeDrive::Awaiting
 pub awaken_session_contract::OutcomeDrive::Completed(awaken_session_contract::OutcomeReport)
+pub enum awaken_session_contract::RefreshExchangeStatus
+pub awaken_session_contract::RefreshExchangeStatus::ConnectError
+pub awaken_session_contract::RefreshExchangeStatus::Failed
+pub awaken_session_contract::RefreshExchangeStatus::Succeeded
 pub enum awaken_session_contract::ResolvedInputSource
 pub awaken_session_contract::ResolvedInputSource::File
 pub awaken_session_contract::ResolvedInputSource::File::file_id: awaken_resource_contract::input::FileId
@@ -1262,8 +1266,12 @@ pub awaken_session_contract::McpGenerationRef::session_id: alloc::string::String
 impl awaken_session_contract::McpGenerationRef
 pub const fn awaken_session_contract::McpGenerationRef::attachment_id(&self) -> &awaken_session_contract::McpAttachmentId
 pub struct awaken_session_contract::McpInspection
+pub awaken_session_contract::McpInspection::failure: core::option::Option<awaken_session_contract::McpProbeFailure>
 pub awaken_session_contract::McpInspection::status: awaken_session_contract::McpProbeStatus
 pub awaken_session_contract::McpInspection::tools: alloc::vec::Vec<awaken_session_contract::McpProbeTool>
+pub struct awaken_session_contract::McpProbeFailure
+pub awaken_session_contract::McpProbeFailure::http_response: core::option::Option<awaken_session_contract::ProbeHttpResponse>
+pub awaken_session_contract::McpProbeFailure::method: alloc::string::String
 pub struct awaken_session_contract::McpProbeTool
 pub awaken_session_contract::McpProbeTool::description: core::option::Option<alloc::string::String>
 pub awaken_session_contract::McpProbeTool::input_schema: serde_json::value::Value
@@ -1402,6 +1410,13 @@ pub fn awaken_session_contract::PersistedSession::effective_runtime_active_milli
 pub fn awaken_session_contract::PersistedSession::observe_runtime_interval(&mut self, awaken_session_contract::SessionRuntimeIntervalObservation) -> bool
 impl awaken_session_contract::PersistedSession
 pub fn awaken_session_contract::PersistedSession::validate_observation_replacement(&self, &Self) -> core::result::Result<(), awaken_session_contract::SessionMutationValidationError>
+pub struct awaken_session_contract::ProbeHttpResponse
+pub awaken_session_contract::ProbeHttpResponse::body: alloc::string::String
+pub awaken_session_contract::ProbeHttpResponse::body_truncated: bool
+pub awaken_session_contract::ProbeHttpResponse::content_type: alloc::string::String
+pub awaken_session_contract::ProbeHttpResponse::status_code: u16
+impl awaken_session_contract::ProbeHttpResponse
+pub fn awaken_session_contract::ProbeHttpResponse::scrubbed(u16, core::option::Option<&str>, &str, bool, &[&str]) -> Self
 pub struct awaken_session_contract::QuiescenceReceipt
 pub awaken_session_contract::QuiescenceReceipt::activity_epoch: u64
 pub awaken_session_contract::QuiescenceReceipt::effect_id: alloc::string::String
@@ -1410,6 +1425,9 @@ pub awaken_session_contract::QuiescenceReceipt::live_environment_effects: u32
 pub awaken_session_contract::QuiescenceReceipt::mcp_generations: alloc::vec::Vec<awaken_session_contract::McpGenerationRef>
 impl awaken_session_contract::QuiescenceReceipt
 pub fn awaken_session_contract::QuiescenceReceipt::verify(&self, &awaken_session_contract::SessionEnvironmentOperation, &awaken_session_contract::SandboxGeneration, &[awaken_session_contract::McpGenerationRef]) -> core::result::Result<(), awaken_session_contract::SessionEnvironmentTransitionError>
+pub struct awaken_session_contract::RefreshExchangeOutcome
+pub awaken_session_contract::RefreshExchangeOutcome::http_response: core::option::Option<awaken_session_contract::ProbeHttpResponse>
+pub awaken_session_contract::RefreshExchangeOutcome::status: awaken_session_contract::RefreshExchangeStatus
 pub struct awaken_session_contract::RenewSessionRealization
 pub awaken_session_contract::RenewSessionRealization::asserted_lease: awaken_session_contract::SessionRealizationLease
 pub awaken_session_contract::RenewSessionRealization::requested_expires_at_unix_ms: u64
@@ -2198,6 +2216,9 @@ pub const awaken_session_contract::DREAM_MAX_SESSIONS: usize
 pub const awaken_session_contract::DREAM_SUPPORTED_MODELS: &[&str]
 pub const awaken_session_contract::MAX_SESSION_INITIAL_EVENTS: usize
 pub const awaken_session_contract::OUTCOME_BUSY_CODE: &str
+pub const awaken_session_contract::PROBE_HTTP_BODY_LIMIT: usize
+pub trait awaken_session_contract::CredentialRefreshExchange: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::CredentialRefreshExchange::exchange<'life0, 'async_trait>(&'life0 self, awaken_credential_contract::CredentialSourceId, awaken_credential_contract::CredentialRefreshAccess) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::RefreshExchangeOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_contract::DreamPolicyApplication: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::DreamPolicyApplication::policy(&self, &str, &str) -> core::result::Result<awaken_session_contract::DreamPolicy, awaken_session_contract::DreamPolicyApplicationError>
 pub fn awaken_session_contract::DreamPolicyApplication::set_policy(&self, &str, &str, awaken_session_contract::DreamPolicyConfig) -> core::result::Result<(), awaken_session_contract::DreamPolicyApplicationError>

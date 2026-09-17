@@ -93,6 +93,9 @@ pub struct ControlDependencies {
     /// runtime/resources, either through a local mount or hosted routing.
     pub managed_runtime_available: bool,
     pub mcp_probe: Option<Arc<dyn McpProbe>>,
+    /// The OAuth refresh exchange credential validation attempts after an
+    /// auth-refused probe. `None` reports no attempt.
+    pub mcp_refresh_exchange: Option<Arc<dyn awaken_session_contract::CredentialRefreshExchange>>,
     pub assistant_model_selection: Option<ModelSelection>,
     pub global_tools: Vec<ToolDescriptor>,
     pub platform_plugins: Vec<PluginCapability>,
@@ -174,6 +177,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         model_supply,
         managed_runtime_available,
         mcp_probe,
+        mcp_refresh_exchange,
         assistant_model_selection,
         global_tools,
         platform_plugins,
@@ -204,6 +208,9 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     let mut vault_state = VaultState::new(secrets.clone(), managed_credentials.clone());
     if let Some(probe) = mcp_probe {
         vault_state = vault_state.with_probe(probe);
+    }
+    if let Some(exchange) = mcp_refresh_exchange {
+        vault_state = vault_state.with_refresh_exchange(exchange);
     }
     if let Some(delivery) = credential_material_delivery {
         vault_state = vault_state.with_material_delivery(delivery);

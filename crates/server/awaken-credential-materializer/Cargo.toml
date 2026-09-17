@@ -18,6 +18,7 @@ awaken-credential-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-run-executor-acp.workspace = true
 awaken-runtime-contract.workspace = true
+awaken-session-contract = { workspace = true, optional = true }
 awaken-provider-genai.workspace = true
 awaken-model-catalog = { workspace = true, optional = true }
 awaken-ext-builtin-tools = { workspace = true, optional = true }
@@ -38,6 +39,7 @@ uuid = { version = "1", features = ["v4"] }
 default = ["authority"]
 authority = [
     "dep:awaken-credential-vault",
+    "dep:awaken-session-contract",
     "dep:form_urlencoded",
     "dep:awaken-outbound-http",
     "dep:reqwest",

@@ -46,7 +46,9 @@ pub use credential::{
     AuthChallenge, AuthRetrySafety, Credential, CredentialRefresher, auth_retry_safety,
 };
 pub use error::McpError;
-pub use http::{HttpTransport, HttpTransportBuilder};
+pub use http::{
+    HTTP_FAILURE_BODY_LIMIT, HttpTransport, HttpTransportBuilder, McpHttpFailure, McpRequestTrace,
+};
 pub use id_mapping::{to_tool_id, tool_namespace};
 pub use manager::{McpManager, ServerStatus};
 pub use plugin::{McpPlugin, McpServer, SensitiveFields};

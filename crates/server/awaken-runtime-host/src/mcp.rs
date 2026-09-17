@@ -11,15 +11,15 @@
 //! `awaken_session_contract::McpProbe` port the `mcp_oauth_validate` route
 //! drives — a connect + `initialize` handshake as the live credential check).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_agent_contract::RedactedString;
 use awaken_ext_mcp::McpToolTransport;
-use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
+use awaken_ext_mcp::{Credential, CredentialRefresher, HttpTransportBuilder, McpRequestTrace};
 use awaken_ext_skills::SkillRegistry as _;
 use awaken_runtime_contract::plugin::Plugin;
-use awaken_session_contract::{McpProbe, McpProbeStatus};
+use awaken_session_contract::{McpProbe, McpProbeStatus, ProbeHttpResponse};
 
 use crate::host::HostError;
 
@@ -238,29 +238,19 @@ pub(crate) fn project_mcp_session_transport(
 #[derive(Clone)]
 pub(crate) struct McpRefreshMaterial(pub(crate) Arc<dyn CredentialRefresher>);
 
-/// Records the auth challenge the probe's connect attempt hit (and declines to
-/// refresh), so [`ExtMcpProbe`] can tell a refused bearer apart from an
-/// unreachable server.
-struct ChallengeCapture {
-    status: Mutex<Option<u16>>,
-}
-
-#[async_trait::async_trait]
-impl CredentialRefresher for ChallengeCapture {
-    async fn refresh(&self, challenge: &AuthChallenge) -> Option<Credential> {
-        *self.status.lock().unwrap() = Some(challenge.status);
-        None
-    }
-}
-
 /// The live MCP credential probe (ADR-0043), implementing the
 /// [`awaken_session_contract::McpProbe`] port over `awaken-ext-mcp`: connect +
-/// MCP `initialize` handshake with the materialized bearer. Handshake success →
-/// `Valid`; an auth challenge (401/403) → `Invalid` with the HTTP status;
-/// anything else (unreachable, protocol error) → `Unknown`. This is the only
-/// place the MCP client is named for validation — the adapter crate stays
-/// wire-client-free.
+/// MCP `initialize` handshake + `tools/list` with the materialized bearer.
+/// Completion → `Valid`; a final auth challenge (401/403) → `Invalid` with the
+/// HTTP status; anything else (unreachable, protocol or server error, timeout)
+/// → `Unknown`. Every non-completion also reports the failing JSON-RPC method
+/// and, when the server answered, its response with the bearer scrubbed. This
+/// is the only place the MCP client is named for validation — the adapter
+/// crate stays wire-client-free.
 pub struct ExtMcpProbe;
+
+/// The whole probe, including a slow failed-response body, is bounded.
+const MCP_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[async_trait::async_trait]
 impl McpProbe for ExtMcpProbe {
@@ -272,22 +262,20 @@ impl McpProbe for ExtMcpProbe {
         url: &str,
         bearer: Option<&RedactedString>,
     ) -> awaken_session_contract::McpInspection {
-        use awaken_session_contract::{McpInspection, McpProbeTool};
-        let capture = Arc::new(ChallengeCapture {
-            status: Mutex::new(None),
-        });
-        let mut builder = HttpTransportBuilder::new(url.to_string())
-            .refresher(Arc::clone(&capture) as Arc<dyn CredentialRefresher>);
+        use awaken_session_contract::{McpInspection, McpProbeFailure, McpProbeTool};
+        let trace = Arc::new(McpRequestTrace::new());
+        let mut builder =
+            HttpTransportBuilder::new(url.to_string()).request_trace(Arc::clone(&trace));
         if let Some(bearer) = bearer {
             builder = builder.credential(Credential::Bearer(bearer.expose_secret().to_string()));
         }
-        let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let result = tokio::time::timeout(MCP_PROBE_TIMEOUT, async {
             let transport = builder.connect().await?;
             transport.list_tools().await
         })
         .await;
-        match result {
-            Ok(Ok(tools)) => McpInspection {
+        if let Ok(Ok(tools)) = result {
+            return McpInspection {
                 status: McpProbeStatus::Valid,
                 tools: tools
                     .into_iter()
@@ -297,17 +285,40 @@ impl McpProbe for ExtMcpProbe {
                         input_schema: tool.input_schema,
                     })
                     .collect(),
-            },
-            _ => McpInspection {
-                status: capture
-                    .status
-                    .lock()
-                    .unwrap()
-                    .map_or(McpProbeStatus::Unknown, |http_status| {
-                        McpProbeStatus::Invalid { http_status }
-                    }),
-                tools: Vec::new(),
-            },
+                failure: None,
+            };
+        }
+        let captured = trace.last_failure();
+        let status = match &captured {
+            Some(failure) if failure.status == 401 || failure.status == 403 => {
+                McpProbeStatus::Invalid {
+                    http_status: failure.status,
+                }
+            }
+            _ => McpProbeStatus::Unknown,
+        };
+        let secrets: Vec<&str> = bearer
+            .map(RedactedString::expose_secret)
+            .into_iter()
+            .collect();
+        McpInspection {
+            status,
+            tools: Vec::new(),
+            failure: Some(McpProbeFailure {
+                // No request attempted means the handshake never started.
+                method: trace
+                    .last_method()
+                    .unwrap_or_else(|| "initialize".to_owned()),
+                http_response: captured.map(|failure| {
+                    ProbeHttpResponse::scrubbed(
+                        failure.status,
+                        failure.content_type.as_deref(),
+                        &failure.body,
+                        failure.body_truncated,
+                        &secrets,
+                    )
+                }),
+            }),
         }
     }
 }

@@ -28,7 +28,10 @@ use awaken_model_catalog::{
 };
 use awaken_protocol_managed::{VaultState, vault_router};
 use awaken_session_application::SessionCredentialSource;
-use awaken_session_contract::{McpProbe, McpProbeStatus};
+use awaken_session_contract::{
+    CredentialRefreshExchange, McpInspection, McpProbe, McpProbeFailure, McpProbeStatus,
+    ProbeHttpResponse, RefreshExchangeOutcome, RefreshExchangeStatus,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -61,6 +64,11 @@ fn harness() -> Harness {
 /// port signature takes a `RedactedString`, so a vault ref cannot cross it).
 struct FakeProbe {
     status: McpProbeStatus,
+    /// The failing step reported with `status`. Its body echoes the bearer
+    /// verbatim so tests prove the Vault owner scrubs without trusting the port.
+    failure: Option<McpProbeFailure>,
+    /// The verdict of every probe after the first (the post-refresh re-probe).
+    after_first: Option<McpProbeStatus>,
     seen: Mutex<Vec<(String, String)>>,
 }
 
@@ -182,8 +190,18 @@ impl awaken_credential_contract::CredentialEnvelopeIssuer for AdversarialEnvelop
 
 impl FakeProbe {
     fn new(status: McpProbeStatus) -> Arc<Self> {
+        Self::scripted(status, None, None)
+    }
+
+    fn scripted(
+        status: McpProbeStatus,
+        failure: Option<McpProbeFailure>,
+        after_first: Option<McpProbeStatus>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             status,
+            failure,
+            after_first,
             seen: Mutex::new(Vec::new()),
         })
     }
@@ -192,11 +210,78 @@ impl FakeProbe {
 #[async_trait::async_trait]
 impl McpProbe for FakeProbe {
     async fn probe(&self, mcp_server_url: &str, bearer: &RedactedString) -> McpProbeStatus {
-        self.seen.lock().unwrap().push((
-            mcp_server_url.to_string(),
-            bearer.expose_secret().to_string(),
-        ));
-        self.status
+        self.inspect(mcp_server_url, Some(bearer)).await.status
+    }
+
+    async fn inspect(&self, url: &str, bearer: Option<&RedactedString>) -> McpInspection {
+        let bearer = bearer.map_or_else(String::new, |b| b.expose_secret().to_string());
+        let mut seen = self.seen.lock().unwrap();
+        seen.push((url.to_string(), bearer.clone()));
+        if seen.len() > 1
+            && let Some(status) = self.after_first
+        {
+            return McpInspection {
+                status,
+                tools: Vec::new(),
+                failure: None,
+            };
+        }
+        McpInspection {
+            status: self.status,
+            tools: Vec::new(),
+            failure: self.failure.clone().map(|mut failure| {
+                if let Some(response) = failure.http_response.as_mut() {
+                    response.body = response.body.replace("{bearer}", &bearer);
+                }
+                failure
+            }),
+        }
+    }
+}
+
+/// A scripted refresh exchange. It records the exact instruction it receives
+/// and, when told to succeed, really reseals `issued` under the pinned revision
+/// so the re-probe must observe the new material.
+struct FakeExchange {
+    outcome: RefreshExchangeOutcome,
+    issued: Option<&'static str>,
+    secrets: Arc<InMemorySecretStore>,
+    credentials: Arc<InMemoryCredentialRepo>,
+    seen: Mutex<
+        Vec<(
+            CredentialSourceId,
+            awaken_credential_contract::CredentialRefreshAccess,
+        )>,
+    >,
+}
+
+#[async_trait::async_trait]
+impl CredentialRefreshExchange for FakeExchange {
+    async fn exchange(
+        &self,
+        credential_id: CredentialSourceId,
+        access: awaken_credential_contract::CredentialRefreshAccess,
+    ) -> RefreshExchangeOutcome {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((credential_id.clone(), access.clone()));
+        if let Some(issued) = self.issued {
+            awaken_credential_vault::repo::rotate_credential_materials_exact(
+                &credential_id,
+                i64::try_from(access.credential_revision).unwrap(),
+                awaken_credential_vault::repo::CredentialMaterialPatch {
+                    primary: Some(RedactedString::new(issued)),
+                    auxiliary: Default::default(),
+                    descriptor: None,
+                },
+                self.secrets.as_ref(),
+                self.credentials.as_ref(),
+            )
+            .await
+            .expect("fake exchange reseals the exact revision");
+        }
+        self.outcome.clone()
     }
 }
 
@@ -2938,7 +3023,9 @@ async fn validate_with_probe_reports_valid_and_the_probe_sees_the_materialized_t
     .await
     .expect(StatusCode::OK);
     assert_eq!(validation["status"], "valid");
-    assert_eq!(validation["mcp_probe"], json!({ "handshake": "ok" }));
+    // A completed probe has no failing step and no refresh was attempted.
+    assert_eq!(validation["mcp_probe"], Value::Null);
+    assert_eq!(validation["refresh"], Value::Null);
     // The probe was handed the server URL and the MATERIALIZED access token —
     // the resolved secret, never a `sec:` vault ref.
     let seen = probe.seen.lock().unwrap();
@@ -2953,24 +3040,440 @@ async fn validate_with_probe_reports_valid_and_the_probe_sees_the_materialized_t
     );
 }
 
-#[tokio::test]
-async fn validate_with_probe_reports_invalid_with_the_http_status() {
-    let probe = FakeProbe::new(McpProbeStatus::Invalid { http_status: 401 });
-    let h = harness_with_probe(probe);
-    let vault_id = create_vault(&h, "mcp").await;
-    let cred = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/sse", None).await;
-    let cred_id = cred["id"].as_str().unwrap().to_string();
+fn refused_initialize() -> McpProbeFailure {
+    McpProbeFailure {
+        method: "initialize".into(),
+        http_response: Some(ProbeHttpResponse {
+            status_code: 401,
+            content_type: "application/json".into(),
+            body: r#"{"error":"invalid_token","echo":"{bearer}"}"#.into(),
+            body_truncated: false,
+        }),
+    }
+}
 
-    let validation = call(
+/// The exact `BetaManagedAgentsMCPProbe` projection of [`refused_initialize`]
+/// after the Vault owner scrubbed the access token the fake echoed.
+fn refused_initialize_wire() -> Value {
+    json!({
+        "method": "initialize",
+        "http_response": {
+            "body": r#"{"error":"invalid_token","echo":"[REDACTED]"}"#,
+            "body_truncated": false,
+            "content_type": "application/json",
+            "status_code": 401
+        }
+    })
+}
+
+fn oauth_refresh_config() -> Value {
+    json!({
+        "client_id": "client-1",
+        "refresh_token": "rt-secret", // awaken-allow: secret
+        "token_endpoint": "https://auth.example.com/token",
+        "token_endpoint_auth": { "type": "none" }
+    })
+}
+
+async fn validate(h: &Harness, vault_id: &str, cred_id: &str) -> Value {
+    call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
         None,
     )
     .await
-    .expect(StatusCode::OK);
+    .expect(StatusCode::OK)
+}
+
+#[tokio::test]
+async fn validate_with_probe_reports_invalid_with_the_failing_step() {
+    let probe = FakeProbe::scripted(
+        McpProbeStatus::Invalid { http_status: 401 },
+        Some(refused_initialize()),
+        None,
+    );
+    let h = harness_with_probe(probe);
+    let vault_id = create_vault(&h, "mcp").await;
+    let cred = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/sse", None).await;
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+
+    let validation = validate(&h, &vault_id, &cred_id).await;
     assert_eq!(validation["status"], "invalid");
-    assert_eq!(validation["mcp_probe"], json!({ "http_status": 401 }));
+    assert_eq!(validation["mcp_probe"], refused_initialize_wire());
+    // Refused and nothing to exchange: the SDK's `no_refresh_token` outcome.
+    assert_eq!(
+        validation["refresh"],
+        json!({ "http_response": null, "status": "no_refresh_token" })
+    );
+    assert!(!validation.to_string().contains("at-secret-token"));
+}
+
+#[tokio::test]
+async fn validate_refresh_follows_the_exchange_decision_table() {
+    // Cause-effect graph. C1 probe refused (401/403); C2 credential holds a
+    // refresh token; C3 an exchange is wired; C4 the exchange outcome.
+    // E1 refresh=null; E2 refresh=no_refresh_token; E3 refresh=<outcome> with
+    // the verdict and failing step of the FIRST probe; E4 refresh=succeeded and
+    // the verdict/failing step of a RE-probe against the resealed token.
+    //
+    // | Rule | C1 | C2 | C3 | C4           | Effect |
+    // | R1   | no | -  | -  | -            | E1 (inconclusive probe keeps its step) |
+    // | R2   | yes| no | -  | -            | E2 (adjacent test) |
+    // | R3   | yes| yes| no | -            | E1 |
+    // | R4   | yes| yes| yes| failed       | E3 |
+    // | R5   | yes| yes| yes| connect_error| E3 |
+    // | R6   | yes| yes| yes| succeeded    | E4 |
+    let failed_response = ProbeHttpResponse {
+        status_code: 400,
+        content_type: "application/json".into(),
+        body: r#"{"error":"invalid_grant"}"#.into(),
+        body_truncated: false,
+    };
+    let succeeded_response = ProbeHttpResponse {
+        status_code: 200,
+        content_type: "application/json".into(),
+        body: r#"{"access_token":"[REDACTED]","token_type":"Bearer"}"#.into(),
+        body_truncated: false,
+    };
+    struct Row {
+        rule: &'static str,
+        first: McpProbeStatus,
+        failure: Option<McpProbeFailure>,
+        refresh: bool,
+        exchange: Option<(RefreshExchangeOutcome, Option<&'static str>)>,
+        status: &'static str,
+        mcp_probe: Value,
+        refresh_wire: Value,
+        probes: usize,
+    }
+    let rows = [
+        Row {
+            rule: "R1",
+            first: McpProbeStatus::Unknown,
+            failure: Some(McpProbeFailure {
+                method: "initialize".into(),
+                http_response: None,
+            }),
+            refresh: true,
+            exchange: Some((
+                RefreshExchangeOutcome {
+                    status: RefreshExchangeStatus::Succeeded,
+                    http_response: None,
+                },
+                None,
+            )),
+            status: "unknown",
+            mcp_probe: json!({ "http_response": null, "method": "initialize" }),
+            refresh_wire: Value::Null,
+            probes: 1,
+        },
+        Row {
+            rule: "R3",
+            first: McpProbeStatus::Invalid { http_status: 401 },
+            failure: Some(refused_initialize()),
+            refresh: true,
+            exchange: None,
+            status: "invalid",
+            mcp_probe: refused_initialize_wire(),
+            refresh_wire: Value::Null,
+            probes: 1,
+        },
+        Row {
+            rule: "R4",
+            first: McpProbeStatus::Invalid { http_status: 401 },
+            failure: Some(refused_initialize()),
+            refresh: true,
+            exchange: Some((
+                RefreshExchangeOutcome {
+                    status: RefreshExchangeStatus::Failed,
+                    http_response: Some(failed_response.clone()),
+                },
+                None,
+            )),
+            status: "invalid",
+            mcp_probe: refused_initialize_wire(),
+            refresh_wire: json!({
+                "http_response": {
+                    "body": r#"{"error":"invalid_grant"}"#,
+                    "body_truncated": false,
+                    "content_type": "application/json",
+                    "status_code": 400
+                },
+                "status": "failed"
+            }),
+            probes: 1,
+        },
+        Row {
+            rule: "R5",
+            first: McpProbeStatus::Invalid { http_status: 403 },
+            failure: Some(refused_initialize()),
+            refresh: true,
+            exchange: Some((
+                RefreshExchangeOutcome {
+                    status: RefreshExchangeStatus::ConnectError,
+                    http_response: None,
+                },
+                None,
+            )),
+            status: "invalid",
+            mcp_probe: refused_initialize_wire(),
+            refresh_wire: json!({ "http_response": null, "status": "connect_error" }),
+            probes: 1,
+        },
+        Row {
+            rule: "R6",
+            first: McpProbeStatus::Invalid { http_status: 401 },
+            failure: Some(refused_initialize()),
+            refresh: true,
+            exchange: Some((
+                RefreshExchangeOutcome {
+                    status: RefreshExchangeStatus::Succeeded,
+                    http_response: Some(succeeded_response.clone()),
+                },
+                Some("at-resealed-token"),
+            )),
+            status: "valid",
+            mcp_probe: Value::Null,
+            refresh_wire: json!({
+                "http_response": {
+                    "body": r#"{"access_token":"[REDACTED]","token_type":"Bearer"}"#,
+                    "body_truncated": false,
+                    "content_type": "application/json",
+                    "status_code": 200
+                },
+                "status": "succeeded"
+            }),
+            probes: 2,
+        },
+    ];
+    for row in rows {
+        let probe = FakeProbe::scripted(row.first, row.failure, Some(McpProbeStatus::Valid));
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let mut state =
+            VaultState::new(secrets.clone(), credentials.clone()).with_probe(probe.clone());
+        let exchange = row.exchange.map(|(outcome, issued)| {
+            Arc::new(FakeExchange {
+                outcome,
+                issued,
+                secrets: secrets.clone(),
+                credentials: credentials.clone(),
+                seen: Mutex::new(Vec::new()),
+            })
+        });
+        if let Some(exchange) = &exchange {
+            state = state.with_refresh_exchange(exchange.clone());
+        }
+        let state = Arc::new(state);
+        let h = Harness {
+            app: vault_router(state.clone()),
+            state,
+            secrets,
+            credentials,
+        };
+        let vault_id = create_vault(&h, "mcp").await;
+        let cred = create_mcp_oauth(
+            &h,
+            &vault_id,
+            "https://mcp.example.com/sse",
+            row.refresh.then(oauth_refresh_config),
+        )
+        .await;
+        let cred_id = cred["id"].as_str().unwrap().to_string();
+        let validation = validate(&h, &vault_id, &cred_id).await;
+        let rule = row.rule;
+
+        assert_eq!(validation["status"], row.status, "{rule}");
+        assert_eq!(validation["has_refresh_token"], row.refresh, "{rule}");
+        assert_eq!(validation["mcp_probe"], row.mcp_probe, "{rule}");
+        assert_eq!(validation["refresh"], row.refresh_wire, "{rule}");
+        let seen = probe.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), row.probes, "{rule}: probe count");
+        assert_eq!(seen[0].1, "at-secret-token", "{rule}");
+        let rendered = validation.to_string();
+        for secret in ["at-secret-token", "rt-secret", "at-resealed-token"] {
+            assert!(!rendered.contains(secret), "{rule}: {secret} leaked");
+        }
+        let exchanged = exchange.map(|e| e.seen.lock().unwrap().clone());
+        match rule {
+            "R1" => assert_eq!(exchanged.map(|e| e.len()), Some(0), "R1 never exchanges"),
+            "R3" => assert!(exchanged.is_none()),
+            _ => {
+                let exchanged = exchanged.unwrap();
+                assert_eq!(exchanged.len(), 1, "{rule}");
+                let source = h
+                    .state
+                    .credential_source_id(&vault_id, &cred_id)
+                    .await
+                    .unwrap();
+                let (id, access) = &exchanged[0];
+                assert_eq!(id, &source, "{rule}: exact credential");
+                assert_eq!(access.credential_revision, 1, "{rule}: pinned revision");
+                assert_eq!(access.client_id, "client-1", "{rule}");
+                assert_eq!(
+                    access.token_endpoint, "https://auth.example.com/token",
+                    "{rule}"
+                );
+                assert_eq!(
+                    h.secrets
+                        .get(&awaken_credential_vault::SecretRef(
+                            access.refresh_token_ref.clone()
+                        ))
+                        .await
+                        .unwrap()
+                        .expose_secret(),
+                    "rt-secret",
+                    "{rule}: the instruction names the sealed refresh token"
+                );
+            }
+        }
+        if rule == "R6" {
+            assert_eq!(
+                seen[1].1, "at-resealed-token",
+                "R6 re-probes the resealed token"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn credential_validation_wire_matches_the_sdk_declaration() {
+    // @anthropic-ai/sdk 0.125.0 resources/beta/vaults/credentials.d.ts:
+    //   BetaManagedAgentsCredentialValidation { credential_id: string;
+    //     has_refresh_token: boolean; mcp_probe: BetaManagedAgentsMCPProbe | null;
+    //     refresh: BetaManagedAgentsRefreshObject | null;
+    //     status: 'valid' | 'invalid' | 'unknown'; type: 'vault_credential_validation';
+    //     validated_at: string; vault_id: string }
+    //   BetaManagedAgentsMCPProbe { http_response: BetaManagedAgentsRefreshHTTPResponse | null;
+    //     method: string }
+    //   BetaManagedAgentsRefreshObject { http_response: BetaManagedAgentsRefreshHTTPResponse | null;
+    //     status: 'succeeded' | 'failed' | 'connect_error' | 'no_refresh_token' }
+    //   BetaManagedAgentsRefreshHTTPResponse { body: string; body_truncated: boolean;
+    //     content_type: string; status_code: number }
+    // Every member is required (no `?`); `| null` members are present as null.
+    fn kind(value: &Value) -> &'static str {
+        match value {
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+        }
+    }
+    fn assert_members(object: &Value, declared: &[(&str, &[&str])], owner: &str) {
+        let map = object
+            .as_object()
+            .unwrap_or_else(|| panic!("{owner} is an object"));
+        let mut actual: Vec<&str> = map.keys().map(String::as_str).collect();
+        actual.sort_unstable();
+        let mut expected: Vec<&str> = declared.iter().map(|(name, _)| *name).collect();
+        expected.sort_unstable();
+        assert_eq!(actual, expected, "{owner}: exact member set");
+        for (name, kinds) in declared {
+            assert!(
+                kinds.contains(&kind(&map[*name])),
+                "{owner}.{name} is {} but the SDK declares {kinds:?}",
+                kind(&map[*name])
+            );
+        }
+    }
+    const HTTP: &[(&str, &[&str])] = &[
+        ("body", &["string"]),
+        ("body_truncated", &["boolean"]),
+        ("content_type", &["string"]),
+        ("status_code", &["number"]),
+    ];
+    let probe = FakeProbe::scripted(
+        McpProbeStatus::Invalid { http_status: 401 },
+        Some(refused_initialize()),
+        None,
+    );
+    let secrets = Arc::new(InMemorySecretStore::new());
+    let credentials = Arc::new(InMemoryCredentialRepo::new());
+    let exchange = Arc::new(FakeExchange {
+        outcome: RefreshExchangeOutcome {
+            status: RefreshExchangeStatus::Failed,
+            http_response: Some(ProbeHttpResponse {
+                status_code: 400,
+                content_type: "application/json".into(),
+                body: "{}".into(),
+                body_truncated: false,
+            }),
+        },
+        issued: None,
+        secrets: secrets.clone(),
+        credentials: credentials.clone(),
+        seen: Mutex::new(Vec::new()),
+    });
+    let state = Arc::new(
+        VaultState::new(secrets.clone(), credentials.clone())
+            .with_probe(probe)
+            .with_refresh_exchange(exchange),
+    );
+    let h = Harness {
+        app: vault_router(state.clone()),
+        state,
+        secrets,
+        credentials,
+    };
+    let vault_id = create_vault(&h, "mcp").await;
+    let cred = create_mcp_oauth(
+        &h,
+        &vault_id,
+        "https://mcp.example.com/sse",
+        Some(oauth_refresh_config()),
+    )
+    .await;
+    let validation = validate(&h, &vault_id, cred["id"].as_str().unwrap()).await;
+
+    assert_members(
+        &validation,
+        &[
+            ("credential_id", &["string"]),
+            ("has_refresh_token", &["boolean"]),
+            ("mcp_probe", &["object", "null"]),
+            ("refresh", &["object", "null"]),
+            ("status", &["string"]),
+            ("type", &["string"]),
+            ("validated_at", &["string"]),
+            ("vault_id", &["string"]),
+        ],
+        "BetaManagedAgentsCredentialValidation",
+    );
+    assert_eq!(validation["type"], "vault_credential_validation");
+    assert!(["valid", "invalid", "unknown"].contains(&validation["status"].as_str().unwrap()));
+    assert_members(
+        &validation["mcp_probe"],
+        &[
+            ("http_response", &["object", "null"]),
+            ("method", &["string"]),
+        ],
+        "BetaManagedAgentsMCPProbe",
+    );
+    assert_members(
+        &validation["mcp_probe"]["http_response"],
+        HTTP,
+        "BetaManagedAgentsRefreshHTTPResponse",
+    );
+    assert_members(
+        &validation["refresh"],
+        &[
+            ("http_response", &["object", "null"]),
+            ("status", &["string"]),
+        ],
+        "BetaManagedAgentsRefreshObject",
+    );
+    assert!(
+        ["succeeded", "failed", "connect_error", "no_refresh_token"]
+            .contains(&validation["refresh"]["status"].as_str().unwrap())
+    );
+    assert_members(
+        &validation["refresh"]["http_response"],
+        HTTP,
+        "BetaManagedAgentsRefreshHTTPResponse",
+    );
 }
 
 #[tokio::test]

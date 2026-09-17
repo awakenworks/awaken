@@ -12,10 +12,6 @@
     {
       "path": "crates/server/awaken-protocol-managed/src/types/page.rs",
       "name": "PageQuery"
-    },
-    {
-      "path": "crates/server/awaken-protocol-managed/src/types/vault.rs",
-      "name": "McpProbeResult"
     }
   ]
 }

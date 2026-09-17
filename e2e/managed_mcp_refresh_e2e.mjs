@@ -249,11 +249,14 @@ async function main() {
       assert.equal(validation.type, 'vault_credential_validation');
       assert.equal(validation.status, 'valid');
       assert.equal(validation.has_refresh_token, true);
-      assert.deepEqual(validation.mcp_probe, { handshake: 'ok' });
+      // BetaManagedAgentsMCPProbe is the FAILING step; a completed probe has
+      // none, and an accepted token needs no refresh exchange.
+      assert.equal(validation.mcp_probe, null);
+      assert.equal(validation.refresh, null);
       const validationJson = JSON.stringify(validation);
       assert.ok(!validationJson.includes(NEW_TOKEN), 'the probe detail never carries the token');
       assert.ok(!validationJson.includes(REFRESH_TOKEN), 'nor the refresh token');
-      pass('mcpOAuthValidate -> valid, has_refresh_token=true, mcp_probe {handshake:"ok"}');
+      pass('mcpOAuthValidate -> valid, has_refresh_token=true, mcp_probe null, refresh null');
 
       // --- (d) invalid arm: wrong token, NO refresh, second fixture instance ---
       const vault2 = await client.beta.vaults.create({ display_name: 'MCP invalid vault', betas: BETAS });
@@ -269,8 +272,12 @@ async function main() {
       });
       assert.equal(badValidation.status, 'invalid');
       assert.equal(badValidation.has_refresh_token, false);
-      assert.deepEqual(badValidation.mcp_probe, { http_status: 401 });
-      pass('mcpOAuthValidate (wrong token, no refresh) -> invalid, mcp_probe {http_status:401}');
+      assert.deepEqual(badValidation.mcp_probe, {
+        method: 'initialize',
+        http_response: { body: '', body_truncated: false, content_type: '', status_code: 401 },
+      });
+      assert.deepEqual(badValidation.refresh, { http_response: null, status: 'no_refresh_token' });
+      pass('mcpOAuthValidate (wrong token, no refresh) -> invalid, mcp_probe initialize/401, refresh no_refresh_token');
 
       // Cause-effect graph for exact-generation staging:
       // C1 access token accepted -> E1 stage and activate
@@ -431,6 +438,65 @@ async function main() {
         `Bearer ${POST_NEW_TOKEN}`,
       );
       pass('client_secret_post refreshes through its exact form transform and remains secret-free on read-back');
+
+      // --- (g) validate attempts the refresh exchange after a refused probe ---
+      // | Rule | token endpoint     | status  | refresh               | mcp_probe       |
+      // | G1   | issues a token     | valid   | succeeded + 200 body  | null (re-probe) |
+      // | G2   | refuses the grant  | invalid | failed + 400 body     | initialize/401  |
+      const vault5 = await client.beta.vaults.create({ display_name: 'MCP validate-refresh vault', betas: BETAS });
+      const grantsBefore = fixtureA.grants.length;
+      const g1Cred = await client.beta.vaults.credentials.create(vault5.id, {
+        type: 'mcp_oauth',
+        mcp_server_url: fixtureA.url,
+        access_token: EXPIRED_TOKEN,
+        refresh: { client_id: CLIENT_ID, refresh_token: REFRESH_TOKEN, token_endpoint: fixtureA.tokenUrl },
+        betas: BETAS,
+      });
+      const g1 = await client.beta.vaults.credentials.mcpOAuthValidate(g1Cred.id, {
+        vault_id: vault5.id,
+        betas: BETAS,
+      });
+      assert.equal(g1.status, 'valid', JSON.stringify(g1));
+      assert.equal(g1.mcp_probe, null, JSON.stringify(g1));
+      assert.equal(g1.refresh.status, 'succeeded', JSON.stringify(g1));
+      assert.equal(g1.refresh.http_response.status_code, 200);
+      assert.equal(g1.refresh.http_response.content_type, 'application/json');
+      assert.equal(g1.refresh.http_response.body_truncated, false);
+      assert.deepEqual(
+        JSON.parse(g1.refresh.http_response.body),
+        { access_token: '[REDACTED]', token_type: 'Bearer' },
+        'the token endpoint body is reported with the issued token scrubbed',
+      );
+      assert.equal(fixtureA.grants.length, grantsBefore + 1, 'validate performed exactly one exchange');
+      for (const secret of [EXPIRED_TOKEN, REFRESH_TOKEN, NEW_TOKEN]) {
+        assert.ok(!JSON.stringify(g1).includes(secret), `validate never echoes ${secret}`);
+      }
+      const g2Cred = await client.beta.vaults.credentials.create(vault5.id, {
+        type: 'mcp_oauth',
+        mcp_server_url: fixtureB.url,
+        access_token: WRONG_TOKEN,
+        refresh: { client_id: CLIENT_ID, refresh_token: REFRESH_TOKEN, token_endpoint: fixtureB.tokenUrl },
+        betas: BETAS,
+      });
+      const g2 = await client.beta.vaults.credentials.mcpOAuthValidate(g2Cred.id, {
+        vault_id: vault5.id,
+        betas: BETAS,
+      });
+      assert.equal(g2.status, 'invalid', JSON.stringify(g2));
+      assert.deepEqual(g2.mcp_probe, {
+        method: 'initialize',
+        http_response: { body: '', body_truncated: false, content_type: '', status_code: 401 },
+      });
+      assert.deepEqual(g2.refresh, {
+        http_response: {
+          body: '{"error":"invalid_grant"}',
+          body_truncated: false,
+          content_type: 'application/json',
+          status_code: 400,
+        },
+        status: 'failed',
+      });
+      pass('mcpOAuthValidate exchanges after a refused probe: succeeded -> re-probed valid; refused grant -> failed with the endpoint response');
     });
 
     console.log('E2E PASS: mcp_oauth refresh exchange (public + confidential client), reseal persistence, and live validate round-trip through the official @anthropic-ai/sdk.');
