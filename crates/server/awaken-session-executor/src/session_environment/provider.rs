@@ -2,9 +2,11 @@
 
 use super::{HandExecutorFactory, SessionEnvironment, container_files};
 use crate::deployment_config::ContainerHandResidency;
+use awaken_sandbox_local::FilesystemHandleCodec as _;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 
 /// Creates/adopts the one Session environment while auxiliary housekeeping Runs
@@ -645,7 +647,7 @@ impl SessionEnvironmentProvider {
                 )),
                 Self::Container { .. } => {
                     let expected = handle.container_physical_incarnation()?;
-                    if physical_incarnation.as_deref() == Some(expected) {
+                    if physical_incarnation.as_deref() == Some(expected.as_str()) {
                         Ok(())
                     } else {
                         Err(pc::SandboxError::conflict(
@@ -670,7 +672,7 @@ impl SessionEnvironmentProvider {
                     }
                     Self::Container { .. } => handle.container_physical_incarnation()?,
                 };
-                if physical_incarnation == expected {
+                if *physical_incarnation == expected {
                     Ok(())
                 } else {
                     Err(pc::SandboxError::conflict(

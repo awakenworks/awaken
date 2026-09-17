@@ -54,7 +54,7 @@ fn source<'a>(
     RebuildSource {
         fingerprint,
         effect_fence: evidence.effect_fence(),
-        physical_incarnation: evidence.physical_incarnation(),
+        physical_incarnation: evidence.physical_incarnation().to_owned(),
     }
 }
 
@@ -603,7 +603,7 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
             for expected_kind in ["absent", "exact", "foreign"] {
                 let exact = source(&fingerprint, &evidence);
                 let foreign = RebuildSource {
-                    physical_incarnation: "foreign-incarnation",
+                    physical_incarnation: "foreign-incarnation".into(),
                     ..source(&fingerprint, &evidence)
                 };
                 let handle = match handle_kind {

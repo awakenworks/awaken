@@ -1,6 +1,7 @@
 use super::*;
 use crate::host::SharedHost;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
     SandboxControlServiceKind, SandboxControlServicePublisher,
@@ -1123,8 +1124,8 @@ fn batch_artifact_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle 
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
     pc::SandboxHandle::container_v2(
         &spec.scope,
-        pc::ContainerSandboxHandleV2 {
-            previous: pc::ContainerSandboxHandleV1 {
+        awaken_sandbox_container::ContainerSandboxHandleV2 {
+            previous: awaken_sandbox_container::ContainerSandboxHandleV1 {
                 container_id: format!("container-{}", spec.scope),
                 outputs_path: spec.outputs_path.clone(),
                 base_env: spec.env.clone(),

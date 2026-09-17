@@ -17,41 +17,6 @@ enum LegacySandboxHandlePayload {
         #[allow(dead_code)]
         provider_kind: String,
     },
-    ContainerV1(LegacyContainerSandboxHandleV1),
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyContainerSandboxHandleV1 {
-    #[allow(dead_code)]
-    container_id: String,
-    #[allow(dead_code)]
-    outputs_path: String,
-    #[allow(dead_code)]
-    base_env: Vec<crate::EnvVar>,
-    #[allow(dead_code)]
-    live_input_projection: bool,
-    #[allow(dead_code)]
-    #[serde(default)]
-    continuation_excluded_paths: Vec<String>,
-    #[allow(dead_code)]
-    runtime_handle: Option<LegacyContainerContinuationHandle>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    sandbox_control_incarnation: Option<SandboxControlIncarnation>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    control_services: std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[allow(dead_code)]
-enum LegacyContainerContinuationHandle {
-    KubernetesContinuation {
-        #[allow(dead_code)]
-        claim_uid: String,
-    },
 }
 
 fn future_evidence() -> serde_json::Value {
@@ -65,122 +30,34 @@ fn future_evidence() -> serde_json::Value {
     })
 }
 
-fn future_container(runtime_handle: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "sandbox_id": "sandbox-a",
-        "restoration": future_evidence(),
-        "payload": {
-            "schema": "container_v1",
-            "container_id": "container-a",
-            "outputs_path": "/outputs",
-            "base_env": [],
-            "live_input_projection": true,
-            "continuation_excluded_paths": [],
-            "runtime_handle": runtime_handle
-        }
-    })
-}
-
-#[test]
-fn sandbox_control_incarnation_is_typed_and_legacy_handle_compatible() {
-    /* Incarnation wire cause/effect table:
-     * C1=legacy ContainerV1 handle omits control evidence; C2=valid Pod
-     * UID; C3=empty/line-injected UID; C4=unknown incarnation kind.
-     * E1=decode as None and omit on re-encode; E2=lossless typed roundtrip;
-     * E3=reject before adoption. Rules: I1 C1=>E1; I2 C2=>E2;
-     * I3 C3|C4=>E3.
-     */
-    let legacy = serde_json::json!({
-        "sandbox_id": "sandbox-a",
-        "payload": {
-            "schema": "container_v1",
-            "container_id": "pod-a",
-            "outputs_path": "/outputs",
-            "base_env": [],
-            "live_input_projection": false,
-            "continuation_excluded_paths": []
-        }
-    });
-    let decoded: SandboxHandle = serde_json::from_value(legacy).expect("I1/E1");
-    let payload = decoded.container_payload().expect("I1 container payload");
-    assert!(payload.sandbox_control_incarnation.is_none(), "I1/E1");
-    assert!(payload.control_services.is_empty(), "I1/E1");
-    assert!(
-        ["sandbox_control_incarnation", "control_services"]
-            .into_iter()
-            .all(|field| !serde_json::to_string(&decoded).unwrap().contains(field)),
-        "I1/E1 empty evidence omitted"
-    );
-
-    let incarnation = SandboxControlIncarnation::kubernetes_pod("pod-uid-a").unwrap();
-    let encoded = serde_json::to_value(&incarnation).unwrap();
-    assert_eq!(
-        serde_json::from_value::<SandboxControlIncarnation>(encoded).unwrap(),
-        incarnation,
-        "I2/E2"
-    );
-    assert!(
-        SandboxControlIncarnation::kubernetes_pod("").is_err(),
-        "I3/E3"
-    );
-    assert!(
-        SandboxControlIncarnation::kubernetes_pod("uid\nother").is_err(),
-        "I3/E3"
-    );
-    assert!(
-        serde_json::from_value::<SandboxControlIncarnation>(serde_json::json!({
-            "kind": "opaque",
-            "uid": "pod-uid-a"
-        }))
-        .is_err(),
-        "I3/E3 closed kind"
-    );
-}
-
 /*
- * Phase-A writer decision table. Causes: C1 unmanaged, C2 local, C3 namespace,
- * C4 container typed constructors. Effect E1: every current constructor emits
- * legacy None (the field is absent), so only a later gated composition can write
- * Some. Rules R1=C1=>E1, R2=C2=>E1, R3=C3=>E1, R4=C4=>E1.
+ * Phase-A writer decision table. Causes: C1 unmanaged, C2 legacy and C3 current
+ * provider payloads through the one neutral constructor every provider codec
+ * uses (each codec pins its own typed writer bytes). Effect E1: every current
+ * constructor emits legacy None (the field is absent), so only a later gated
+ * composition can write Some. Rules R1=C1=>E1, R2=C2=>E1, R3=C3=>E1.
  */
+fn fixture_locator() -> crate::test_support::FixtureHandleLocator {
+    crate::test_support::FixtureHandleLocator {
+        outputs_path: "/outputs".into(),
+        physical_incarnation: "physical-a".into(),
+    }
+}
+
 #[test]
 fn every_phase_a_constructor_omits_restoration() {
     let handles = [
         SandboxHandle::new("fake", "sandbox-a"),
-        SandboxHandle::local(
+        crate::test_support::fixture_legacy_handle("sandbox-a", &fixture_locator()),
+        crate::test_support::fixture_current_handle(
             "sandbox-a",
-            LocalSandboxHandleV1 {
-                outputs_path: "/outputs".into(),
-                base_env: Vec::new(),
-                continuation_excluded_paths: Vec::new(),
-                deny_tool_egress: false,
-            },
-        ),
-        SandboxHandle::namespace(
-            NamespaceProviderKind::Bubblewrap,
-            "sandbox-a",
-            NamespaceSandboxHandleV1 {
-                outputs_path: "/outputs".into(),
-                base_env: Vec::new(),
-                network: crate::NetworkPolicy::None,
-                control_services: Default::default(),
-            },
-        ),
-        SandboxHandle::container(
-            "sandbox-a",
-            ContainerSandboxHandleV1 {
-                container_id: "container-a".into(),
-                outputs_path: "/outputs".into(),
-                base_env: Vec::new(),
-                live_input_projection: false,
-                continuation_excluded_paths: Vec::new(),
-                runtime_handle: None,
-                sandbox_control_incarnation: None,
-                control_services: Default::default(),
-            },
+            &fixture_locator(),
+            &serde_json::from_value(serde_json::json!("fingerprint-a")).unwrap(),
+            &SandboxEffectFence::new("effect-a", "owner-a", "runtime-a", 1, u64::MAX).unwrap(),
+            &["/workspace/a".to_owned()],
         ),
     ];
-    for (rule, handle) in ["R1", "R2", "R3", "R4"].into_iter().zip(handles) {
+    for (rule, handle) in ["R1", "R2", "R3"].into_iter().zip(handles) {
         assert!(handle.restoration().is_none(), "{rule}/E1");
         assert!(
             serde_json::to_value(handle)
@@ -246,98 +123,5 @@ fn future_evidence_is_lossless_closed_and_fail_forward() {
     assert!(
         serde_json::from_value::<SandboxHandle>(unknown).is_err(),
         "R6/E2 unknown"
-    );
-}
-
-/*
- * Nested rollout decision table. C1 legacy Kubernetes locator; C2 current
- * KubernetesContinuationV2 locator with Pod and optional claim identity; C3
- * future HostBind locator plus Some evidence; C4 the actual old nested enum
- * reader. Effects: E1 C1 stays readable, E2 the new reader losslessly accepts
- * C2, E3 the new reader losslessly accepts C3, E4 C4 rejects C2/C3 rather
- * than silently dropping either physical locator. Rules: R8=C1=>E1,
- * R9=C2=>E2, R10=C3=>E3, R11=(C2|C3)+C4=>E4.
- */
-#[test]
-fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
-    let current_kubernetes = future_container(serde_json::json!({
-        "kind": "kubernetes_continuation_v2",
-        "pod_uid": "pod-uid-a",
-        "claim_uid": "claim-uid-a"
-    }));
-    let decoded_kubernetes: SandboxHandle =
-        serde_json::from_value(current_kubernetes.clone()).expect("R9/E2 decode");
-    match decoded_kubernetes
-        .container_payload()
-        .unwrap()
-        .runtime_handle
-        .as_ref()
-        .expect("R9/E2 runtime locator")
-    {
-        ContainerContinuationHandle::KubernetesContinuationV2 { pod_uid, claim_uid } => {
-            assert_eq!(pod_uid, "pod-uid-a", "R9/E2 Pod identity");
-            assert_eq!(claim_uid.as_deref(), Some("claim-uid-a"), "R9/E2 claim");
-        }
-        ContainerContinuationHandle::KubernetesContinuation { .. }
-        | ContainerContinuationHandle::HostBindRestoration(_) => panic!("R9/E2 wrong kind"),
-    }
-    assert_eq!(
-        serde_json::to_value(&decoded_kubernetes).unwrap(),
-        current_kubernetes,
-        "R9/E2"
-    );
-
-    let future = future_container(serde_json::json!({
-        "kind": "host_bind_restoration",
-        "staging_root": "/provider/staging/a"
-    }));
-    let decoded: SandboxHandle = serde_json::from_value(future.clone()).expect("R10/E3 decode");
-    assert!(decoded.restoration().is_some(), "R10/E3 evidence");
-    let runtime_handle = decoded
-        .container_payload()
-        .unwrap()
-        .runtime_handle
-        .as_ref()
-        .expect("R10/E3 runtime locator");
-    match runtime_handle {
-        ContainerContinuationHandle::HostBindRestoration(locator) => {
-            assert_eq!(locator.staging_root(), "/provider/staging/a", "R10/E3")
-        }
-        ContainerContinuationHandle::KubernetesContinuation { .. }
-        | ContainerContinuationHandle::KubernetesContinuationV2 { .. } => {
-            panic!("R10/E3 wrong kind")
-        }
-    }
-    assert_eq!(serde_json::to_value(decoded).unwrap(), future, "R10/E3");
-
-    let mut legacy_kubernetes = future.clone();
-    legacy_kubernetes
-        .as_object_mut()
-        .unwrap()
-        .remove("restoration");
-    legacy_kubernetes["payload"]["runtime_handle"] = serde_json::json!({
-        "kind": "kubernetes_continuation",
-        "claim_uid": "claim-a"
-    });
-    serde_json::from_value::<LegacySandboxHandle>(legacy_kubernetes).expect("R8/E1");
-
-    let mut legacy_kubernetes_v2 = current_kubernetes;
-    legacy_kubernetes_v2
-        .as_object_mut()
-        .unwrap()
-        .remove("restoration");
-    assert!(
-        serde_json::from_value::<LegacySandboxHandle>(legacy_kubernetes_v2).is_err(),
-        "R11/E4 current Kubernetes locator"
-    );
-
-    let mut legacy_host_bind = future;
-    legacy_host_bind
-        .as_object_mut()
-        .unwrap()
-        .remove("restoration");
-    assert!(
-        serde_json::from_value::<LegacySandboxHandle>(legacy_host_bind).is_err(),
-        "R11/E4 HostBind locator"
     );
 }

@@ -842,18 +842,16 @@ mod tests {
     }
 
     fn local_binding_for(sandbox_id: &str, fingerprint: &str, paths: &[&str]) -> String {
-        serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::local_v2(
-            sandbox_id,
-            awaken_provisioning_contract::LocalSandboxHandleV2 {
-                previous: awaken_provisioning_contract::LocalSandboxHandleV1 {
+        serde_json::to_string(
+            &awaken_provisioning_contract::test_support::fixture_current_handle(
+                sandbox_id,
+                &awaken_provisioning_contract::test_support::FixtureHandleLocator {
                     outputs_path: "/outputs".into(),
-                    base_env: Vec::new(),
-                    continuation_excluded_paths: Vec::new(),
-                    deny_tool_egress: false,
+                    physical_incarnation: "environment-test-incarnation".into(),
                 },
-                realization_fingerprint: serde_json::from_value(serde_json::json!(fingerprint))
+                &serde_json::from_value(serde_json::json!(fingerprint))
                     .expect("test realization fingerprint"),
-                effect_fence: awaken_provisioning_contract::SandboxEffectFence::new(
+                &awaken_provisioning_contract::SandboxEffectFence::new(
                     "environment-test-effect",
                     "environment-test-owner",
                     "environment-test-runtime",
@@ -861,10 +859,12 @@ mod tests {
                     u64::MAX,
                 )
                 .expect("test filesystem effect fence"),
-                physical_incarnation: "environment-test-incarnation".into(),
-                owned_paths: paths.iter().map(|path| (*path).to_string()).collect(),
-            },
-        ))
+                &paths
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect::<Vec<_>>(),
+            ),
+        )
         .expect("typed local binding")
     }
 

@@ -173,8 +173,8 @@ fn restored_host_staging_survives_wrapper_drop_and_only_terminally_removes() {
     let mut guard = None;
     let path = staging_dir(&mut guard, "restore-staging-test").unwrap();
     std::fs::write(path.join("physical"), b"retained").unwrap();
-    let handle = pc::ContainerContinuationHandle::HostBindRestoration(
-        pc::HostBindRestorationHandle::for_restore(path.to_string_lossy().into_owned()).unwrap(),
+    let handle = crate::ContainerContinuationHandle::HostBindRestoration(
+        crate::HostBindRestorationHandle::for_restore(path.to_string_lossy().into_owned()).unwrap(),
     );
     let retained = retained_host_staging(Some(&handle)).unwrap().unwrap();
     drop(retained);
@@ -187,8 +187,8 @@ fn restored_host_staging_survives_wrapper_drop_and_only_terminally_removes() {
     assert!(!path.exists(), "H2/E2");
     remove_host_staging_path(&path).expect("H4 missing after Host restart is idempotent");
 
-    let escaped = pc::ContainerContinuationHandle::HostBindRestoration(
-        pc::HostBindRestorationHandle::for_restore("/tmp/not-an-awaken-stage").unwrap(),
+    let escaped = crate::ContainerContinuationHandle::HostBindRestoration(
+        crate::HostBindRestorationHandle::for_restore("/tmp/not-an-awaken-stage").unwrap(),
     );
     assert!(retained_host_staging(Some(&escaped)).is_err(), "H3/E3");
     assert!(
@@ -2712,13 +2712,15 @@ async fn effect_fenced_total_absence_has_no_terminal_environment() {
     let sandbox = provider.create_container(&sandbox_spec).await.unwrap();
     let created = pc::Sandbox::handle(&sandbox);
     let mut previous = created.container_payload().unwrap().clone();
-    previous.runtime_handle = Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-        pod_uid: "pod-a".into(),
-        claim_uid: Some("claim-p".into()),
-    });
+    previous.runtime_handle = Some(
+        crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid: "pod-a".into(),
+            claim_uid: Some("claim-p".into()),
+        },
+    );
     let handle = pc::SandboxHandle::container_v2(
         created.sandbox_id.clone(),
-        pc::ContainerSandboxHandleV2 {
+        crate::ContainerSandboxHandleV2 {
             previous,
             adoption_fingerprint: created
                 .container_adoption_fingerprint()
@@ -3206,7 +3208,7 @@ impl ContainerRuntime for FakeRuntime {
 
     fn historical_terminal_configuration(
         &self,
-        _: Option<&pc::ContainerContinuationHandle>,
+        _: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
         Ok(self.st.lock().unwrap().historical_configuration.clone())
     }
@@ -3238,8 +3240,9 @@ impl ContainerRuntime for FakeRuntime {
                 .checkpoint_expected
                 .as_ref()
                 .expect("checkpoint fixture configured");
+            let decoded = crate::DecodedContainerHandle::decode(handle).unwrap();
             let expected =
-                ContainerObservationExpectation::from_handle_for_effect(handle, active).unwrap();
+                ContainerObservationExpectation::from_decoded_for_effect(&decoded, active);
             assert_eq!(expectation.container_id, expected.container_id);
             assert_eq!(
                 expectation.adoption_fingerprint,
@@ -3286,11 +3289,11 @@ impl ContainerRuntime for FakeRuntime {
         &self,
         _container_id: &str,
         request: SandboxControlBindingRequest<'_>,
-    ) -> Result<Option<pc::SandboxControlIncarnation>, RuntimeError> {
+    ) -> Result<Option<crate::SandboxControlIncarnation>, RuntimeError> {
         let expected = match request {
             SandboxControlBindingRequest::New { .. } => None,
             SandboxControlBindingRequest::Adopt { expected, .. } => expected
-                .and_then(pc::SandboxControlIncarnation::kubernetes_pod_uid)
+                .and_then(crate::SandboxControlIncarnation::kubernetes_pod_uid)
                 .map(str::to_owned),
         };
         self.st.lock().unwrap().control_binding_calls.push((
@@ -3310,7 +3313,7 @@ impl ContainerRuntime for FakeRuntime {
         if self.st.lock().unwrap().control_binding_missing {
             return Ok(None);
         }
-        pc::SandboxControlIncarnation::kubernetes_pod("fake-control-incarnation")
+        crate::SandboxControlIncarnation::kubernetes_pod("fake-control-incarnation")
             .map(Some)
             .map_err(|error| RuntimeError::Backend(error.to_string()))
     }
@@ -3318,7 +3321,7 @@ impl ContainerRuntime for FakeRuntime {
     async fn open_sandbox_control_channel(
         &self,
         _container_id: &str,
-        _binding: &pc::SandboxControlIncarnation,
+        _binding: &crate::SandboxControlIncarnation,
         _kind: SandboxControlServiceKind,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
         let pending = self.st.lock().unwrap().control_open_pending.clone();
@@ -3697,7 +3700,7 @@ impl ContainerRuntime for FakeRuntime {
     async fn handle_extra(
         &self,
         container_id: &str,
-    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
+    ) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
         self.restore_query_response("handle", container_id).await;
         self.creation_response("handle").await;
         Ok(None)
@@ -3962,7 +3965,7 @@ impl ContainerRuntime for FakeRuntime {
     async fn remove_exact_incarnation(
         &self,
         container_id: &str,
-        _runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        _runtime_handle: Option<&crate::ContainerContinuationHandle>,
         _authorization: &pc::SandboxDisposalAuthorization,
         _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
@@ -4784,7 +4787,7 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         payload
             .sandbox_control_incarnation
             .as_ref()
-            .and_then(pc::SandboxControlIncarnation::kubernetes_pod_uid),
+            .and_then(crate::SandboxControlIncarnation::kubernetes_pod_uid),
         Some("fake-control-incarnation"),
         "B2/E2 persisted"
     );
@@ -4835,7 +4838,7 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
 
     let missing_incarnation = pc::SandboxHandle::container(
         &handle.sandbox_id,
-        pc::ContainerSandboxHandleV1 {
+        crate::ContainerSandboxHandleV1 {
             sandbox_control_incarnation: None,
             ..payload.clone()
         },
@@ -4852,7 +4855,7 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
 
     let missing_set = pc::SandboxHandle::container(
         &handle.sandbox_id,
-        pc::ContainerSandboxHandleV1 {
+        crate::ContainerSandboxHandleV1 {
             control_services: Default::default(),
             ..payload.clone()
         },
@@ -4877,7 +4880,7 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
     );
     let legacy = pc::SandboxHandle::container(
         &handle.sandbox_id,
-        pc::ContainerSandboxHandleV1 {
+        crate::ContainerSandboxHandleV1 {
             sandbox_control_incarnation: None,
             control_services: Default::default(),
             ..payload.clone()
@@ -6041,12 +6044,8 @@ async fn default_runtime_rejects_future_handle_before_remove() {
     // an unaware runtime. C1 => E1 reject and E2 never call remove/delete.
     let runtime = FakeRuntime::default();
     let handle = future_host_bind_handle();
-    let runtime_handle = handle
-        .container_payload()
-        .unwrap()
-        .runtime_handle
-        .as_ref()
-        .unwrap();
+    let payload = handle.container_payload().unwrap();
+    let runtime_handle = payload.runtime_handle.as_ref().unwrap();
     assert!(
         runtime
             .remove_with_handle("future-container", Some(runtime_handle))

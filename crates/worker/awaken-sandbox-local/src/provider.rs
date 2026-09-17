@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::tool::RawTool;
 
+use crate::FilesystemHandleCodec as _;
 use crate::read_only_tree::materialize_read_only_tree_at;
 use crate::{
     DiscoveredSkillFile, IsolatedRoot, content_fingerprint, list_files_at, provision_repo_at,
@@ -311,7 +312,7 @@ impl LocalProvider {
     /// merely because the in-memory wrapper was reconstructed.
     fn project_durable_handle_fields(
         sandbox: &mut LocalSandbox,
-        payload: &pc::LocalSandboxHandleV1,
+        payload: &crate::LocalSandboxHandleV1,
     ) -> Result<(), pc::SandboxError> {
         sandbox.base_env.clone_from(&payload.base_env);
         sandbox.deny_egress = payload.deny_tool_egress;
@@ -640,7 +641,7 @@ impl LocalProvider {
             root,
             Some(handle.clone()),
         );
-        Self::project_durable_handle_fields(&mut sandbox, payload)?;
+        Self::project_durable_handle_fields(&mut sandbox, &payload)?;
         Ok(sandbox)
     }
 
@@ -795,7 +796,7 @@ impl LocalProvider {
             sandbox.root.root(),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             effect_fence,
         )?;
         let completion = verified.as_ref().map(|(_, receipt)| receipt.clone());
@@ -805,7 +806,7 @@ impl LocalProvider {
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
         };
         self.select_execution_boundary(&sandbox)?;
-        Self::project_durable_handle_fields(&mut sandbox, payload)?;
+        Self::project_durable_handle_fields(&mut sandbox, &payload)?;
         if let Some(spec) = spec {
             sandbox.secret_paths = spec
                 .mounts
@@ -1073,7 +1074,7 @@ impl pc::SandboxProvider for LocalProvider {
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             None,
         )
     }
@@ -1096,7 +1097,7 @@ impl pc::SandboxProvider for LocalProvider {
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             Some(effect_fence),
         )
     }
@@ -1651,7 +1652,7 @@ impl pc::Sandbox for LocalSandbox {
             .filter_map(|path| path.strip_prefix(self.root.root()).ok())
             .map(|path| path.to_string_lossy().into_owned())
             .collect();
-        let previous = pc::LocalSandboxHandleV1 {
+        let previous = crate::LocalSandboxHandleV1 {
             outputs_path: self.outputs_path.clone(),
             base_env: self.base_env.clone(),
             continuation_excluded_paths,
@@ -1660,7 +1661,7 @@ impl pc::Sandbox for LocalSandbox {
         match self.realization.current() {
             Some(realization) => pc::SandboxHandle::local_v2(
                 &self.id,
-                pc::LocalSandboxHandleV2 {
+                crate::LocalSandboxHandleV2 {
                     previous,
                     realization_fingerprint: realization.fingerprint().clone(),
                     effect_fence: realization.effect_fence().clone(),

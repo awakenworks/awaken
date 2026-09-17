@@ -1,5 +1,6 @@
 //! Backend-erased contracts for Session-owned container environments.
 
+use crate::ContainerHandleCodec as _;
 use std::sync::Arc;
 
 /// Source-compatible container name for the provider-neutral effect fence.
@@ -144,7 +145,7 @@ pub enum ContainerRealizationIntent {
         /// source handle. Kubernetes revalidates the persisted claim UID before
         /// it may recreate an absent Pod; host-bind runtimes carry `None` and
         /// therefore cannot turn an absent retained workspace into a fresh one.
-        source_runtime_handle: Option<pc::ContainerContinuationHandle>,
+        source_runtime_handle: Option<crate::ContainerContinuationHandle>,
     },
 }
 
@@ -160,7 +161,7 @@ impl ContainerRealizationIntent {
     }
 
     #[must_use]
-    pub fn source_runtime_handle(&self) -> Option<&pc::ContainerContinuationHandle> {
+    pub fn source_runtime_handle(&self) -> Option<&crate::ContainerContinuationHandle> {
         match self {
             Self::Create => None,
             Self::Rebuild {
@@ -419,33 +420,53 @@ pub struct ContainerObservationExpectation<'a> {
     pub container_id: &'a str,
     pub adoption_fingerprint: Option<&'a pc::SandboxRealizationFingerprint>,
     pub realization_fingerprint: Option<&'a pc::SandboxRealizationFingerprint>,
-    pub runtime_handle: Option<&'a pc::ContainerContinuationHandle>,
+    pub runtime_handle: Option<&'a crate::ContainerContinuationHandle>,
     pub effect_fence: Option<&'a pc::SandboxEffectFence>,
     pub retained_attempt: Option<&'a ContainerCreateAttempt>,
 }
 
-impl<'a> ContainerObservationExpectation<'a> {
-    pub fn from_handle(handle: &'a pc::SandboxHandle) -> Result<Self, pc::SandboxError> {
-        let payload = handle.container_payload()?;
+/// One durable container handle decoded once by its owning codec, so an
+/// observation expectation can borrow its locator and fingerprints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedContainerHandle {
+    pub payload: crate::ContainerSandboxHandleV1,
+    pub adoption_fingerprint: Option<pc::SandboxRealizationFingerprint>,
+    pub realization_fingerprint: Option<pc::SandboxRealizationFingerprint>,
+}
+
+impl DecodedContainerHandle {
+    pub fn decode(handle: &pc::SandboxHandle) -> Result<Self, pc::SandboxError> {
         Ok(Self {
-            purpose: ContainerObservationPurpose::Recovery,
-            container_id: &payload.container_id,
+            payload: handle.container_payload()?,
             adoption_fingerprint: handle.container_adoption_fingerprint()?,
-            realization_fingerprint: handle.realization_fingerprint(),
-            runtime_handle: payload.runtime_handle.as_ref(),
-            effect_fence: None,
-            retained_attempt: None,
+            realization_fingerprint: handle.realization_fingerprint().cloned(),
         })
     }
+}
 
-    pub fn from_handle_for_effect(
-        handle: &'a pc::SandboxHandle,
+impl<'a> ContainerObservationExpectation<'a> {
+    #[must_use]
+    pub fn from_decoded(handle: &'a DecodedContainerHandle) -> Self {
+        Self {
+            purpose: ContainerObservationPurpose::Recovery,
+            container_id: &handle.payload.container_id,
+            adoption_fingerprint: handle.adoption_fingerprint.as_ref(),
+            realization_fingerprint: handle.realization_fingerprint.as_ref(),
+            runtime_handle: handle.payload.runtime_handle.as_ref(),
+            effect_fence: None,
+            retained_attempt: None,
+        }
+    }
+
+    #[must_use]
+    pub fn from_decoded_for_effect(
+        handle: &'a DecodedContainerHandle,
         effect_fence: &'a pc::SandboxEffectFence,
-    ) -> Result<Self, pc::SandboxError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             effect_fence: Some(effect_fence),
-            ..Self::from_handle(handle)?
-        })
+            ..Self::from_decoded(handle)
+        }
     }
 }
 

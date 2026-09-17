@@ -1,6 +1,7 @@
 //! Ordinary Session Environment selection, effect authorization, and publication.
 
 use super::*;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 
 #[cfg(test)]
 mod fence_source_tests;

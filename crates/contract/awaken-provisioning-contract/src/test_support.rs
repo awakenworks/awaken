@@ -129,3 +129,61 @@ pub async fn dispose_owned_fixture(
         .dispose_for_effect(&authorization, &successor_authority)
         .await
 }
+
+/// Opaque locator of the neutral fixture provider. It deliberately mirrors no
+/// real backend: contract consumers exercise only the neutral handle evidence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureHandleLocator {
+    pub outputs_path: String,
+    pub physical_incarnation: String,
+}
+
+#[derive(serde::Serialize)]
+struct FixtureCurrentPayload<'a> {
+    previous: &'a FixtureHandleLocator,
+    realization_fingerprint: &'a crate::SandboxRealizationFingerprint,
+    effect_fence: &'a SandboxEffectFence,
+    owned_paths: &'a [String],
+}
+
+/// Provider name of [`fixture_current_handle`] / [`fixture_legacy_handle`].
+pub const FIXTURE_HANDLE_PROVIDER: &str = "fixture";
+
+/// A current (evidence-carrying) handle of the neutral fixture provider.
+#[must_use]
+pub fn fixture_current_handle(
+    sandbox_id: impl Into<String>,
+    locator: &FixtureHandleLocator,
+    realization_fingerprint: &crate::SandboxRealizationFingerprint,
+    effect_fence: &SandboxEffectFence,
+    owned_paths: &[String],
+) -> crate::SandboxHandle {
+    crate::SandboxHandle::from_provider_payload(
+        sandbox_id,
+        crate::SandboxPayloadSchema::new(FIXTURE_HANDLE_PROVIDER, 2)
+            .expect("fixture schema is well formed"),
+        &FixtureCurrentPayload {
+            previous: locator,
+            realization_fingerprint,
+            effect_fence,
+            owned_paths,
+        },
+    )
+    .expect("fixture payload carries complete neutral evidence")
+}
+
+/// A legacy (evidence-free) handle of the neutral fixture provider.
+#[must_use]
+pub fn fixture_legacy_handle(
+    sandbox_id: impl Into<String>,
+    locator: &FixtureHandleLocator,
+) -> crate::SandboxHandle {
+    crate::SandboxHandle::from_provider_payload(
+        sandbox_id,
+        crate::SandboxPayloadSchema::new(FIXTURE_HANDLE_PROVIDER, 1)
+            .expect("fixture schema is well formed"),
+        locator,
+    )
+    .expect("fixture legacy payload is one object")
+}

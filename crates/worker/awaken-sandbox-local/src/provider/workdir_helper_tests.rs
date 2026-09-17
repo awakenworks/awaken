@@ -1241,8 +1241,8 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     )
     .unwrap();
     let realization = creation.complete(&completion).unwrap();
-    let payload = pc::LocalSandboxHandleV2 {
-        previous: pc::LocalSandboxHandleV1 {
+    let payload = crate::LocalSandboxHandleV2 {
+        previous: crate::LocalSandboxHandleV1 {
             outputs_path: spec.outputs_path.clone(),
             base_env: spec.env.clone(),
             continuation_excluded_paths: vec!["memory".into()],

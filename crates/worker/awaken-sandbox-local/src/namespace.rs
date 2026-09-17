@@ -32,6 +32,7 @@ use crate::{
 mod control;
 mod process;
 mod seatbelt;
+use crate::FilesystemHandleCodec as _;
 use control::{
     NamespaceControlPublicationRegistry, private_control_host_directory, private_control_mount,
 };
@@ -368,11 +369,11 @@ impl NamespaceProvider {
     /// adapter. Runtime-side adoption preflight consumes this same classifier,
     /// so handle validation cannot drift from the provider that later opens it.
     #[must_use]
-    pub fn provider_kind() -> pc::NamespaceProviderKind {
+    pub fn provider_kind() -> crate::NamespaceProviderKind {
         if cfg!(target_os = "macos") {
-            pc::NamespaceProviderKind::Seatbelt
+            crate::NamespaceProviderKind::Seatbelt
         } else {
-            pc::NamespaceProviderKind::Bubblewrap
+            crate::NamespaceProviderKind::Bubblewrap
         }
     }
 
@@ -674,7 +675,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             None,
         )
     }
@@ -698,7 +699,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             Some(effect_fence),
         )
     }
@@ -1164,7 +1165,7 @@ impl NamespaceProvider {
             }
             (
                 handle.sandbox_id.as_str(),
-                payload.outputs_path.as_str(),
+                payload.outputs_path.clone(),
                 payload.base_env.clone(),
                 payload.network.clone(),
                 handle.owned_paths().unwrap_or_default().to_vec(),
@@ -1172,7 +1173,7 @@ impl NamespaceProvider {
         } else {
             (
                 spec.scope.as_str(),
-                spec.outputs_path.as_str(),
+                spec.outputs_path.clone(),
                 spec.env.clone(),
                 spec.network.clone(),
                 spec.mounts
@@ -1186,7 +1187,9 @@ impl NamespaceProvider {
         let host_workspace = root
             .resolve(pc::WorkspaceLayout::ROOT)
             .map_err(pc::SandboxError::from)?;
-        let host_outputs = root.resolve(outputs_path).map_err(pc::SandboxError::from)?;
+        let host_outputs = root
+            .resolve(&outputs_path)
+            .map_err(pc::SandboxError::from)?;
         let secret_paths = spec
             .mounts
             .iter()
@@ -1236,7 +1239,7 @@ impl NamespaceProvider {
             id: id.to_owned(),
             realization_root: raw_root,
             root,
-            outputs_path: outputs_path.to_owned(),
+            outputs_path: outputs_path.clone(),
             host_workspace,
             host_outputs,
             base_env,
@@ -1301,7 +1304,7 @@ impl NamespaceProvider {
             &raw_root,
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             effect_fence,
         )?;
         let completion = verified.as_ref().map(|(_, receipt)| receipt.clone());
