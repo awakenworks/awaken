@@ -62,6 +62,7 @@ EFFECT_METHODS: dict[str, str] = {
     "create_container": "a container on the runtime (docker/podman/k8s)",
     "create_environment_for_effect": "a sandbox environment on the provider",
     "create_environment": "a sandbox environment on the provider",
+    "create_unattached_environment": "a sandbox environment no aggregate effect owns",
     "restore_environment": "a sandbox environment restored from a checkpoint",
     "realize_restore_container": "a container restored from a checkpoint",
     "create_or_verify": "a Kubernetes object (Pod, PVC, Secret) via Api::create",
@@ -116,7 +117,7 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
 # pure predicates were admitting five real Kubernetes creations — the Sandbox
 # Pod among them — and the podman backend had no registered leaf at all. A
 # number that falls because the rule stopped looking is not progress.
-CANCEL_SAFETY_BASELINE = 64
+CANCEL_SAFETY_BASELINE = 63
 
 FN_HEAD = re.compile(r"\bfn\s+([A-Za-z_]\w*)\s*")
 IMPL_HEAD = re.compile(r"\bimpl\b")

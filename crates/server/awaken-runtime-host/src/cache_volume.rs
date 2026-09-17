@@ -159,7 +159,7 @@ impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
         };
         let environment = self
             .provider
-            .create_environment(&spec)
+            .create_unattached_environment(&spec)
             .await
             .map_err(|error| format!("create CacheVolume initializer Pod: {error}"))?;
         let script = format!(
@@ -569,11 +569,66 @@ mod tests {
     ))]
     #[async_trait]
     impl awaken_sandbox_container::ContainerEnvironmentProvider for RecordingProvider {
+        async fn create_environment_for_effect(
+            &self,
+            _spec: &awaken_provisioning_contract::SandboxSpec,
+            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+            _intent: awaken_sandbox_container::ContainerRealizationIntent,
+        ) -> Result<
+            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test double does not implement fenced Environment creation",
+            ))
+        }
+        async fn observe_environment(
+            &self,
+            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
+        ) -> Result<
+            awaken_provisioning_contract::SandboxObservation,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test double does not observe Environments",
+            ))
+        }
+        async fn adopt_environment_for_effect(
+            &self,
+            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        ) -> Result<
+            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test double does not implement fenced Environment adoption",
+            ))
+        }
+        async fn prepare_terminal_environment_for_effect(
+            &self,
+            _spec: &awaken_provisioning_contract::SandboxSpec,
+            _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
+            _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
+            _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        ) -> Result<
+            Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test double does not implement fenced terminal preparation",
+            ))
+        }
+
         async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
             Ok(())
         }
 
-        async fn create_environment(
+        async fn create_unattached_environment(
             &self,
             spec: &pc::SandboxSpec,
         ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError>
@@ -586,7 +641,7 @@ mod tests {
             }))
         }
 
-        async fn adopt_environment(
+        async fn adopt_unattached_environment(
             &self,
             _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
         ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError>
@@ -751,7 +806,7 @@ mod tests {
             deny_tool_egress: false,
         };
         let environment =
-            awaken_sandbox_container::ContainerEnvironmentProvider::create_environment(
+            awaken_sandbox_container::ContainerEnvironmentProvider::create_unattached_environment(
                 provider.as_ref(),
                 &session_spec,
             )

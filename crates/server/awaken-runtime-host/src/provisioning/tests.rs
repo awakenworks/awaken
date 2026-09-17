@@ -1144,6 +1144,61 @@ fn batch_artifact_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle 
 
 #[async_trait::async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactContainerProvider {
+    async fn create_environment_for_effect(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        _intent: awaken_sandbox_container::ContainerRealizationIntent,
+    ) -> Result<
+        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced Environment creation",
+        ))
+    }
+    async fn observe_environment(
+        &self,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxObservation,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not observe Environments",
+        ))
+    }
+    async fn adopt_environment_for_effect(
+        &self,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<
+        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced Environment adoption",
+        ))
+    }
+    async fn prepare_terminal_environment_for_effect(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
+        _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
+        _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<
+        Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced terminal preparation",
+        ))
+    }
+
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             process_tree_supervision: false,
@@ -1165,7 +1220,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
         Ok(())
     }
 
-    async fn create_environment(
+    async fn create_unattached_environment(
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
@@ -1176,7 +1231,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
         }))
     }
 
-    async fn adopt_environment(
+    async fn adopt_unattached_environment(
         &self,
         _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {

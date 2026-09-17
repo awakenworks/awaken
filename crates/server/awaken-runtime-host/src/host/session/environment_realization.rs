@@ -1002,16 +1002,15 @@ impl SharedHost {
                 .current_effect_fence(fence)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         }
+        let effect = crate::session_environment::ProviderEffect::from_parts(
+            effect_fence,
+            current_fence.as_ref().map(|source| {
+                source as &dyn awaken_provisioning_contract::CurrentExecutionAuthority
+            }),
+        )
+        .map_err(|error| HostError::internal(error.to_string()))?;
         provider
-            .create_effective_for_effect(
-                &spec,
-                effect_fence,
-                current_fence.as_ref().map(|source| {
-                    source as &dyn awaken_provisioning_contract::CurrentExecutionAuthority
-                }),
-                source_handle,
-                intent,
-            )
+            .create_effective_for_effect(&spec, effect, source_handle, intent)
             .await
             .map_err(|error| HostError::internal(error.to_string()))
     }

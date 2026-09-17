@@ -246,35 +246,29 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        self.create_container_for_effect(spec, None, None, ContainerRealizationIntent::Create)
-            .await
+        self.create_container_for_effect(
+            spec,
+            ContainerEffect::Unattached,
+            ContainerRealizationIntent::Create,
+        )
+        .await
     }
 
     pub(crate) async fn create_container_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect_fence: Option<&ContainerEffectFence>,
-        effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect: ContainerEffect<'_>,
         intent: ContainerRealizationIntent,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        let effect_fence = effect.fence();
+        let effect_fence_source = effect.authority();
         if let Some(effect_fence) = effect_fence {
             effect_fence.validate_live_at(container_runtime_unix_now_ms()?)?;
         }
-        // The copied durable fence is identity, not current admission. Both
-        // public creation ports carry the original captured authority here;
-        // legacy explicitly unfenced creation continues through this same path.
-        let admit = || match effect_fence {
-            Some(fence) => pc::with_current_sandbox_effect(
-                fence,
-                effect_fence_source.ok_or_else(|| {
-                    pc::SandboxError::fence_rejected(
-                        "fenced container creation requires current Session authority",
-                    )
-                })?,
-                |_| Ok(()),
-            ),
-            None => Ok(()),
-        };
+        // The copied durable fence is identity, not current admission. The
+        // fenced creation port carries the original captured authority here;
+        // explicitly unattached creation continues through this same path.
+        let admit = || effect.admit();
         admit()?;
         let create_attempt = ContainerCreateAttempt::fresh();
         // Fail closed against our capabilities before touching the runtime.
@@ -1179,7 +1173,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         self.probe_runtime_ready().await
     }
 
-    async fn create_environment(
+    async fn create_unattached_environment(
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
@@ -1189,34 +1183,44 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
     async fn create_environment_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect_fence: Option<&ContainerEffectFence>,
-        effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
         intent: ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         Ok(Arc::new(
-            self.create_container_for_effect(spec, effect_fence, effect_fence_source, intent)
-                .await?,
+            self.create_container_for_effect(
+                spec,
+                ContainerEffect::Fenced {
+                    fence: effect_fence,
+                    authority,
+                },
+                intent,
+            )
+            .await?,
         ))
     }
 
     async fn observe_environment(
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
+        basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(adoption, None, adoption.observation_purpose)
+        let effect_fence = match basis {
+            pc::SandboxObservationBasis::Unattached => None,
+            pc::SandboxObservationBasis::Effect { spec, effect_fence } => {
+                if spec != adoption.spec {
+                    return Err(pc::SandboxError::invalid(
+                        "container observation basis names a different effective spec",
+                    ));
+                }
+                Some(effect_fence)
+            }
+        };
+        self.observe_container_adoption(adoption, effect_fence, adoption.observation_purpose)
             .await
     }
 
-    async fn observe_environment_for_effect(
-        &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
-        effect_fence: &pc::SandboxEffectFence,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(adoption, Some(effect_fence), adoption.observation_purpose)
-            .await
-    }
-
-    async fn adopt_environment(
+    async fn adopt_unattached_environment(
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
@@ -1228,25 +1232,16 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
     async fn adopt_environment_for_effect(
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
-        effect_fence: Option<&ContainerEffectFence>,
-        authority: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         // `adopt_container` re-observes the exact durable incarnation at this
         // effect edge. It never deletes or replaces; a concurrent transition to
         // Gone is surfaced to the Host for a separately authorized Rebuild.
-        Ok(Arc::new(match effect_fence {
-            Some(effect_fence) => {
-                self.adopt_container_with_adoption_for_effect(
-                    adoption,
-                    effect_fence,
-                    authority.ok_or_else(|| {
-                        pc::SandboxError::fence_rejected("adoption has no current authority")
-                    })?,
-                )
-                .await?
-            }
-            None => self.adopt_container_with_adoption(adoption).await?,
-        }))
+        Ok(Arc::new(
+            self.adopt_container_with_adoption_for_effect(adoption, effect_fence, authority)
+                .await?,
+        ))
     }
 
     async fn prepare_terminal_environment_for_effect(
@@ -1322,8 +1317,10 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
             Ok(Box::new(
                 self.create_container_for_effect(
                     spec,
-                    Some(effect_fence),
-                    Some(authority),
+                    ContainerEffect::Fenced {
+                        fence: effect_fence,
+                        authority,
+                    },
                     ContainerRealizationIntent::Create,
                 )
                 .await?,

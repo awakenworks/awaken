@@ -564,12 +564,12 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         self.inner.probe_ready().await
     }
 
-    async fn create_environment(
+    async fn create_unattached_environment(
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         let Some(key) = poolable_shape(spec) else {
-            return self.inner.create_environment(spec).await;
+            return self.inner.create_unattached_environment(spec).await;
         };
         let warm = {
             let mut map = self.warm.lock().expect("warm pool mutex");
@@ -592,56 +592,40 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
     async fn create_environment_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect_fence: Option<&ContainerEffectFence>,
-        effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
         intent: ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        // Cause/effect rule: a durable fence or Rebuild intent requires exact
-        // provider realization identity. A warm candidate has neither and
-        // `bind_scope` cannot rewrite its physical labels/name/UID, so this path
-        // always delegates without touching ready capacity. Unfenced Ephemeral
-        // Create remains the one safe checkout row.
-        if effect_fence.is_some()
-            || matches!(&intent, ContainerRealizationIntent::Rebuild { .. })
-            || poolable_shape(spec).is_none()
-        {
-            return self
-                .inner
-                .create_environment_for_effect(spec, effect_fence, effect_fence_source, intent)
-                .await;
-        }
-        self.create_environment(spec).await
+        // Cause/effect rule: a durable fence requires exact provider
+        // realization identity. A warm candidate has none and `bind_scope`
+        // cannot rewrite its physical labels/name/UID, so a fenced effect always
+        // delegates without touching ready capacity. Unattached Ephemeral
+        // Create (`create_unattached_environment`) is the one safe checkout row.
+        self.inner
+            .create_environment_for_effect(spec, effect_fence, authority, intent)
+            .await
     }
 
     async fn observe_environment(
         &self,
         adoption: crate::ContainerEnvironmentAdoption<'_>,
+        basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.inner.observe_environment(adoption).await
+        self.inner.observe_environment(adoption, basis).await
     }
 
-    async fn observe_environment_for_effect(
-        &self,
-        adoption: crate::ContainerEnvironmentAdoption<'_>,
-        effect_fence: &pc::SandboxEffectFence,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.inner
-            .observe_environment_for_effect(adoption, effect_fence)
-            .await
-    }
-
-    async fn adopt_environment(
+    async fn adopt_unattached_environment(
         &self,
         adoption: crate::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        self.inner.adopt_environment(adoption).await
+        self.inner.adopt_unattached_environment(adoption).await
     }
 
     async fn adopt_environment_for_effect(
         &self,
         adoption: crate::ContainerEnvironmentAdoption<'_>,
-        effect_fence: Option<&ContainerEffectFence>,
-        authority: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         self.inner
             .adopt_environment_for_effect(adoption, effect_fence, authority)
@@ -983,7 +967,7 @@ mod tests {
 
         let retained = retained_spec("retained");
         assert_eq!(pool.prewarm(&retained, 1).await.unwrap(), 0, "R2");
-        let retained_environment = pool.create_environment(&retained).await.unwrap();
+        let retained_environment = pool.create_unattached_environment(&retained).await.unwrap();
         assert_eq!(pool.ready_len(&retained), 0, "R2");
         assert_eq!(pool.ready_len(&ephemeral), 1, "R2 preserves capacity");
         retained_environment.dispose_unattached().await.unwrap();
@@ -997,8 +981,8 @@ mod tests {
         let fenced = pool
             .create_environment_for_effect(
                 &ephemeral,
-                Some(&fence),
-                Some(&authority),
+                &fence,
+                &authority,
                 crate::ContainerRealizationIntent::Create,
             )
             .await
@@ -1219,7 +1203,10 @@ mod tests {
         let pool = recording_pool(runtime.clone(), 1);
         let spec = spec("adaptive-not-ready", &[]);
 
-        let environment = pool.create_environment(&spec).await.expect("E1 cold path");
+        let environment = pool
+            .create_unattached_environment(&spec)
+            .await
+            .expect("E1 cold path");
         for _ in 0..100 {
             if runtime.creates.load(Ordering::SeqCst) >= 2 {
                 break;

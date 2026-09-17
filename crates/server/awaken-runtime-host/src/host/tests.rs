@@ -10869,6 +10869,61 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     #[async_trait::async_trait]
     impl awaken_sandbox_container::ContainerEnvironmentProvider for SecureExternalProvider {
+        async fn create_environment_for_effect(
+            &self,
+            _spec: &awaken_provisioning_contract::SandboxSpec,
+            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+            _intent: awaken_sandbox_container::ContainerRealizationIntent,
+        ) -> Result<
+            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test double does not implement fenced Environment creation",
+            ))
+        }
+        async fn observe_environment(
+            &self,
+            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
+        ) -> Result<
+            awaken_provisioning_contract::SandboxObservation,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test double does not observe Environments",
+            ))
+        }
+        async fn adopt_environment_for_effect(
+            &self,
+            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        ) -> Result<
+            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test double does not implement fenced Environment adoption",
+            ))
+        }
+        async fn prepare_terminal_environment_for_effect(
+            &self,
+            _spec: &awaken_provisioning_contract::SandboxSpec,
+            _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
+            _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
+            _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        ) -> Result<
+            Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test double does not implement fenced terminal preparation",
+            ))
+        }
+
         async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
             Ok(())
         }
@@ -10877,7 +10932,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             managed_test_container_capabilities()
         }
 
-        async fn create_environment(
+        async fn create_unattached_environment(
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
         ) -> Result<
@@ -10889,7 +10944,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             ))
         }
 
-        async fn adopt_environment(
+        async fn adopt_unattached_environment(
             &self,
             _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
         ) -> Result<
@@ -17913,7 +17968,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         Ok(())
     }
 
-    async fn create_environment(
+    async fn create_unattached_environment(
         &self,
         _spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
@@ -17922,11 +17977,28 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         ))
     }
 
-    async fn observe_environment_for_effect(
+    async fn create_environment_for_effect(
+        &self,
+        _spec: &pc::SandboxSpec,
+        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn pc::CurrentExecutionAuthority,
+        _intent: awaken_sandbox_container::ContainerRealizationIntent,
+    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+        Err(pc::SandboxError::unsupported(
+            "absent-auxiliary fixture never creates a container",
+        ))
+    }
+
+    async fn observe_environment(
         &self,
         adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        _effect_fence: &pc::SandboxEffectFence,
+        basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        if matches!(basis, pc::SandboxObservationBasis::Unattached) {
+            return Err(pc::SandboxError::unsupported(
+                "terminal recovery fixture observes only under an effect fence",
+            ));
+        }
         let physical_incarnation = adoption
             .handle
             .container_physical_incarnation()?
@@ -17969,7 +18041,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         }
     }
 
-    async fn adopt_environment(
+    async fn adopt_unattached_environment(
         &self,
         _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
@@ -17981,21 +18053,16 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
     async fn adopt_environment_for_effect(
         &self,
         adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-        authority: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
         if !matches!(self.scenario, TerminalRecoveryScenario::LiveMemory) {
             return Err(pc::SandboxError::unsupported(
                 "non-live terminal recovery fixture cannot be ordinarily adopted",
             ));
         }
-        let effect_fence = effect_fence.ok_or_else(|| {
-            pc::SandboxError::fence_rejected(
-                "live terminal Memory adoption requires an exact effect fence",
-            )
-        })?;
         effect_fence.validate_identity()?;
-        pc::with_current_sandbox_effect(effect_fence, authority.unwrap(), |_| {
+        pc::with_current_sandbox_effect(effect_fence, authority, |_| {
             self.events.lock().unwrap().push("adopt-live-memory");
             Ok(())
         })?;

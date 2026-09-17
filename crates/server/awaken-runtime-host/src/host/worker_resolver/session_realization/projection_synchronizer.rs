@@ -839,8 +839,10 @@ mod tests {
                 host.session_provider
                     .create_effective_for_effect(
                         &host.sandbox_spec(thread),
-                        Some(fence),
-                        Some(&authority),
+                        crate::session_environment::ProviderEffect::Fenced {
+                            fence,
+                            authority: &authority,
+                        },
                         None,
                         awaken_sandbox_container::ContainerRealizationIntent::Create,
                     )

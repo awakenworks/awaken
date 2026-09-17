@@ -36,8 +36,12 @@ async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
     let environment = provider
         .create_effective_for_effect(
             &spec(),
-            Some(&fence),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&fence)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &fence,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &fence,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )

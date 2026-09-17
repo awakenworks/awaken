@@ -100,9 +100,10 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
     // A matching session is handed a WARM agent (no create on the request path); the
     // ready count drops by one immediately (checked before any await lets the
     // off-path replenish run on this current-thread runtime).
-    let environment = ContainerEnvironmentProvider::create_environment(&pool, &session_spec)
-        .await
-        .expect("canonical Environment checkout hands out warm capacity");
+    let environment =
+        ContainerEnvironmentProvider::create_unattached_environment(&pool, &session_spec)
+            .await
+            .expect("canonical Environment checkout hands out warm capacity");
     assert_eq!(
         pool.ready_len(&session_spec),
         1,
@@ -199,7 +200,7 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
     // Create the mounted Session environment through the same provider seam used
     // by the runtime. This proves the pool decision directly without coupling the
     // test to an agent protocol endpoint that busybox intentionally does not expose.
-    let environment = ContainerEnvironmentProvider::create_environment(&pool, &mounted)
+    let environment = ContainerEnvironmentProvider::create_unattached_environment(&pool, &mounted)
         .await
         .expect("create mounted environment outside the pool");
     assert_eq!(

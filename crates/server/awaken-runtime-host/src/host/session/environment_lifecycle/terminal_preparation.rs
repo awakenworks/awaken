@@ -142,8 +142,10 @@ impl SharedHost {
                                     "live bound Environment recovery has no durable handle",
                                 )
                             })?,
-                            Some(effect_fence),
-                            Some(&authority),
+                            crate::session_environment::ProviderEffect::Fenced {
+                                fence: effect_fence,
+                                authority: &authority,
+                            },
                         )
                         .await
                         .map_err(|error| {
@@ -373,11 +375,14 @@ impl SharedHost {
             None => (resident, None),
         };
         let observation = provider
-            .observe_effective_for_effect(
+            .observe_effective(
                 &spec,
                 &handle,
                 resident.as_deref(),
-                effect_fence,
+                awaken_provisioning_contract::SandboxObservationBasis::Effect {
+                    spec: &spec,
+                    effect_fence,
+                },
                 if mode == BoundEnvironmentPreparationMode::LiveSource {
                     awaken_sandbox_container::ContainerObservationPurpose::Recovery
                 } else {

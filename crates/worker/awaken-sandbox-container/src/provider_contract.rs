@@ -388,6 +388,19 @@ pub struct ContainerEnvironmentAdoption<'a> {
 }
 
 impl<'a> ContainerEnvironmentAdoption<'a> {
+    /// The observation basis for revalidating this adoption at an
+    /// aggregate-authorized effect boundary: its own effective spec and `fence`.
+    #[must_use]
+    pub const fn effect_basis(
+        &self,
+        effect_fence: &'a pc::SandboxEffectFence,
+    ) -> pc::SandboxObservationBasis<'a> {
+        pc::SandboxObservationBasis::Effect {
+            spec: self.spec,
+            effect_fence,
+        }
+    }
+
     #[must_use]
     pub const fn new(spec: &'a pc::SandboxSpec, handle: &'a pc::SandboxHandle) -> Self {
         Self {
@@ -470,7 +483,57 @@ impl<'a> ContainerObservationExpectation<'a> {
     }
 }
 
+/// Who owns one container realization effect. A fence travels together with
+/// the current authority that admits it, so a fence without authority, or an
+/// omitted fence that silently selects the unfenced path, cannot be written.
+#[derive(Clone, Copy)]
+pub(crate) enum ContainerEffect<'a> {
+    /// No aggregate effect owns the environment.
+    Unattached,
+    /// An aggregate-authorized effect and its current authority.
+    Fenced {
+        fence: &'a ContainerEffectFence,
+        authority: &'a dyn pc::CurrentExecutionAuthority,
+    },
+}
+
+impl<'a> ContainerEffect<'a> {
+    pub(crate) const fn fence(self) -> Option<&'a ContainerEffectFence> {
+        match self {
+            Self::Unattached => None,
+            Self::Fenced { fence, .. } => Some(fence),
+        }
+    }
+
+    pub(crate) fn authority(self) -> Option<&'a dyn pc::CurrentExecutionAuthority> {
+        match self {
+            Self::Unattached => None,
+            Self::Fenced { authority, .. } => Some(authority),
+        }
+    }
+
+    /// Enter current authority for a fenced effect; an unattached effect has
+    /// no authority to enter.
+    pub(crate) fn admit(self) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Unattached => Ok(()),
+            Self::Fenced { fence, authority } => {
+                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
+            }
+        }
+    }
+}
+
 /// Backend-erased provider for Session-owned container environments.
+///
+/// This is the container projection of [`pc::SandboxProvider`]: the same
+/// ownership split (an unattached environment versus one owned by an aggregate
+/// effect), the same typed observation basis, and the same required terminal
+/// obligation. It differs only where containers genuinely differ: environments
+/// are shared `Arc<dyn ContainerEnvironment>` values carrying create-attempt and
+/// checkpoint-upload participants, adoption carries retained attempt evidence,
+/// and the Memory mounter and Secret broker are installed after composition.
+/// There is no `Option` fence: an unfenced path is a separately named method.
 #[async_trait]
 pub trait ContainerEnvironmentProvider: Send + Sync {
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
@@ -487,68 +550,49 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
 
     async fn probe_ready(&self) -> Result<(), pc::SandboxError>;
 
-    async fn create_environment(
+    /// Create an environment no aggregate effect owns: warm capacity, a
+    /// capability probe, a cache-volume initializer, or an unowned Session.
+    async fn create_unattached_environment(
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
 
+    /// Realize one environment for an aggregate-authorized effect. The fence is
+    /// recorded as backend evidence; `authority` is re-entered after every
+    /// backend wait and before publishing the result.
     async fn create_environment_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect_fence: Option<&ContainerEffectFence>,
-        _effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
         intent: ContainerRealizationIntent,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        if effect_fence.is_some() {
-            return Err(pc::SandboxError::unsupported(
-                "container provider does not implement fenced Environment creation",
-            ));
-        }
-        let _ = intent;
-        self.create_environment(spec).await
-    }
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
 
+    /// Observe one exact durable handle without creating, adopting, renewing,
+    /// or deleting it. `basis` has the same meaning as for
+    /// [`pc::SandboxProvider::observe`]; with an effect basis, its spec must be
+    /// the adoption's effective spec.
     async fn observe_environment(
         &self,
-        _adoption: ContainerEnvironmentAdoption<'_>,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container provider does not implement effect-free observation",
-        ))
-    }
+        adoption: ContainerEnvironmentAdoption<'_>,
+        basis: pc::SandboxObservationBasis<'_>,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError>;
 
-    async fn observe_environment_for_effect(
-        &self,
-        _adoption: ContainerEnvironmentAdoption<'_>,
-        _effect_fence: &pc::SandboxEffectFence,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container provider does not implement fenced Environment observation",
-        ))
-    }
-
-    async fn adopt_environment(
+    /// Adopt an environment no aggregate effect owns.
+    async fn adopt_unattached_environment(
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
 
     /// Revalidate and adopt under the already-authorized Session Environment
-    /// effect. The additive default preserves legacy unfenced providers while
-    /// failing closed for durable callers until the provider can re-observe the
-    /// exact handle without treating an indeterminate backend failure as Gone.
+    /// effect, re-observing the exact handle without treating an indeterminate
+    /// backend failure as Gone.
     async fn adopt_environment_for_effect(
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
-        effect_fence: Option<&ContainerEffectFence>,
-        _authority: Option<&dyn pc::CurrentExecutionAuthority>,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        if effect_fence.is_some() {
-            return Err(pc::SandboxError::unsupported(
-                "container provider does not implement fenced Environment adoption",
-            ));
-        }
-        self.adopt_environment(adoption).await
-    }
+        effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
 
     /// Reconstruct the exact terminal substrate and its frozen cleanup
     /// participants without renewing it or making it runnable. The caller has
@@ -563,16 +607,12 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
     /// `None` is reserved for provider-proved exact absence.
     async fn prepare_terminal_environment_for_effect(
         &self,
-        _spec: &pc::SandboxSpec,
-        _handle: Option<&pc::SandboxHandle>,
-        _expected_effect_fence: Option<&ContainerEffectFence>,
-        _terminal_effect_fence: &ContainerEffectFence,
-        _authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container provider does not implement fenced terminal preparation",
-        ))
-    }
+        spec: &pc::SandboxSpec,
+        handle: Option<&pc::SandboxHandle>,
+        expected_effect_fence: Option<&ContainerEffectFence>,
+        terminal_effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError>;
 
     /// Acquire the one physical target for an exact restore effect. Canonical
     /// checkpoint decorators use this instead of ordinary create.
