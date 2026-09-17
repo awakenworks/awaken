@@ -3,7 +3,7 @@
 use std::io::{Read as _, Write};
 use std::path::Path;
 
-use super::{LocalProvider, LocalSandbox, content_fingerprint, err, pc};
+use super::{LocalProvider, LocalSandbox, content_fingerprint, pc};
 use crate::realization_marker::CheckpointParticipantGuard;
 
 /// Borrow the original Ready/Removing participant through the shared effect
@@ -71,7 +71,7 @@ fn append_snapshot<W: Write>(
         header.set_cksum();
         archive
             .append_data(&mut header, &directory.relative_path, std::io::empty())
-            .map_err(err)?;
+            .map_err(|error| pc::SandboxError::backend("append_snapshot", error))?;
     }
     for file in &snapshot.files {
         let mut header = tar::Header::new_gnu();
@@ -81,7 +81,7 @@ fn append_snapshot<W: Write>(
         header.set_cksum();
         archive
             .append_data(&mut header, &file.relative_path, file.bytes.as_slice())
-            .map_err(err)?;
+            .map_err(|error| pc::SandboxError::backend("append_snapshot", error))?;
     }
     Ok(())
 }
@@ -93,7 +93,7 @@ fn validate_checkpoint_effect(
     if request.effect_id == effect_fence.operation_id {
         Ok(())
     } else {
-        Err(err(
+        Err(pc::SandboxError::fence_rejected(
             "checkpoint request effect id does not match its Sandbox effect fence",
         ))
     }
@@ -143,7 +143,7 @@ fn validate_checkpoint_reference(
         || reference.suspend_effect_id != request.effect_id
         || reference.size_bytes > request.max_bytes
     {
-        Err(err(
+        Err(pc::SandboxError::conflict(
             "recorded filesystem checkpoint does not match its exact request metadata",
         ))
     } else {
@@ -163,7 +163,7 @@ impl LocalProvider {
     ) -> Result<pc::SandboxRestoreResult<LocalSandbox>, pc::SandboxError> {
         request.validate_for_spec(spec)?;
         if request.checkpoint.format != "awaken-fs-tar-v1" {
-            return Err(err(format!(
+            return Err(pc::SandboxError::unsupported(format!(
                 "unsupported checkpoint format {:?}",
                 request.checkpoint.format
             )));
@@ -175,13 +175,15 @@ impl LocalProvider {
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != request.checkpoint.size_bytes
             || content_fingerprint(&bytes) != request.checkpoint.digest
         {
-            return Err(err("checkpoint size or digest mismatch"));
+            return Err(pc::SandboxError::conflict(
+                "checkpoint size or digest mismatch",
+            ));
         }
 
         let _target_lock =
             super::restore_target::lock_bound_target(sandbox.root.root(), &evidence).await?;
-        let root_identity =
-            awaken_sandbox_fs::directory_identity_nofollow(sandbox.root.root()).map_err(err)?;
+        let root_identity = awaken_sandbox_fs::directory_identity_nofollow(sandbox.root.root())
+            .map_err(|error| pc::SandboxError::backend("restore_exact_sandbox", error))?;
         extract_checkpoint(&sandbox, root_identity, &bytes, || {
             super::restore_target::verify_binding(sandbox.root.root(), &evidence)
         })?;
@@ -200,21 +202,28 @@ pub(super) fn extract_checkpoint(
     let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
     let mut seen = std::collections::BTreeSet::new();
     let mut directory_modes = Vec::new();
-    for entry in archive.entries().map_err(err)? {
-        let mut entry = entry.map_err(err)?;
-        let path = entry.path().map_err(err)?.into_owned();
+    for entry in archive
+        .entries()
+        .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?
+    {
+        let mut entry =
+            entry.map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?;
+        let path = entry
+            .path()
+            .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?
+            .into_owned();
         if path.as_os_str().is_empty()
             || path
                 .components()
                 .any(|component| !matches!(component, std::path::Component::Normal(_)))
         {
-            return Err(err(format!(
+            return Err(pc::SandboxError::invalid(format!(
                 "checkpoint entry `{}` is not one canonical relative path",
                 path.display()
             )));
         }
         if !seen.insert(path.clone()) {
-            return Err(err(format!(
+            return Err(pc::SandboxError::invalid(format!(
                 "checkpoint entry `{}` is duplicated",
                 path.display()
             )));
@@ -225,22 +234,32 @@ pub(super) fn extract_checkpoint(
             .iter()
             .any(|excluded| destination == *excluded || destination.starts_with(excluded))
         {
-            return Err(err(format!(
+            return Err(pc::SandboxError::invalid(format!(
                 "checkpoint entry `{}` overlaps an independently governed mount",
                 path.display()
             )));
         }
         let entry_type = entry.header().entry_type();
         if entry_type.is_dir() {
-            let mode = entry.header().mode().map_err(err)? & 0o777;
+            let mode = entry
+                .header()
+                .mode()
+                .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?
+                & 0o777;
             validate_before_mutation()?;
             awaken_sandbox_fs::create_relative_directory_all(root, root_identity, &path)
-                .map_err(err)?;
+                .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?;
             directory_modes.push((path, mode));
         } else if entry_type.is_file() {
             let mut contents = Vec::new();
-            entry.read_to_end(&mut contents).map_err(err)?;
-            let mode = entry.header().mode().map_err(err)? & 0o777;
+            entry
+                .read_to_end(&mut contents)
+                .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?;
+            let mode = entry
+                .header()
+                .mode()
+                .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?
+                & 0o777;
             validate_before_mutation()?;
             awaken_sandbox_fs::write_relative_file_atomic(
                 root,
@@ -249,9 +268,9 @@ pub(super) fn extract_checkpoint(
                 &contents,
                 mode,
             )
-            .map_err(err)?;
+            .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?;
         } else {
-            return Err(err(format!(
+            return Err(pc::SandboxError::invalid(format!(
                 "checkpoint entry `{}` is not a regular file or directory",
                 path.display()
             )));
@@ -264,7 +283,7 @@ pub(super) fn extract_checkpoint(
     for (path, mode) in directory_modes {
         validate_before_mutation()?;
         awaken_sandbox_fs::set_relative_directory_mode(root, root_identity, &path, mode)
-            .map_err(err)?;
+            .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?;
     }
     Ok(())
 }
@@ -277,14 +296,16 @@ impl LocalSandbox {
             .iter()
             .map(|path| {
                 let relative = path.strip_prefix(self.root.root()).map_err(|_| {
-                    err(format!(
+                    pc::SandboxError::invalid(format!(
                         "checkpoint exclusion `{}` is outside sandbox root `{}`",
                         path.display(),
                         self.root.root().display()
                     ))
                 })?;
                 if relative.as_os_str().is_empty() {
-                    return Err(err("checkpoint cannot exclude the complete sandbox root"));
+                    return Err(pc::SandboxError::invalid(
+                        "checkpoint cannot exclude the complete sandbox root",
+                    ));
                 }
                 Ok(relative.to_owned())
             })
@@ -295,13 +316,15 @@ impl LocalSandbox {
             Path::new(""),
             &excluded,
         )
-        .map_err(err)?;
+        .map_err(|error| pc::SandboxError::backend("checkpoint_snapshot", error))?;
 
         let mut bytes = Vec::new();
         {
             let mut archive = tar::Builder::new(&mut bytes);
             append_snapshot(&mut archive, &snapshot)?;
-            archive.finish().map_err(err)?;
+            archive
+                .finish()
+                .map_err(|error| pc::SandboxError::backend("checkpoint_snapshot", error))?;
         }
         Ok(bytes)
     }
@@ -316,7 +339,7 @@ impl LocalSandbox {
         )>,
     ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
         if request.format != "awaken-fs-tar-v1" {
-            return Err(err(format!(
+            return Err(pc::SandboxError::unsupported(format!(
                 "unsupported checkpoint format {:?}",
                 request.format
             )));
@@ -327,7 +350,7 @@ impl LocalSandbox {
         let bytes = self.checkpoint_snapshot()?;
         let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if size_bytes > request.max_bytes {
-            return Err(err(format!(
+            return Err(pc::SandboxError::invalid(format!(
                 "checkpoint is {size_bytes} bytes, limit is {}",
                 request.max_bytes
             )));
@@ -357,7 +380,9 @@ impl LocalSandbox {
             .await?;
         if stored.id.trim().is_empty() || stored.digest != digest || stored.size_bytes != size_bytes
         {
-            return Err(err("checkpoint store durability receipt mismatch"));
+            return Err(pc::SandboxError::conflict(
+                "checkpoint store durability receipt mismatch",
+            ));
         }
         let reference = pc::SandboxCheckpointRef {
             id: stored.id,
@@ -414,7 +439,7 @@ impl LocalSandbox {
         store: &dyn pc::SandboxCheckpointStore,
     ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
         if self.realization.current().is_some() {
-            return Err(err(
+            return Err(pc::SandboxError::fence_rejected(
                 "current filesystem sandbox checkpoint requires an aggregate effect fence",
             ));
         }
@@ -431,10 +456,11 @@ impl LocalSandbox {
         pc::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
         validate_checkpoint_effect(request, effect_fence)?;
         let request_fingerprint = checkpoint_request_fingerprint(request, effect_fence);
-        let evidence = self
-            .realization
-            .current()
-            .ok_or_else(|| err("legacy filesystem sandbox cannot publish a fenced checkpoint"))?;
+        let evidence = self.realization.current().ok_or_else(|| {
+            pc::SandboxError::unsupported(
+                "legacy filesystem sandbox cannot publish a fenced checkpoint",
+            )
+        })?;
         let mut operation = crate::realization_marker::begin_ready_operation(
             self.root.root(),
             evidence,
@@ -488,10 +514,11 @@ impl LocalSandbox {
                 .await;
         }
 
-        let evidence = self
-            .realization
-            .current()
-            .ok_or_else(|| err("legacy filesystem sandbox cannot recover a fenced checkpoint"))?;
+        let evidence = self.realization.current().ok_or_else(|| {
+            pc::SandboxError::unsupported(
+                "legacy filesystem sandbox cannot recover a fenced checkpoint",
+            )
+        })?;
         let mut ready = pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
             crate::realization_marker::begin_ready_terminal_checkpoint(
                 self.root.root(),
@@ -898,8 +925,8 @@ mod tests {
                                 .completed_checkpoint(&fingerprint)
                                 .unwrap_err();
                             assert!(
-                                error.to_string().contains("no bound expected effect"),
-                                "R2 slot denial cannot bind the checkpoint participant"
+                                matches!(error, pc::SandboxError::NotFound(_)),
+                                "R2 slot denial cannot bind the checkpoint participant: {error}"
                             );
                             None
                         } else if removing {

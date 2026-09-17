@@ -268,7 +268,7 @@ impl ProcessHandle for ScopedProcess {
         let status = self.process.poll().await?;
         if self
             .tree_exited()
-            .map_err(|e| SandboxError::new(e.to_string()))?
+            .map_err(|e| SandboxError::backend("poll", e))?
         {
             Ok(status)
         } else {
@@ -282,7 +282,7 @@ impl ProcessHandle for ScopedProcess {
             // helper never targets a host PID. Force-stop targets init instead.
             if self
                 .tree_exited()
-                .map_err(|e| SandboxError::new(e.to_string()))?
+                .map_err(|e| SandboxError::backend("signal", e))?
             {
                 return Ok(());
             }
@@ -299,18 +299,18 @@ impl ProcessHandle for ScopedProcess {
                     // a broken channel alone remains an unknown/error outcome.
                     if self
                         .tree_exited()
-                        .map_err(|e| SandboxError::new(e.to_string()))?
+                        .map_err(|e| SandboxError::backend("signal", e))?
                     {
                         Ok(())
                     } else {
-                        Err(SandboxError::new(error.to_string()))
+                        Err(SandboxError::backend("signal", error))
                     }
                 }
             };
         }
         match pidfd_send_signal(&self.init, rustix::process::Signal::KILL) {
             Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-            Err(error) => Err(SandboxError::new(error.to_string())),
+            Err(error) => Err(SandboxError::backend("signal", error)),
         }
     }
 }

@@ -22,7 +22,7 @@ impl pc::SecretBroker for FixedBroker {
     async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
         (reference == "broker://k")
             .then(|| b"brokered-value".to_vec())
-            .ok_or_else(|| pc::SandboxError::new("unknown reference"))
+            .ok_or_else(|| pc::SandboxError::not_found("unknown reference"))
     }
 
     async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
@@ -30,7 +30,7 @@ impl pc::SecretBroker for FixedBroker {
     }
 
     async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new("not supported"))
+        Err(pc::SandboxError::unsupported("not supported"))
     }
 }
 

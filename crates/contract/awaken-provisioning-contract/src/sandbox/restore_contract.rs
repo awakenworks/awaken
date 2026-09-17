@@ -43,7 +43,7 @@ impl SandboxRestoreRequest {
     ) -> Result<SandboxHandle, SandboxError> {
         self.validate_for_spec(spec)?;
         if handle.sandbox_id != self.session_id {
-            return Err(SandboxError::new(
+            return Err(SandboxError::conflict(
                 "restore target handle belongs to a different Session",
             ));
         }
@@ -66,13 +66,13 @@ impl SandboxRestoreRequest {
         handle: &SandboxHandle,
     ) -> Result<(), SandboxError> {
         if handle.sandbox_id != self.session_id {
-            return Err(SandboxError::new(
+            return Err(SandboxError::conflict(
                 "restore target handle belongs to a different Session",
             ));
         }
         handle
             .restoration()
-            .ok_or_else(|| SandboxError::new("restore target handle has no effect evidence"))?
+            .ok_or_else(|| SandboxError::invalid("restore target handle has no effect evidence"))?
             .verify(self, spec)
     }
 
@@ -89,13 +89,13 @@ impl SandboxRestoreRequest {
         .into_iter()
         .any(str::is_empty)
         {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "sandbox restore request identity must be non-empty",
             ));
         }
         if awaken_agent_contract::collision_resistant_fingerprint_digest(&self.effect_id).is_none()
         {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "sandbox restoration effect must be canonical blake3 lowercase hex",
             ));
         }
@@ -110,7 +110,7 @@ impl SandboxRestoreRequest {
     pub fn validate_for_spec(&self, spec: &SandboxSpec) -> Result<(), SandboxError> {
         self.validate()?;
         if self.session_id != spec.scope {
-            return Err(SandboxError::new(
+            return Err(SandboxError::conflict(
                 "sandbox restore request session does not match Sandbox scope",
             ));
         }
@@ -134,7 +134,7 @@ pub fn validate_checkpoint_exclusions_for_spec(
                 )
             })
     }) {
-        return Err(SandboxError::new(
+        return Err(SandboxError::invalid(
             "checkpoint exclusions must be absolute bounded paths",
         ));
     }
@@ -144,7 +144,7 @@ pub fn validate_checkpoint_exclusions_for_spec(
             .iter()
             .any(|excluded| excluded.trim_end_matches('/') == required)
     }) {
-        return Err(SandboxError::new(
+        return Err(SandboxError::invalid(
             "checkpoint exclusions do not cover every SandboxSpec mount",
         ));
     }

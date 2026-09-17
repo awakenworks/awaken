@@ -148,7 +148,8 @@ impl awaken_sandbox_container::ContainerEnvironmentCapacity for RecordingCapacit
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
         self.warmups.lock().unwrap().push((spec.clone(), target));
         if self.fail_warmup.load(Ordering::SeqCst) {
-            Err(awaken_provisioning_contract::SandboxError::new(
+            Err(awaken_provisioning_contract::SandboxError::backend(
+                "prewarm_to",
                 "injected warmup failure",
             ))
         } else {
@@ -240,7 +241,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
         {
             Ok(())
         } else {
-            Err(awaken_provisioning_contract::SandboxError::new(
+            Err(awaken_provisioning_contract::SandboxError::conflict(
                 "injected provider evidence drift",
             ))
         }
@@ -253,7 +254,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
-        Err(awaken_provisioning_contract::SandboxError::new(
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
             "manifest-only fixture",
         ))
     }
@@ -265,7 +266,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
-        Err(awaken_provisioning_contract::SandboxError::new(
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
             "manifest-only fixture",
         ))
     }

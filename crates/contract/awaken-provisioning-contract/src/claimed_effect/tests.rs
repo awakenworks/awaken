@@ -83,7 +83,10 @@ async fn t1_completed_ok_settles_without_retaining() {
 #[tokio::test]
 async fn t2_completed_err_settles_without_retaining() {
     let (runs, retain) = retention();
-    let (_, effect) = yield_once(Err(SandboxError::new("the effect failed")));
+    let (_, effect) = yield_once(Err(SandboxError::backend(
+        "t2_completed_err_settles_without_retaining",
+        "the effect failed",
+    )));
     let claimed = ClaimedEffect::new(EffectClaim::durable("reconciler", retain), effect);
 
     assert!(claimed.await.is_err());

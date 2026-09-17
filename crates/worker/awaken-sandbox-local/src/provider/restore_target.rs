@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{LocalProvider, LocalSandbox, err, pc};
+use super::{LocalProvider, LocalSandbox, pc};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,25 +34,26 @@ pub(super) fn restoration_root(
 }
 
 fn sidecar(root: &Path, suffix: &str) -> Result<PathBuf, pc::SandboxError> {
-    let parent = root
-        .parent()
-        .ok_or_else(|| err("local restoration root has no provider parent"))?;
+    let parent = root.parent().ok_or_else(|| {
+        pc::SandboxError::invalid("local restoration root has no provider parent")
+    })?;
     let name = root
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| err("local restoration root is not portable UTF-8"))?;
+        .ok_or_else(|| pc::SandboxError::invalid("local restoration root is not portable UTF-8"))?;
     Ok(parent.join(format!(".{name}.awaken-restore-{suffix}")))
 }
 
 fn read_binding(root: &Path) -> Result<Option<RestoreTargetBinding>, pc::SandboxError> {
     match std::fs::read(sidecar(root, "target.json")?) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| err(format!("decode local restoration target evidence: {error}"))),
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            pc::SandboxError::invalid(format!("decode local restoration target evidence: {error}"))
+        }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(err(format!(
-            "read local restoration target evidence: {error}"
-        ))),
+        Err(error) => Err(pc::SandboxError::backend(
+            "read_binding",
+            format!("read local restoration target evidence: {error}"),
+        )),
     }
 }
 
@@ -65,49 +66,58 @@ fn write_binding(
     let bytes = serde_json::to_vec(&RestoreTargetBinding {
         evidence: evidence.clone(),
     })
-    .map_err(|error| err(format!("encode local restoration target evidence: {error}")))?;
+    .map_err(|error| {
+        pc::SandboxError::backend(
+            "write_binding",
+            format!("encode local restoration target evidence: {error}"),
+        )
+    })?;
     match std::fs::remove_file(&temporary) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(err(error)),
+        Err(error) => return Err(pc::SandboxError::backend("write_binding", error)),
     }
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(&temporary)
-        .map_err(err)?;
-    file.write_all(&bytes).map_err(err)?;
-    file.sync_all().map_err(err)?;
-    std::fs::rename(&temporary, &destination).map_err(err)?;
+        .map_err(|error| pc::SandboxError::backend("write_binding", error))?;
+    file.write_all(&bytes)
+        .map_err(|error| pc::SandboxError::backend("write_binding", error))?;
+    file.sync_all()
+        .map_err(|error| pc::SandboxError::backend("write_binding", error))?;
+    std::fs::rename(&temporary, &destination)
+        .map_err(|error| pc::SandboxError::backend("write_binding", error))?;
     std::fs::File::open(
         destination
             .parent()
-            .ok_or_else(|| err("local restoration evidence has no parent"))?,
+            .ok_or_else(|| pc::SandboxError::invalid("local restoration evidence has no parent"))?,
     )
     .and_then(|directory| directory.sync_all())
-    .map_err(err)
+    .map_err(|error| pc::SandboxError::backend("write_binding", error))
 }
 
 async fn lock_target(root: &Path) -> Result<std::fs::File, pc::SandboxError> {
-    std::fs::create_dir_all(
-        root.parent()
-            .ok_or_else(|| err("local restoration root has no provider parent"))?,
-    )
-    .map_err(err)?;
+    std::fs::create_dir_all(root.parent().ok_or_else(|| {
+        pc::SandboxError::invalid("local restoration root has no provider parent")
+    })?)
+    .map_err(|error| pc::SandboxError::backend("lock_target", error))?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(sidecar(root, "lock")?)
-        .map_err(err)?;
+        .map_err(|error| pc::SandboxError::backend("lock_target", error))?;
     loop {
         match lock.try_lock() {
             Ok(()) => return Ok(lock),
             Err(std::fs::TryLockError::WouldBlock) => {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
-            Err(std::fs::TryLockError::Error(error)) => return Err(err(error)),
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(pc::SandboxError::backend("lock_target", error));
+            }
         }
     }
 }
@@ -128,7 +138,7 @@ fn remove_target_binding(root: &Path) -> Result<(), pc::SandboxError> {
     match std::fs::remove_file(sidecar(root, "target.json")?) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(err(error)),
+        Err(error) => return Err(pc::SandboxError::backend("remove_target_binding", error)),
     }
     Ok(())
 }
@@ -136,13 +146,14 @@ fn remove_target_binding(root: &Path) -> Result<(), pc::SandboxError> {
 fn physical_directory_exists(root: &Path) -> Result<bool, pc::SandboxError> {
     match std::fs::symlink_metadata(root) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
-        Ok(_) => Err(err(
+        Ok(_) => Err(pc::SandboxError::conflict(
             "local restoration target is not a physical provider directory",
         )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(err(format!(
-            "inspect local restoration target directory: {error}"
-        ))),
+        Err(error) => Err(pc::SandboxError::backend(
+            "physical_directory_exists",
+            format!("inspect local restoration target directory: {error}"),
+        )),
     }
 }
 
@@ -154,13 +165,15 @@ pub(super) fn verify_binding(
         Some(binding) if binding.evidence == *expected && physical_directory_exists(root)? => {
             Ok(())
         }
-        Some(binding) if binding.evidence != *expected => Err(err(
+        Some(binding) if binding.evidence != *expected => Err(pc::SandboxError::conflict(
             "local restoration target belongs to a different exact effect",
         )),
-        Some(_) => Err(err(
+        Some(_) => Err(pc::SandboxError::not_found(
             "local restoration evidence has no physical target directory",
         )),
-        None => Err(err("local restoration target has no durable evidence")),
+        None => Err(pc::SandboxError::not_found(
+            "local restoration target has no durable evidence",
+        )),
     }
 }
 
@@ -182,17 +195,19 @@ impl LocalProvider {
         let disposition = match read_binding(&root)? {
             Some(binding) if binding.evidence == evidence => {
                 if !physical_directory_exists(&root)? {
-                    std::fs::create_dir(&root).map_err(err)?;
+                    std::fs::create_dir(&root).map_err(|error| {
+                        pc::SandboxError::backend("acquire_restore_sandbox", error)
+                    })?;
                 }
                 pc::SandboxRestoreTargetDisposition::Recovered
             }
             Some(_) => {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "local restoration target belongs to a different exact effect",
                 ));
             }
             None if physical_directory_exists(&root)? => {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "local restoration target directory exists without exact evidence",
                 ));
             }
@@ -200,7 +215,8 @@ impl LocalProvider {
                 // Evidence is durable before the directory becomes observable;
                 // a crash in this gap is repaired by the exact request only.
                 write_binding(&root, &evidence)?;
-                std::fs::create_dir(&root).map_err(err)?;
+                std::fs::create_dir(&root)
+                    .map_err(|error| pc::SandboxError::backend("acquire_restore_sandbox", error))?;
                 pc::SandboxRestoreTargetDisposition::Created
             }
         };
@@ -234,10 +250,15 @@ impl LocalProvider {
             .checkpoint
             .excluded_mounts
             .iter()
-            .map(|path| sandbox.root.resolve(path).map_err(err))
+            .map(|path| sandbox.root.resolve(path).map_err(pc::SandboxError::from))
             .collect::<Result<_, _>>()?;
-        std::fs::create_dir_all(sandbox.root.resolve(&spec.outputs_path).map_err(err)?)
-            .map_err(err)?;
+        std::fs::create_dir_all(
+            sandbox
+                .root
+                .resolve(&spec.outputs_path)
+                .map_err(pc::SandboxError::from)?,
+        )
+        .map_err(|error| pc::SandboxError::backend("restore_target_with_disposition", error))?;
         pc::SandboxRestoreTarget::exact(request, spec, sandbox, &handle, disposition)
     }
 
@@ -271,18 +292,20 @@ pub(super) async fn dispose_bound_target(
     pc::with_current_sandbox_effect(fence, authority, || {
         match read_binding(root)? {
             Some(binding) if binding.evidence != *expected => {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "local restored-target cleanup observed another exact effect",
                 ));
             }
             None if physical_directory_exists(root)? => {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "local restored-target cleanup found an unfenced directory",
                 ));
             }
             Some(_) if physical_directory_exists(root)? => {
-                let identity = awaken_sandbox_fs::directory_identity_nofollow(root).map_err(err)?;
-                awaken_sandbox_fs::remove_directory_tree_exact(root, identity).map_err(err)?;
+                let identity = awaken_sandbox_fs::directory_identity_nofollow(root)
+                    .map_err(|error| pc::SandboxError::backend("dispose_bound_target", error))?;
+                awaken_sandbox_fs::remove_directory_tree_exact(root, identity)
+                    .map_err(|error| pc::SandboxError::backend("dispose_bound_target", error))?;
             }
             Some(_) | None => {}
         }

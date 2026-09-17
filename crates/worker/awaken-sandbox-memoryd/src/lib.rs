@@ -49,6 +49,21 @@ pub enum FuseError {
     Internal(String),
 }
 
+impl From<FuseError> for awaken_provisioning_contract::SandboxError {
+    /// A full dirty-write budget clears once buffered writes flush; the store's
+    /// own classes pass through unchanged.
+    fn from(error: FuseError) -> Self {
+        let detail = error.to_string();
+        match error {
+            FuseError::Mem(error) => error.into(),
+            FuseError::DirtyFileLimitExceeded => Self::NotReady(detail),
+            FuseError::NotFound(_) => Self::NotFound(detail),
+            FuseError::TooLarge => Self::Invalid(detail),
+            FuseError::Internal(cause) => Self::backend("memory FUSE", cause),
+        }
+    }
+}
+
 /// Positional overwrite/extend of `original` with `data` at `offset`, returning the
 /// new UTF-8 content. Caps the projected size **before** any allocation so a large
 /// agent-controlled offset (e.g. a 1 TiB `pwrite`) cannot abort the process on an

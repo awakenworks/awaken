@@ -941,7 +941,10 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
             _plan: &pc::RepositoryRealizationPlan,
             _credential: Option<&pc::RepositoryHttpBasicCredential>,
         ) -> Result<(), pc::SandboxError> {
-            Err(pc::SandboxError::new("clone failed"))
+            Err(pc::SandboxError::backend(
+                "realize_repository",
+                "clone failed",
+            ))
         }
 
         async fn publish_repository(
@@ -1176,7 +1179,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
         &self,
         _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "batch Artifact fixture never adopts an Environment",
         ))
     }
@@ -1188,7 +1191,7 @@ impl awaken_sandbox_container::ContainerEnvironment for BatchArtifactContainer {
         &self,
         _command: pc::Command,
     ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "batch Artifact fixture never spawns an Agent",
         ))
     }
@@ -1234,7 +1237,7 @@ impl pc::Sandbox for BatchArtifactContainer {
         &self,
         _command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "batch Artifact fixture never spawns a process",
         ))
     }
@@ -1243,19 +1246,19 @@ impl pc::Sandbox for BatchArtifactContainer {
         &self,
         _requirement: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "batch Artifact fixture never attaches a mount",
         ))
     }
 
     async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "Host batch capture must not use the Container Sandbox list port",
         ))
     }
 
     async fn read_artifact(&self, _id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "Host batch capture must not reread one Container Artifact",
         ))
     }
@@ -1268,7 +1271,7 @@ impl pc::Sandbox for BatchArtifactContainer {
         &self,
         _process_id: &str,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "batch Artifact fixture has no process",
         ))
     }

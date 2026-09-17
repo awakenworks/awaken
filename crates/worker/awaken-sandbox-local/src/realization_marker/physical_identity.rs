@@ -2,8 +2,12 @@ use super::*;
 
 pub(super) fn new_physical_incarnation() -> Result<String, pc::SandboxError> {
     let mut random = [0_u8; 32];
-    getrandom::getrandom(&mut random)
-        .map_err(|error| err(format!("generate filesystem physical incarnation: {error}")))?;
+    getrandom::getrandom(&mut random).map_err(|error| {
+        pc::SandboxError::backend(
+            "new_physical_incarnation",
+            format!("generate filesystem physical incarnation: {error}"),
+        )
+    })?;
     Ok(blake3::hash(&random).to_hex().to_string())
 }
 
@@ -40,15 +44,18 @@ pub(super) fn validate_removed_restore_source(
     source: &RebuildSourceRecord,
     incoming_restore_fingerprint: &str,
 ) -> Result<(), pc::SandboxError> {
-    let participant = source
-        .checkpoint
-        .as_ref()
-        .ok_or_else(|| err("Removed filesystem tombstone has no checkpoint participant"))?;
-    let checkpoint = participant
-        .reference()
-        .ok_or_else(|| err("Removed filesystem tombstone has no completed checkpoint receipt"))?;
+    let participant = source.checkpoint.as_ref().ok_or_else(|| {
+        pc::SandboxError::not_found("Removed filesystem tombstone has no checkpoint participant")
+    })?;
+    let checkpoint = participant.reference().ok_or_else(|| {
+        pc::SandboxError::not_found(
+            "Removed filesystem tombstone has no completed checkpoint receipt",
+        )
+    })?;
     let checkpoint_operation_id = participant.operation_id().ok_or_else(|| {
-        err("Removed filesystem tombstone has no durable checkpoint operation identity")
+        pc::SandboxError::not_found(
+            "Removed filesystem tombstone has no durable checkpoint operation identity",
+        )
     })?;
     if source.phase != RealizationPhase::Removed
         || source.terminal_source.is_none()
@@ -58,7 +65,7 @@ pub(super) fn validate_removed_restore_source(
         || checkpoint.suspend_effect_id != checkpoint_operation_id
         || restore_input_fingerprint(checkpoint) != incoming_restore_fingerprint
     {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "restore input does not identify the checkpoint participant that removed this filesystem",
         ));
     }

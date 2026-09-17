@@ -453,7 +453,7 @@ mod tests {
             &self,
             _requirement: pc::MountRequirement,
         ) -> Result<pc::RealizedMount, pc::SandboxError> {
-            Err(pc::SandboxError::new("unused"))
+            Err(pc::SandboxError::unsupported("unused"))
         }
 
         async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
@@ -461,7 +461,7 @@ mod tests {
         }
 
         async fn read_artifact(&self, _id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-            Err(pc::SandboxError::new("unused"))
+            Err(pc::SandboxError::unsupported("unused"))
         }
 
         fn realized(&self) -> &[pc::RealizedMount] {
@@ -510,7 +510,7 @@ mod tests {
             &self,
             _command: pc::Command,
         ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
-            Err(pc::SandboxError::new("unused"))
+            Err(pc::SandboxError::unsupported("unused"))
         }
 
         async fn read_files(
@@ -581,7 +581,7 @@ mod tests {
             _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
         ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError>
         {
-            Err(pc::SandboxError::new("unused"))
+            Err(pc::SandboxError::unsupported("unused"))
         }
     }
 

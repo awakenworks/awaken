@@ -1733,6 +1733,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-resource-contract",
+ "awaken-runtime-contract",
  "awaken-sandbox-control",
  "serde",
  "serde_json",

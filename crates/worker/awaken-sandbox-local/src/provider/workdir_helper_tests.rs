@@ -330,7 +330,10 @@ impl pc::MemoryMount for TeardownProbe {
             let _permit = gate.acquire().await.unwrap();
         }
         if call < self.failures {
-            Err(pc::SandboxError::new("injected teardown failure"))
+            Err(pc::SandboxError::backend(
+                "teardown",
+                "injected teardown failure",
+            ))
         } else {
             Ok(())
         }
@@ -357,15 +360,19 @@ impl pc::MemoryMounter for FailedCreationMounter {
                 .mount_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if call == 1 {
-                return Err(pc::SandboxError::new("injected later mount failure"));
+                return Err(pc::SandboxError::backend(
+                    "mount",
+                    "injected later mount failure",
+                ));
             }
             if call != 0 {
-                return Err(pc::SandboxError::new(format!(
-                    "unexpected Memory mount call {call}"
-                )));
+                return Err(pc::SandboxError::backend(
+                    "mount",
+                    format!("unexpected Memory mount call {call}"),
+                ));
             }
             std::fs::create_dir_all(host_path)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("mount", error))?;
             Ok(Box::new(TeardownProbe {
                 teardowns: self.teardowns.clone(),
                 drops: self.drops.clone(),
@@ -1059,7 +1066,7 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
                 Some(stored) if stored.metadata == *metadata && stored.bytes == bytes => {
                     Ok(stored.receipt.clone())
                 }
-                Some(_) => Err(err(
+                Some(_) => Err(pc::SandboxError::conflict(
                     "checkpoint logical key is already bound to different metadata or bytes",
                 )),
                 None => {
@@ -1086,7 +1093,7 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
             .unwrap()
             .get(id)
             .map(|stored| stored.bytes.clone())
-            .ok_or_else(|| err("checkpoint object not found"))
+            .ok_or_else(|| pc::SandboxError::not_found("checkpoint object not found"))
     }
 
     async fn delete(&self, id: &str) -> Result<(), pc::SandboxError> {

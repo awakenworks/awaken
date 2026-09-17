@@ -70,8 +70,10 @@ impl ContainerEnvironmentProvider for RecordingProvider {
         source: Option<&dyn pc::CurrentExecutionAuthority>,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        let fence = fence.ok_or_else(|| pc::SandboxError::new("missing creation fence"))?;
-        let source = source.ok_or_else(|| pc::SandboxError::new("missing creation authority"))?;
+        let fence =
+            fence.ok_or_else(|| pc::SandboxError::fence_rejected("missing creation fence"))?;
+        let source =
+            source.ok_or_else(|| pc::SandboxError::fence_rejected("missing creation authority"))?;
         assert!(matches!(
             intent,
             awaken_sandbox_container::ContainerRealizationIntent::Create
@@ -91,14 +93,17 @@ impl ContainerEnvironmentProvider for RecordingProvider {
         })?;
         // This test owns projection, not process creation or stop evidence.
         // End the probe here; no fabricated SandboxHandle/remote Hand is needed.
-        Err(pc::SandboxError::new("resource projection probe complete"))
+        Err(pc::SandboxError::backend(
+            "create_environment_for_effect",
+            "resource projection probe complete",
+        ))
     }
 
     async fn adopt_environment(
         &self,
         _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::invalid(
             "resource proof does not recover a Session",
         ))
     }

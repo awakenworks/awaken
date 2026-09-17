@@ -33,9 +33,10 @@ impl ContainerSkillCache {
             ContainerSkillSnapshot::Ready(files) => {
                 Ok(files.get(subdir).cloned().unwrap_or_default())
             }
-            ContainerSkillSnapshot::Unavailable(error) => Err(pc::SandboxError::new(format!(
-                "container Skill catalog is unavailable: {error}"
-            ))),
+            ContainerSkillSnapshot::Unavailable(error) => Err(pc::SandboxError::backend(
+                "get",
+                format!("container Skill catalog is unavailable: {error}"),
+            )),
         }
     }
 
@@ -48,9 +49,10 @@ impl ContainerSkillCache {
         sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
     ) -> Result<(), pc::SandboxError> {
         if let ContainerSkillSnapshot::Unavailable(error) = &*self.snapshot.read().unwrap() {
-            return Err(pc::SandboxError::new(format!(
-                "container Skill catalog is unavailable: {error}"
-            )));
+            return Err(pc::SandboxError::backend(
+                "refresh",
+                format!("container Skill catalog is unavailable: {error}"),
+            ));
         }
         let dirs: Vec<_> = self.dirs.lock().unwrap().iter().cloned().collect();
         let discovered = async {
@@ -66,7 +68,7 @@ impl ContainerSkillCache {
                         continue;
                     }
                     let content = String::from_utf8(file.bytes).map_err(|error| {
-                        pc::SandboxError::new(format!("Skill `{id}` is not UTF-8: {error}"))
+                        pc::SandboxError::invalid(format!("Skill `{id}` is not UTF-8: {error}"))
                     })?;
                     files.push(DiscoveredSkillFile {
                         id: id.to_string(),

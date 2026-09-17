@@ -6,10 +6,6 @@ use awaken_provisioning_contract as pc;
 
 use crate::{IsolatedRoot, content_fingerprint};
 
-fn err(e: impl ToString) -> pc::SandboxError {
-    pc::SandboxError::new(e.to_string())
-}
-
 /// Capture the outputs tree once as `(artifact, bytes)` pairs, sorted by sandbox
 /// path. The descriptor-relative leaf binds the walk to `root_identity` and
 /// never follows a symlink. A missing outputs root is empty; every other read
@@ -24,13 +20,12 @@ pub(crate) fn scan_outputs(
         root_identity,
         std::path::Path::new(outputs_path.trim_start_matches('/')),
     )
-    .map_err(err)?
+    .map_err(|error| pc::SandboxError::backend("scan_outputs", error))?
     .into_iter()
     .map(|file| {
-        let relative = file
-            .relative_path
-            .to_str()
-            .ok_or_else(|| err("sandbox outputs contain a non-UTF-8 logical path"))?;
+        let relative = file.relative_path.to_str().ok_or_else(|| {
+            pc::SandboxError::invalid("sandbox outputs contain a non-UTF-8 logical path")
+        })?;
         let sandbox_path = format!(
             "{}/{}",
             outputs_path.trim_end_matches('/'),

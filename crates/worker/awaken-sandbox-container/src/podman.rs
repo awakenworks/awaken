@@ -91,10 +91,10 @@ impl pc::ProcessHandle for PodmanExecProcess {
         let child = state
             .child
             .as_mut()
-            .ok_or_else(|| pc::SandboxError::new("podman exec process is not attached"))?;
+            .ok_or_else(|| pc::SandboxError::invalid("podman exec process is not attached"))?;
         let status = child
             .try_wait()
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?
+            .map_err(|error| pc::SandboxError::backend("poll", error))?
             .map(Self::exit_status);
         if let Some(status) = &status {
             state.status = Some(status.clone());
@@ -120,7 +120,7 @@ impl pc::ProcessHandle for PodmanExecProcess {
             .args(["exec", &self.container_id, "sh", "-c", &script])
             .status()
             .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| pc::SandboxError::backend("signal", error))?;
         if status.success() {
             Ok(())
         } else if self.poll().await?.is_some() {
@@ -129,9 +129,10 @@ impl pc::ProcessHandle for PodmanExecProcess {
             // idempotent across every backend.
             Ok(())
         } else {
-            Err(pc::SandboxError::new(format!(
-                "podman exec signal failed with {status}"
-            )))
+            Err(pc::SandboxError::backend(
+                "signal",
+                format!("podman exec signal failed with {status}"),
+            ))
         }
     }
 }
@@ -1098,8 +1099,7 @@ impl ContainerRuntime for PodmanRuntime {
             .parent()
             .ok_or_else(|| backend("Podman restored live-input root has no staging parent"))?;
         pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
-            crate::remove_host_staging_path(staging_root)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))
+            crate::remove_host_staging_path(staging_root).map_err(pc::SandboxError::from)
         })
         .map_err(backend)?;
         self.remove_exact_incarnation(&container_id, None, authorization, authority)

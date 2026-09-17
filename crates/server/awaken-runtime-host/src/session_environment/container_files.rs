@@ -15,7 +15,7 @@ const fn read_only_tree_publish_admitted(
 
 fn lexical_components(path: &str, allow_empty: bool) -> Result<Vec<&str>, pc::SandboxError> {
     if path.contains('\0') || path.contains('\\') {
-        return Err(pc::SandboxError::new("unsafe sandbox path"));
+        return Err(pc::SandboxError::invalid("unsafe sandbox path"));
     }
     let components = path
         .split('/')
@@ -26,7 +26,7 @@ fn lexical_components(path: &str, allow_empty: bool) -> Result<Vec<&str>, pc::Sa
             .iter()
             .any(|component| matches!(*component, "." | ".."))
     {
-        return Err(pc::SandboxError::new("unsafe sandbox path"));
+        return Err(pc::SandboxError::invalid("unsafe sandbox path"));
     }
     Ok(components)
 }
@@ -39,7 +39,7 @@ fn lexical_components(path: &str, allow_empty: bool) -> Result<Vec<&str>, pc::Sa
 /// workspace path must use [`workspace_path`] or [`logical_path`] instead.
 pub(super) fn sandbox_absolute_path(path: &str) -> Result<String, pc::SandboxError> {
     if !path.starts_with('/') {
-        return Err(pc::SandboxError::new("unsafe sandbox-absolute path"));
+        return Err(pc::SandboxError::invalid("unsafe sandbox-absolute path"));
     }
     let components = lexical_components(path, false)?;
     Ok(format!("/{}", components.join("/")))
@@ -47,7 +47,7 @@ pub(super) fn sandbox_absolute_path(path: &str) -> Result<String, pc::SandboxErr
 
 fn read_only_tree_file_path(root: &str, relative: &str) -> Result<String, pc::SandboxError> {
     if relative.starts_with('/') {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::invalid(
             "unsafe container read-only tree path",
         ));
     }
@@ -57,7 +57,9 @@ fn read_only_tree_file_path(root: &str, relative: &str) -> Result<String, pc::Sa
 
 pub(super) fn workspace_path(subdir: &str) -> Result<String, pc::SandboxError> {
     if subdir.starts_with('/') {
-        return Err(pc::SandboxError::new("unsafe container workspace subdir"));
+        return Err(pc::SandboxError::invalid(
+            "unsafe container workspace subdir",
+        ));
     }
     let components = lexical_components(subdir, true)?;
     Ok(if components.is_empty() {
@@ -190,10 +192,10 @@ fn require_success(status: pc::ExitStatus, operation: &str) -> Result<(), pc::Sa
     if status.code == Some(0) {
         Ok(())
     } else {
-        Err(pc::SandboxError::new(format!(
-            "{operation} exited {:?}",
-            status.code
-        )))
+        Err(pc::SandboxError::backend(
+            "require_success",
+            format!("{operation} exited {:?}", status.code),
+        ))
     }
 }
 

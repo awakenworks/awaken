@@ -951,7 +951,7 @@ mod tests {
                 _reference: &str,
                 _bytes: Vec<u8>,
             ) -> Result<(), pc::SandboxError> {
-                Err(pc::SandboxError::new("not supported"))
+                Err(pc::SandboxError::unsupported("not supported"))
             }
         }
 

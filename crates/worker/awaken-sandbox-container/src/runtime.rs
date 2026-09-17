@@ -107,10 +107,20 @@ pub(crate) fn container_effect_fence_from_values(
 pub(crate) fn container_runtime_unix_now_ms() -> Result<u64, pc::SandboxError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| pc::SandboxError::new(format!("read Sandbox effect time: {error}")))?
+        .map_err(|error| {
+            pc::SandboxError::backend(
+                "container_runtime_unix_now_ms",
+                format!("read Sandbox effect time: {error}"),
+            )
+        })?
         .as_millis()
         .try_into()
-        .map_err(|_| pc::SandboxError::new("Sandbox effect time exceeds u64"))
+        .map_err(|_| {
+            pc::SandboxError::backend(
+                "container_runtime_unix_now_ms",
+                "Sandbox effect time exceeds u64",
+            )
+        })
 }
 /// Identifies the runtime incarnation that currently owns a container. It fences
 /// realization/adoption only and cannot authorize garbage collection.
@@ -353,6 +363,20 @@ pub enum RuntimeError {
     /// Session authority; it must retain all staged participants meanwhile.
     #[error("container runtime effect fence expired before the next provider boundary")]
     EffectFenceExpired,
+}
+
+impl From<RuntimeError> for pc::SandboxError {
+    /// The runtime adapter already distinguishes absence, a stale fence, and an
+    /// effect whose outcome is unknown; keep those classes at the port.
+    fn from(error: RuntimeError) -> Self {
+        let detail = error.to_string();
+        match error {
+            RuntimeError::NotFound(_) => Self::NotFound(detail),
+            RuntimeError::EffectFenceExpired => Self::FenceRejected(detail),
+            RuntimeError::MayHaveCommitted(_) => Self::Transport(detail),
+            RuntimeError::Backend(cause) => Self::backend("container runtime", cause),
+        }
+    }
 }
 
 impl RuntimeError {

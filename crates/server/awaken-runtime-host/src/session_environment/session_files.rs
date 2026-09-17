@@ -82,7 +82,7 @@ impl FileReadRoot {
                 lexically_safe: true,
             },
         ) {
-            return Err(pc::SandboxError::new("unsafe Workspace file read root"));
+            return Err(pc::SandboxError::invalid("unsafe Workspace file read root"));
         }
         Ok(Self::Workspace {
             subdir: subdir.to_string(),
@@ -98,7 +98,7 @@ impl FileReadRoot {
                 lexically_safe: true,
             },
         ) {
-            return Err(pc::SandboxError::new("unsafe frozen mount read root"));
+            return Err(pc::SandboxError::invalid("unsafe frozen mount read root"));
         }
         Ok(Self::FrozenMount { path })
     }

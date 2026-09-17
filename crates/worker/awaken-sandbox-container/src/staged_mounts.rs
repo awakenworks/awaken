@@ -43,21 +43,19 @@ async fn reject_unaccepted_memory_mount(
 ) -> pc::SandboxError {
     if let Err(authority_error) = admit() {
         staged.retain_mounted_memory(handle);
-        return pc::SandboxError::new(format!(
-            "{cause}; Memory participant cleanup was not authorized: {authority_error}"
-        ));
+        return cause.map_detail(|detail| {
+            format!("{detail}; Memory participant cleanup was not authorized: {authority_error}")
+        });
     }
     let cleanup = handle.teardown().await;
     let current = admit();
     match (cleanup, current) {
         (Ok(()), Ok(())) => cause,
-        (Ok(()), Err(authority_error)) => pc::SandboxError::new(format!(
-            "{cause}; Memory participant cleanup completed after authority changed: {authority_error}"
+        (Ok(()), Err(authority_error)) => cause.map_detail(|detail| format!("{detail}; Memory participant cleanup completed after authority changed: {authority_error}"
         )),
         (Err(cleanup_error), current) => {
             staged.retain_mounted_memory(handle);
-            pc::SandboxError::new(format!(
-                "{cause}; Memory participant cleanup failed: {cleanup_error}{}",
+            cause.map_detail(|detail| format!("{detail}; Memory participant cleanup failed: {cleanup_error}{}",
                 current
                     .err()
                     .map(|error| format!("; authority changed: {error}"))
@@ -80,8 +78,9 @@ pub(super) async fn materialize_memory_binds(
     if memory.is_empty() {
         return Ok(());
     }
-    let mounter = mounter
-        .ok_or_else(|| pc::SandboxError::new("container MemoryStore mount has no MemoryMounter"))?;
+    let mounter = mounter.ok_or_else(|| {
+        pc::SandboxError::unsupported("container MemoryStore mount has no MemoryMounter")
+    })?;
     let root = super::staging_dir(&mut staged.guard, &spec.scope)?;
     for projection in memory {
         admit()?;
@@ -147,7 +146,7 @@ pub(super) async fn materialize_memory_binds(
                     return Err(reject_unaccepted_memory_mount(
                         staged,
                         handle,
-                        pc::SandboxError::new(
+                        pc::SandboxError::invalid(
                             "copy-backed Memory mount omitted its original durable heads",
                         ),
                         admit,
@@ -171,7 +170,7 @@ pub(super) async fn materialize_memory_binds(
                 return Err(reject_unaccepted_memory_mount(
                     staged,
                     handle,
-                    pc::SandboxError::new(
+                    pc::SandboxError::invalid(
                         "container Memory requires a restart-recoverable copy realization",
                     ),
                     admit,
@@ -182,7 +181,9 @@ pub(super) async fn materialize_memory_binds(
                 return Err(reject_unaccepted_memory_mount(
                     staged,
                     handle,
-                    pc::SandboxError::new("MemoryStore mount returned an unsupported realization"),
+                    pc::SandboxError::invalid(
+                        "MemoryStore mount returned an unsupported realization",
+                    ),
                     admit,
                 )
                 .await);
@@ -203,7 +204,7 @@ pub(super) async fn materialize_memory_binds(
                 .memory_mounts
                 .iter_mut()
                 .find(|planned| planned.mount_path == projection.mount_path)
-                .ok_or_else(|| pc::SandboxError::new("Memory mount disappeared from plan"));
+                .ok_or_else(|| pc::SandboxError::not_found("Memory mount disappeared from plan"));
             let planned = match planned {
                 Ok(planned) => planned,
                 Err(error) => {
@@ -272,7 +273,7 @@ impl StagedMounts {
     /// claim exists to close: a host mount whose owner has gone away.
     pub(super) fn into_parts(mut self) -> Result<StagedMountsParts, pc::SandboxError> {
         if !self.retained_memory.is_empty() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::not_ready(
                 "container staging cannot be handed on while a Memory claim is unsettled",
             ));
         }
@@ -337,7 +338,7 @@ impl StagedMounts {
             return if self.memory.is_empty() {
                 Ok(())
             } else {
-                Err(pc::SandboxError::new(
+                Err(pc::SandboxError::invalid(
                     "container Memory materialization has no backend-bound staging root",
                 ))
             };
@@ -348,27 +349,32 @@ impl StagedMounts {
             .filter_map(|mount| mount.materialization.clone())
             .collect::<Vec<_>>();
         pc::MemoryMaterializationEvidence::canonicalize_all(&mut evidence)?;
-        let bytes = serde_json::to_vec(&evidence)
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let bytes = serde_json::to_vec(&evidence).map_err(|error| {
+            pc::SandboxError::backend("write_memory_pre_activation_receipt", error)
+        })?;
         let pending = root.join(format!("{MEMORY_PRE_ACTIVATION_RECEIPT}.pending"));
-        std::fs::write(&pending, bytes)
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        std::fs::rename(&pending, root.join(MEMORY_PRE_ACTIVATION_RECEIPT))
-            .map_err(|error| pc::SandboxError::new(error.to_string()))
+        std::fs::write(&pending, bytes).map_err(|error| {
+            pc::SandboxError::backend("write_memory_pre_activation_receipt", error)
+        })?;
+        std::fs::rename(&pending, root.join(MEMORY_PRE_ACTIVATION_RECEIPT)).map_err(|error| {
+            pc::SandboxError::backend("write_memory_pre_activation_receipt", error)
+        })
     }
 
     pub(super) fn read_memory_pre_activation_receipt(
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Vec<pc::MemoryMaterializationEvidence>, pc::SandboxError> {
-        let root =
-            self.guard.as_ref().map(StagingGuard::path).ok_or_else(|| {
-                pc::SandboxError::new("active container has no Memory staging root")
-            })?;
-        let bytes = std::fs::read(root.join(MEMORY_PRE_ACTIVATION_RECEIPT))
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let root = self.guard.as_ref().map(StagingGuard::path).ok_or_else(|| {
+            pc::SandboxError::invalid("active container has no Memory staging root")
+        })?;
+        let bytes = std::fs::read(root.join(MEMORY_PRE_ACTIVATION_RECEIPT)).map_err(|error| {
+            pc::SandboxError::backend("read_memory_pre_activation_receipt", error)
+        })?;
         let evidence: Vec<pc::MemoryMaterializationEvidence> = serde_json::from_slice(&bytes)
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| {
+                pc::SandboxError::backend("read_memory_pre_activation_receipt", error)
+            })?;
         pc::MemoryMaterializationEvidence::validate_all(&evidence)?;
         let projections = super::memory_projections(spec);
         if evidence.len() != projections.len()
@@ -378,7 +384,7 @@ impl StagedMounts {
                 })
             })
         {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::conflict(
                 "container Memory pre-activation receipt differs from the frozen specification",
             ));
         }
@@ -550,8 +556,8 @@ mod cancellation_tests {
             Ok(_) => panic!("R1/E2: an unsettled claim must not be handed on"),
         };
         assert!(
-            refusal.to_string().contains("unsettled"),
-            "R1/E2 names the unsettled claim: {refusal}"
+            matches!(refusal, pc::SandboxError::NotReady(_)),
+            "R1/E2 an unsettled claim is a transitional refusal: {refusal}"
         );
     }
 

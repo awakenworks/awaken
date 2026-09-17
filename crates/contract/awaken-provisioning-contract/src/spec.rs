@@ -141,21 +141,24 @@ pub async fn materialize_process_command(
         let value = match var.value {
             EnvValue::Inline { value } => MaterializedEnvValue::Inline(value),
             EnvValue::Secret { .. } if var.visibility == EnvVisibility::EgressOnly => {
-                return Err(SandboxError::new(format!(
+                return Err(SandboxError::invalid(format!(
                     "egress-only secret `{}` cannot be materialized into a process",
                     var.name
                 )));
             }
             EnvValue::Secret { reference } => {
                 let broker = broker.ok_or_else(|| {
-                    SandboxError::new(format!(
+                    SandboxError::unsupported(format!(
                         "process secret `{}` has no credential broker",
                         var.name
                     ))
                 })?;
                 let bytes = broker.materialize_process(&reference).await?;
                 let value = String::from_utf8(bytes).map_err(|_| {
-                    SandboxError::new(format!("process secret `{}` is not valid UTF-8", var.name))
+                    SandboxError::invalid(format!(
+                        "process secret `{}` is not valid UTF-8",
+                        var.name
+                    ))
                 })?;
                 MaterializedEnvValue::Secret(awaken_agent_contract::RedactedString::new(value))
             }
@@ -191,7 +194,7 @@ mod process_secret_tests {
                 .get(reference)
                 .cloned()
                 .unwrap_or(Err("missing"))
-                .map_err(SandboxError::new)
+                .map_err(|error| SandboxError::backend("materialize", error))
         }
 
         async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, SandboxError> {
@@ -199,7 +202,7 @@ mod process_secret_tests {
         }
 
         async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), SandboxError> {
-            Err(SandboxError::new("not supported"))
+            Err(SandboxError::unsupported("not supported"))
         }
     }
 

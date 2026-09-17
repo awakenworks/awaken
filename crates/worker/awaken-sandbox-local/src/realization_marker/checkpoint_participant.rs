@@ -2,8 +2,9 @@ use super::*;
 
 impl ReadyOperationGuard {
     pub(super) fn current_marker(&self) -> Result<RealizationMarker, pc::SandboxError> {
-        let marker = read_marker_locked(&self.root, &self.lock)?
-            .ok_or_else(|| err("ready filesystem operation lost its realization marker"))?;
+        let marker = read_marker_locked(&self.root, &self.lock)?.ok_or_else(|| {
+            pc::SandboxError::gone("ready filesystem operation lost its realization marker")
+        })?;
         validate_ready_operation_marker(
             &self.root,
             &marker,
@@ -14,7 +15,7 @@ impl ReadyOperationGuard {
             &self.lock,
         )?;
         if marker != self.marker {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "ready filesystem operation marker changed outside its held lifecycle lock",
             ));
         }
@@ -32,7 +33,7 @@ impl ReadyOperationGuard {
         // this participant owns only exact marker/root/receipt identity.
         execution_participant::require_quiescent(&self.current_marker()?)?;
         if self.marker.completion.as_ref() != Some(expected) {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "ready filesystem effect changed the exact completion receipt",
             ));
         }
@@ -59,7 +60,7 @@ fn begin_checkpoint_upload(
 ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
     if let Some(participant) = &marker.checkpoint {
         if !participant.matches_pending(&pending) {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "filesystem checkpoint replay changed request metadata or snapshot bytes",
             ));
         }
@@ -81,10 +82,9 @@ fn complete_checkpoint_upload(
     reference: &pc::SandboxCheckpointRef,
 ) -> Result<(), pc::SandboxError> {
     let mut next = marker.clone();
-    let participant = next
-        .checkpoint
-        .as_mut()
-        .ok_or_else(|| err("filesystem checkpoint completion has no pending participant"))?;
+    let participant = next.checkpoint.as_mut().ok_or_else(|| {
+        pc::SandboxError::not_found("filesystem checkpoint completion has no pending participant")
+    })?;
     if !participant.complete(operation_id, request_fingerprint, reference)? {
         return Ok(());
     }
@@ -186,7 +186,11 @@ impl CheckpointParticipantGuard for RemovalGuard {
         let operation_id = self
             .checkpoint_expected_effect_fence
             .as_ref()
-            .ok_or_else(|| err("terminal checkpoint participant has no bound Suspend effect"))?;
+            .ok_or_else(|| {
+                pc::SandboxError::not_found(
+                    "terminal checkpoint participant has no bound Suspend effect",
+                )
+            })?;
         completed_checkpoint(&marker, request_fingerprint, &operation_id.operation_id)
     }
 
@@ -200,7 +204,11 @@ impl CheckpointParticipantGuard for RemovalGuard {
         let operation_id = self
             .checkpoint_expected_effect_fence
             .as_ref()
-            .ok_or_else(|| err("terminal checkpoint participant has no bound Suspend effect"))?
+            .ok_or_else(|| {
+                pc::SandboxError::not_found(
+                    "terminal checkpoint participant has no bound Suspend effect",
+                )
+            })?
             .operation_id
             .clone();
         let pending = pc::SandboxCheckpointUpload::pending(
@@ -221,7 +229,11 @@ impl CheckpointParticipantGuard for RemovalGuard {
         let operation_id = self
             .checkpoint_expected_effect_fence
             .as_ref()
-            .ok_or_else(|| err("terminal checkpoint participant has no bound Suspend effect"))?
+            .ok_or_else(|| {
+                pc::SandboxError::not_found(
+                    "terminal checkpoint participant has no bound Suspend effect",
+                )
+            })?
             .operation_id
             .clone();
         complete_checkpoint_upload(

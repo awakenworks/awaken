@@ -88,7 +88,8 @@ async fn ready_candidate<R: ContainerRuntime + 'static>(
         Ok(pc::SandboxStatus::Ready) => Ok(sandbox),
         Ok(_) => {
             let _ = sandbox.dispose().await;
-            Err(pc::SandboxError::new(
+            Err(pc::SandboxError::backend(
+                "ready_candidate",
                 "prewarmed container did not become ready",
             ))
         }
@@ -251,7 +252,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         if self.closed.load(Ordering::SeqCst) {
             self.in_flight_creates.fetch_sub(1, Ordering::SeqCst);
             self.create_changed.notify_waiters();
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::gone(
                 "warm container capacity is shut down",
             ));
         }
@@ -360,7 +361,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             if let Some(excess) = excess {
                 let _ = excess.dispose().await;
                 if self.closed.load(Ordering::SeqCst) {
-                    return Err(pc::SandboxError::new(
+                    return Err(pc::SandboxError::gone(
                         "warm container capacity is shut down",
                     ));
                 }

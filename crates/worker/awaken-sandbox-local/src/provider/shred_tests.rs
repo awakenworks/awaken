@@ -14,7 +14,9 @@ impl pc::SecretBroker for Broker {
     }
 
     async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("process secrets are not supported"))
+        Err(pc::SandboxError::unsupported(
+            "process secrets are not supported",
+        ))
     }
 
     async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
@@ -102,7 +104,7 @@ async fn a_brokered_writable_secret_fails_closed() {
         Ok(_) => panic!("brokered writable Secret must fail closed"),
         Err(error) => error,
     };
-    assert!(error.0.contains("cannot write back"));
+    assert!(matches!(error, pc::SandboxError::Unsupported(_)), "{error}");
 }
 
 #[tokio::test]

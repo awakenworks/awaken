@@ -494,7 +494,7 @@ mod tests {
             &self,
             _reference: &str,
         ) -> Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
-            Err(awaken_provisioning_contract::SandboxError::new(
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
                 "hosted ACP leases are process-only",
             ))
         }
@@ -505,7 +505,9 @@ mod tests {
         ) -> Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
             (reference == "lease://hosted-attempt")
                 .then(|| b"short-lived-lease".to_vec())
-                .ok_or_else(|| awaken_provisioning_contract::SandboxError::new("unknown lease"))
+                .ok_or_else(|| {
+                    awaken_provisioning_contract::SandboxError::not_found("unknown lease")
+                })
         }
 
         async fn write_back(
@@ -513,7 +515,7 @@ mod tests {
             _reference: &str,
             _bytes: Vec<u8>,
         ) -> Result<(), awaken_provisioning_contract::SandboxError> {
-            Err(awaken_provisioning_contract::SandboxError::new(
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
                 "hosted ACP leases are read-only",
             ))
         }
@@ -1073,7 +1075,7 @@ mod tests {
                         .materialize_process(reference)
                         .await
                 }
-                Err(error) => Err(awaken_provisioning_contract::SandboxError::new(
+                Err(error) => Err(awaken_provisioning_contract::SandboxError::unauthorized(
                     error.to_string(),
                 )),
             };

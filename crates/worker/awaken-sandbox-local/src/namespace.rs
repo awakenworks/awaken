@@ -40,10 +40,6 @@ use seatbelt::projected_runtime_roots;
 use seatbelt::projected_runtime_roots_for_command;
 pub use seatbelt::sandbox_exec_argv;
 
-fn err(e: impl ToString) -> pc::SandboxError {
-    pc::SandboxError::new(e.to_string())
-}
-
 /// Probe the actual launch profile, not only the presence of a user namespace.
 /// This is deliberately not cached: installation, permissions and host policy
 /// can change during a Worker incarnation. Readiness is observation, not consent
@@ -188,9 +184,9 @@ fn host_projection_path(
     if !logical.starts_with('/') || pc::WorkspaceLayout::contains(logical) {
         IsolatedRoot::new(host_workspace)
             .resolve(workspace_relative(logical))
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     } else {
-        root.resolve(logical).map_err(err)
+        root.resolve(logical).map_err(pc::SandboxError::from)
     }
 }
 
@@ -495,15 +491,15 @@ impl NamespaceProvider {
         memory_materializations: &mut Vec<pc::MemoryMaterializationEvidence>,
         mutation_guard: &crate::realization_marker::ProviderCreationGuard<'_>,
     ) -> Result<(Vec<RenderMount>, Vec<pc::RealizedMount>), pc::SandboxError> {
-        let root_identity = mutation_guard
-            .root_identity()?
-            .ok_or_else(|| err("namespace layout has no exact admitted root identity"))?;
+        let root_identity = mutation_guard.root_identity()?.ok_or_else(|| {
+            pc::SandboxError::invalid("namespace layout has no exact admitted root identity")
+        })?;
         let mut layout = Vec::new();
         let mut realized = Vec::new();
         for req in &spec.mounts {
             let host = host_projection_path(root, host_workspace, &req.mount_path)?;
             if matches!(req.source, pc::MountSource::CacheVolume { .. }) {
-                return Err(err(format!(
+                return Err(pc::SandboxError::unsupported(format!(
                     "mount {:?}: cache_volume is not supported by the local OS sandbox",
                     req.mount_id
                 )));
@@ -548,7 +544,7 @@ impl NamespaceProvider {
                 && matches!(req.source, pc::MountSource::Secret { .. })
                 && req.access == pc::MountAccess::ReadWrite
             {
-                return Err(err(
+                return Err(pc::SandboxError::unsupported(
                     "the Namespace provider cannot write back a brokered writable Secret mount",
                 ));
             }
@@ -563,9 +559,9 @@ impl NamespaceProvider {
             match &bytes {
                 Some(bytes) => {
                     verify(&req.source, bytes)?; // fail closed on content-hash mismatch
-                    let relative = host
-                        .strip_prefix(root.root())
-                        .map_err(|_| err("namespace mount escaped its exact sandbox root"))?;
+                    let relative = host.strip_prefix(root.root()).map_err(|_| {
+                        pc::SandboxError::invalid("namespace mount escaped its exact sandbox root")
+                    })?;
                     mutation_guard.with_mutation(|| {
                         awaken_sandbox_fs::write_relative_file_atomic(
                             root.root(),
@@ -574,19 +570,19 @@ impl NamespaceProvider {
                             bytes,
                             0o600,
                         )
-                        .map_err(err)
+                        .map_err(|error| pc::SandboxError::backend("realize_layout", error))
                     })?;
                 }
                 None if req.required => {
-                    return Err(err(format!(
+                    return Err(pc::SandboxError::not_found(format!(
                         "required mount {:?} has no resolvable source",
                         req.mount_id
                     )));
                 }
                 None => {
-                    let relative = host
-                        .strip_prefix(root.root())
-                        .map_err(|_| err("namespace mount escaped its exact sandbox root"))?;
+                    let relative = host.strip_prefix(root.root()).map_err(|_| {
+                        pc::SandboxError::invalid("namespace mount escaped its exact sandbox root")
+                    })?;
                     mutation_guard.with_mutation(|| {
                         awaken_sandbox_fs::write_relative_file_atomic(
                             root.root(),
@@ -595,7 +591,7 @@ impl NamespaceProvider {
                             b"",
                             0o600,
                         )
-                        .map_err(err)
+                        .map_err(|error| pc::SandboxError::backend("realize_layout", error))
                     })?;
                 }
             }
@@ -636,7 +632,7 @@ impl pc::SandboxProvider for NamespaceProvider {
         if ok {
             Ok(())
         } else {
-            Err(err(
+            Err(pc::SandboxError::unsupported(
                 if cfg!(any(target_os = "linux", target_os = "macos")) {
                     "OS-native sandbox (bwrap userns / macOS Seatbelt) unavailable on this host"
                 } else {
@@ -790,11 +786,11 @@ impl NamespaceProvider {
         effect: Option<(&pc::SandboxEffectFence, &dyn pc::CurrentExecutionAuthority)>,
         source_handle: Option<&pc::SandboxHandle>,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
+        pc::prepare_environment(spec, &Self::capabilities()).map_err(pc::SandboxError::from)?;
         // Neither bwrap nor the Seatbelt adapter can enforce a DNS-host allowlist;
         // refuse it rather than silently blocking all egress or allowing too much.
         if matches!(spec.network, pc::NetworkPolicy::Allowlist { .. }) {
-            return Err(err(
+            return Err(pc::SandboxError::unsupported(
                 "local OS sandbox supports on/off egress only, not a host allowlist",
             ));
         }
@@ -821,12 +817,16 @@ impl NamespaceProvider {
                     crate::realization_marker::begin_legacy(&raw_root)?,
                 )
             }
-            None => return Err(err("sandbox rebuild requires an aggregate effect fence")),
+            None => {
+                return Err(pc::SandboxError::fence_rejected(
+                    "sandbox rebuild requires an aggregate effect fence",
+                ));
+            }
         };
         let raw_isolated_root = IsolatedRoot::new(raw_root.clone());
         let raw_workspace = raw_isolated_root
             .resolve(pc::WorkspaceLayout::ROOT)
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         let raw_secret_paths = spec
             .mounts
             .iter()
@@ -843,20 +843,26 @@ impl NamespaceProvider {
         if let Some(receipt) = realization_guard.completed_receipt()?.cloned() {
             let (realized, memory_materializations) =
                 crate::replay_completion_receipt(spec, &receipt, pc::Realization::Bind)?;
-            let raw_identity = realization_guard
-                .root_identity()?
-                .ok_or_else(|| err("Ready Namespace sandbox has no root identity"))?;
-            let canonical_root = std::fs::canonicalize(&raw_root).map_err(err)?;
-            if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root).map_err(err)?
+            let raw_identity = realization_guard.root_identity()?.ok_or_else(|| {
+                pc::SandboxError::invalid("Ready Namespace sandbox has no root identity")
+            })?;
+            let canonical_root = std::fs::canonicalize(&raw_root)
+                .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?;
+            if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root)
+                .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?
                 != raw_identity
             {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "namespace sandbox root changed identity during Ready replay",
                 ));
             }
             let root = IsolatedRoot::new(canonical_root);
-            let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
-            let host_outputs = root.resolve(&spec.outputs_path).map_err(err)?;
+            let host_workspace = root
+                .resolve(pc::WorkspaceLayout::ROOT)
+                .map_err(pc::SandboxError::from)?;
+            let host_outputs = root
+                .resolve(&spec.outputs_path)
+                .map_err(pc::SandboxError::from)?;
             let secret_paths = spec
                 .mounts
                 .iter()
@@ -893,8 +899,7 @@ impl NamespaceProvider {
                         .await;
                     return Err(match teardown {
                         Ok(()) => cause,
-                        Err(teardown) => err(format!(
-                            "Namespace Ready replay publication failed: {cause}; Memory replay teardown failed: {teardown}"
+                        Err(teardown) => cause.map_detail(|detail| format!("Namespace Ready replay publication failed: {detail}; Memory replay teardown failed: {teardown}"
                         )),
                     });
                 }
@@ -948,18 +953,22 @@ impl NamespaceProvider {
             // `/var` is a symlink to `/private/var` on macOS. Seatbelt evaluates some
             // operations against the canonical vnode path, so build every rule/env/cwd
             // from one canonical root or write grants can miss their target.
-            let raw_identity =
-                awaken_sandbox_fs::directory_identity_nofollow(&raw_root).map_err(err)?;
-            let canonical_root = std::fs::canonicalize(&raw_root).map_err(err)?;
-            if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root).map_err(err)?
+            let raw_identity = awaken_sandbox_fs::directory_identity_nofollow(&raw_root)
+                .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?;
+            let canonical_root = std::fs::canonicalize(&raw_root)
+                .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?;
+            if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root)
+                .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?
                 != raw_identity
             {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "namespace sandbox root changed identity during canonicalization",
                 ));
             }
             let root = IsolatedRoot::new(canonical_root);
-            let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
+            let host_workspace = root
+                .resolve(pc::WorkspaceLayout::ROOT)
+                .map_err(pc::SandboxError::from)?;
             let secret_paths = spec
                 .mounts
                 .iter()
@@ -972,16 +981,18 @@ impl NamespaceProvider {
                     raw_identity,
                     std::path::Path::new(pc::WorkspaceLayout::ROOT.trim_start_matches('/')),
                 )
-                .map_err(err)
+                .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))
             })?;
-            let host_outputs = root.resolve(&spec.outputs_path).map_err(err)?;
+            let host_outputs = root
+                .resolve(&spec.outputs_path)
+                .map_err(pc::SandboxError::from)?;
             realization_guard.with_mutation(|| {
                 awaken_sandbox_fs::create_relative_directory_all(
                     root.root(),
                     raw_identity,
                     std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
                 )
-                .map_err(err)
+                .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))
             })?;
 
             // Only incomplete creation reaches materialization. Ready returned
@@ -1147,7 +1158,7 @@ impl NamespaceProvider {
                 || payload.network != spec.network
                 || payload.control_services != spec.control_services
             {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "Namespace terminal handle does not match the effective authorization spec",
                 ));
             }
@@ -1172,8 +1183,10 @@ impl NamespaceProvider {
         };
         let raw_root = crate::sandbox_dir(&self.base, id);
         let root = IsolatedRoot::new(raw_root.clone());
-        let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
-        let host_outputs = root.resolve(outputs_path).map_err(err)?;
+        let host_workspace = root
+            .resolve(pc::WorkspaceLayout::ROOT)
+            .map_err(pc::SandboxError::from)?;
+        let host_outputs = root.resolve(outputs_path).map_err(pc::SandboxError::from)?;
         let secret_paths = spec
             .mounts
             .iter()
@@ -1270,7 +1283,7 @@ impl NamespaceProvider {
             &payload.control_services,
             &Self::capabilities(),
         )
-        .map_err(err)?;
+        .map_err(pc::SandboxError::from)?;
         if let Some(spec) = spec
             && (handle.realization_fingerprint()
                 != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
@@ -1278,7 +1291,7 @@ impl NamespaceProvider {
                 || payload.base_env != spec.env
                 || payload.network != spec.network)
         {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "Namespace sandbox handle does not match the effective adoption spec",
             ));
         }
@@ -1297,27 +1310,33 @@ impl NamespaceProvider {
             Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
         };
-        let raw_identity =
-            awaken_sandbox_fs::directory_identity_nofollow(&raw_root).map_err(err)?;
+        let raw_identity = awaken_sandbox_fs::directory_identity_nofollow(&raw_root)
+            .map_err(|error| pc::SandboxError::backend("adopt_sandbox_inner", error))?;
         if realization
             .current()
             .is_some_and(|evidence| evidence.root_identity() != raw_identity)
         {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "namespace sandbox root was substituted after fenced adoption",
             ));
         }
-        let canonical_root = std::fs::canonicalize(&raw_root).map_err(err)?;
-        if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root).map_err(err)?
+        let canonical_root = std::fs::canonicalize(&raw_root)
+            .map_err(|error| pc::SandboxError::backend("adopt_sandbox_inner", error))?;
+        if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root)
+            .map_err(|error| pc::SandboxError::backend("adopt_sandbox_inner", error))?
             != raw_identity
         {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "namespace sandbox root changed identity during adoption",
             ));
         }
         let root = IsolatedRoot::new(canonical_root);
-        let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
-        let host_outputs = root.resolve(&outputs_path).map_err(err)?;
+        let host_workspace = root
+            .resolve(pc::WorkspaceLayout::ROOT)
+            .map_err(pc::SandboxError::from)?;
+        let host_outputs = root
+            .resolve(&outputs_path)
+            .map_err(pc::SandboxError::from)?;
         let secret_paths = if let Some(spec) = spec {
             spec.mounts
                 .iter()
@@ -1522,7 +1541,7 @@ impl NamespaceSandbox {
                 pc::WorkspaceLayout::RESOURCE_PROJECTION_ROOT.trim_start_matches('/'),
             ),
         )
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("clear_resource_projection", error))
     }
 
     pub fn provision_repo(
@@ -1539,8 +1558,7 @@ impl NamespaceSandbox {
             plan.initial_branch.as_deref(),
             plan.initial_commit.as_deref(),
             credential,
-        )
-        .map_err(err)?;
+        )?;
         self.reserve_owned_path(&plan.mount_path);
         Ok(())
     }
@@ -1568,11 +1586,13 @@ impl NamespaceSandbox {
         let has_copy_materializations = !self
             .memory_materializations
             .lock()
-            .map_err(|_| err("Memory materializations lock poisoned"))?
+            .map_err(|_| {
+                pc::SandboxError::backend("list_files", "Memory materializations lock poisoned")
+            })?
             .is_empty();
         let Some(identity) = self.root_identity_for_access()? else {
             if has_copy_materializations {
-                return Err(err(
+                return Err(pc::SandboxError::gone(
                     "copy-backed Memory lost its exact namespace root before reconciliation",
                 ));
             }
@@ -1612,7 +1632,6 @@ impl NamespaceSandbox {
             sandbox_relative.trim_start_matches('/'),
             logical_subdir,
         )
-        .map_err(Into::into)
     }
 
     pub fn materialize_inline(
@@ -1629,7 +1648,7 @@ impl NamespaceSandbox {
             contents,
             0o600,
         )
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("materialize_inline", error))
     }
 
     /// Remove one dynamically projected workspace path. Missing paths are an
@@ -1642,7 +1661,7 @@ impl NamespaceSandbox {
             root_identity,
             std::path::Path::new(sandbox_relative.trim_start_matches('/')),
         )
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("remove_inline", error))
     }
 
     /// Revoke a dynamically attached mount and its runtime-owned backing path.
@@ -1659,11 +1678,11 @@ impl NamespaceSandbox {
             return self.remove_inline(logical);
         }
         let path = host_projection_path(&self.root, &self.host_workspace, logical)?;
-        let relative = path
-            .strip_prefix(self.root.root())
-            .map_err(|_| err("namespace mount path escaped its sandbox root"))?;
+        let relative = path.strip_prefix(self.root.root()).map_err(|_| {
+            pc::SandboxError::invalid("namespace mount path escaped its sandbox root")
+        })?;
         awaken_sandbox_fs::remove_relative_entry_exact(self.root.root(), root_identity, relative)
-            .map_err(err)
+            .map_err(|error| pc::SandboxError::backend("remove_mount", error))
     }
 
     fn translate_macos_path(&self, value: &str) -> Option<String> {
@@ -1730,7 +1749,9 @@ impl NamespaceSandbox {
             } else if let Some(translated) = self.translate_macos_path(&command.cwd) {
                 PathBuf::from(translated)
             } else {
-                self.root.resolve(&command.cwd).map_err(err)?
+                self.root
+                    .resolve(&command.cwd)
+                    .map_err(pc::SandboxError::from)?
             };
             process.current_dir(cwd);
             crate::RuntimePathEnv::new(
@@ -1754,7 +1775,7 @@ impl NamespaceSandbox {
         command: &pc::MaterializedCommand,
     ) -> Result<Vec<String>, pc::SandboxError> {
         if command.argv.is_empty() {
-            return Err(err("command argv is empty"));
+            return Err(pc::SandboxError::invalid("command argv is empty"));
         }
         // Only PATH is needed by the pure renderer to expose an explicitly
         // selected runtime root. Secret values never enter renderer/argv data.
@@ -1798,7 +1819,7 @@ impl NamespaceSandbox {
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = input;
-            Err(err(
+            Err(pc::SandboxError::unsupported(
                 "OS-native Namespace sandbox is unsupported on this platform",
             ))
         }
@@ -1840,14 +1861,15 @@ impl NamespaceSandbox {
         cmd.stdin(ProcStdio::piped())
             .stdout(ProcStdio::piped())
             .stderr(stderr);
-        let mut process = LocalProcess::spawn(&mut cmd).map_err(err)?;
+        let mut process = LocalProcess::spawn(&mut cmd)
+            .map_err(|error| pc::SandboxError::backend("spawn_agent", error))?;
         drop(cmd); // Close the parent copy of bubblewrap's private report fd.
         let stdin = process
             .take_stdin()
-            .ok_or_else(|| err("agent stdin was not piped"))?;
-        let stdout = process
-            .take_stdout()
-            .ok_or_else(|| err("agent stdout was not piped"))?;
+            .ok_or_else(|| pc::SandboxError::backend("spawn_agent", "agent stdin was not piped"))?;
+        let stdout = process.take_stdout().ok_or_else(|| {
+            pc::SandboxError::backend("spawn_agent", "agent stdout was not piped")
+        })?;
         let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
         Ok((Box::new(launch_info.bind(process).await?), channel))
     }

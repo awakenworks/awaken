@@ -5,6 +5,7 @@
 
 mod checkpoint_upload;
 mod control_incarnation;
+mod error;
 mod foundation;
 mod repository_publication;
 mod restore_contract;
@@ -95,7 +96,7 @@ mod tests {
             }))
         }
         async fn attach(&self, _req: MountRequirement) -> Result<RealizedMount, SandboxError> {
-            Err(SandboxError::new("fake has no mounts"))
+            Err(SandboxError::invalid("fake has no mounts"))
         }
         async fn artifacts(&self) -> Result<Vec<Artifact>, SandboxError> {
             Ok(Vec::new())
@@ -418,7 +419,7 @@ mod tests {
             if self.ready {
                 Ok(())
             } else {
-                Err(SandboxError::new("backend not ready"))
+                Err(SandboxError::not_ready("backend not ready"))
             }
         }
 

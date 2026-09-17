@@ -59,20 +59,41 @@ fn with_checked_effect<T, A: CurrentExecutionAuthority + ?Sized>(
     asserted.validate_identity()?;
     let mut apply = Some(apply);
     let mut result = None;
-    authority
-        .with_current_effect(asserted, &mut |current, remaining| {
-            if remaining.is_zero()
-                || !asserted.same_effect_identity(current)
-                || current.expires_at_unix_ms < asserted.expires_at_unix_ms
-            {
-                return Err(io::ErrorKind::PermissionDenied.into());
+    let mut effect_error = None;
+    let admitted = authority.with_current_effect(asserted, &mut |current, remaining| {
+        if remaining.is_zero()
+            || !asserted.same_effect_identity(current)
+            || current.expires_at_unix_ms < asserted.expires_at_unix_ms
+        {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        let apply = apply.take().ok_or(io::ErrorKind::PermissionDenied)?;
+        match apply(current) {
+            Ok(value) => {
+                result = Some(value);
+                Ok(())
             }
-            let apply = apply.take().ok_or(io::ErrorKind::PermissionDenied)?;
-            result = Some(apply(current).map_err(io::Error::other)?);
-            Ok(())
-        })
-        .map_err(|error| crate::SandboxError::new(error.to_string()))?;
-    result.ok_or_else(|| crate::SandboxError::new("Sandbox authority omitted the effect"))
+            Err(error) => {
+                effect_error = Some(error);
+                Err(io::Error::other(
+                    "Sandbox effect failed under its current authority",
+                ))
+            }
+        }
+    });
+    // The effect's own failure keeps its class; the port cannot relabel it.
+    if let Some(error) = effect_error {
+        return Err(error);
+    }
+    admitted.map_err(|error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            crate::SandboxError::fence_rejected(error.to_string())
+        } else {
+            crate::SandboxError::transport(format!("current execution authority: {error}"))
+        }
+    })?;
+    result
+        .ok_or_else(|| crate::SandboxError::fence_rejected("Sandbox authority omitted the effect"))
 }
 
 #[cfg(test)]

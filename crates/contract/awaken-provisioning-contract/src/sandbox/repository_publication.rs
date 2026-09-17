@@ -38,12 +38,12 @@ impl RepositoryPublicationExpectation {
     /// branch and HEAD before contacting the frozen remote.
     pub fn validate(&self) -> Result<(), SandboxError> {
         if self.branch.is_empty() || self.branch.trim() != self.branch {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "repository publication branch must be non-empty without surrounding whitespace",
             ));
         }
         if !is_canonical_git_oid(&self.commit) {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "repository publication commit must be a canonical lowercase 40-hex object id",
             ));
         }
@@ -52,7 +52,7 @@ impl RepositoryPublicationExpectation {
             .as_ref()
             .is_some_and(|commit| !is_canonical_git_oid(commit))
         {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "repository publication expected prior commit must be a canonical lowercase 40-hex object id",
             ));
         }
@@ -87,7 +87,7 @@ impl RepositoryPublicationRejection {
         expectation.validate()?;
         match self {
             Self::RemoteRefAbsent if expectation.expected_prior_commit.is_some() => Ok(()),
-            Self::RemoteRefAbsent => Err(SandboxError::new(
+            Self::RemoteRefAbsent => Err(SandboxError::invalid(
                 "an absent remote ref is not stale for create-only publication",
             )),
             Self::RemoteRefChanged { observed_commit }
@@ -97,7 +97,7 @@ impl RepositoryPublicationRejection {
             {
                 Ok(())
             }
-            Self::RemoteRefChanged { .. } => Err(SandboxError::new(
+            Self::RemoteRefChanged { .. } => Err(SandboxError::invalid(
                 "repository publication rejection does not prove a stale remote ref",
             )),
         }
@@ -152,7 +152,7 @@ impl RepositoryPublicationReceipt {
         if self == &Self::new(plan, expectation) {
             Ok(())
         } else {
-            Err(SandboxError::new(
+            Err(SandboxError::conflict(
                 "repository publication receipt does not match its exact intent",
             ))
         }

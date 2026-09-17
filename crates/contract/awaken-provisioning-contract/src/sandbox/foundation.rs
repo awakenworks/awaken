@@ -13,17 +13,7 @@ use super::{
 use crate::spec::SandboxSpec;
 use crate::vocab::{MountAccess, Realization};
 
-/// Provisioning failure. String-carried at the boundary (like the runtime's other
-/// neutral errors); a backend maps its own error into this.
-#[derive(Debug, thiserror::Error)]
-#[error("sandbox error: {0}")]
-pub struct SandboxError(pub String);
-
-impl SandboxError {
-    pub fn new(msg: impl Into<String>) -> Self {
-        Self(msg.into())
-    }
-}
+pub use super::error::SandboxError;
 
 /// One credential write-back command whose authorization and durable
 /// idempotency identities are deliberately independent.
@@ -51,12 +41,12 @@ impl SecretWritebackEffect {
         let reference = reference.into();
         let physical_incarnation = physical_incarnation.into();
         if reference.trim().is_empty() {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "Secret write-back requires a non-empty credential reference",
             ));
         }
         if physical_incarnation.trim().is_empty() {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "Secret write-back requires a non-empty physical Sandbox incarnation",
             ));
         }
@@ -135,7 +125,7 @@ pub trait SecretBroker: Send + Sync {
         _effect: &SecretWritebackEffect,
         _bytes: Vec<u8>,
     ) -> Result<(), SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "effect-fenced credential write-back is unsupported",
         ))
     }
@@ -183,7 +173,7 @@ pub trait MemoryMounter: Send + Sync {
         _files: &[(String, Vec<u8>)],
         _access: MountAccess,
     ) -> Result<(), SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "recovered Memory copy reconciliation is unsupported",
         ))
     }
@@ -284,7 +274,7 @@ impl MemoryMaterializationEvidence {
     /// it. Canonical ordering is part of the durable binding identity.
     pub fn validate(&self) -> Result<(), SandboxError> {
         if self.store_id.trim().is_empty() || self.mount_path.trim().is_empty() {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "Memory materialization evidence requires store and mount identities",
             ));
         }
@@ -296,7 +286,7 @@ impl MemoryMaterializationEvidence {
                 || head.content_sha256.trim().is_empty()
                 || previous_path.is_some_and(|previous| previous >= head.path.as_str())
             {
-                return Err(SandboxError::new(
+                return Err(SandboxError::invalid(
                     "Memory materialization heads are invalid or not canonically ordered",
                 ));
             }
@@ -315,7 +305,7 @@ impl MemoryMaterializationEvidence {
         if evidence.windows(2).any(|pair| {
             pair[0].mount_path == pair[1].mount_path && pair[0].store_id == pair[1].store_id
         }) {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "Memory materialization evidence contains a duplicate mount",
             ));
         }
@@ -330,7 +320,7 @@ impl MemoryMaterializationEvidence {
             item.validate()?;
             let current_mount = (item.mount_path.as_str(), item.store_id.as_str());
             if previous_mount.is_some_and(|previous| previous >= current_mount) {
-                return Err(SandboxError::new(
+                return Err(SandboxError::invalid(
                     "Memory materialization evidence is not canonically ordered",
                 ));
             }
@@ -573,7 +563,7 @@ pub fn validate_repository_mount_path(path: &str) -> Result<(), SandboxError> {
     if canonical_workspace_child && !WorkspaceLayout::owns(path) {
         Ok(())
     } else {
-        Err(SandboxError::new(format!(
+        Err(SandboxError::unsupported(format!(
             "repository mount path {path:?} is unsupported: current providers require one canonical, non-runtime-owned sandbox-absolute child of `{}`",
             WorkspaceLayout::ROOT
         )))
@@ -608,7 +598,7 @@ pub fn validate_repository_mount_paths(
             .chain(other_mount_paths)
             .any(|other| mount_trees_overlap(repository, other))
         {
-            return Err(SandboxError::new(format!(
+            return Err(SandboxError::invalid(format!(
                 "repository mount path {repository:?} overlaps another resource tree"
             )));
         }
@@ -658,13 +648,13 @@ fn validate_repository_sandbox_layout_with_history(
             || mount.mount_path.trim().is_empty()
             || !mount_ids.insert(mount.mount_id.as_str())
         {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "sandbox mount ids and paths must be non-empty and unique",
             ));
         }
         let absolute = mount.mount_path.starts_with('/');
         if !validate_canonical_sandbox_path(&mount.mount_path, absolute) {
-            return Err(SandboxError::new(format!(
+            return Err(SandboxError::invalid(format!(
                 "sandbox mount path {:?} is not canonical",
                 mount.mount_path
             )));
@@ -675,14 +665,14 @@ fn validate_repository_sandbox_layout_with_history(
             format!("{}/{path}", WorkspaceLayout::ROOT, path = mount.mount_path)
         };
         if !mount_paths.insert(visible.clone()) {
-            return Err(SandboxError::new(format!(
+            return Err(SandboxError::invalid(format!(
                 "sandbox mount path {visible:?} is duplicated"
             )));
         }
         owned_paths.push(visible);
     }
     if !validate_canonical_sandbox_path(&spec.outputs_path, true) {
-        return Err(SandboxError::new(format!(
+        return Err(SandboxError::invalid(format!(
             "sandbox outputs path {:?} is not canonical",
             spec.outputs_path
         )));
@@ -693,13 +683,13 @@ fn validate_repository_sandbox_layout_with_history(
             continue;
         }
         let crate::vocab::EnvValue::Inline { value } = &variable.value else {
-            return Err(SandboxError::new(format!(
+            return Err(SandboxError::invalid(format!(
                 "runtime directory `{}` must be one inline canonical sandbox path",
                 variable.name
             )));
         };
         if !validate_canonical_sandbox_path(value, true) {
-            return Err(SandboxError::new(format!(
+            return Err(SandboxError::invalid(format!(
                 "runtime directory `{}` has non-canonical path {value:?}",
                 variable.name
             )));
@@ -711,7 +701,7 @@ fn validate_repository_sandbox_layout_with_history(
     for path in historical_owned_paths {
         let absolute = path.starts_with('/');
         if !validate_canonical_sandbox_path(path, absolute) {
-            return Err(SandboxError::new(format!(
+            return Err(SandboxError::invalid(format!(
                 "historical sandbox-owned path {path:?} is not canonical"
             )));
         }

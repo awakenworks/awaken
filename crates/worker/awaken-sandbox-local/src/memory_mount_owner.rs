@@ -29,7 +29,7 @@ struct PendingMount {
 
 enum PendingMountPhase {
     Running(MountFuture),
-    RecoveryRequired { detail: String },
+    RecoveryRequired { error: pc::SandboxError },
 }
 
 type RawMountFuture = Pin<Box<dyn Future<Output = pc::MemoryMountOutcome> + Send>>;
@@ -51,7 +51,8 @@ impl Future for MountFuture {
         })) {
             Ok(outcome) => outcome,
             Err(_) => Poll::Ready(pc::MemoryMountOutcome::RecoveryRequired(
-                pc::SandboxError::new(
+                pc::SandboxError::backend(
+                    "poll",
                     "Memory mount operation panicked before classifying its effect",
                 ),
             )),
@@ -181,9 +182,9 @@ impl MemoryMountState {
     ) -> Result<(), pc::SandboxError> {
         if let Some(expected) = identity {
             let observed = awaken_sandbox_fs::directory_identity_nofollow(root)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("validate_root", error))?;
             if observed != expected {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::conflict(
                     "retained Memory participant root identity changed",
                 ));
             }
@@ -196,10 +197,8 @@ impl MemoryMountState {
             // Await a borrowed JoinHandle: cancellation cannot consume the
             // operation, while task panic becomes an explicit unknown result.
             PendingMountPhase::Running(operation) => operation.await,
-            PendingMountPhase::RecoveryRequired { detail } => {
-                return Some(PendingMountCompletion::RecoveryRequired(
-                    pc::SandboxError::new(detail.clone()),
-                ));
+            PendingMountPhase::RecoveryRequired { error } => {
+                return Some(PendingMountCompletion::RecoveryRequired(error.clone()));
             }
         };
         match outcome {
@@ -220,16 +219,13 @@ impl MemoryMountState {
                 Some(PendingMountCompletion::NoEffect(error))
             }
             pc::MemoryMountOutcome::RecoveryRequired(error) => {
-                let detail = error.to_string();
                 self.pending
                     .as_mut()
                     .expect("unknown Memory operation remains retained")
                     .phase = PendingMountPhase::RecoveryRequired {
-                    detail: detail.clone(),
+                    error: error.clone(),
                 };
-                Some(PendingMountCompletion::RecoveryRequired(
-                    pc::SandboxError::new(detail),
-                ))
+                Some(PendingMountCompletion::RecoveryRequired(error))
             }
         }
     }
@@ -240,7 +236,7 @@ impl MemoryMountState {
             .as_ref()
             .expect("unknown Memory recovery requires a retained operation");
         if !matches!(pending.phase, PendingMountPhase::RecoveryRequired { .. }) {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::not_ready(
                 "Memory mount has not reached an unknown result",
             ));
         }
@@ -267,14 +263,14 @@ impl MemoryMountState {
         access: pc::MountAccess,
     ) -> Result<usize, pc::SandboxError> {
         if self.pending.is_some() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::not_ready(
                 "unfinished Memory mount requires admitted cleanup before retry",
             ));
         }
         if self.mounts.is_empty() {
             self.identity = Some(
                 awaken_sandbox_fs::directory_identity_nofollow(&self.root)
-                    .map_err(|error| pc::SandboxError::new(error.to_string()))?,
+                    .map_err(|error| pc::SandboxError::backend("acquire", error))?,
             );
         }
         Self::validate_root(&self.root, self.identity)?;
@@ -370,7 +366,7 @@ impl MemoryMountState {
 
     pub(crate) fn require_no_pending(&self) -> Result<(), pc::SandboxError> {
         if self.pending.is_some() || self.mounts.iter().any(|mount| !mount.confirmed) {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::not_ready(
                 "Memory acknowledgement has unfinished physical participants",
             ));
         }
@@ -393,7 +389,7 @@ impl MemoryMountState {
 
     pub(crate) fn require_empty(&self) -> Result<(), pc::SandboxError> {
         if self.pending.is_some() || !self.mounts.is_empty() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::not_ready(
                 "absent realization still has retained Memory participants",
             ));
         }

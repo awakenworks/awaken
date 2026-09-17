@@ -47,7 +47,9 @@ impl LocalExecutionDeployment {
             })
             .and_then(|path| std::fs::canonicalize(path).ok())
             .ok_or_else(|| {
-                err("TrustedHost scoped execution requires bwrap on an absolute operator PATH")
+                pc::SandboxError::unsupported(
+                    "TrustedHost scoped execution requires bwrap on an absolute operator PATH",
+                )
             })?;
         Self::new(launcher, helper)
     }
@@ -65,24 +67,37 @@ impl LocalExecutionDeployment {
                 cwd: Path::new("/"),
                 stdio: pc::Stdio::Null.into(),
             },
-            ExecutionDeadline::after(CONTROL_TIMEOUT).map_err(err)?,
+            ExecutionDeadline::after(CONTROL_TIMEOUT)
+                .map_err(|error| pc::SandboxError::backend("probe_ready", error))?,
             CONTROL_TIMEOUT,
             |_, grant| grant.commit(),
         )
         .await
-        .map_err(|_| err("TrustedHost scoped execution probe could not launch"))?;
+        .map_err(|_| {
+            pc::SandboxError::backend(
+                "probe_ready",
+                "TrustedHost scoped execution probe could not launch",
+            )
+        })?;
         let status = tokio::time::timeout(CONTROL_TIMEOUT, process.wait())
             .await
-            .map_err(|_| err("TrustedHost scoped execution probe timed out"))??;
+            .map_err(|_| {
+                pc::SandboxError::timeout("TrustedHost scoped execution probe timed out")
+            })??;
         if status.code != Some(0) || status.signaled {
-            return Err(err("TrustedHost scoped execution probe failed"));
+            return Err(pc::SandboxError::backend(
+                "probe_ready",
+                "TrustedHost scoped execution probe failed",
+            ));
         }
         Ok(())
     }
 
     pub fn new(launcher: PathBuf, helper: PathBuf) -> Result<Self, pc::SandboxError> {
         if !launcher.is_absolute() || !helper.is_absolute() {
-            return Err(err("execution deployment binaries must be absolute"));
+            return Err(pc::SandboxError::invalid(
+                "execution deployment binaries must be absolute",
+            ));
         }
         Ok(Self { launcher, helper })
     }
@@ -145,13 +160,17 @@ impl LocalSandbox {
         command.env = std::env::vars_os()
             .map(|(name, value)| {
                 Ok(pc::MaterializedEnvVar {
-                    name: name
-                        .into_string()
-                        .map_err(|_| err("repository environment name is not Unicode"))?,
+                    name: name.into_string().map_err(|_| {
+                        pc::SandboxError::invalid("repository environment name is not Unicode")
+                    })?,
                     value: pc::MaterializedEnvValue::Secret(
                         value
                             .into_string()
-                            .map_err(|_| err("repository environment value is not Unicode"))?
+                            .map_err(|_| {
+                                pc::SandboxError::invalid(
+                                    "repository environment value is not Unicode",
+                                )
+                            })?
                             .into(),
                     ),
                 })
@@ -168,15 +187,15 @@ impl LocalSandbox {
         let mut process = execution
             .spawn_prepared(self, async { Ok(prepared) }, pc::Stdio::Piped.into())
             .await?;
-        let mut input = process
-            .take_stdin()
-            .ok_or_else(|| err("repository input pipe missing"))?;
-        let output = process
-            .take_stdout()
-            .ok_or_else(|| err("repository output pipe missing"))?;
-        let error = process
-            .take_stderr()
-            .ok_or_else(|| err("repository error pipe missing"))?;
+        let mut input = process.take_stdin().ok_or_else(|| {
+            pc::SandboxError::backend("scoped_repository", "repository input pipe missing")
+        })?;
+        let output = process.take_stdout().ok_or_else(|| {
+            pc::SandboxError::backend("scoped_repository", "repository output pipe missing")
+        })?;
+        let error = process.take_stderr().ok_or_else(|| {
+            pc::SandboxError::backend("scoped_repository", "repository error pipe missing")
+        })?;
         // Register before any I/O wait. The existing sweep can refresh this
         // operation; cancellation drops the same last-owner handle and leaves
         // durable participant evidence until the complete tree is absent.
@@ -204,19 +223,26 @@ impl LocalSandbox {
         let (written, output, drained, status) = tokio::join!(write, read, drain, process.wait());
         // Business stdout alone is never an exit/cleanup receipt. Do not expose
         // malformed process bytes or stderr in errors (they may contain secrets).
-        written.map_err(|_| err("repository request delivery failed"))?;
-        drained.map_err(|_| err("repository error stream failed"))?;
+        written.map_err(|_| pc::SandboxError::transport("repository request delivery failed"))?;
+        drained.map_err(|_| pc::SandboxError::transport("repository error stream failed"))?;
         let status = status?;
         if status.code != Some(0) || status.signaled {
-            return Err(err("repository helper failed"));
+            return Err(pc::SandboxError::backend(
+                "scoped_repository",
+                "repository helper failed",
+            ));
         }
-        let output = output.map_err(|_| err("repository response delivery failed"))?;
+        let output = output
+            .map_err(|_| pc::SandboxError::transport("repository response delivery failed"))?;
         if output.len() > MAX_FRAME {
-            return Err(err("repository response too large"));
+            return Err(pc::SandboxError::backend(
+                "scoped_repository",
+                "repository response too large",
+            ));
         }
-        serde_json::from_slice(&output)
-            .map(Some)
-            .map_err(|_| err("repository response invalid"))
+        serde_json::from_slice(&output).map(Some).map_err(|_| {
+            pc::SandboxError::backend("scoped_repository", "repository response invalid")
+        })
     }
 
     pub(super) fn select_execution_boundary(
@@ -224,7 +250,7 @@ impl LocalSandbox {
         deployment: &LocalExecutionDeployment,
     ) -> Result<(), pc::SandboxError> {
         if !self.trusted_host_access {
-            return Err(err(
+            return Err(pc::SandboxError::unauthorized(
                 "host-view execution requires TrustedHost authorization",
             ));
         }
@@ -235,7 +261,11 @@ impl LocalSandbox {
                 authority: Default::default(),
                 live: Mutex::new(LiveExecution::default()),
             })))
-            .map_err(|_| err("execution boundary is already selected; late upgrade is forbidden"))
+            .map_err(|_| {
+                pc::SandboxError::conflict(
+                    "execution boundary is already selected; late upgrade is forbidden",
+                )
+            })
     }
 
     /// Bind the current Session exactly once; an unselected/weak sandbox is not
@@ -250,7 +280,7 @@ impl LocalSandbox {
         execution
             .authority
             .set(authority)
-            .map_err(|_| err("execution authority is already bound"))?;
+            .map_err(|_| pc::SandboxError::conflict("execution authority is already bound"))?;
         Ok(true)
     }
 
@@ -275,7 +305,7 @@ impl LocalSandbox {
             || !launcher.is_absolute()
             || !helper.is_absolute()
         {
-            return Err(err(
+            return Err(pc::SandboxError::unsupported(
                 "scoped execution requires an exact TrustedHost realization and absolute deployment binaries",
             ));
         }
@@ -316,7 +346,7 @@ impl LocalSandbox {
                     // channel failure or leader exit alone cannot do so. This
                     // is a skipped renewal, never a Session stop receipt.
                     if process.poll().await?.is_none() {
-                        return Err(err(error));
+                        return Err(pc::SandboxError::backend("refresh_scoped_execution", error));
                     }
                 }
             }
@@ -333,7 +363,11 @@ impl LocalSandbox {
         let Some(ExecutionBinding::Scoped(execution)) = self.execution.get() else {
             return Ok(false);
         };
-        execution.live.lock().map_err(err)?.closed = true;
+        execution
+            .live
+            .lock()
+            .map_err(|error| pc::SandboxError::backend("stop_scoped_execution", error))?
+            .closed = true;
         let processes = execution.live_processes()?;
         for process in &processes {
             process.signal(pc::Signal::Kill).await?;
@@ -345,11 +379,11 @@ impl LocalSandbox {
             Ok::<_, pc::SandboxError>(())
         })
         .await
-        .map_err(|_| err("execution tree stop is still unconfirmed"))??;
+        .map_err(|_| pc::SandboxError::not_ready("execution tree stop is still unconfirmed"))??;
         let evidence = self
             .realization
             .current()
-            .ok_or_else(|| err("scoped realization evidence missing"))?;
+            .ok_or_else(|| pc::SandboxError::not_found("scoped realization evidence missing"))?;
         let removal = self.terminal_removal.lock().await;
         if let Some(removal) = removal.as_ref() {
             removal.verify_execution_quiescence()?;
@@ -362,7 +396,10 @@ impl LocalSandbox {
 
 impl ScopedExecution {
     fn live_processes(&self) -> Result<Vec<Arc<ScopedProcess>>, pc::SandboxError> {
-        let mut live = self.live.lock().map_err(err)?;
+        let mut live = self
+            .live
+            .lock()
+            .map_err(|error| pc::SandboxError::backend("live_processes", error))?;
         let processes = live
             .processes
             .iter()
@@ -391,13 +428,13 @@ impl ScopedExecution {
         let evidence = sandbox
             .realization
             .current()
-            .ok_or_else(|| err("scoped realization evidence missing"))?;
+            .ok_or_else(|| pc::SandboxError::not_found("scoped realization evidence missing"))?;
         let mut guard = crate::realization_marker::begin_execution(sandbox.root.root(), evidence)?;
         let mut deadline = None;
         ExecutionDeadline::with_current_authority(
             self.authority
                 .get()
-                .ok_or_else(|| err("execution authority is not bound"))?
+                .ok_or_else(|| pc::SandboxError::invalid("execution authority is not bound"))?
                 .as_ref(),
             &mut |current_deadline| {
                 if self.live.lock().map_err(|_| denied())?.closed || deadline.is_some() {
@@ -407,9 +444,10 @@ impl ScopedExecution {
                 Ok(())
             },
         )
-        .map_err(err)?;
-        let deadline =
-            deadline.ok_or_else(|| err("current authority omitted execution deadline"))?;
+        .map_err(|error| pc::SandboxError::backend("spawn_prepared", error))?;
+        let deadline = deadline.ok_or_else(|| {
+            pc::SandboxError::fence_rejected("current authority omitted execution deadline")
+        })?;
         let prepared = prepare.await?;
         ScopedProcess::spawn_authorized(
             &self.launcher,
@@ -437,16 +475,21 @@ impl ScopedExecution {
             },
         )
         .await
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("spawn_prepared", error))
     }
 
     pub(super) fn track(
         &self,
         process: ScopedProcess,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        let mut live = self.live.lock().map_err(err)?;
+        let mut live = self
+            .live
+            .lock()
+            .map_err(|error| pc::SandboxError::backend("track", error))?;
         if live.closed {
-            return Err(err("execution admission closed during launch"));
+            return Err(pc::SandboxError::gone(
+                "execution admission closed during launch",
+            ));
         }
         let process = Arc::new(process);
         live.processes.retain(|process| process.strong_count() > 0);

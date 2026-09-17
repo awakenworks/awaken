@@ -41,8 +41,8 @@ pub(super) fn validate_credentialed_git_transport(
             });
         }
         Err(_) => {
-            return Err(SandboxError(
-                "repository transport must be an absolute HTTPS endpoint".into(),
+            return Err(SandboxError::invalid(
+                "repository transport must be an absolute HTTPS endpoint",
             ));
         }
     };
@@ -64,8 +64,8 @@ pub(super) fn validate_credentialed_git_transport(
             || parsed.host().is_none()
             || url.bytes().any(|byte| byte.is_ascii_whitespace())
         {
-            return Err(SandboxError(
-                "anonymous repository transport must be HTTPS without embedded user info".into(),
+            return Err(SandboxError::invalid(
+                "anonymous repository transport must be HTTPS without embedded user info",
             ));
         }
         return Ok(AdmittedGitTransport {
@@ -77,8 +77,8 @@ pub(super) fn validate_credentialed_git_transport(
     if parsed.scheme() != "https"
         && !(credential.is_gateway_capability() && parsed.scheme() == "http")
     {
-        return Err(SandboxError(
-            "credentialed repository URL must use its admitted HTTP transport without embedded user info".into(),
+        return Err(SandboxError::invalid(
+            "credentialed repository URL must use its admitted HTTP transport without embedded user info",
         ));
     }
     if !parsed.username().is_empty()
@@ -86,8 +86,8 @@ pub(super) fn validate_credentialed_git_transport(
         || parsed.host().is_none()
         || url.bytes().any(|byte| byte.is_ascii_whitespace())
     {
-        return Err(SandboxError(
-            "credentialed repository URL must use its admitted HTTP transport without embedded user info".into(),
+        return Err(SandboxError::invalid(
+            "credentialed repository URL must use its admitted HTTP transport without embedded user info",
         ));
     }
     if [credential.expose_username(), credential.expose_password()]
@@ -99,8 +99,8 @@ pub(super) fn validate_credentialed_git_transport(
                     .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
         })
     {
-        return Err(SandboxError(
-            "repository HTTP Basic credentials contain an invalid protocol value".into(),
+        return Err(SandboxError::invalid(
+            "repository HTTP Basic credentials contain an invalid protocol value",
         ));
     }
     let host = match parsed.host().expect("host checked above") {
@@ -189,8 +189,10 @@ fn compose_git_command(
         alternate_objects,
     } = authentication
     {
-        let isolated_cwd = isolated_cwd
-            .insert(tempfile::tempdir().map_err(|error| SandboxError(error.to_string()))?);
+        let isolated_cwd = isolated_cwd.insert(
+            tempfile::tempdir()
+                .map_err(|error| SandboxError::backend("compose_git_command", error))?,
+        );
         command
             .current_dir(isolated_cwd.path())
             .env("HOME", isolated_cwd.path())
@@ -263,7 +265,7 @@ fn compose_git_command(
         }
         if let Some(objects) = alternate_objects {
             let alternate = std::env::join_paths([objects]).map_err(|_| {
-                SandboxError("repository object path cannot form a Git alternate".into())
+                SandboxError::invalid("repository object path cannot form a Git alternate")
             })?;
             command.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", alternate);
         }
@@ -293,9 +295,12 @@ fn git_command_output(
         GitAuthentication::Network { credential, .. } => *credential,
     };
     let (mut command, isolated_cwd) = compose_git_command(cwd, args, authentication)?;
-    let output = command
-        .output()
-        .map_err(|error| SandboxError(format!("git {}: {error}", args.first().unwrap_or(&""))))?;
+    let output = command.output().map_err(|error| {
+        SandboxError::backend(
+            "git_command_output",
+            format!("git {}: {error}", args.first().unwrap_or(&"")),
+        )
+    })?;
     if !output.status.success() {
         let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         if let Some(credential) = redaction {
@@ -305,11 +310,10 @@ fn git_command_output(
                 }
             }
         }
-        return Err(SandboxError(format!(
-            "git {} failed: {}",
-            args.first().unwrap_or(&""),
-            detail
-        )));
+        return Err(SandboxError::backend(
+            "git_command_output",
+            format!("git {} failed: {}", args.first().unwrap_or(&""), detail),
+        ));
     }
     drop(isolated_cwd);
     Ok(output)

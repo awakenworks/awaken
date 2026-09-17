@@ -216,7 +216,7 @@ impl SessionTerminalCleanupDisposalEffect {
         awaken_provisioning_contract::SandboxError,
     > {
         if !crate::realization_lease_generation_authorizes(current_lease, &self.lease) {
-            return Err(awaken_provisioning_contract::SandboxError::new(
+            return Err(awaken_provisioning_contract::SandboxError::gone(
                 "terminal disposal realization generation was replaced",
             ));
         }

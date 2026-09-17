@@ -254,12 +254,12 @@ impl SessionEnvironment {
         } else {
             pc::validate_mount_requirements(next, &capabilities)
         }
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        .map_err(pc::SandboxError::from)?;
         if previous != next
             && let Self::Container { sandbox, .. } = self
             && !sandbox.supports_live_mount_replacement(previous, next)
         {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "late mount replacement is unsupported for this container input set",
             ));
         }

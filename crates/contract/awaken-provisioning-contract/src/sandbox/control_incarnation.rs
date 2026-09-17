@@ -17,7 +17,7 @@ impl KubernetesPodUid {
                 .chars()
                 .any(|character| matches!(character, '\r' | '\n' | '\0'))
         {
-            return Err(SandboxError::new("Kubernetes Pod UID is invalid"));
+            return Err(SandboxError::invalid("Kubernetes Pod UID is invalid"));
         }
         Ok(Self(value))
     }

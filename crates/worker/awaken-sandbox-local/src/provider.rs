@@ -40,10 +40,6 @@ pub(crate) mod execution;
 mod restore_target;
 pub(crate) mod terminal_disposal;
 
-fn err(e: impl ToString) -> pc::SandboxError {
-    pc::SandboxError::new(e.to_string())
-}
-
 /// Resolve a mount's bytes: an in-memory seed map first, then an optional
 /// content-addressed [`BlobSource`](pc::BlobSource), then typed inline content.
 pub(crate) async fn resolve_source(
@@ -101,7 +97,7 @@ pub(crate) fn verify(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::S
     if let Some(expected) = declared_hash(source) {
         let got = content_fingerprint(bytes);
         if got != expected {
-            return Err(err(format!(
+            return Err(pc::SandboxError::conflict(format!(
                 "mount content hash mismatch: declared {expected}, realized {got}"
             )));
         }
@@ -181,10 +177,14 @@ impl LocalProvider {
         deployment: execution::LocalExecutionDeployment,
     ) -> Result<(), pc::SandboxError> {
         if !self.trusted_host_access {
-            return Err(err("execution deployment requires TrustedHost"));
+            return Err(pc::SandboxError::unsupported(
+                "execution deployment requires TrustedHost",
+            ));
         }
         if self.execution_deployment.is_some() {
-            return Err(err("execution deployment is already installed"));
+            return Err(pc::SandboxError::conflict(
+                "execution deployment is already installed",
+            ));
         }
         self.execution_deployment = Some(deployment);
         Ok(())
@@ -199,7 +199,7 @@ impl LocalProvider {
         #[cfg(target_os = "linux")]
         if let Some(deployment) = &self.execution_deployment {
             if sandbox.realization.current().is_none() {
-                return Err(err(
+                return Err(pc::SandboxError::fence_rejected(
                     "execution deployment requires a current fenced realization",
                 ));
             }
@@ -216,7 +216,7 @@ impl LocalProvider {
             pc::prepare_environment(spec, &Self::capabilities())
         }
         .map(|_| ())
-        .map_err(err)
+        .map_err(pc::SandboxError::from)
     }
 
     /// Select whether an opaque agent child inherits the host stderr.
@@ -296,7 +296,12 @@ impl LocalProvider {
                         | pc::MountSource::CacheVolume { .. }
                 )
             })
-            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .map(|mount| {
+                sandbox
+                    .root
+                    .resolve(&mount.mount_path)
+                    .map_err(pc::SandboxError::from)
+            })
             .collect::<Result<_, _>>()?;
         Ok(())
     }
@@ -313,7 +318,7 @@ impl LocalProvider {
         sandbox.continuation_excluded_paths = payload
             .continuation_excluded_paths
             .iter()
-            .map(|path| sandbox.root.resolve(path).map_err(err))
+            .map(|path| sandbox.root.resolve(path).map_err(pc::SandboxError::from))
             .collect::<Result<_, _>>()?;
         Ok(())
     }
@@ -356,7 +361,9 @@ impl LocalProvider {
 
         #[cfg(target_os = "linux")]
         if self.execution_deployment.is_some() && effect.is_none() {
-            return Err(err("execution deployment requires fenced creation"));
+            return Err(pc::SandboxError::fence_rejected(
+                "execution deployment requires fenced creation",
+            ));
         }
 
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
@@ -378,13 +385,22 @@ impl LocalProvider {
                     crate::realization_marker::begin_legacy(sandbox.root.root())?,
                 )
             }
-            None => return Err(err("sandbox rebuild requires an aggregate effect fence")),
+            None => {
+                return Err(pc::SandboxError::fence_rejected(
+                    "sandbox rebuild requires an aggregate effect fence",
+                ));
+            }
         };
         sandbox.secret_paths = spec
             .mounts
             .iter()
             .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
-            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .map(|mount| {
+                sandbox
+                    .root
+                    .resolve(&mount.mount_path)
+                    .map_err(pc::SandboxError::from)
+            })
             .collect::<Result<_, _>>()?;
         Self::project_spec_handle_fields(&mut sandbox, spec)?;
         *sandbox
@@ -404,7 +420,12 @@ impl LocalProvider {
             let host_paths = spec
                 .mounts
                 .iter()
-                .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+                .map(|mount| {
+                    sandbox
+                        .root
+                        .resolve(&mount.mount_path)
+                        .map_err(pc::SandboxError::from)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let memory_mounts = crate::replay_memory_mount_guards(
                 &self.memory_mounter,
@@ -427,8 +448,7 @@ impl LocalProvider {
                         .await;
                     return Err(match teardown {
                         Ok(()) => cause,
-                        Err(teardown) => err(format!(
-                            "Local Ready replay publication failed: {cause}; Memory replay teardown failed: {teardown}"
+                        Err(teardown) => cause.map_detail(|detail| format!("Local Ready replay publication failed: {detail}; Memory replay teardown failed: {teardown}"
                         )),
                     });
                 }
@@ -452,12 +472,15 @@ impl LocalProvider {
             })?;
         }
         realization_guard.prepare_root()?;
-        let root_identity = realization_guard
-            .root_identity()?
-            .ok_or_else(|| err("prepared Local sandbox has no root identity"))?;
+        let root_identity = realization_guard.root_identity()?.ok_or_else(|| {
+            pc::SandboxError::invalid("prepared Local sandbox has no root identity")
+        })?;
         let realization = async {
             // Outputs directory (sandbox-absolute → rejailed host path).
-            let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
+            let host_outputs = sandbox
+                .root
+                .resolve(&spec.outputs_path)
+                .map_err(pc::SandboxError::from)?;
             realization_guard.with_mutation(|| {
                 awaken_sandbox_fs::create_relative_directory_all(
                     sandbox.root.root(),
@@ -465,10 +488,13 @@ impl LocalProvider {
                     std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
                 )
                 .map_err(|error| {
-                    err(format!(
-                        "create sandbox outputs `{}`: {error}",
-                        host_outputs.display()
-                    ))
+                    pc::SandboxError::backend(
+                        "create_sandbox_inner",
+                        format!(
+                            "create sandbox outputs `{}`: {error}",
+                            host_outputs.display()
+                        ),
+                    )
                 })
             })?;
 
@@ -576,15 +602,19 @@ impl LocalProvider {
         }
         #[cfg(target_os = "linux")]
         if self.execution_deployment.is_some() {
-            return Err(err("scoped restored realization is not qualified"));
+            return Err(pc::SandboxError::unsupported(
+                "scoped restored realization is not qualified",
+            ));
         }
         self.prepare(spec)?;
         if handle.sandbox_id != spec.scope {
-            return Err(err("local Sandbox handle does not match SandboxSpec scope"));
+            return Err(pc::SandboxError::conflict(
+                "local Sandbox handle does not match SandboxSpec scope",
+            ));
         }
-        let evidence = handle
-            .restoration()
-            .ok_or_else(|| err("restored local handle has no exact evidence"))?;
+        let evidence = handle.restoration().ok_or_else(|| {
+            pc::SandboxError::not_found("restored local handle has no exact evidence")
+        })?;
         let payload = handle.local_payload()?;
         if evidence.sandbox_spec_fingerprint() != pc::sandbox_spec_security_fingerprint(spec)
             || pc::validate_checkpoint_exclusions_for_spec(
@@ -598,7 +628,7 @@ impl LocalProvider {
             || payload.outputs_path != spec.outputs_path
             || payload.base_env != spec.env
         {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "restored local handle differs from the exact SandboxSpec or checkpoint exclusions",
             ));
         }
@@ -633,7 +663,7 @@ impl LocalProvider {
                 || payload.outputs_path != spec.outputs_path
                 || payload.base_env != spec.env
             {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "Local terminal handle does not match the effective authorization spec",
                 ));
             }
@@ -659,12 +689,22 @@ impl LocalProvider {
             .mounts
             .iter()
             .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
-            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .map(|mount| {
+                sandbox
+                    .root
+                    .resolve(&mount.mount_path)
+                    .map_err(pc::SandboxError::from)
+            })
             .collect::<Result<_, _>>()?;
         let host_paths = spec
             .mounts
             .iter()
-            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .map(|mount| {
+                sandbox
+                    .root
+                    .resolve(&mount.mount_path)
+                    .map_err(pc::SandboxError::from)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         // The provider-neutral terminal Memory owner performs the one typed
         // preflight->takeover->receipt/FUSE replay sequence. Local only supplies
@@ -728,7 +768,7 @@ impl LocalProvider {
         let payload = handle.local_payload()?;
         #[cfg(target_os = "linux")]
         if self.execution_deployment.is_some() && spec.is_none() {
-            return Err(err(
+            return Err(pc::SandboxError::invalid(
                 "execution deployment requires the frozen adoption spec",
             ));
         }
@@ -741,7 +781,7 @@ impl LocalProvider {
                 || payload.outputs_path != spec.outputs_path
                 || payload.base_env != spec.env)
         {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "Local sandbox handle does not match the effective adoption spec",
             ));
         }
@@ -771,7 +811,12 @@ impl LocalProvider {
                 .mounts
                 .iter()
                 .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
-                .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+                .map(|mount| {
+                    sandbox
+                        .root
+                        .resolve(&mount.mount_path)
+                        .map_err(pc::SandboxError::from)
+                })
                 .collect::<Result<_, _>>()?;
         }
         *sandbox
@@ -784,7 +829,12 @@ impl LocalProvider {
                 .map(|spec| {
                     spec.mounts
                         .iter()
-                        .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+                        .map(|mount| {
+                            sandbox
+                                .root
+                                .resolve(&mount.mount_path)
+                                .map_err(pc::SandboxError::from)
+                        })
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .transpose()?;
@@ -834,7 +884,9 @@ impl LocalProvider {
         mutation_guard: &crate::realization_marker::ProviderCreationGuard<'_>,
     ) -> Result<(pc::RealizedMount, Option<pc::MemoryMaterializationEvidence>), pc::SandboxError>
     {
-        let host = root.resolve(&req.mount_path).map_err(err)?;
+        let host = root
+            .resolve(&req.mount_path)
+            .map_err(pc::SandboxError::from)?;
         // A memory_store is a genuine keyed store (ADR-0038/0053), not a byte blob:
         // realize it through the injected mounter (FUSE where the kernel supports it,
         // else a harvested copy). Without a mounter, fail loud rather than fake it
@@ -848,7 +900,9 @@ impl LocalProvider {
                     .await?;
             mutation_guard.validate_before_mutation()?;
             return mounted.ok_or_else(|| {
-                err("Memory requirement did not reach the canonical Memory mount adapter")
+                pc::SandboxError::invalid(
+                    "Memory requirement did not reach the canonical Memory mount adapter",
+                )
             });
         }
         let secret_broker = self
@@ -860,7 +914,7 @@ impl LocalProvider {
             && matches!(req.source, pc::MountSource::Secret { .. })
             && req.access == pc::MountAccess::ReadWrite
         {
-            return Err(err(
+            return Err(pc::SandboxError::unsupported(
                 "the Workdir provider cannot write back a brokered writable Secret mount",
             ));
         }
@@ -875,9 +929,9 @@ impl LocalProvider {
         let realized = match bytes {
             Some(bytes) => {
                 verify(&req.source, &bytes)?; // fail closed on content-hash mismatch
-                let relative = host
-                    .strip_prefix(root.root())
-                    .map_err(|_| err("mount path escaped its exact sandbox root"))?;
+                let relative = host.strip_prefix(root.root()).map_err(|_| {
+                    pc::SandboxError::invalid("mount path escaped its exact sandbox root")
+                })?;
                 mutation_guard.with_mutation(|| {
                     awaken_sandbox_fs::write_relative_file_atomic(
                         root.root(),
@@ -886,7 +940,7 @@ impl LocalProvider {
                         &bytes,
                         0o600,
                     )
-                    .map_err(err)
+                    .map_err(|error| pc::SandboxError::backend("realize_mount", error))
                 })?;
                 pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
@@ -897,16 +951,16 @@ impl LocalProvider {
                 }
             }
             None if req.required => {
-                return Err(err(format!(
+                return Err(pc::SandboxError::not_found(format!(
                     "required mount {:?} has no resolvable source on the local provider",
                     req.mount_id
                 )));
             }
             None => {
                 // Optional + unresolvable: create an empty placeholder so the path exists.
-                let relative = host
-                    .strip_prefix(root.root())
-                    .map_err(|_| err("mount path escaped its exact sandbox root"))?;
+                let relative = host.strip_prefix(root.root()).map_err(|_| {
+                    pc::SandboxError::invalid("mount path escaped its exact sandbox root")
+                })?;
                 mutation_guard.with_mutation(|| {
                     awaken_sandbox_fs::write_relative_file_atomic(
                         root.root(),
@@ -915,7 +969,7 @@ impl LocalProvider {
                         b"",
                         0o600,
                     )
-                    .map_err(err)
+                    .map_err(|error| pc::SandboxError::backend("realize_mount", error))
                 })?;
                 pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
@@ -1268,11 +1322,13 @@ impl LocalSandbox {
             root_identity,
             std::path::Path::new(pc::WorkspaceLayout::RESOURCE_PROJECTION_SUBDIR),
         )
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("clear_resource_projection", error))
     }
 
     fn host_outputs(&self) -> Result<PathBuf, pc::SandboxError> {
-        self.root.resolve(&self.outputs_path).map_err(err)
+        self.root
+            .resolve(&self.outputs_path)
+            .map_err(pc::SandboxError::from)
     }
 
     /// Outputs scan → one descriptor-captured `(artifact, bytes)` snapshot.
@@ -1298,31 +1354,34 @@ impl LocalSandbox {
         let mut command =
             pc::materialize_process_command(&self.base_env, command, broker.as_ref()).await?;
         if command.argv.is_empty() {
-            return Err(err("command argv is empty"));
+            return Err(pc::SandboxError::invalid("command argv is empty"));
         }
         let cwd_logical = if command.cwd.is_empty() {
             "/"
         } else {
             &command.cwd
         };
-        let host_cwd = self.root.resolve(cwd_logical).map_err(err)?;
+        let host_cwd = self
+            .root
+            .resolve(cwd_logical)
+            .map_err(pc::SandboxError::from)?;
         awaken_sandbox_fs::create_relative_directory_all(
             self.root.root(),
             root_identity,
-            host_cwd
-                .strip_prefix(self.root.root())
-                .map_err(|_| err("command cwd escaped its exact sandbox root"))?,
+            host_cwd.strip_prefix(self.root.root()).map_err(|_| {
+                pc::SandboxError::invalid("command cwd escaped its exact sandbox root")
+            })?,
         )
-        .map_err(err)?;
+        .map_err(|error| pc::SandboxError::backend("build_command", error))?;
         let host_outputs = self.host_outputs()?;
         awaken_sandbox_fs::create_relative_directory_all(
             self.root.root(),
             root_identity,
-            host_outputs
-                .strip_prefix(self.root.root())
-                .map_err(|_| err("outputs path escaped its exact sandbox root"))?,
+            host_outputs.strip_prefix(self.root.root()).map_err(|_| {
+                pc::SandboxError::invalid("outputs path escaped its exact sandbox root")
+            })?,
         )
-        .map_err(err)?;
+        .map_err(|error| pc::SandboxError::backend("build_command", error))?;
 
         // Reserved, runtime-owned env: where the agent writes/works (the local tier
         // has no path fidelity, so a process finds the outputs dir via this var).
@@ -1366,12 +1425,12 @@ impl LocalSandbox {
                     awaken_local_process::scoped::ScopedStdio::agent(self.inherit_agent_stderr),
                 )
                 .await?;
-            let stdin = process
-                .take_stdin()
-                .ok_or_else(|| err("agent stdin was not piped"))?;
-            let stdout = process
-                .take_stdout()
-                .ok_or_else(|| err("agent stdout was not piped"))?;
+            let stdin = process.take_stdin().ok_or_else(|| {
+                pc::SandboxError::backend("spawn_agent", "agent stdin was not piped")
+            })?;
+            let stdout = process.take_stdout().ok_or_else(|| {
+                pc::SandboxError::backend("spawn_agent", "agent stdout was not piped")
+            })?;
             return Ok((
                 execution.track(process)?,
                 Box::new(SplitChannel::new(stdout, stdin)),
@@ -1386,13 +1445,14 @@ impl LocalSandbox {
         cmd.stdin(ProcStdio::piped())
             .stdout(ProcStdio::piped())
             .stderr(stderr);
-        let mut process = LocalProcess::spawn(&mut cmd).map_err(err)?;
+        let mut process = LocalProcess::spawn(&mut cmd)
+            .map_err(|error| pc::SandboxError::backend("spawn_agent", error))?;
         let stdin = process
             .take_stdin()
-            .ok_or_else(|| err("agent stdin was not piped"))?;
-        let stdout = process
-            .take_stdout()
-            .ok_or_else(|| err("agent stdout was not piped"))?;
+            .ok_or_else(|| pc::SandboxError::backend("spawn_agent", "agent stdin was not piped"))?;
+        let stdout = process.take_stdout().ok_or_else(|| {
+            pc::SandboxError::backend("spawn_agent", "agent stdout was not piped")
+        })?;
         let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
         Ok((Box::new(process), channel))
     }
@@ -1427,7 +1487,7 @@ impl LocalSandbox {
     pub fn list_files(&self, subdir: &str) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
         let Some(root_identity) = self.root_identity_for_access()? else {
             if !self.memory_materializations.is_empty() {
-                return Err(err(
+                return Err(pc::SandboxError::gone(
                     "copy-backed Memory lost its exact sandbox root before reconciliation",
                 ));
             }
@@ -1459,7 +1519,6 @@ impl LocalSandbox {
             subdir.trim_start_matches('/'),
             subdir.trim_start_matches('/'),
         )
-        .map_err(Into::into)
     }
 
     /// Materialize host-projected, non-secret configuration inside this existing
@@ -1479,7 +1538,7 @@ impl LocalSandbox {
             contents,
             0o600,
         )
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("materialize_inline", error))
     }
 
     /// Remove one dynamically projected workspace path without tearing down the
@@ -1492,7 +1551,7 @@ impl LocalSandbox {
             root_identity,
             std::path::Path::new(logical.trim_start_matches('/')),
         )
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("remove_inline", error))
     }
 }
 
@@ -1507,14 +1566,13 @@ impl pc::RepositoryRealizer for LocalSandbox {
         plan.validate_mount_path()?;
         #[cfg(target_os = "linux")]
         if let Some(outcome) = self.scoped_repository(plan, None, credential).await? {
-            match outcome {
+            match outcome.into_result()? {
                 crate::repository_effect::Outcome::Realized => {
                     self.reserve_owned_path(&plan.mount_path);
                     return Ok(());
                 }
-                crate::repository_effect::Outcome::Unavailable(error) => return Err(err(error)),
                 _ => {
-                    return Err(err(
+                    return Err(pc::SandboxError::conflict(
                         "repository realization returned another operation's receipt",
                     ));
                 }
@@ -1527,8 +1585,7 @@ impl pc::RepositoryRealizer for LocalSandbox {
             plan.initial_branch.as_deref(),
             plan.initial_commit.as_deref(),
             credential,
-        )
-        .map_err(err)?;
+        )?;
         self.reserve_owned_path(&plan.mount_path);
         Ok(())
     }
@@ -1550,7 +1607,10 @@ impl pc::RepositoryRealizer for LocalSandbox {
             .map_err(pc::RepositoryPublicationError::Unavailable)?
         {
             use crate::repository_effect::Outcome;
-            return match outcome {
+            return match outcome
+                .into_result()
+                .map_err(pc::RepositoryPublicationError::Unavailable)?
+            {
                 Outcome::Published(receipt)
                     if receipt == pc::RepositoryPublicationReceipt::new(plan, expectation) =>
                 {
@@ -1560,12 +1620,11 @@ impl pc::RepositoryRealizer for LocalSandbox {
                     rejection.verify(expectation)?;
                     Err(pc::RepositoryPublicationError::Rejected(rejection))
                 }
-                Outcome::Unavailable(error) => {
-                    Err(pc::RepositoryPublicationError::Unavailable(err(error)))
-                }
-                _ => Err(pc::RepositoryPublicationError::Unavailable(err(
-                    "repository publication returned another operation's receipt",
-                ))),
+                _ => Err(pc::RepositoryPublicationError::Unavailable(
+                    pc::SandboxError::conflict(
+                        "repository publication returned another operation's receipt",
+                    ),
+                )),
             };
         }
         push_repo_to_at(&self.root, &plan.mount_path, plan, expectation, credential)
@@ -1642,7 +1701,9 @@ impl pc::Sandbox for LocalSandbox {
         };
         cmd.stdout(out).stderr(e);
 
-        Ok(Box::new(LocalProcess::spawn(&mut cmd).map_err(err)?))
+        Ok(Box::new(LocalProcess::spawn(&mut cmd).map_err(
+            |error| pc::SandboxError::backend("spawn", error),
+        )?))
     }
 
     async fn checkpoint(
@@ -1691,21 +1752,27 @@ impl pc::Sandbox for LocalSandbox {
                 std::slice::from_ref(&req),
                 &LocalProvider::capabilities(),
             )
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         } else {
             pc::validate_mount_requirements(
                 std::slice::from_ref(&req),
                 &LocalProvider::capabilities(),
             )
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         }
         // Create-time participants keep their original lifecycle authority.
         // Only already-resolved ordinary File bytes use this late attach port.
-        let destination = self.root.resolve(&req.mount_path).map_err(err)?;
+        let destination = self
+            .root
+            .resolve(&req.mount_path)
+            .map_err(pc::SandboxError::from)?;
         for retained in &self.realized {
-            let retained_path = self.root.resolve(&retained.mount_path).map_err(err)?;
+            let retained_path = self
+                .root
+                .resolve(&retained.mount_path)
+                .map_err(pc::SandboxError::from)?;
             if destination.starts_with(&retained_path) || retained_path.starts_with(&destination) {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "runtime attachment cannot replace a create-time mount participant",
                 ));
             }
@@ -1714,7 +1781,7 @@ impl pc::Sandbox for LocalSandbox {
             pc::MountSource::Inline { contents } => contents.as_bytes(),
             pc::MountSource::InlineBytes { contents, .. } => contents.as_slice(),
             _ => {
-                return Err(err(
+                return Err(pc::SandboxError::invalid(
                     "runtime attachment requires resolved inline File bytes",
                 ));
             }
@@ -1740,7 +1807,9 @@ impl pc::Sandbox for LocalSandbox {
                 return Ok(bytes);
             }
         }
-        Err(err(format!("no artifact with id {id:?}")))
+        Err(pc::SandboxError::not_found(format!(
+            "no artifact with id {id:?}"
+        )))
     }
 
     fn realized(&self) -> &[pc::RealizedMount] {
@@ -1753,13 +1822,14 @@ impl pc::Sandbox for LocalSandbox {
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
         // A local child is owned by its spawner's process; once that process is
         // gone there is nothing to re-open (no OS-level process registry here).
-        Err(err(
+        Err(pc::SandboxError::unsupported(
             "local provider cannot reattach to a process across owners",
         ))
     }
 
     async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
-        let entry = awaken_sandbox_fs::classify_nofollow(self.root.root()).map_err(err)?;
+        let entry = awaken_sandbox_fs::classify_nofollow(self.root.root())
+            .map_err(|error| pc::SandboxError::backend("status", error))?;
         match (&self.realization, entry) {
             (_, awaken_sandbox_fs::PathEntry::Absent) => Ok(pc::SandboxStatus::Terminated),
             (
@@ -1774,7 +1844,7 @@ impl pc::Sandbox for LocalSandbox {
                 crate::realization_marker::LiveRealization::LegacyAdopted,
                 awaken_sandbox_fs::PathEntry::Directory(_),
             ) => Ok(pc::SandboxStatus::Ready),
-            _ => Err(err(
+            _ => Err(pc::SandboxError::conflict(
                 "sandbox root has a foreign file type or physical identity",
             )),
         }
@@ -1865,12 +1935,12 @@ impl LocalSandbox {
             .and_then(pc::SandboxHandle::restoration)
             .is_some()
         {
-            return Err(err(
+            return Err(pc::SandboxError::fence_rejected(
                 "restored target disposal requires the exact provider request and current authority",
             ));
         }
         if self.realization.current().is_some() {
-            return Err(err(
+            return Err(pc::SandboxError::fence_rejected(
                 "current durable sandbox disposal requires an aggregate effect fence",
             ));
         }

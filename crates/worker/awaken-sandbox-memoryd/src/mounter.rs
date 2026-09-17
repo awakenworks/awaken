@@ -70,10 +70,6 @@ impl MemoryStoreMounter {
     }
 }
 
-fn sandbox_err(e: impl std::fmt::Display) -> SandboxError {
-    SandboxError::new(e.to_string())
-}
-
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 fn is_mountpoint(path: &Path) -> bool {
     let expected = path.to_string_lossy();
@@ -131,7 +127,8 @@ fn clear_projection(host_path: &Path) -> Result<(), SandboxError> {
         return Ok(());
     };
     if metadata.file_type().is_symlink() || metadata.is_file() {
-        return std::fs::remove_file(host_path).map_err(sandbox_err);
+        return std::fs::remove_file(host_path)
+            .map_err(|error| SandboxError::backend("clear_projection", error));
     }
     if std::fs::remove_dir_all(host_path).is_ok() && matches!(host_path.try_exists(), Ok(false)) {
         return Ok(());
@@ -150,14 +147,17 @@ fn clear_projection(host_path: &Path) -> Result<(), SandboxError> {
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    Err(sandbox_err(format!(
-        "clear prior Memory projection `{}`: {}",
-        host_path.display(),
-        last_error.map_or_else(
-            || "mountpoint remained after removal".into(),
-            |error| error.to_string()
-        )
-    )))
+    Err(SandboxError::backend(
+        "clear_projection",
+        format!(
+            "clear prior Memory projection `{}`: {}",
+            host_path.display(),
+            last_error.map_or_else(
+                || "mountpoint remained after removal".into(),
+                |error| error.to_string()
+            )
+        ),
+    ))
 }
 
 #[async_trait::async_trait]
@@ -174,10 +174,13 @@ impl MemoryMounter for MemoryStoreMounter {
             // left by an evicted Session context. Never follow a replaced symlink.
             clear_projection(host_path)?;
             std::fs::create_dir_all(host_path).map_err(|error| {
-                sandbox_err(format!(
-                    "create Memory projection `{}`: {error}",
-                    host_path.display()
-                ))
+                SandboxError::backend(
+                    "mount",
+                    format!(
+                        "create Memory projection `{}`: {error}",
+                        host_path.display()
+                    ),
+                )
             })?;
 
             #[cfg(all(feature = "fuse", target_os = "linux"))]
@@ -189,10 +192,13 @@ impl MemoryMounter for MemoryStoreMounter {
                     self.bus.subscribe(),
                 )
                 .map_err(|error| {
-                    sandbox_err(format!(
-                        "mount MemoryStore `{store_id}` at `{}`: {error}",
-                        host_path.display()
-                    ))
+                    SandboxError::backend(
+                        "mount",
+                        format!(
+                            "mount MemoryStore `{store_id}` at `{}`: {error}",
+                            host_path.display()
+                        ),
+                    )
                 })?;
                 return Ok(Box::new(FuseMount {
                     handle: Arc::new(std::sync::Mutex::new(handle)),
@@ -201,11 +207,11 @@ impl MemoryMounter for MemoryStoreMounter {
 
             // No FUSE (macOS / CI / unprivileged container): copy the store out now and
             // harvest a writable mount back on teardown.
-            let root =
-                awaken_sandbox_fs::ProjectionRoot::capture(host_path).map_err(sandbox_err)?;
+            let root = awaken_sandbox_fs::ProjectionRoot::capture(host_path)
+                .map_err(|error| SandboxError::backend("mount", error))?;
             let snapshot = copy::materialize(&*self.fs, store_id, host_path)
                 .await
-                .map_err(sandbox_err)?;
+                .map_err(SandboxError::from)?;
             let materialization_heads = snapshot.materialization_heads();
             Ok(Box::new(CopyMount {
                 root,
@@ -247,12 +253,12 @@ impl MemoryMounter for MemoryStoreMounter {
         if access != MountAccess::ReadWrite {
             return Ok(());
         }
-        let mut snapshot =
-            copy::CopySnapshot::from_materialization_heads(&evidence.heads).map_err(sandbox_err)?;
+        let mut snapshot = copy::CopySnapshot::from_materialization_heads(&evidence.heads)
+            .map_err(SandboxError::from)?;
         let report =
             copy::harvest_recovered_files(&*self.fs, operation_reference, files, &mut snapshot)
                 .await
-                .map_err(sandbox_err)?;
+                .map_err(SandboxError::from)?;
         // Terminal replay alone may retire a copy after preserving every losing
         // proposal in its original Memory aggregate. Live harvest still reports
         // conflicts. An unsupported, denied or failed durable write remains an
@@ -261,7 +267,7 @@ impl MemoryMounter for MemoryStoreMounter {
             self.fs
                 .preserve_copy_conflict(operation_reference, &conflict.candidate)
                 .await
-                .map_err(sandbox_err)?;
+                .map_err(SandboxError::from)?;
         }
         Ok(())
     }
@@ -288,12 +294,16 @@ impl MemoryMount for FuseMount {
         tokio::task::spawn_blocking(move || {
             handle
                 .lock()
-                .map_err(|_| sandbox_err("Memory FUSE handle mutex is poisoned"))?
+                .map_err(|_| {
+                    SandboxError::backend("teardown", "Memory FUSE handle mutex is poisoned")
+                })?
                 .unmount();
             Ok(())
         })
         .await
-        .map_err(|error| sandbox_err(format!("join Memory FUSE teardown: {error}")))?
+        .map_err(|error| {
+            SandboxError::backend("teardown", format!("join Memory FUSE teardown: {error}"))
+        })?
     }
 }
 
@@ -323,12 +333,14 @@ impl MemoryMount for CopyMount {
     async fn teardown(&self) -> Result<(), SandboxError> {
         if self.writable {
             let mut snapshot = self.snapshot.lock().await;
-            self.root.verify(&self.host_path).map_err(sandbox_err)?;
+            self.root
+                .verify(&self.host_path)
+                .map_err(|error| SandboxError::backend("teardown", error))?;
             let report = copy::harvest(&*self.fs, &self.store_id, &self.host_path, &mut snapshot)
                 .await
-                .map_err(sandbox_err)?;
+                .map_err(SandboxError::from)?;
             if !report.conflicts.is_empty() {
-                return Err(sandbox_err(format!(
+                return Err(SandboxError::conflict(format!(
                     "Memory copy harvest preserved {} concurrent durable head conflict(s)",
                     report.conflicts.len()
                 )));

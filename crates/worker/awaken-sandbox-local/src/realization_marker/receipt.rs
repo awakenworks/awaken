@@ -40,7 +40,7 @@ impl RealizationCompletionReceipt {
                     || !mount_ids.insert(mount.mount_id.as_str())
                     || !mount_paths.insert(mount.mount_path.as_str())
                 {
-                    return Err(err(
+                    return Err(pc::SandboxError::invalid(
                         "filesystem realization receipt has invalid or duplicate mounts",
                     ));
                 }
@@ -62,7 +62,7 @@ impl RealizationCompletionReceipt {
         if memory_materializations.windows(2).any(|pair| {
             pair[0].mount_path == pair[1].mount_path && pair[0].store_id == pair[1].store_id
         }) {
-            return Err(err(
+            return Err(pc::SandboxError::invalid(
                 "filesystem realization receipt has duplicate Memory materializations",
             ));
         }
@@ -88,7 +88,7 @@ impl RealizationCompletionReceipt {
         if canonical == *self {
             Ok(())
         } else {
-            Err(err(
+            Err(pc::SandboxError::invalid(
                 "filesystem realization receipt is not canonically encoded",
             ))
         }

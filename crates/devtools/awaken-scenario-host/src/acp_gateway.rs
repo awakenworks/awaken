@@ -14,7 +14,7 @@ impl awaken_run_executor_acp::SecretBroker for ScenarioEnvSecretBroker {
         &self,
         _reference: &str,
     ) -> Result<Vec<u8>, awaken_run_executor_acp::SandboxError> {
-        Err(awaken_run_executor_acp::SandboxError::new(
+        Err(awaken_run_executor_acp::SandboxError::unsupported(
             "scenario broker has no file credential",
         ))
     }
@@ -24,7 +24,7 @@ impl awaken_run_executor_acp::SecretBroker for ScenarioEnvSecretBroker {
         reference: &str,
     ) -> Result<Vec<u8>, awaken_run_executor_acp::SandboxError> {
         if reference != "scenario-env://acp-credential" {
-            return Err(awaken_run_executor_acp::SandboxError::new(
+            return Err(awaken_run_executor_acp::SandboxError::not_found(
                 "unknown scenario credential reference",
             ));
         }
@@ -33,7 +33,7 @@ impl awaken_run_executor_acp::SecretBroker for ScenarioEnvSecretBroker {
             .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
             .map(String::into_bytes)
             .ok_or_else(|| {
-                awaken_run_executor_acp::SandboxError::new("dev scenario has no credential")
+                awaken_run_executor_acp::SandboxError::unsupported("dev scenario has no credential")
             })
     }
 
@@ -42,7 +42,7 @@ impl awaken_run_executor_acp::SecretBroker for ScenarioEnvSecretBroker {
         _reference: &str,
         _bytes: Vec<u8>,
     ) -> Result<(), awaken_run_executor_acp::SandboxError> {
-        Err(awaken_run_executor_acp::SandboxError::new(
+        Err(awaken_run_executor_acp::SandboxError::unsupported(
             "scenario credentials are read-only",
         ))
     }

@@ -482,7 +482,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
                 "unfenced creation invents no authority source"
             );
         }
-        Err(awaken_provisioning_contract::SandboxError::new(
+        Err(awaken_provisioning_contract::SandboxError::backend(
+            "create_environment_for_effect",
             "projection probe finished",
         ))
     }

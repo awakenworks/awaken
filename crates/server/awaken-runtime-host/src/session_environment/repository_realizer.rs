@@ -14,7 +14,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some() => {
-                Err(pc::SandboxError::new(
+                Err(pc::SandboxError::unsupported(
                     "credentialed Repository effects require a container Sandbox",
                 ))
             }
@@ -42,7 +42,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
     ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
         match self {
             Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some() => Err(
-                pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(
+                pc::RepositoryPublicationError::Unavailable(pc::SandboxError::unsupported(
                     "credentialed Repository effects require a container Sandbox",
                 )),
             ),

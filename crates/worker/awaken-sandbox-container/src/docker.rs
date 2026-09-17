@@ -216,7 +216,7 @@ impl DockerExecProcess {
             .docker
             .inspect_exec(&self.exec_id)
             .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| pc::SandboxError::backend("status", error))?;
         if state.running.unwrap_or(false) {
             return Ok(None);
         }
@@ -247,7 +247,9 @@ impl pc::ProcessHandle for DockerExecProcess {
         }
         let result = async {
             let pid_file = self.pid_file.as_ref().ok_or_else(|| {
-                pc::SandboxError::new("legacy docker exec handle has no in-container pid reference")
+                pc::SandboxError::unsupported(
+                    "legacy docker exec handle has no in-container pid reference",
+                )
             })?;
             let name = match signal {
                 pc::Signal::Term => "TERM",
@@ -273,7 +275,7 @@ impl pc::ProcessHandle for DockerExecProcess {
                     },
                 )
                 .await
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("signal", error))?;
             let mut output = match self
                 .docker
                 .start_exec(
@@ -283,30 +285,31 @@ impl pc::ProcessHandle for DockerExecProcess {
                     }),
                 )
                 .await
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?
+                .map_err(|error| pc::SandboxError::backend("signal", error))?
             {
                 StartExecResults::Attached { output, .. } => output,
                 StartExecResults::Detached => {
-                    return Err(pc::SandboxError::new(
+                    return Err(pc::SandboxError::backend(
+                        "signal",
                         "docker returned detached result for signal exec",
                     ));
                 }
             };
             while let Some(frame) = output.next().await {
-                frame.map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                frame.map_err(|error| pc::SandboxError::backend("signal", error))?;
             }
             let state = self
                 .docker
                 .inspect_exec(&request.id)
                 .await
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("signal", error))?;
             if state.exit_code == Some(0) {
                 Ok(())
             } else {
-                Err(pc::SandboxError::new(format!(
-                    "docker exec signal failed with {:?}",
-                    state.exit_code
-                )))
+                Err(pc::SandboxError::backend(
+                    "signal",
+                    format!("docker exec signal failed with {:?}", state.exit_code),
+                ))
             }
         }
         .await;
@@ -1552,8 +1555,7 @@ impl ContainerRuntime for DockerRuntime {
             .parent()
             .ok_or_else(|| backend("Docker restored live-input root has no staging parent"))?;
         pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
-            crate::remove_host_staging_path(staging_root)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))
+            crate::remove_host_staging_path(staging_root).map_err(pc::SandboxError::from)
         })
         .map_err(backend)?;
         // Reuse ordinary immutable-incarnation removal; never delete the

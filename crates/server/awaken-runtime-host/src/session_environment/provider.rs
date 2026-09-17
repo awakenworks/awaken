@@ -137,12 +137,12 @@ impl SessionEnvironmentProvider {
         execution: awaken_sandbox_local::LocalExecutionDeployment,
     ) -> Result<(), pc::SandboxError> {
         let Self::Workdir { provider, .. } = self else {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "scoped host execution requires Workdir provider",
             ));
         };
         if !provider.has_trusted_host_access() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unauthorized(
                 "scoped host execution requires TrustedHost authorization",
             ));
         }
@@ -150,7 +150,7 @@ impl SessionEnvironmentProvider {
             return if current == &execution {
                 pc::SandboxProvider::probe_ready(provider).await
             } else {
-                Err(pc::SandboxError::new(
+                Err(pc::SandboxError::conflict(
                     "scoped execution deployment changed after installation",
                 ))
             };
@@ -399,7 +399,7 @@ impl SessionEnvironmentProvider {
             (Some(fence), Some(authority)) => {
                 pc::with_current_sandbox_effect(fence, authority, || Ok(()))
             }
-            (Some(_), None) => Err(pc::SandboxError::new(
+            (Some(_), None) => Err(pc::SandboxError::fence_rejected(
                 "fenced creation has no current authority",
             )),
             (None, _) => Ok(()),
@@ -554,12 +554,12 @@ impl SessionEnvironmentProvider {
             awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle);
         if let Some(environment) = retained {
             let super::SessionEnvironment::Container { sandbox, .. } = environment else {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::conflict(
                     "retained Environment belongs to another provider",
                 ));
             };
             if &environment.handle() != handle {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::conflict(
                     "retained Environment differs from observed handle",
                 ));
             }
@@ -640,7 +640,7 @@ impl SessionEnvironmentProvider {
                 Self::Workdir { .. } | Self::Namespace { .. } if physical_incarnation.is_none() => {
                     Ok(())
                 }
-                Self::Workdir { .. } | Self::Namespace { .. } => Err(pc::SandboxError::new(
+                Self::Workdir { .. } | Self::Namespace { .. } => Err(pc::SandboxError::conflict(
                     "filesystem sandbox absence carried a foreign physical incarnation",
                 )),
                 Self::Container { .. } => {
@@ -648,7 +648,7 @@ impl SessionEnvironmentProvider {
                     if physical_incarnation.as_deref() == Some(expected) {
                         Ok(())
                     } else {
-                        Err(pc::SandboxError::new(
+                        Err(pc::SandboxError::conflict(
                             "container unavailable observation does not match the durable incarnation",
                         ))
                     }
@@ -663,7 +663,7 @@ impl SessionEnvironmentProvider {
                 let expected = match self {
                     Self::Workdir { .. } | Self::Namespace { .. } => {
                         handle.filesystem_physical_incarnation()?.ok_or_else(|| {
-                            pc::SandboxError::new(
+                            pc::SandboxError::unsupported(
                                 "legacy filesystem handle has no physical incarnation",
                             )
                         })?
@@ -673,14 +673,14 @@ impl SessionEnvironmentProvider {
                 if physical_incarnation == expected {
                     Ok(())
                 } else {
-                    Err(pc::SandboxError::new(
+                    Err(pc::SandboxError::conflict(
                         "terminal sandbox observation does not match the durable incarnation",
                     ))
                 }
             }
             pc::SandboxObservation::Ready
             | pc::SandboxObservation::Provisioning
-            | pc::SandboxObservation::Incompatible { .. } => Err(pc::SandboxError::new(
+            | pc::SandboxObservation::Incompatible { .. } => Err(pc::SandboxError::invalid(
                 "sandbox observation does not carry closed physical evidence",
             )),
         }
@@ -716,7 +716,7 @@ impl SessionEnvironmentProvider {
         authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         if &retained.handle() != handle {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::conflict(
                 "retained Environment differs from rebound handle",
             ));
         }
@@ -727,7 +727,7 @@ impl SessionEnvironmentProvider {
                 || effect_fence.is_none()
                 || authority.is_none()
             {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::fence_rejected(
                     "scoped rebind requires its deployment and current adoption authority",
                 ));
             }
@@ -784,7 +784,7 @@ impl SessionEnvironmentProvider {
                 )
                 .await
             }
-            _ => Err(pc::SandboxError::new(
+            _ => Err(pc::SandboxError::conflict(
                 "retained Environment belongs to another provider",
             )),
         }
@@ -801,8 +801,11 @@ impl SessionEnvironmentProvider {
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
         authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
-        let required_authority =
-            || authority.ok_or_else(|| pc::SandboxError::new("adoption has no current authority"));
+        let required_authority = || {
+            authority.ok_or_else(|| {
+                pc::SandboxError::fence_rejected("adoption has no current authority")
+            })
+        };
         let admit = || match effect_fence {
             Some(fence) => pc::with_current_sandbox_effect(fence, required_authority()?, || Ok(())),
             None => Ok(()),
@@ -898,7 +901,7 @@ impl SessionEnvironmentProvider {
                 request.verify_handle(spec, &handle)?;
                 Ok(handle)
             }
-            Self::Namespace { .. } => Err(pc::SandboxError::new(
+            Self::Namespace { .. } => Err(pc::SandboxError::unsupported(
                 "namespace provider does not implement checkpoint restore",
             )),
             Self::Container {
@@ -1023,7 +1026,7 @@ impl SessionEnvironmentProvider {
                 )
                 .await
             }
-            Self::Namespace { .. } => Err(pc::SandboxError::new(
+            Self::Namespace { .. } => Err(pc::SandboxError::unsupported(
                 "namespace provider does not implement exact restored-target disposal",
             )),
             Self::Container {

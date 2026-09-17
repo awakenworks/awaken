@@ -148,7 +148,7 @@ async fn signal_errors_require_later_exit_evidence_within_the_same_reap_budget()
                     code: Some(0),
                     signaled: false,
                 }),
-                "error" => Err(pc::SandboxError::new("exit evidence unavailable")),
+                "error" => Err(pc::SandboxError::transport("exit evidence unavailable")),
                 _ => std::future::pending().await,
             }
         }
@@ -161,7 +161,7 @@ async fn signal_errors_require_later_exit_evidence_within_the_same_reap_budget()
             }
             let bit = if signal == pc::Signal::Term { 1 } else { 2 };
             if self.failures & bit != 0 {
-                Err(pc::SandboxError::new("signal failed"))
+                Err(pc::SandboxError::backend("signal", "signal failed"))
             } else {
                 Ok(())
             }

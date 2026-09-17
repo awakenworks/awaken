@@ -65,7 +65,8 @@ impl pc::Sandbox for NamespaceSandbox {
             pc::Stdio::Null => (ProcStdio::null(), ProcStdio::null()),
         };
         cmd.stdout(out).stderr(e);
-        let process = LocalProcess::spawn(&mut cmd).map_err(err)?;
+        let process = LocalProcess::spawn(&mut cmd)
+            .map_err(|error| pc::SandboxError::backend("spawn", error))?;
         drop(cmd);
         Ok(Box::new(launch_info.bind(process).await?))
     }
@@ -82,7 +83,7 @@ impl pc::Sandbox for NamespaceSandbox {
             std::slice::from_ref(&req),
             &NamespaceProvider::capabilities(),
         )
-        .map_err(err)?;
+        .map_err(pc::SandboxError::from)?;
         let mut memory_mounts = self.memory_mounts.lock().await;
         memory_mounts
             .release_unconfirmed(|| self.require_root_identity().map(|_| ()))
@@ -107,7 +108,7 @@ impl pc::Sandbox for NamespaceSandbox {
             || recovered_copy_exists
             || (destination_exists && matches!(req.source, pc::MountSource::MemoryStore { .. }))
         {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "runtime Memory attachment cannot replace an existing mount participant",
             ));
         }
@@ -126,10 +127,10 @@ impl pc::Sandbox for NamespaceSandbox {
             // Publish the guard and its evidence under the same lock order used
             // by reconciliation acknowledgement, so no snapshot can drain an
             // unrepresented Copy participant.
-            let mut memory_materializations = self
-                .memory_materializations
-                .lock()
-                .map_err(|_| err("Memory materializations lock poisoned"))?;
+            let mut memory_materializations =
+                self.memory_materializations.lock().map_err(|_| {
+                    pc::SandboxError::backend("attach", "Memory materializations lock poisoned")
+                })?;
             let mut layout = self.layout.write().expect("namespace layout lock poisoned");
             layout.retain(|mount| mount.dest != req.mount_path);
             layout.push(rendered);
@@ -146,16 +147,16 @@ impl pc::Sandbox for NamespaceSandbox {
                 content_hash,
             } => (contents.as_slice(), content_hash.clone()),
             _ => {
-                return Err(err(format!(
+                return Err(pc::SandboxError::unsupported(format!(
                     "runtime attach for mount {:?} requires a provider-owned resolver",
                     req.mount_id
                 )));
             }
         };
         verify(&req.source, contents)?;
-        let relative = host
-            .strip_prefix(self.root.root())
-            .map_err(|_| err("namespace attachment path escaped its sandbox root"))?;
+        let relative = host.strip_prefix(self.root.root()).map_err(|_| {
+            pc::SandboxError::invalid("namespace attachment path escaped its sandbox root")
+        })?;
         awaken_sandbox_fs::write_relative_file_atomic(
             self.root.root(),
             root_identity,
@@ -163,7 +164,7 @@ impl pc::Sandbox for NamespaceSandbox {
             contents,
             0o600,
         )
-        .map_err(err)?;
+        .map_err(|error| pc::SandboxError::backend("attach", error))?;
         let mut layout = self.layout.write().expect("namespace layout lock poisoned");
         layout.retain(|mount| mount.dest != req.mount_path);
         layout.push(RenderMount {
@@ -195,7 +196,9 @@ impl pc::Sandbox for NamespaceSandbox {
 
     async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
         let Some(identity) = self.root_identity_for_access()? else {
-            return Err(err(format!("no artifact with id {id:?}")));
+            return Err(pc::SandboxError::not_found(format!(
+                "no artifact with id {id:?}"
+            )));
         };
         for (artifact, bytes) in
             crate::artifacts::scan_outputs(&self.root, identity, &self.outputs_path)?
@@ -204,7 +207,9 @@ impl pc::Sandbox for NamespaceSandbox {
                 return Ok(bytes);
             }
         }
-        Err(err(format!("no artifact with id {id:?}")))
+        Err(pc::SandboxError::not_found(format!(
+            "no artifact with id {id:?}"
+        )))
     }
 
     fn realized(&self) -> &[pc::RealizedMount] {
@@ -215,7 +220,7 @@ impl pc::Sandbox for NamespaceSandbox {
         &self,
         _process_id: &str,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        Err(err(
+        Err(pc::SandboxError::unsupported(
             "local namespace tier cannot reattach to a process across owners",
         ))
     }
@@ -306,7 +311,7 @@ impl NamespaceSandbox {
     // as this type's own implementation detail, used by its fenced edges.
     pub async fn dispose(&self) -> Result<(), pc::SandboxError> {
         if self.realization.current().is_some() {
-            return Err(err(
+            return Err(pc::SandboxError::fence_rejected(
                 "current durable sandbox disposal requires an aggregate effect fence",
             ));
         }

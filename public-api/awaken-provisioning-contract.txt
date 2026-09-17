@@ -146,6 +146,8 @@ pub awaken_provisioning_contract::PrepareError::SandboxControlPathConflict(alloc
 pub awaken_provisioning_contract::PrepareError::SandboxControlServiceRealizationMismatch
 pub awaken_provisioning_contract::PrepareError::SandboxControlServiceUnsupported
 pub awaken_provisioning_contract::PrepareError::TrustedHostRequiresWorkdir
+impl core::convert::From<awaken_provisioning_contract::PrepareError> for awaken_provisioning_contract::SandboxError
+pub fn awaken_provisioning_contract::SandboxError::from(awaken_provisioning_contract::PrepareError) -> Self
 pub enum awaken_provisioning_contract::Realization
 pub awaken_provisioning_contract::Realization::Bind
 pub awaken_provisioning_contract::Realization::Copy
@@ -172,6 +174,40 @@ pub awaken_provisioning_contract::SandboxControlIncarnation::KubernetesPod::uid:
 impl awaken_provisioning_contract::SandboxControlIncarnation
 pub fn awaken_provisioning_contract::SandboxControlIncarnation::kubernetes_pod(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::SandboxControlIncarnation::kubernetes_pod_uid(&self) -> core::option::Option<&str>
+pub enum awaken_provisioning_contract::SandboxError
+pub awaken_provisioning_contract::SandboxError::Backend
+pub awaken_provisioning_contract::SandboxError::Backend::detail: alloc::string::String
+pub awaken_provisioning_contract::SandboxError::Backend::operation: &'static str
+pub awaken_provisioning_contract::SandboxError::Conflict(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::FenceRejected(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::Gone(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::Invalid(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::NotFound(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::NotReady(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::Timeout(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::Transport(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::Unauthorized(alloc::string::String)
+pub awaken_provisioning_contract::SandboxError::Unsupported(alloc::string::String)
+impl awaken_provisioning_contract::SandboxError
+pub fn awaken_provisioning_contract::SandboxError::backend(&'static str, impl core::fmt::Display) -> Self
+pub fn awaken_provisioning_contract::SandboxError::conflict(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::detail(&self) -> &str
+pub fn awaken_provisioning_contract::SandboxError::fence_rejected(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::gone(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::invalid(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::map_detail(self, impl core::ops::function::FnOnce(alloc::string::String) -> alloc::string::String) -> Self
+pub fn awaken_provisioning_contract::SandboxError::not_found(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::not_ready(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::timeout(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::transport(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::unauthorized(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provisioning_contract::SandboxError::unsupported(impl core::convert::Into<alloc::string::String>) -> Self
+impl awaken_runtime_contract::resilience::Classify for awaken_provisioning_contract::SandboxError
+pub fn awaken_provisioning_contract::SandboxError::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
+impl core::convert::From<awaken_provisioning_contract::PrepareError> for awaken_provisioning_contract::SandboxError
+pub fn awaken_provisioning_contract::SandboxError::from(awaken_provisioning_contract::PrepareError) -> Self
+impl core::convert::From<awaken_resource_contract::MemErr> for awaken_provisioning_contract::SandboxError
+pub fn awaken_provisioning_contract::SandboxError::from(awaken_resource_contract::MemErr) -> Self
 pub enum awaken_provisioning_contract::SandboxExecutionPolicyError
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::Disabled
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::Invalid(alloc::string::String)
@@ -550,9 +586,6 @@ pub fn awaken_provisioning_contract::SandboxEffectFence::same_effect_identity(&s
 pub fn awaken_provisioning_contract::SandboxEffectFence::same_realization_lease(&self, &Self) -> bool
 pub fn awaken_provisioning_contract::SandboxEffectFence::validate_identity(&self) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::SandboxEffectFence::validate_live_at(&self, u64) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>
-pub struct awaken_provisioning_contract::SandboxError(pub alloc::string::String)
-impl awaken_provisioning_contract::SandboxError
-pub fn awaken_provisioning_contract::SandboxError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_provisioning_contract::SandboxExecutionPolicy
 pub awaken_provisioning_contract::SandboxExecutionPolicy::config: awaken_provisioning_contract::SandboxOverride
 pub awaken_provisioning_contract::SandboxExecutionPolicy::disabled: bool

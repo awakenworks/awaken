@@ -651,10 +651,10 @@ mod actuator_tests {
             SandboxHandle::new("fake", &self.id)
         }
         async fn spawn(&self, _c: Command) -> Result<Box<dyn ProcessHandle>, SandboxError> {
-            Err(SandboxError::new("unused"))
+            Err(SandboxError::unsupported("unused"))
         }
         async fn attach(&self, _r: MountRequirement) -> Result<RealizedMount, SandboxError> {
-            Err(SandboxError::new("unused"))
+            Err(SandboxError::unsupported("unused"))
         }
         async fn artifacts(&self) -> Result<Vec<Artifact>, SandboxError> {
             Ok(Vec::new())
@@ -666,7 +666,7 @@ mod actuator_tests {
             &[]
         }
         async fn process(&self, _p: &str) -> Result<Box<dyn ProcessHandle>, SandboxError> {
-            Err(SandboxError::new("unused"))
+            Err(SandboxError::unsupported("unused"))
         }
         async fn status(&self) -> Result<SandboxStatus, SandboxError> {
             Ok(SandboxStatus::Ready)
@@ -692,7 +692,7 @@ mod actuator_tests {
         async fn dispose(&self) -> Result<(), SandboxError> {
             self.disposes.fetch_add(1, Ordering::SeqCst);
             if self.dispose_fails {
-                Err(SandboxError::new("dispose failed"))
+                Err(SandboxError::backend("dispose", "dispose failed"))
             } else {
                 Ok(())
             }
@@ -756,12 +756,12 @@ mod actuator_tests {
         // are no longer a trait obligation or a reachable escape hatch. They stay
         // as this type's own implementation detail, used by its fenced edges.
         async fn create(&self, _s: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
-            Err(SandboxError::new("unused"))
+            Err(SandboxError::unsupported("unused"))
         }
         async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError> {
             self.adopts.fetch_add(1, Ordering::SeqCst);
             if self.fail_adopt_ids.contains(&handle.sandbox_id) {
-                return Err(SandboxError::new("adopt failed"));
+                return Err(SandboxError::backend("adopt", "adopt failed"));
             }
             Ok(Box::new(FakeSandbox {
                 id: handle.sandbox_id.clone(),

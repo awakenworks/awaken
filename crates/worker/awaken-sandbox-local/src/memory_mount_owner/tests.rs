@@ -162,10 +162,10 @@ impl pc::MemoryMounter for FailedMountMounter {
         self.mount_calls.fetch_add(1, Ordering::SeqCst);
         match self.mode {
             FailedMountMode::NoEffect => {
-                pc::MemoryMountOutcome::NoEffect(pc::SandboxError::new("no effect"))
+                pc::MemoryMountOutcome::NoEffect(pc::SandboxError::backend("mount", "no effect"))
             }
             FailedMountMode::RecoveryRequired => pc::MemoryMountOutcome::RecoveryRequired(
-                pc::SandboxError::new("response lost after effect"),
+                pc::SandboxError::transport("response lost after effect"),
             ),
             FailedMountMode::Panic => panic!("mount task panicked after effect boundary"),
         }
@@ -185,7 +185,7 @@ impl pc::MemoryMounter for FailedMountMounter {
             })
             .is_ok()
         {
-            Err(pc::SandboxError::new("recovery still unavailable"))
+            Err(pc::SandboxError::transport("recovery still unavailable"))
         } else {
             Ok(())
         }
@@ -254,7 +254,7 @@ async fn mount_outcome_decision_table_retains_only_effect_responsibility() {
             owner
                 .lock()
                 .await
-                .release(|| Err(pc::SandboxError::new("denied")))
+                .release(|| Err(pc::SandboxError::unauthorized("denied")))
                 .await
                 .is_err(),
             "U2/E3"
@@ -308,7 +308,7 @@ async fn cancelled_mount_and_failed_compensation_keep_one_resumable_operation() 
                     retry
                         .lock()
                         .await
-                        .release(|| Err(pc::SandboxError::new("denied")))
+                        .release(|| Err(pc::SandboxError::unauthorized("denied")))
                         .await
                         .is_err()
                 );
@@ -433,7 +433,7 @@ async fn concurrent_cleanup_reenters_authority_and_retains_cancelled_waits() {
                     if allowed.load(Ordering::SeqCst) {
                         Ok(())
                     } else {
-                        Err(pc::SandboxError::new("revoked"))
+                        Err(pc::SandboxError::unauthorized("revoked"))
                     }
                 })
                 .await

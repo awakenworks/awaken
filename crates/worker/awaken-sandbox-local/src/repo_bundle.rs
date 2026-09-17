@@ -14,7 +14,8 @@ pub fn clone_repo_bundle(
     initial_commit: Option<&str>,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
 ) -> Result<Vec<u8>, pc::SandboxError> {
-    let temp = tempfile::tempdir().map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    let temp = tempfile::tempdir()
+        .map_err(|error| pc::SandboxError::backend("clone_repo_bundle", error))?;
     let root = IsolatedRoot::new(temp.path());
     provision_repo_at(
         &root,
@@ -23,13 +24,11 @@ pub fn clone_repo_bundle(
         initial_branch,
         initial_commit,
         credential,
-    )
-    .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    )?;
     git_bytes(
         Some(&temp.path().join("repo")),
         &["bundle", "create", "-", "--all"],
     )
-    .map_err(|error| pc::SandboxError::new(error.to_string()))
 }
 
 /// Rehydrate a sandbox-produced Git bundle on the host and push its current branch
@@ -46,28 +45,36 @@ pub fn push_repo_bundle(
         .map_err(pc::RepositoryPublicationError::Unavailable)?;
     if branch != expectation.branch {
         return Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::new(format!(
+            pc::SandboxError::conflict(format!(
                 "repository export branch `{branch}` does not match expected branch `{}`",
                 expectation.branch
             )),
         ));
     }
     let temp = tempfile::tempdir().map_err(|error| {
-        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::backend(
+            "push_repo_bundle",
+            error,
+        ))
     })?;
     let bundle_path = temp.path().join("repo.bundle");
     let mut file = std::fs::File::create(&bundle_path).map_err(|error| {
-        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::backend(
+            "push_repo_bundle",
+            error,
+        ))
     })?;
     file.write_all(bundle).map_err(|error| {
-        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::backend(
+            "push_repo_bundle",
+            error,
+        ))
     })?;
     let repo = temp.path().join("repo");
     let bundle_arg = bundle_path.to_string_lossy().into_owned();
     let repo_arg = repo.to_string_lossy().into_owned();
-    run_git(None, &["clone", "--branch", branch, &bundle_arg, &repo_arg]).map_err(|error| {
-        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
-    })?;
+    run_git(None, &["clone", "--branch", branch, &bundle_arg, &repo_arg])
+        .map_err(pc::RepositoryPublicationError::Unavailable)?;
     let root = IsolatedRoot::new(temp.path());
     push_repo_to_at(&root, "repo", plan, expectation, credential)
 }
