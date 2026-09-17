@@ -937,7 +937,6 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-resource-contract",
- "awaken-session-contract",
  "chrono",
  "chrono-tz",
  "serde",

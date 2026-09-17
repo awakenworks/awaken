@@ -278,14 +278,16 @@ mod tests {
 
     #[test]
     fn rfc3339_round_trips_the_anchor() {
-        assert_eq!(
-            awaken_session_contract::epoch_millis_to_rfc3339(MON_0900),
-            "2026-01-05T09:00:00Z"
-        );
-        assert_eq!(
-            awaken_session_contract::epoch_millis_to_rfc3339(0),
-            "1970-01-01T00:00:00Z"
-        );
+        let millis = |value: &str| {
+            u64::try_from(
+                chrono::DateTime::parse_from_rfc3339(value)
+                    .unwrap()
+                    .timestamp_millis(),
+            )
+            .unwrap()
+        };
+        assert_eq!(millis("2026-01-05T09:00:00Z"), MON_0900);
+        assert_eq!(millis("1970-01-01T00:00:00Z"), 0);
     }
 
     #[test]

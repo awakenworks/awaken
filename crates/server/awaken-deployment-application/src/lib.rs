@@ -977,10 +977,9 @@ fn lifecycle_fact(
     DeploymentLifecycleFact {
         id: format!("{key}:{}", uuid::Uuid::new_v4().simple()),
         object_id: object_id.to_string(),
-        workspace_id: Some(workspace_id.to_string()),
+        workspace_id: workspace_id.to_string(),
         event_type: event_type.to_string(),
         timestamp: (now_ms() / 1_000) as i64,
-        runtime_interval: None,
     }
 }
 
