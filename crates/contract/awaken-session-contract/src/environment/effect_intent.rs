@@ -42,7 +42,7 @@ pub enum SessionEnvironmentEffectAuthorization {
 /// provider fence and the completed [`super::SessionEnvironmentReceipt`].
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionEnvironmentEffectIntent {
-    session_id: String,
+    session_id: crate::SessionId,
     effect_id: String,
     kind: SessionEnvironmentEffectKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,7 +55,7 @@ pub struct SessionEnvironmentEffectIntent {
 impl SessionEnvironmentEffectIntent {
     #[must_use]
     pub fn new(
-        session_id: impl Into<String>,
+        session_id: impl Into<crate::SessionId>,
         kind: SessionEnvironmentEffectKind,
         realization: Option<crate::SessionRealizationLease>,
     ) -> Self {
@@ -87,7 +87,7 @@ impl SessionEnvironmentEffectIntent {
 
     #[must_use]
     pub fn session_id(&self) -> &str {
-        &self.session_id
+        self.session_id.as_str()
     }
 
     #[must_use]
@@ -135,7 +135,7 @@ impl SessionEnvironmentEffectIntent {
         realization: Option<crate::SessionRealizationLease>,
     ) -> Result<Self, SessionEnvironmentReceiptError> {
         let intent = Self {
-            session_id,
+            session_id: crate::SessionId::from(session_id),
             effect_id,
             kind,
             source_binding,

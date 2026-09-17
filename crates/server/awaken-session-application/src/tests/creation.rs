@@ -1,4 +1,5 @@
 use super::*;
+use awaken_session_contract::SessionId;
 
 #[derive(Default)]
 struct RecordingCreateRuntime {
@@ -490,7 +491,9 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
         "T1/E1",
     );
     assert!(matches!(
-        repository.get("worker-checkpoint-retention").await,
+        repository
+            .get(&SessionId::from("worker-checkpoint-retention"))
+            .await,
         Err(awaken_session_contract::SessionRepositoryError::NotFound)
     ));
     assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "T1/E1");
@@ -695,7 +698,7 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
     );
 
     assert_eq!(
-        repository.owner("active").await.unwrap(),
+        repository.owner(&SessionId::from("active")).await.unwrap(),
         "workspace",
         "R1/E3"
     );
@@ -748,7 +751,10 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
         awaken_session_contract::SessionExecutionState::Running,
         "I1/E3"
     );
-    let durable = repository.get("initial-root").await.expect("I1/E1");
+    let durable = repository
+        .get(&SessionId::from("initial-root"))
+        .await
+        .expect("I1/E1");
     assert_eq!(durable, created, "I1/E1+E4 response follows durable root");
     let batch = durable.event_batches.first().expect("I1/E1 batch");
     assert!(
@@ -941,7 +947,8 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "Q1/E1");
                 assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "Q1/E1");
                 assert_eq!(
-                    serde_json::to_value(repository.get(&id).await.unwrap()).unwrap(),
+                    serde_json::to_value(repository.get(&SessionId::from(&id)).await.unwrap())
+                        .unwrap(),
                     serde_json::to_value(&accepted).unwrap(),
                     "Q1/E2 complete committed response"
                 );
@@ -957,18 +964,18 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
             );
             let frozen = serde_json::to_value(&accepted).unwrap();
             assert_eq!(
-                serde_json::to_value(repository.get(&id).await.unwrap()).unwrap(),
+                serde_json::to_value(repository.get(&SessionId::from(&id)).await.unwrap()).unwrap(),
                 frozen,
                 "Q1/E2 reopened complete root"
             );
             assert_eq!(
-                repository.owner(&id).await.unwrap(),
+                repository.owner(&SessionId::from(&id)).await.unwrap(),
                 "workspace",
                 "Q1/E2 owner"
             );
             assert_eq!(
                 repository
-                    .replay_create("workspace", &id, &record)
+                    .replay_create("workspace", &SessionId::from(&id), &record)
                     .await
                     .unwrap(),
                 Some(accepted.clone()),
@@ -989,7 +996,8 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 let failed = application.reconcile_session_realizations().await;
                 assert_eq!(failed.failures.len(), 1, "Q2/E3 exact failed scan");
                 assert_eq!(
-                    serde_json::to_value(repository.get(&id).await.unwrap()).unwrap(),
+                    serde_json::to_value(repository.get(&SessionId::from(&id)).await.unwrap())
+                        .unwrap(),
                     frozen,
                     "Q2/E3 full root stutter"
                 );
@@ -1007,7 +1015,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 "Q3/E4: {:?}",
                 recovery.failures
             );
-            let ready = repository.get(&id).await.unwrap();
+            let ready = repository.get(&SessionId::from(&id)).await.unwrap();
             assert_eq!(
                 ready.execution,
                 if initial_batch {
@@ -1061,7 +1069,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 "Q4 complete replay receipt"
             );
             assert_eq!(
-                serde_json::to_value(repository.get(&id).await.unwrap()).unwrap(),
+                serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap(),
                 ready_json,
                 "Q4 complete root frame"
             );
@@ -1324,7 +1332,10 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
         command.idempotency = stable.clone();
 
         let created = application.create_session(command).await.expect(rule);
-        let durable_after_create = durable.get(session_id).await.expect("E1 durable root");
+        let durable_after_create = durable
+            .get(&SessionId::from(session_id))
+            .await
+            .expect("E1 durable root");
         assert_eq!(created, durable_after_create, "{rule}/E1");
         assert_eq!(
             created.execution.admits_activity(),
@@ -1352,7 +1363,11 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
                 "R3/E3"
             );
             assert_eq!(
-                durable.get(session_id).await.unwrap().revision,
+                durable
+                    .get(&SessionId::from(session_id))
+                    .await
+                    .unwrap()
+                    .revision,
                 revision,
                 "R3/E3"
             );
@@ -1414,7 +1429,10 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
             ),
             "{rule}/E1"
         );
-        let durable = repository.get(&session_id).await.expect("durable root");
+        let durable = repository
+            .get(&SessionId::from(session_id))
+            .await
+            .expect("durable root");
         assert_eq!(durable.execution.is_terminal(), terminal, "{rule}");
         assert_eq!(
             durable.terminal_cleanup.is_fenced(),
@@ -1456,7 +1474,10 @@ async fn creation_persists_only_a_complete_frozen_root_before_later_cas_failure(
         awaken_session_contract::SessionRuntimePlacement::Worker;
 
     assert!(app.create_session(command).await.is_err(), "A1/E1");
-    let committed = durable.get("atomic-create").await.expect("A1/E2");
+    let committed = durable
+        .get(&SessionId::from("atomic-create"))
+        .await
+        .expect("A1/E2");
     assert!(committed.frozen_baseline().is_some(), "A1/E2+E3");
     assert!(committed.resources.pending.is_some(), "A1/E2");
 }
@@ -1483,7 +1504,10 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     app.admit_run_session("workspace", "thread", "assistant")
         .await
         .expect("A1");
-    let created = repository.get("thread").await.expect("A1/E1");
+    let created = repository
+        .get(&SessionId::from("thread"))
+        .await
+        .expect("A1/E1");
     assert!(created.frozen_baseline().is_some(), "A1/E1");
     assert_eq!(created.agent_id(), Some("assistant"), "A1/E1");
 
@@ -1645,7 +1669,9 @@ async fn assert_profiled_realization_and_environment_rules(
     );
     assert!(
         matches!(
-            repository.get("profiled-environment-substitution").await,
+            repository
+                .get(&SessionId::from("profiled-environment-substitution"))
+                .await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "Environment substitution fails before Session persistence"
@@ -1712,7 +1738,9 @@ async fn assert_profiled_publication_revision_rules(repository: Arc<dyn ManagedS
     );
     assert!(
         matches!(
-            repository.get("profiled-substituted-revision").await,
+            repository
+                .get(&SessionId::from("profiled-substituted-revision"))
+                .await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "revision substitution must fail before Session persistence"
@@ -1819,7 +1847,7 @@ async fn assert_profiled_rejection_rules(repository: Arc<dyn ManagedSessionRepos
     assert!(mismatched.is_err(), "P2/E2");
     assert!(
         matches!(
-            repository.get("profiled-mismatch").await,
+            repository.get(&SessionId::from("profiled-mismatch")).await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "P2/E2"
@@ -1836,7 +1864,9 @@ async fn assert_profiled_rejection_rules(repository: Arc<dyn ManagedSessionRepos
     );
     assert!(
         matches!(
-            repository.get("profiled-unavailable").await,
+            repository
+                .get(&SessionId::from("profiled-unavailable"))
+                .await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "P3/E2"
@@ -1861,7 +1891,9 @@ async fn assert_profiled_rejection_rules(repository: Arc<dyn ManagedSessionRepos
     );
     assert!(
         matches!(
-            repository.get("profiled-mcp-conflict").await,
+            repository
+                .get(&SessionId::from("profiled-mcp-conflict"))
+                .await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "P4/E2"
@@ -1935,7 +1967,9 @@ async fn assert_profiled_direct_resource_rules() {
         "D3 Agent collision"
     );
     assert_eq!(
-        agent_repo.get("profiled-direct-agent-collision").await,
+        agent_repo
+            .get(&SessionId::from("profiled-direct-agent-collision"))
+            .await,
         Err(awaken_session_contract::SessionRepositoryError::NotFound),
         "D3 no root"
     );
@@ -2060,7 +2094,9 @@ async fn assert_profiled_direct_resource_rules() {
         );
     }
     assert_eq!(
-        repository_repo.get(overlapping_session).await,
+        repository_repo
+            .get(&SessionId::from(overlapping_session))
+            .await,
         Err(awaken_session_contract::SessionRepositoryError::NotFound),
         "D5 no root"
     );

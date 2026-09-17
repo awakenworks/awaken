@@ -1,4 +1,5 @@
 use super::*;
+use awaken_session_contract::SessionId;
 use awaken_session_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
     SessionRunReservation, StepOutcome,
@@ -199,7 +200,10 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
         &run_id,
     );
     let (_, original_epoch) = application
-        .begin_activity_for_operation("cold-replica-activity", &activity_operation)
+        .begin_activity_for_operation(
+            &SessionId::from("cold-replica-activity"),
+            &activity_operation,
+        )
         .await
         .expect("C1 exact durable activity receipt");
 
@@ -233,7 +237,7 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
         "R1/E1"
     );
     let persisted = repository
-        .get("cold-replica-activity")
+        .get(&SessionId::from("cold-replica-activity"))
         .await
         .expect("R1 durable Session");
     assert_eq!(persisted.activity_epoch, original_epoch, "R1/E3");
@@ -314,7 +318,7 @@ async fn background_attention_uses_canonical_session_admission_without_observing
     }
     assert_eq!(
         repository
-            .get("background-protocol")
+            .get(&SessionId::from("background-protocol"))
             .await
             .expect("B1 durable Session")
             .execution,
@@ -388,7 +392,10 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
         "H1/E1-E4",
     );
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "H1/E5");
-    let resident = repository.get("public-restore").await.expect("H1 root");
+    let resident = repository
+        .get(&SessionId::from("public-restore"))
+        .await
+        .expect("H1 root");
     assert!(
         matches!(
             resident.environment,
@@ -549,7 +556,10 @@ impl awaken_session_contract::SessionRuntime for BlockingSessionRunRuntime {
             .get()
             .and_then(std::sync::Weak::upgrade)
             .expect("test Session application")
-            .settle_activity(&delivery.session_id, delivery.session_activity_epoch)
+            .settle_activity(
+                delivery.session_id.as_str(),
+                delivery.session_activity_epoch,
+            )
             .await
             .expect("committed Run observation settles the exact activity");
         Ok(StepOutcome::ended(
@@ -655,7 +665,11 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
     // E4 recovery fails before Resource/Runtime/WorkQueue effects; C6 retry
     // after recovery; E5 the existing canonical dispatch path runs. Constraint
     // K1 durable Session intent remains unchanged. D3 C5=>E4; D4 C6=>E5.
-    let revision = repo.get("dispatch-admission").await.unwrap().revision;
+    let revision = repo
+        .get(&SessionId::from("dispatch-admission"))
+        .await
+        .unwrap()
+        .revision;
     assert!(
         matches!(
             application
@@ -666,7 +680,10 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
         "D3/E4"
     );
     assert_eq!(
-        repo.get("dispatch-admission").await.unwrap().revision,
+        repo.get(&SessionId::from("dispatch-admission"))
+            .await
+            .unwrap()
+            .revision,
         revision,
         "D3/E4 no durable mutation"
     );
@@ -685,7 +702,10 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
     };
     assert_eq!(error.code, "session_work_dispatch_failed", "D1/E1");
     assert!(error.message.contains("injected failure"), "D1/E1");
-    let persisted = repo.get("dispatch-admission").await.expect("D1/E2 intent");
+    let persisted = repo
+        .get(&SessionId::from("dispatch-admission"))
+        .await
+        .expect("D1/E2 intent");
     assert!(persisted.needs_work_dispatch(), "D1/E2 remains retryable");
     assert!(!persisted.is_terminal(), "D1/E2 is not falsely terminal");
 
@@ -756,7 +776,7 @@ async fn worker_placed_cloud_session_admits_the_event_that_triggers_realization(
         "E1 Cloud Environment does not enter the self-hosted WorkQueue"
     );
     assert_eq!(
-        repo.get("cloud-worker-admission")
+        repo.get(&SessionId::from("cloud-worker-admission"))
             .await
             .expect("E1 durable Session")
             .execution,
@@ -792,7 +812,7 @@ async fn recovered_running_activity_admits_a_fenced_successor() {
         .await
         .expect("Running is an execution-ready, epoch-fenced state");
     let successor = application
-        .begin_activity("crash-orphaned-activity")
+        .begin_activity(&SessionId::from("crash-orphaned-activity"))
         .await
         .expect("successor activity advances the durable fence");
     assert_eq!(successor.execution, SessionExecutionState::Running);
@@ -868,7 +888,7 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
         .forget();
     assert_eq!(
         repository
-            .get("protocol-running")
+            .get(&SessionId::from("protocol-running"))
             .await
             .expect("P1 durable Session")
             .execution,
@@ -880,7 +900,7 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     drive.await.expect("P2 join").expect("P2 Run settled");
     assert_eq!(
         repository
-            .get("protocol-running")
+            .get(&SessionId::from("protocol-running"))
             .await
             .expect("P2 durable Session")
             .execution,

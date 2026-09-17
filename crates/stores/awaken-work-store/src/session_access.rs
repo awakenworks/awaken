@@ -299,7 +299,7 @@ impl SqliteWorkQueue {
     pub(super) async fn acquire_session_inner(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
@@ -328,7 +328,7 @@ impl SqliteWorkQueue {
                 let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
                     .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
                 return Ok(Some(SessionWorkLease {
-                    work_id, environment_id: env_id, session_id, owner, epoch, expires_at_unix_ms,
+                    work_id, environment_id: env_id, session_id: awaken_session_contract::SessionId::from(&session_id), owner, epoch, expires_at_unix_ms,
                 }));
             }
             let epoch = if current.0 == "active"
@@ -367,7 +367,7 @@ impl SqliteWorkQueue {
             };
             tx.commit().map_err(storage)?;
             Ok(Some(SessionWorkLease {
-                work_id, environment_id: env_id, session_id, owner: worker_owner, epoch,
+                work_id, environment_id: env_id, session_id: awaken_session_contract::SessionId::from(&session_id), owner: worker_owner, epoch,
                 expires_at_unix_ms: now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000),
             }))
         }).await
@@ -702,7 +702,10 @@ mod epoch_tests {
         let queue = SqliteWorkQueue::open_in_memory().unwrap();
         for epoch in [i64::MAX, i64::MAX - 1] {
             let env = format!("epoch-{epoch}");
-            let work = queue.enqueue_session(&env, "session").await.unwrap();
+            let work = queue
+                .enqueue_session(&env, &awaken_session_contract::SessionId::from("session"))
+                .await
+                .unwrap();
             let work_for_sql = work.clone();
             queue
                 .with_connection(move |conn| {
@@ -760,7 +763,10 @@ mod epoch_tests {
         let queue = PostgresWorkQueue::with_pool(pool.clone()).await.unwrap();
         for epoch in [i64::MAX, i64::MAX - 1] {
             let env = format!("epoch-{epoch}");
-            let work = queue.enqueue_session(&env, "session").await.unwrap();
+            let work = queue
+                .enqueue_session(&env, &awaken_session_contract::SessionId::from("session"))
+                .await
+                .unwrap();
             sqlx::query("UPDATE work_queue_item SET lease_epoch = $1 WHERE work_id = $2")
                 .bind(epoch)
                 .bind(&work)

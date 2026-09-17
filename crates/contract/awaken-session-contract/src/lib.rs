@@ -36,6 +36,7 @@ mod resource_activation;
 mod run_admission;
 mod run_application;
 mod session;
+mod session_id;
 mod session_realization;
 mod session_repo;
 mod skill_execution;
@@ -188,6 +189,7 @@ pub use session::{
     SessionInit, SessionModelUsage, SessionRuntime, SessionSandboxLayout,
     SessionThreadLiveSubscription, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
+pub use session_id::SessionId;
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, FrozenAgentPublicationDecision, FrozenResourceTransitionUse,

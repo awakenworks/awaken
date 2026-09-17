@@ -59,8 +59,16 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
     let new_generation = set.attachments[1].generation.clone();
     assert_ne!(old_generation, new_generation);
     set.claim_realization(&new_generation, claim("b")).unwrap();
-    let old_receipt = projection::mcp_generation_ref("a", &set.attachments[0]).unwrap();
-    let new_receipt = projection::mcp_generation_ref("a", &set.attachments[1]).unwrap();
+    let old_receipt = projection::mcp_generation_ref(
+        &awaken_session_contract::SessionId::from("a"),
+        &set.attachments[0],
+    )
+    .unwrap();
+    let new_receipt = projection::mcp_generation_ref(
+        &awaken_session_contract::SessionId::from("a"),
+        &set.attachments[1],
+    )
+    .unwrap();
     set.activate(&new_generation, "b").unwrap();
     set.begin_obsolete_drains().unwrap();
     assert_unique_generations(&set);

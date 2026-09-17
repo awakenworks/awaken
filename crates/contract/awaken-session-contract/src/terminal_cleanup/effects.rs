@@ -103,7 +103,7 @@ pub(super) fn complete_cleanup(
 /// Stable, per-thread cleanup command derived from the root operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionCleanupCommand {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub thread_id: String,
     pub effect_id: String,
     /// Exact already-created restore target that terminal cleanup must prepare
@@ -117,7 +117,7 @@ impl SessionCleanupCommand {
     #[must_use]
     pub fn new(session_id: &str, thread_id: &str, root_effect_id: &str) -> Self {
         Self {
-            session_id: session_id.to_string(),
+            session_id: crate::SessionId::from(session_id),
             thread_id: thread_id.to_string(),
             effect_id: crate::stable_fingerprint(&(
                 "session-terminal-cleanup-thread-v1",

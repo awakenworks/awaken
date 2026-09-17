@@ -192,7 +192,7 @@ impl awaken_resource_contract::CompleteGeneration for McpGeneration {
 /// and the disagreement is exactly the stale write the fence exists to stop.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpGenerationRef {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub generation: McpGeneration,
     pub runtime_incarnation: String,
     pub lease_epoch: u64,

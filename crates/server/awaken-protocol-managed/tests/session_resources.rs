@@ -5,6 +5,7 @@
 //! Repository tokens use the official write-only create/update fields and are
 //! sealed into the canonical Vault before a Session snapshot is persisted.
 
+use awaken_session_contract::SessionId;
 mod support;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -467,7 +468,7 @@ async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
         if expected == StatusCode::BAD_REQUEST {
             assert!(prepared.lock().unwrap().is_empty(), "{rule}");
             assert_eq!(
-                repo.get("sesn_0").await,
+                repo.get(&SessionId::from("sesn_0")).await,
                 Err(awaken_session_contract::SessionRepositoryError::NotFound),
                 "{rule}"
             );
@@ -982,7 +983,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     );
     let equal_persisted = equal_state
         .session_application()
-        .session(&equal_created.id)
+        .session(&SessionId::from(equal_created.id))
         .await
         .expect("R1 persisted Session");
     let equal_override = equal_persisted
@@ -1065,7 +1066,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     );
     let persisted = resolved_state
         .session_application()
-        .session(&created.id)
+        .session(&SessionId::from(created.id))
         .await
         .expect("R2 persisted Session");
     let publication = persisted
@@ -1459,7 +1460,11 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
 
         if let Some(expected_models) = rule.expected_models {
             let created = result.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
-            assert!(repo.get(&created.id).await.is_ok(), "{}", rule.id);
+            assert!(
+                repo.get(&SessionId::from(created.id)).await.is_ok(),
+                "{}",
+                rule.id
+            );
             assert_eq!(runtime.prepared.lock().unwrap().len(), 1, "{}", rule.id);
             let expected_models = expected_models
                 .iter()
@@ -1645,7 +1650,7 @@ async fn publication_backend_is_the_only_session_backend_authority() {
             .await
             .unwrap()
             .id;
-        let durable = repo.get(&id).await.unwrap();
+        let durable = repo.get(&SessionId::from(id)).await.unwrap();
         let baseline = durable.frozen_baseline().expect("frozen baseline");
         assert_eq!(baseline.runtime.as_deref(), expected_runtime, "{rule}");
         assert_eq!(
@@ -1960,7 +1965,7 @@ impl SessionRuntime for AcceptingFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -2009,7 +2014,7 @@ impl AcceptingFake {
             ));
         };
         let effect_receipt = awaken_provisioning_contract::RepositoryPublicationReceipt {
-            repository_id: repository_id.as_str().to_string(),
+            repository_id: repository_id.to_string(),
             source_remote_url: config.remote_url.clone(),
             branch: command.intent.expectation.branch.clone(),
             commit: command.intent.expectation.commit.clone(),
@@ -2075,7 +2080,7 @@ async fn settle_coordinated_user_run_activity(
     rule: &str,
 ) {
     let session = application
-        .session(session_id)
+        .session(&SessionId::from(session_id))
         .await
         .unwrap_or_else(|error| panic!("{rule}: read admitted Session: {error}"));
     assert_eq!(
@@ -2341,7 +2346,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         );
     }
     let durable = repo
-        .get(session["id"].as_str().unwrap())
+        .get(&SessionId::from(session["id"].as_str().unwrap()))
         .await
         .expect("created Session is durable");
     assert_eq!(
@@ -2410,7 +2415,10 @@ async fn session_mcp_override_replaces_the_published_set() {
     assert_eq!(prepared.lock().unwrap().len(), 1);
     assert_eq!(session["agent"]["mcp_servers"].as_array().unwrap().len(), 1);
     assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs-alias");
-    let durable = repo.get(session["id"].as_str().unwrap()).await.unwrap();
+    let durable = repo
+        .get(&SessionId::from(session["id"].as_str().unwrap()))
+        .await
+        .unwrap();
     assert_eq!(durable.mcp.attachments.len(), 1);
     assert_eq!(
         durable.mcp.attachments[0].origin,
@@ -2722,7 +2730,7 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
         .expect_for(StatusCode::OK, "A2/E1");
     assert_eq!(receipt["data"][0]["type"], "user.message", "A2/E1");
     let application = state.session_application();
-    Box::pin(application.drive_session_event_batches(&session_id, None))
+    Box::pin(application.drive_session_event_batches(&SessionId::from(&session_id), None))
         .await
         .expect("A2 terminal recovery scan");
     settle_coordinated_user_run_activity(&application, &session_id, "A2/C4").await;
@@ -2816,12 +2824,12 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
         "L2 admitted receipt"
     );
     let application = state.session_application();
-    Box::pin(application.drive_session_event_batches(session_id, None))
+    Box::pin(application.drive_session_event_batches(&SessionId::from(session_id), None))
         .await
         .expect("L2 terminal recovery scan");
     settle_coordinated_user_run_activity(&application, session_id, "L2/C4").await;
     let settled = application
-        .session(session_id)
+        .session(&SessionId::from(session_id))
         .await
         .expect("L2/E2 Session");
     assert_eq!(
@@ -3212,7 +3220,7 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
         .await
         .unwrap()
         .id;
-    let persisted = repo.get(&id).await.unwrap();
+    let persisted = repo.get(&SessionId::from(&id)).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
         &persisted.resources.active.inputs()[0].source
     else {
@@ -3392,7 +3400,7 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
     .await
     .expect_for(StatusCode::OK, "T1 create");
     let session_id = session["id"].as_str().unwrap();
-    let persisted = repository.get(session_id).await.unwrap();
+    let persisted = repository.get(&SessionId::from(session_id)).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository {
         repository_id,
         credential: Some(credential),
@@ -3502,7 +3510,7 @@ async fn platform_repository_default_is_shared_and_replaceable_without_a_false_p
         .expect("P2 same-mount Repository replaces the published default");
     let replacement = state
         .session_application()
-        .session(&replacement.id)
+        .session(&SessionId::from(replacement.id))
         .await
         .expect("P2 durable replacement Session");
     assert_eq!(replacement.resources.active.inputs().len(), 1, "P2");
@@ -3678,7 +3686,7 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
         assert_eq!(calls[0].inputs().len(), 1);
         assert!(calls[1].inputs().is_empty());
     }
-    let durable = repo.get(&id).await.unwrap();
+    let durable = repo.get(&SessionId::from(id)).await.unwrap();
     assert!(durable.resources.active.inputs().is_empty());
     assert!(durable.resources.pending.is_none());
     assert_eq!(
@@ -3739,7 +3747,7 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
         serde_json::to_value(&resources[0]).unwrap()["mount_path"],
         "/retryable.txt"
     );
-    let durable = repo.get(&id).await.unwrap();
+    let durable = repo.get(&SessionId::from(&id)).await.unwrap();
     assert!(durable.resources.pending.is_some());
     assert!(durable.resources.needs_reconciliation());
     assert_eq!(
@@ -3764,7 +3772,7 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
         serde_json::to_value(replayed).unwrap()["mount_path"],
         "/retryable.txt"
     );
-    let settled = repo.get(&id).await.unwrap();
+    let settled = repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(settled.resources.revision, revision, "same generation");
     assert!(settled.resources.pending.is_none(), "retry settled pending");
     assert_eq!(
@@ -3877,7 +3885,7 @@ async fn assert_resource_root_cas_rule(index: usize, rule: ResourceCasRule) {
             .unwrap(),
         )
         .await;
-    let durable = repo.get(&id).await.unwrap();
+    let durable = repo.get(&SessionId::from(id)).await.unwrap();
     let apply_count = applied.lock().unwrap().len();
 
     match rule {
@@ -3987,7 +3995,7 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
     .await
     .expect_for(StatusCode::CONFLICT, "F1");
     assert!(
-        repo.get(id)
+        repo.get(&SessionId::from(id))
             .await
             .unwrap()
             .resources
@@ -4026,7 +4034,7 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
     )
     .await
     .expect_for(StatusCode::OK, "F2/E2");
-    let durable = repo.get(id).await.unwrap();
+    let durable = repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         durable.metadata.get("concurrent").map(String::as_str),
         Some("winner")
@@ -4149,7 +4157,7 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
     let session_id = session["id"].as_str().unwrap();
     let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let repository_id = match &sessions
-        .get(session_id)
+        .get(&SessionId::from(session_id))
         .await
         .unwrap()
         .resources
@@ -4170,7 +4178,7 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
     )
     .await
     .expect_for(StatusCode::OK, "U1/E1");
-    let durable = sessions.get(session_id).await.unwrap();
+    let durable = sessions.get(&SessionId::from(session_id)).await.unwrap();
     assert!(durable.resources.active.inputs().is_empty(), "U1/E1");
     assert!(
         durable.resources.repository_retirements().is_empty(),
@@ -4224,7 +4232,7 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
     .expect(StatusCode::OK);
     let session_id = session["id"].as_str().unwrap();
     let repository_id = match &sessions
-        .get(session_id)
+        .get(&SessionId::from(session_id))
         .await
         .unwrap()
         .resources
@@ -4246,7 +4254,7 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
     )
     .await
     .expect_for(StatusCode::OK, "U2/E1");
-    let durable = sessions.get(session_id).await.unwrap();
+    let durable = sessions.get(&SessionId::from(session_id)).await.unwrap();
     assert!(durable.resources.active.inputs().is_empty(), "U2/E1");
     assert!(
         durable.resources.repository_retirements().is_empty(),
@@ -4430,7 +4438,12 @@ async fn whole_manifest_resource_loser_compensates_its_applied_repository() {
         .await
         .unwrap()
         .id;
-    let read_revision = repo.get(&id).await.unwrap().resources.revision;
+    let read_revision = repo
+        .get(&SessionId::from(&id))
+        .await
+        .unwrap()
+        .resources
+        .revision;
     let remote_url = "https://github.com/awaken/manifest-race.git";
     let normalized_mount = "workspace/manifest-race";
     let initial_branch = Some("main".to_string());
@@ -4467,7 +4480,12 @@ async fn whole_manifest_resource_loser_compensates_its_applied_repository() {
         "W1/E1: {result:?}"
     );
     assert!(
-        repo.get(&id).await.unwrap().resources.pending.is_some(),
+        repo.get(&SessionId::from(id))
+            .await
+            .unwrap()
+            .resources
+            .pending
+            .is_some(),
         "W1/E2"
     );
     assert_eq!(
@@ -4511,7 +4529,12 @@ async fn whole_manifest_rebases_over_unrelated_root_revision_changes() {
         .await
         .unwrap()
         .id;
-    let resource_revision = repo.get(&id).await.unwrap().resources.revision;
+    let resource_revision = repo
+        .get(&SessionId::from(&id))
+        .await
+        .unwrap()
+        .resources
+        .revision;
     repo.metadata_change_on_next(1, "realization-lease", "renewed");
 
     // The HTTP adapter owns this same Box boundary because the complete
@@ -4538,7 +4561,7 @@ async fn whole_manifest_rebases_over_unrelated_root_revision_changes() {
     .expect("W2 unrelated root mutation is a retryable implementation race");
 
     assert_eq!(result.desired_revision, resource_revision + 1, "W2/E3");
-    let durable = repo.get(&id).await.unwrap();
+    let durable = repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         durable
             .metadata
@@ -4587,7 +4610,7 @@ async fn failed_manifest_realization_keeps_active_and_exposes_durable_desired() 
     )
     .await
     .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "F2");
-    let durable = repo.get(id).await.unwrap();
+    let durable = repo.get(&SessionId::from(id)).await.unwrap();
     assert!(durable.resources.active.inputs().is_empty(), "F2 active");
     assert!(durable.resources.pending.is_some(), "F2 desired");
 
@@ -4641,7 +4664,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
     .await
     .expect(StatusCode::OK);
     let id = session["id"].as_str().unwrap();
-    let before = repo.get(id).await.unwrap();
+    let before = repo.get(&SessionId::from(id)).await.unwrap();
     let old = before.resources.desired().inputs()[0].clone();
     let response = call(
         &app,
@@ -4656,7 +4679,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
     )
     .await
     .expect_for(StatusCode::OK, "K1");
-    let after = repo.get(id).await.unwrap();
+    let after = repo.get(&SessionId::from(id)).await.unwrap();
     let retained = &after.resources.desired().inputs()[0];
     assert_eq!(retained.binding_id, old.binding_id, "K1/E1");
     assert_eq!(retained.source, old.source, "K1/E1 credential pin");
@@ -4826,7 +4849,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     let serialized = session.to_string();
     assert!(!serialized.contains("credential_binding"));
     assert!(!serialized.contains("never-project-this-secret"));
-    let durable = sessions.get(session_id).await.unwrap();
+    let durable = sessions.get(&SessionId::from(session_id)).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository {
         config, credential, ..
     } = &durable.resources.active.inputs()[0].source
@@ -4887,7 +4910,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         applied_before,
         "B3 changes no Runtime effect"
     );
-    let stranded = sessions.get(session_id).await.unwrap();
+    let stranded = sessions.get(&SessionId::from(session_id)).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
         &stranded.resources.active.inputs()[0].source
     else {
@@ -4932,7 +4955,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         !different.to_string().contains("different-secret"),
         "B4 no echo"
     );
-    let after_different = sessions.get(session_id).await.unwrap();
+    let after_different = sessions.get(&SessionId::from(session_id)).await.unwrap();
     assert_eq!(
         after_different.revision, stranded_revision,
         "B4 Session revision"
@@ -4964,7 +4987,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         applied_before,
         "B5 repins without remounting the working tree"
     );
-    let durable = sessions.get(session_id).await.unwrap();
+    let durable = sessions.get(&SessionId::from(session_id)).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
         &durable.resources.active.inputs()[0].source
     else {
@@ -5046,7 +5069,7 @@ async fn persist_profiled_publication_source(
     .await
     .expect("persist profiled live Environment source");
     let durable = sessions
-        .get(session_id)
+        .get(&SessionId::from(session_id))
         .await
         .expect("profiled Session with live source");
     assert_eq!(
@@ -5109,7 +5132,10 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
     )
     .await;
 
-    let durable = sessions.get("profiled-durable-accept").await.unwrap();
+    let durable = sessions
+        .get(&SessionId::from("profiled-durable-accept"))
+        .await
+        .unwrap();
     assert_eq!(
         durable.execution,
         awaken_session_contract::SessionExecutionState::Preparing,
@@ -5124,7 +5150,10 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
         .expect_for(StatusCode::ACCEPTED, "Q1/E1");
     assert_eq!(body["id"], "profiled-durable-accept", "Q1/E1");
 
-    let durable_before_replay = sessions.get("profiled-durable-accept").await.unwrap();
+    let durable_before_replay = sessions
+        .get(&SessionId::from("profiled-durable-accept"))
+        .await
+        .unwrap();
     let replay = tokio::time::timeout(
         std::time::Duration::from_secs(1),
         call(&app, "POST", "/v1/awaken/sessions", Some(request)),
@@ -5137,7 +5166,10 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
         "Q2/E3 same operation identity/projection"
     );
     assert_eq!(
-        sessions.get("profiled-durable-accept").await.unwrap(),
+        sessions
+            .get(&SessionId::from("profiled-durable-accept"))
+            .await
+            .unwrap(),
         durable_before_replay,
         "Q2/E3 replay does not mutate durable operation truth"
     );
@@ -5171,7 +5203,7 @@ async fn execution_evidence_http_reads_the_owned_frozen_root_without_mutation() 
         .await
         .expect_for(StatusCode::ACCEPTED, "H1 create");
     let before = sessions
-        .get("profiled-execution-evidence")
+        .get(&SessionId::from("profiled-execution-evidence"))
         .await
         .expect("durable Session root");
     let baseline = before.frozen_baseline().expect("frozen baseline");
@@ -5184,7 +5216,7 @@ async fn execution_evidence_http_reads_the_owned_frozen_root_without_mutation() 
     )
     .await
     .expect_for(StatusCode::OK, "H1/E1");
-    assert_eq!(evidence["session_id"], before.session_id, "H1/E1");
+    assert_eq!(evidence["session_id"], before.session_id.as_str(), "H1/E1");
     assert_eq!(evidence["session_revision"], before.revision.0, "H1/E1");
     assert_eq!(evidence["agent_id"], baseline.agent_id, "H1/E1");
     assert_eq!(evidence["model"], baseline.model, "H1/E1");
@@ -5205,7 +5237,7 @@ async fn execution_evidence_http_reads_the_owned_frozen_root_without_mutation() 
     .expect_for(StatusCode::NOT_FOUND, "H2/E2");
     assert_eq!(
         sessions
-            .get("profiled-execution-evidence")
+            .get(&SessionId::from("profiled-execution-evidence"))
             .await
             .expect("Session after reads"),
         before,
@@ -5250,7 +5282,7 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
     .await
     .expect_for(StatusCode::ACCEPTED, "F1 seed");
     let mut failed = seed_sessions
-        .get("profiled-failed-replay")
+        .get(&SessionId::from("profiled-failed-replay"))
         .await
         .expect("seed Session root");
     failed.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
@@ -5273,7 +5305,7 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
     // The repository, not the pre-admission candidate, owns the canonical
     // revision used by an exact replay oracle.
     let failed = sessions
-        .get("profiled-failed-replay")
+        .get(&SessionId::from("profiled-failed-replay"))
         .await
         .expect("durable failed root");
     let runtime = AcceptingFake::default();
@@ -5295,7 +5327,10 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
     .expect_for(StatusCode::ACCEPTED, "F1/E1");
     assert_eq!(replay["id"], "profiled-failed-replay", "F1/E1");
     assert_eq!(
-        sessions.get("profiled-failed-replay").await.unwrap(),
+        sessions
+            .get(&SessionId::from("profiled-failed-replay"))
+            .await
+            .unwrap(),
         failed,
         "F1/E2 failure state/reason and operation root are retained"
     );
@@ -5361,7 +5396,10 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
         "profiled-historical-binding",
     )
     .await;
-    let durable = sessions.get("profiled-historical-binding").await.unwrap();
+    let durable = sessions
+        .get(&SessionId::from("profiled-historical-binding"))
+        .await
+        .unwrap();
     assert_eq!(
         durable.resources.active.inputs()[0].binding_id.as_str(),
         historical_binding,
@@ -5404,7 +5442,9 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
     .expect_for(StatusCode::BAD_REQUEST, "B4");
     assert!(
         matches!(
-            sessions.get("profiled-empty-binding").await,
+            sessions
+                .get(&SessionId::from("profiled-empty-binding"))
+                .await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "B4 no root"
@@ -5498,7 +5538,7 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
         .expect_for(StatusCode::ACCEPTED, "H1/E1");
     assert_eq!(
         sessions
-            .get("profiled-legacy-path-replay")
+            .get(&SessionId::from("profiled-legacy-path-replay"))
             .await
             .unwrap()
             .resources
@@ -5590,7 +5630,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     // P7 archive with publication records one real timestamp in the durable
     // root; exact HTTP replay below preserves it with the publication receipt.
     let archived = sessions
-        .get("profiled-publication")
+        .get(&SessionId::from("profiled-publication"))
         .await
         .unwrap()
         .archived_at()
@@ -5613,7 +5653,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     );
     assert!(
         sessions
-            .get("profiled-publication")
+            .get(&SessionId::from("profiled-publication"))
             .await
             .unwrap()
             .terminal_cleanup
@@ -6039,7 +6079,7 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
     assert_eq!(replay, receipt, "R2c/E4 stable completed receipt");
     assert!(
         application
-            .session(session_id)
+            .session(&SessionId::from(session_id))
             .await
             .expect("R2c durable Session")
             .active_activity_epochs
@@ -6157,7 +6197,7 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
     .expect_for(StatusCode::NOT_FOUND, "R5 missing");
     assert!(
         matches!(
-            sessions.get("profiled-run-missing").await,
+            sessions.get(&SessionId::from("profiled-run-missing")).await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "R5 no implicit create"
@@ -6321,7 +6361,14 @@ async fn resource_reads_use_durable_root_without_runtime_history_or_cache_rehydr
         assert_eq!(body["data"], json!([expected.clone()]), "{rule}");
         assert_eq!(
             headers["etag"].to_str().unwrap(),
-            format!("\"{}\"", repo.get(&id).await.unwrap().resources.revision)
+            format!(
+                "\"{}\"",
+                repo.get(&SessionId::from(&id))
+                    .await
+                    .unwrap()
+                    .resources
+                    .revision
+            )
         );
         let detail = call(
             app,
@@ -6365,7 +6412,14 @@ async fn resource_reads_use_durable_root_without_runtime_history_or_cache_rehydr
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
     assert_eq!(
         headers["etag"].to_str().unwrap(),
-        format!("\"{}\"", repo.get(&id).await.unwrap().resources.revision)
+        format!(
+            "\"{}\"",
+            repo.get(&SessionId::from(&id))
+                .await
+                .unwrap()
+                .resources
+                .revision
+        )
     );
     for uri in [
         "/v1/sessions/missing/resources".to_string(),

@@ -387,7 +387,7 @@ pub trait SessionRuntime: Send + Sync {
     /// registry or protocol event cache.
     async fn session_run_state(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
         Err(RunError::unavailable(
@@ -423,10 +423,10 @@ pub trait SessionRuntime: Send + Sync {
     /// reads the current prefix; command admission and final validation use it.
     async fn coordinated_threads(
         &self,
-        session_id: &str,
+        session_id: &crate::SessionId,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<crate::CoordinatedThreadLink>, RunError> {
-        if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id) {
+        if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id.as_str()) {
             return Err(RunError::internal(
                 "coordination query received a snapshot for a different Session root",
             ));
@@ -441,7 +441,7 @@ pub trait SessionRuntime: Send + Sync {
     /// the Runtime's existing live hub, not another fan-out or replay owner.
     async fn subscribe_session_thread_live(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _thread_id: &str,
     ) -> Result<Option<Box<dyn SessionThreadLiveSubscription>>, RunError> {
         Ok(None)
@@ -463,7 +463,7 @@ pub trait SessionRuntime: Send + Sync {
     /// and dispatch partition. Implementations must not open child-named storage.
     async fn interrupt_session_thread(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), RunError> {
         Err(RunError::unavailable(
@@ -526,7 +526,7 @@ pub trait SessionRuntime: Send + Sync {
     /// those authorities, never a pause registry.
     async fn session_budget_resume_tickets(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
     ) -> Result<Vec<SessionBudgetResumeTicket>, RunError> {
         Err(RunError::unavailable(
             "budget-paused Run discovery is unsupported",
@@ -545,7 +545,7 @@ pub trait SessionRuntime: Send + Sync {
             coordinated_thread_ids: Vec::new(),
             watermark: 0,
             runtime_commit_cursor: self
-                .session_thread_recovery_snapshot(thread, thread)
+                .session_thread_recovery_snapshot(&crate::SessionId::from(thread), thread)
                 .await?
                 .map(|snapshot| snapshot.store_cursor)
                 .unwrap_or_default(),
@@ -808,7 +808,7 @@ pub trait SessionRuntime: Send + Sync {
     /// `None` means the logical Thread has no committed Run.
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -828,7 +828,7 @@ pub trait SessionRuntime: Send + Sync {
     /// directly by `run_id`.
     async fn session_thread_run_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &crate::SessionId,
         thread_id: &str,
         run_id: &RunId,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
@@ -873,7 +873,7 @@ pub trait SessionRuntime: Send + Sync {
     /// must retain `session_id` as the physical read owner.
     async fn session_thread_usage(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         thread_id: &str,
     ) -> Result<SessionUsage, RunError> {
         self.session_usage(thread_id).await
@@ -884,7 +884,7 @@ pub trait SessionRuntime: Send + Sync {
     /// state cell remain Active.
     async fn session_thread_disposition(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
         Ok(awaken_agent_contract::ThreadDisposition::Active)
@@ -895,7 +895,7 @@ pub trait SessionRuntime: Send + Sync {
     /// protocol cache or open child-named storage.
     async fn archive_session_thread(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _thread_id: &str,
     ) -> Result<(), RunError> {
         Err(RunError::unavailable(
@@ -985,7 +985,7 @@ pub trait SessionRuntime: Send + Sync {
     /// completion registry.
     async fn acknowledge_completed_terminal_cleanup(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _lease: &crate::SessionRealizationLease,
     ) {
     }
@@ -1455,7 +1455,7 @@ mod tests {
         for observed in [None, Some(&snapshot)] {
             assert!(
                 MinimalRuntime
-                    .coordinated_threads("session", observed)
+                    .coordinated_threads(&crate::SessionId::from("session"), observed)
                     .await
                     .unwrap()
                     .is_empty(),
@@ -1464,7 +1464,7 @@ mod tests {
         }
         snapshot.thread_id = awaken_agent_contract::ThreadId("foreign".into());
         let error = MinimalRuntime
-            .coordinated_threads("session", Some(&snapshot))
+            .coordinated_threads(&crate::SessionId::from("session"), Some(&snapshot))
             .await
             .unwrap_err();
         assert_eq!(error.kind, RunErrorKind::Internal, "D3");

@@ -1,3 +1,4 @@
+use awaken_session_contract::SessionId;
 mod observation_refinement;
 mod observed_commit;
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -716,7 +717,7 @@ impl SessionRuntime for NoopRuntime {
 
     async fn session_budget_resume_tickets(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
     ) -> Result<Vec<awaken_session_contract::SessionBudgetResumeTicket>, RunError> {
         Ok(Vec::new())
     }
@@ -759,7 +760,7 @@ impl SessionRuntime for NoopRuntime {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -828,11 +829,11 @@ impl SessionRuntime for RecordingReplyRuntime {
 
     async fn coordinated_threads(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         Ok(vec![awaken_session_contract::CoordinatedThreadLink {
-            session_id: session_id.to_string(),
+            session_id: session_id.clone(),
             thread_id: awaken_agent_contract::agent::thread::Id("reply-child".into()),
             target: awaken_session_contract::CoordinatedThreadTarget::Agent {
                 agent_id: "reply-agent".into(),
@@ -862,20 +863,24 @@ impl SessionRuntime for RecordingReplyRuntime {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        if self.boundaries.snapshot(session_id, thread_id).is_none() {
+        if self
+            .boundaries
+            .snapshot(session_id.as_str(), thread_id)
+            .is_none()
+        {
             self.boundaries.commit(
-                session_id,
+                session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
                 &awaken_agent_contract::agent::run::Id("reply-run".into()),
                 awaken_agent_contract::agent::run::RunState::Awaiting,
                 "",
             );
         }
-        let mut snapshot = self.boundaries.snapshot(session_id, thread_id);
+        let mut snapshot = self.boundaries.snapshot(session_id.as_str(), thread_id);
         if session_id == thread_id
             && let Some(snapshot) = snapshot.as_mut()
         {
@@ -1016,7 +1021,7 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
 
     async fn coordinated_threads(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         let mut links = self
@@ -1034,7 +1039,7 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
                 .iter()
                 .filter(|command| command.session_id == session_id)
                 .map(|command| awaken_session_contract::CoordinatedThreadLink {
-                    session_id: session_id.to_string(),
+                    session_id: session_id.clone(),
                     thread_id: command.thread_id.clone(),
                     target: awaken_session_contract::CoordinatedThreadTarget::Agent {
                         agent_id: command.snapshot.root_agent_id.0.clone(),
@@ -1051,7 +1056,7 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
 
     async fn session_thread_disposition(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
         Ok(
@@ -1070,24 +1075,24 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
         if !self.generic_recovery_available.load(Ordering::SeqCst) {
             return Ok(None);
         }
-        Ok(self.boundaries.snapshot(session_id, thread_id))
+        Ok(self.boundaries.snapshot(session_id.as_str(), thread_id))
     }
 
     async fn session_thread_run_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        let Some(mut snapshot) = self.boundaries.snapshot(session_id, thread_id) else {
+        let Some(mut snapshot) = self.boundaries.snapshot(session_id.as_str(), thread_id) else {
             return Ok(None);
         };
         if !snapshot.runs.iter().any(|run| &run.id == run_id) {
@@ -1154,7 +1159,7 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
 
     async fn interrupt_session_thread(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), RunError> {
         self.interruptions
@@ -1230,13 +1235,13 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
 
     async fn session_budget_resume_tickets(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Result<Vec<awaken_session_contract::SessionBudgetResumeTicket>, RunError> {
         Ok(self
             .budget_resume_tickets
             .lock()
             .unwrap()
-            .get(session_id)
+            .get(session_id.as_str())
             .cloned()
             .unwrap_or_default())
     }
@@ -1256,7 +1261,7 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
 
     async fn coordinated_threads(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         self.usage_relationship_reads.fetch_add(1, Ordering::SeqCst);
@@ -1265,10 +1270,10 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
         }
         Ok(self
             .boundaries
-            .lifecycle(session_id)
+            .lifecycle(session_id.as_str())
             .into_iter()
             .map(|event| awaken_session_contract::CoordinatedThreadLink {
-                session_id: session_id.to_string(),
+                session_id: session_id.clone(),
                 thread_id: event.thread_id,
                 target: self.child_target.clone(),
                 created_by_operation_id: "budget-spawn".into(),
@@ -1286,16 +1291,16 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        Ok(self.boundaries.snapshot(session_id, thread_id))
+        Ok(self.boundaries.snapshot(session_id.as_str(), thread_id))
     }
 
     async fn session_thread_usage(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         child_thread_id: &str,
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.usage_thread_reads
@@ -1501,7 +1506,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
 
     async fn acknowledge_completed_terminal_cleanup(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) {
         self.acknowledged_completed
@@ -1841,7 +1846,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
     async fn replay_create(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &SessionId,
         idempotency: &awaken_session_contract::IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
         self.inner
@@ -1915,7 +1920,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         };
         if should_commit_running {
             let session_id = mutation.payload.session_id().to_string();
-            let mut concurrent = self.inner.get(&session_id).await?;
+            let mut concurrent = self.inner.get(&SessionId::from(session_id)).await?;
             concurrent.begin_activity_epoch().ok_or_else(|| {
                 awaken_session_contract::SessionRepositoryError::InvalidMutation(
                     "injected concurrent activity exhausted its epoch".into(),
@@ -1952,7 +1957,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         };
         if let Some(realization) = concurrent_realization {
             let session_id = mutation.payload.session_id().to_string();
-            let mut concurrent = self.inner.get(&session_id).await?;
+            let mut concurrent = self.inner.get(&SessionId::from(session_id)).await?;
             concurrent.realization = Some(realization);
             return self
                 .commit_concurrent_root_as_conflict(
@@ -1992,7 +1997,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
             );
             let payload = awaken_session_contract::SessionMutationPayload::Delete(
                 awaken_session_contract::SessionTombstone {
-                    session_id: session_id.clone(),
+                    session_id: SessionId::from(&session_id),
                     deleted_revision,
                     deleted_at: "2026-08-21T00:00:00Z".into(),
                 },
@@ -2052,21 +2057,31 @@ impl ManagedSessionRepository for FaultingSessionRepository {
 
     async fn get(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
         self.observed_gets
             .lock()
             .unwrap()
-            .push(session_id.to_owned());
+            .push(session_id.to_string());
         self.get_entered.notify_one();
-        let gate = self.paused_gets.lock().unwrap().get(session_id).cloned();
+        let gate = self
+            .paused_gets
+            .lock()
+            .unwrap()
+            .get(session_id.as_str())
+            .cloned();
         if let Some(gate) = gate {
             gate.acquire()
                 .await
                 .expect("test read gate remains open")
                 .forget();
         }
-        if self.failed_gets.lock().unwrap().contains(session_id) {
+        if self
+            .failed_gets
+            .lock()
+            .unwrap()
+            .contains(session_id.as_str())
+        {
             return Err(
                 awaken_session_contract::SessionRepositoryError::Unavailable(
                     "injected Session read failure".into(),
@@ -2083,7 +2098,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         self.completed_gets
             .lock()
             .unwrap()
-            .push(session_id.to_owned());
+            .push(session_id.to_string());
         self.get_entered.notify_one();
         result
     }
@@ -2160,7 +2175,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
 
     async fn idempotency_receipt(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         key: &str,
     ) -> Result<
         Option<awaken_session_contract::SessionIdempotencyReceipt>,
@@ -2171,7 +2186,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
 
     async fn owner(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
         self.inner.owner(session_id).await
     }
@@ -2418,7 +2433,7 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
             awaken_session_contract::work_queue::SessionWorkLease {
                 work_id: format!("work:{session_id}"),
                 environment_id: environment_id.to_string(),
-                session_id: session_id.to_string(),
+                session_id: SessionId::from(session_id),
                 owner: worker_owner.to_string(),
                 epoch: 1,
                 expires_at_unix_ms: now_ms.saturating_add(30_000),

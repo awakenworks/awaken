@@ -350,7 +350,7 @@ impl crate::SharedHost {
 
 fn route_key(generation: &awaken_session_contract::McpGenerationRef) -> RouteKey {
     (
-        generation.session_id.clone(),
+        generation.session_id.to_string(),
         generation.attachment_id().0.clone(),
         generation.generation.version(),
     )
@@ -719,7 +719,7 @@ mod tests {
         let accepted = tokio::spawn(forward(
             State(relay.state.clone()),
             Path((
-                generation.session_id.clone(),
+                generation.session_id.to_string(),
                 generation.attachment_id().0.clone(),
                 generation.generation.version(),
                 capability.clone(),
@@ -737,7 +737,7 @@ mod tests {
         let rejected = forward(
             State(relay.state.clone()),
             Path((
-                generation.session_id.clone(),
+                generation.session_id.to_string(),
                 generation.attachment_id().0.clone(),
                 generation.generation.version(),
                 capability,

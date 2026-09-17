@@ -73,7 +73,7 @@ impl SessionRuntime for AcceptingFake {
     }
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
         _thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {

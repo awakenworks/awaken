@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use super::{PersistedSession, SessionExecutionState, SessionRecoveryCursor, SessionRecoveryScan};
-use crate::ManagedLifecycleFact;
+use crate::{ManagedLifecycleFact, SessionId};
 
 /// Monotonic root revision for every mutation of one Session aggregate.
 #[derive(
@@ -84,7 +84,7 @@ pub struct ScopedPersistedSession {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionTombstone {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub deleted_revision: SessionRevision,
     pub deleted_at: String,
 }
@@ -124,8 +124,8 @@ impl SessionMutationPayload {
     #[must_use]
     pub fn session_id(&self) -> &str {
         match self {
-            Self::Replace(session) => &session.session_id,
-            Self::Delete(tombstone) => &tombstone.session_id,
+            Self::Replace(session) => session.session_id.as_str(),
+            Self::Delete(tombstone) => tombstone.session_id.as_str(),
         }
     }
 
@@ -413,7 +413,7 @@ pub trait ManagedSessionRepository: Send + Sync {
     async fn replay_create(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionRepositoryError>;
 
@@ -438,7 +438,8 @@ pub trait ManagedSessionRepository: Send + Sync {
 
     /// The stored configuration for `session_id`. Absence is the typed
     /// [`SessionRepositoryError::NotFound`] case, never a storage fallback.
-    async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError>;
+    async fn get(&self, session_id: &SessionId)
+    -> Result<PersistedSession, SessionRepositoryError>;
 
     /// Read deletion evidence only inside its persisted owner partition. None
     /// means no matching tombstone, not proof of non-admission. Unsupported
@@ -446,7 +447,7 @@ pub trait ManagedSessionRepository: Send + Sync {
     async fn deleted_event_admissions(
         &self,
         _owner_scope: &str,
-        _session_id: &str,
+        _session_id: &SessionId,
     ) -> Result<Option<crate::DeletedSessionEventAdmissions>, SessionRepositoryError> {
         Err(SessionRepositoryError::Unavailable(
             "Session repository does not support retained deletion admission evidence".into(),
@@ -528,12 +529,12 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// second command registry.
     async fn idempotency_receipt(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         key: &str,
     ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError>;
 
     /// The atomically persisted owner scope of `session_id`.
-    async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError>;
+    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError>;
 }
 
 // In-memory and durable adapters live outward in `awaken-session-store`.

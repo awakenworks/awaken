@@ -105,7 +105,7 @@ impl awaken_session_contract::SessionRealizationControl for ExactTerminalPublica
 
     async fn terminal_repository_publication_command(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         asserted_lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,

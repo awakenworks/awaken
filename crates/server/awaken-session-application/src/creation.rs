@@ -576,7 +576,11 @@ impl SessionApplication {
             Ok(result) => result,
             Err(first) => {
                 match self
-                    .replay_session_create(&owner_scope, &session_id, &idempotency)
+                    .replay_session_create(
+                        &owner_scope,
+                        &awaken_session_contract::SessionId::from(&session_id),
+                        &idempotency,
+                    )
                     .await
                 {
                     Ok(Some(session)) => return validated_create_replay(session, completion),
@@ -649,7 +653,10 @@ impl SessionApplication {
                 .await
                 .map(|()| persisted.clone())
         } else {
-            self.realize_session_after_refresh(&session_id).await
+            self.realize_session_after_refresh(&awaken_session_contract::SessionId::from(
+                &session_id,
+            ))
+            .await
         };
         persisted = match realized {
             Ok(session) => session,
@@ -665,7 +672,11 @@ impl SessionApplication {
                 // The accepting replay exposes that state without converting an
                 // ActivationFailed root into a transport-only tombstone.
                 let current = self
-                    .replay_accepted_session_create(&owner_scope, &session_id, &idempotency)
+                    .replay_accepted_session_create(
+                        &owner_scope,
+                        &awaken_session_contract::SessionId::from(&session_id),
+                        &idempotency,
+                    )
                     .await;
                 match current {
                     Ok(Some(session)) if session.execution.is_terminal() => {
@@ -701,7 +712,11 @@ impl SessionApplication {
                 // the create receipt. Return the exact receipt's current root
                 // instead of exposing a retry-unsafe failed POST.
                 let Some(session) = self
-                    .replay_session_create(&owner_scope, &session_id, &idempotency)
+                    .replay_session_create(
+                        &owner_scope,
+                        &awaken_session_contract::SessionId::from(&session_id),
+                        &idempotency,
+                    )
                     .await?
                 else {
                     return Err(SessionCreationError::Conflict);

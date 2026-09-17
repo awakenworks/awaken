@@ -88,7 +88,7 @@ impl ClaimFencedArtifactPublisher {
                 self.authorize_checkpoint_release_artifact(
                     operation,
                     workspace_id,
-                    session_id,
+                    &awaken_session_contract::SessionId::from(session_id),
                     idempotency_scope,
                 )
                 .await?;
@@ -180,7 +180,7 @@ impl ClaimFencedArtifactPublisher {
         &self,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         idempotency_scope: Option<&str>,
     ) -> Result<(), ArtifactPublicationError> {
         if idempotency_scope.is_some() {
@@ -376,10 +376,10 @@ mod tests {
 
         async fn authorize_checkpoint_release_artifact_effect(
             &self,
-            session: &str,
+            session: &awaken_session_contract::SessionId,
             operation: &awaken_session_contract::SessionEnvironmentOperation,
         ) -> Result<String, SessionRealizationControlFailure> {
-            if session != self.asserted_effect.command.thread_id
+            if *session != self.asserted_effect.command.thread_id
                 || self.checkpoint.as_ref() != Some(operation)
             {
                 return Err(SessionRealizationControlFailure::StaleOwnership);

@@ -347,7 +347,7 @@ impl awaken_session_contract::SessionRealizationControl for ExactArtifactControl
 
     async fn authorize_checkpoint_release_artifact_effect(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
     ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
         if !self

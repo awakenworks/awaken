@@ -51,12 +51,13 @@ fn current_session_command_with_operation(
     operation_id: impl Into<String>,
 ) -> RunDispatch {
     let command = AdmitSessionRun {
-        session_id: request
-            .session_thread_id
-            .as_ref()
-            .unwrap_or_else(|| request.thread_id())
-            .0
-            .clone(),
+        session_id: awaken_session_contract::SessionId::from(
+            &request
+                .session_thread_id
+                .as_ref()
+                .unwrap_or_else(|| request.thread_id())
+                .0,
+        ),
         agent_id: request.activation.snapshot.root_agent_id.0.clone(),
         operation_id: operation_id.into(),
         run_id: request.run_id().clone(),

@@ -10,8 +10,11 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4727,
-      "catch_all_errors": 5
+      "production_lines": 4733,
+      "catch_all_errors": 5,
+      "growth_reasons": {
+        "production_lines": "tool vocabulary moved out of awaken-runtime-contract into awaken-tool-contract (counts transferred, not added); agent-contract now owns the one SHA-256 content fingerprint that runtime and tool contracts previously each defined"
+      }
     },
     "awaken-authorization-contract": {
       "depth": 0
@@ -63,9 +66,9 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 9358,
-      "catch_all_errors": 9,
-      "capability_defaults": 6
+      "production_lines": 7745,
+      "catch_all_errors": 7,
+      "capability_defaults": 2
     },
     "awaken-sandbox-control": {
       "depth": 0
@@ -76,12 +79,21 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 17371,
+      "production_lines": 17236,
       "catch_all_errors": 11,
       "capability_defaults": 54
     },
     "awaken-tenancy": {
       "depth": 0
+    },
+    "awaken-tool-contract": {
+      "depth": 1,
+      "catch_all_errors": 2,
+      "capability_defaults": 4,
+      "growth_reasons": {
+        "catch_all_errors": "tool vocabulary moved out of awaken-runtime-contract into awaken-tool-contract (counts transferred, not added); agent-contract now owns the one SHA-256 content fingerprint that runtime and tool contracts previously each defined",
+        "capability_defaults": "tool vocabulary moved out of awaken-runtime-contract into awaken-tool-contract (counts transferred, not added); agent-contract now owns the one SHA-256 content fingerprint that runtime and tool contracts previously each defined"
+      }
     },
     "awaken-worker-contract": {
       "depth": 3,

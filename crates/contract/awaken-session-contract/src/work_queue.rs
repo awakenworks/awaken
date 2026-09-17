@@ -330,7 +330,7 @@ pub struct ClaimedWork {
 pub struct WorkSessionAccess {
     pub work_id: String,
     pub environment_id: String,
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub lease_owner: String,
     pub lease_epoch: u64,
     pub expires_at_unix_ms: u64,
@@ -344,7 +344,7 @@ pub struct WorkSessionAccess {
 pub struct SessionWorkLease {
     pub work_id: String,
     pub environment_id: String,
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     /// Exact authenticated execution owner. For a registered Worker this is
     /// its incarnation-qualified lease owner, not the reusable display id.
     pub owner: String,
@@ -362,7 +362,7 @@ pub struct SessionWorkLease {
 /// Thread truth or admitting a Session effect.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionWorkAuthorityReceipt {
-    session_id: String,
+    session_id: crate::SessionId,
     worker_owner: String,
     authority: SessionWorkAuthorityCoordinate,
 }
@@ -418,7 +418,7 @@ impl SessionWorkAuthorityReceipt {
             SessionWorkOwnership::Leased(_) => return None,
         };
         Some(Self {
-            session_id: session_id.to_string(),
+            session_id: crate::SessionId::from(session_id),
             worker_owner: worker_owner.to_string(),
             authority,
         })
@@ -426,7 +426,7 @@ impl SessionWorkAuthorityReceipt {
 
     #[must_use]
     pub fn session_id(&self) -> &str {
-        &self.session_id
+        self.session_id.as_str()
     }
 
     #[must_use]
@@ -497,7 +497,7 @@ impl SessionWorkAuthorityReceipt {
 /// until [`SessionWorkAuthorityReceipt::matches_observation`] succeeds.
 pub async fn acquire_session_work_receipt(
     authority: &dyn SessionWorkLeaseAuthority,
-    session_id: &str,
+    session_id: &crate::SessionId,
     worker_owner: &str,
     now_ms: u64,
     acquisition: SessionWorkAcquisition,
@@ -506,7 +506,7 @@ pub async fn acquire_session_work_receipt(
         .acquire_session_work(session_id, worker_owner, now_ms, acquisition)
         .await?;
     Ok(SessionWorkAuthorityReceipt::from_acquired(
-        session_id,
+        session_id.as_str(),
         worker_owner,
         &ownership,
     ))
@@ -636,7 +636,7 @@ pub trait SessionWorkLeaseAuthority: Send + Sync {
 
     async fn acquire_session_work(
         &self,
-        session_id: &str,
+        session_id: &crate::SessionId,
         worker_owner: &str,
         now_ms: u64,
         acquisition: SessionWorkAcquisition,
@@ -811,13 +811,17 @@ pub trait WorkQueue: Send + Sync {
     async fn enqueue_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
     ) -> Result<String, WorkQueueError>;
     /// Explicitly wake an existing stopped Session work item, or create it when
     /// absent. Unlike reconciliation's [`Self::enqueue_session`], this command
     /// is driven only by a new admitted Session event, so a completed idle item
     /// cannot be continuously resurrected by the background supervisor.
-    async fn wake_session(&self, env_id: &str, session_id: &str) -> Result<String, WorkQueueError>;
+    async fn wake_session(
+        &self,
+        env_id: &str,
+        session_id: &crate::SessionId,
+    ) -> Result<String, WorkQueueError>;
     /// Seed a `healthcheck` work item (its inner id is the work id); returns it.
     async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
     /// Return the one healthcheck for an Environment, creating it when absent.
@@ -947,7 +951,7 @@ pub trait WorkQueue: Send + Sync {
     async fn retire_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Registered-Worker settlement transition. Retire only the exact current
     /// Session Work owner and lease epoch in one store compare-and-set; a stale
@@ -964,7 +968,7 @@ pub trait WorkQueue: Send + Sync {
     async fn acquire_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError>;

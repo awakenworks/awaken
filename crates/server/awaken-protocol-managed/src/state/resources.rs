@@ -352,7 +352,11 @@ impl ManagedState {
         if let Some(key) = idempotency_key.as_deref()
             && let Some(outcome) = self
                 .application
-                .replay_session_resource_manifest(id, key, &request_fingerprint)
+                .replay_session_resource_manifest(
+                    &awaken_session_contract::SessionId::from(id),
+                    key,
+                    &request_fingerprint,
+                )
                 .await
                 .map_err(Self::map_resource_manifest_error)?
         {
@@ -361,7 +365,7 @@ impl ManagedState {
         }
         let persisted = self
             .application
-            .session(id)
+            .session(&awaken_session_contract::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         if expected_resource_revision
@@ -415,7 +419,7 @@ impl ManagedState {
                 .desired()
                 .inputs()
                 .iter()
-                .map(|input| resolved_resource_dto(&session.session_id, input))
+                .map(|input| resolved_resource_dto(session.session_id.as_str(), input))
                 .collect(),
         }
     }
@@ -444,10 +448,10 @@ impl ManagedState {
         command: awaken_session_application::ReplaceSessionResourceManifest,
         repository_configurations: &[awaken_session_application::ConfiguredSessionRepository],
     ) -> Result<awaken_session_application::SessionResourceManifestOutcome, StateError> {
-        match Box::pin(
-            self.application
-                .replace_session_resource_manifest(session_id, command),
-        )
+        match Box::pin(self.application.replace_session_resource_manifest(
+            &awaken_session_contract::SessionId::from(session_id),
+            command,
+        ))
         .await
         {
             Ok(outcome) => {
@@ -524,7 +528,7 @@ impl ManagedState {
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let persisted = self
             .application
-            .session(id)
+            .session(&awaken_session_contract::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         let read_revision = persisted.resources.revision;
@@ -656,7 +660,7 @@ impl ManagedState {
         let persisted = self
             .application
             .rotate_repository_credential(
-                id,
+                &awaken_session_contract::SessionId::from(id),
                 &owner_scope,
                 &binding_id,
                 patch.authorization_token.into_credential_material(),
@@ -679,7 +683,7 @@ impl ManagedState {
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
             .application
-            .session(id)
+            .session(&awaken_session_contract::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         let read_revision = persisted.resources.revision;

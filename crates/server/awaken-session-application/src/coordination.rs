@@ -62,7 +62,7 @@ impl SessionApplication {
             return Ok(session);
         }
         let usage = self
-            .session_usage_for_model_request(&session.session_id, &source_thread_id.0)
+            .session_usage_for_model_request(session.session_id.as_str(), &source_thread_id.0)
             .await?;
         self.reconcile_managed_budget_usage(&session.session_id, usage)
             .await
@@ -105,7 +105,7 @@ impl SessionApplication {
         }
         let observation = self
             .runtime_interval_observation(
-                &command.session_id,
+                command.session_id.as_str(),
                 command.session_activity_epoch,
                 &command.source_thread_id,
                 &command.source_run_id,
@@ -118,7 +118,7 @@ impl SessionApplication {
 
     async fn validate_coordinated_thread(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), RunError> {
         if child_thread_id.0 == session_id {
@@ -223,7 +223,7 @@ impl SessionApplication {
 
     async fn coordination_session(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<(String, awaken_session_contract::PersistedSession), RunError> {
         let session = self
             .session(session_id)
@@ -258,7 +258,7 @@ impl SessionApplication {
         &self,
         command: SessionThreadToolReplyCommand,
     ) -> Result<(String, Option<u64>, SessionThreadToolReplyDelivery), RunError> {
-        if command.session_id.trim().is_empty()
+        if command.session_id.as_str().trim().is_empty()
             || command.expected_run_id.0.trim().is_empty()
             || command.expected_correlation_id.trim().is_empty()
             || command.tool_use_id.trim().is_empty()
@@ -308,7 +308,7 @@ impl SessionApplication {
             }
         };
         Ok((
-            session_id,
+            String::from(session_id),
             session_activity_epoch,
             SessionThreadToolReplyDelivery {
                 command,
@@ -325,7 +325,7 @@ impl SessionApplication {
     pub async fn resume_session_run(
         &self,
         operation_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
@@ -340,7 +340,7 @@ impl SessionApplication {
         &self,
         owner_scope: &str,
         operation_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
@@ -358,7 +358,7 @@ impl SessionApplication {
         &self,
         expected_owner: Option<&str>,
         operation_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
@@ -380,7 +380,7 @@ impl SessionApplication {
         }
         let snapshot = self
             .runtime()
-            .session_thread_recovery_snapshot(session_id, session_id)
+            .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await?
             .ok_or_else(|| RunError::bad_request("Session Thread has no committed Run"))?;
         let run_id = snapshot
@@ -425,7 +425,7 @@ impl SessionApplication {
             }
         };
         let command = SessionThreadToolReplyCommand {
-            session_id: session_id.to_string(),
+            session_id: session_id.clone(),
             tool_request_event_id: Some(operation_id.to_string()),
             expected_thread_version: Some(snapshot.thread_version),
             target: SessionThreadTarget::Primary,
@@ -453,12 +453,12 @@ impl SessionApplication {
 impl SessionAgentCoordination for SessionApplication {
     async fn admit_session_run_activity(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         agent_id: &str,
         run_id: &RunId,
         mode: SessionRunActivityAdmissionMode,
     ) -> Result<SessionRunActivityAdmission, RunError> {
-        let operation_id = session_run_activity_operation_id(session_id, run_id);
+        let operation_id = session_run_activity_operation_id(session_id.as_str(), run_id);
         let admitted = match mode {
             SessionRunActivityAdmissionMode::RecoverOrAdmit => self
                 .begin_admitted_activity_for_operation(agent_id, session_id, &operation_id)
@@ -486,7 +486,7 @@ impl SessionAgentCoordination for SessionApplication {
 
     async fn admit_session_model_request(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &ThreadId,
         run_id: &RunId,
     ) -> Result<bool, RunError> {
@@ -521,7 +521,7 @@ impl SessionAgentCoordination for SessionApplication {
         // recovery owner while inference is still running, rather than waiting
         // for the completion observer or its scheduled recovery scan. An
         // already anchored input needs no further publication wakeups here.
-        if thread_id.0 == session_id
+        if thread_id.0 == session_id.as_str()
             && session.event_batches.iter().any(|batch| {
                 batch.events.iter().any(|entry| {
                     !entry.processed
@@ -538,7 +538,7 @@ impl SessionAgentCoordination for SessionApplication {
             self.wake_lifecycle_supervisor();
         }
         let usage = self
-            .session_usage_for_model_request(session_id, &thread_id.0)
+            .session_usage_for_model_request(session_id.as_str(), &thread_id.0)
             .await?;
         self.reconcile_managed_budget_usage(session_id, usage)
             .await
@@ -550,7 +550,7 @@ impl SessionAgentCoordination for SessionApplication {
 
     async fn list_session_agents(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<Vec<SessionAgentRosterEntry>, RunError> {
         let (owner, session) = self.coordination_session(session_id).await?;
         self.coordination_roster(&owner, &session)
@@ -597,7 +597,7 @@ impl SessionAgentCoordination for SessionApplication {
                     })?;
                 (
                     awaken_session_contract::coordinated_thread_id(
-                        &command.session_id,
+                        command.session_id.as_str(),
                         &command.source_run_id,
                         &command.operation_id,
                     ),
@@ -692,8 +692,12 @@ impl SessionAgentCoordination for SessionApplication {
                 max_unarchived_threads: MAX_UNARCHIVED_AGENT_CHILD_THREADS,
             })
             .await;
-        self.settle_definitive_coordination_rejection(&session_id, activity_epoch, &admitted)
-            .await?;
+        self.settle_definitive_coordination_rejection(
+            session_id.as_str(),
+            activity_epoch,
+            &admitted,
+        )
+        .await?;
         let admitted = admitted?;
         if admitted.thread_id != thread_id {
             // A mismatched receipt is an internal/ambiguous Runtime fault: it may
@@ -847,7 +851,7 @@ impl SessionAgentCoordination for SessionApplication {
             })
             .await;
         self.settle_definitive_coordination_rejection(
-            &command.session_id,
+            command.session_id.as_str(),
             command.session_activity_epoch,
             &continued,
         )
@@ -907,7 +911,7 @@ impl SessionAgentCoordination for SessionApplication {
 
     async fn interrupt_session_thread(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), RunError> {
         self.validate_coordinated_thread(session_id, child_thread_id)

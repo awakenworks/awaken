@@ -19,7 +19,7 @@ pub(super) fn provisioning_checkpoint_request(
 ) -> awaken_provisioning_contract::SandboxCheckpointRequest {
     awaken_provisioning_contract::SandboxCheckpointRequest {
         workspace_id: request.workspace_id.clone(),
-        session_id: request.session_id.clone(),
+        session_id: request.session_id.to_string(),
         generation_id: request.generation.id.clone(),
         environment_fingerprint: request.generation.environment_fingerprint.clone(),
         base_image_fingerprint: request.generation.base_image_fingerprint.clone(),

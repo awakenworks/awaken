@@ -164,7 +164,9 @@ pub(super) async fn session_agents_list(
         require_primary_session_claim(&guard)?;
         drop(guard);
         let agents = session_coordination(&service)?
-            .list_session_agents(&request.session_id)
+            .list_session_agents(&awaken_session_contract::SessionId::from(
+                request.session_id,
+            ))
             .await
             .map_err(coordination_failure)?;
         Ok(json!({ "agents": agents }))
@@ -199,7 +201,11 @@ pub(super) async fn session_model_request_admit(
         // work. Keep the exact claim guard alive across root usage
         // reconciliation so a superseded Worker cannot spend another request.
         let admitted = session_coordination(&service)?
-            .admit_session_model_request(&request.session_id, &request.thread_id, &request.run_id)
+            .admit_session_model_request(
+                &awaken_session_contract::SessionId::from(request.session_id),
+                &request.thread_id,
+                &request.run_id,
+            )
             .await
             .map_err(coordination_failure)?;
         drop(guard);
@@ -260,7 +266,7 @@ pub(super) async fn session_run_activity_admit(
         // resolution transaction.
         let admission = session_coordination(&service)?
             .admit_session_run_activity(
-                &request.session_id,
+                &awaken_session_contract::SessionId::from(request.session_id),
                 &request.agent_id,
                 &request.run_id,
                 request.mode,
@@ -285,7 +291,7 @@ pub(super) async fn session_agent_send(
             &worker,
             &request.identity,
             &request.claim,
-            &request.command.session_id,
+            request.command.session_id.as_str(),
         )
         .await?;
         require_primary_session_claim(&guard)?;
@@ -318,7 +324,7 @@ pub(super) async fn session_agent_settle(
             &worker,
             &request.identity,
             &request.claim,
-            &request.command.session_id,
+            request.command.session_id.as_str(),
         )
         .await?;
         if !guard.permits_settlement() {

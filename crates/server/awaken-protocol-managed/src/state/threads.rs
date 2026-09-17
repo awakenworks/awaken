@@ -475,7 +475,10 @@ impl ManagedState {
             return Err(StateError::Conflict);
         }
         self.application
-            .archive_session_thread(id, &internal_thread_id)
+            .archive_session_thread(
+                &awaken_session_contract::SessionId::from(id),
+                &internal_thread_id,
+            )
             .await
             .map_err(StateError::Run)?;
         // Do not mutate the disposable Thread first. The disposition read in

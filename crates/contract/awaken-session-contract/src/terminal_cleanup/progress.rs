@@ -17,7 +17,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCleanupRepositoryPreparation {
-    session_id: String,
+    session_id: crate::SessionId,
     workspace_id: String,
     cleanup_effect_id: String,
     plan_fingerprint: String,
@@ -49,7 +49,7 @@ impl SessionCleanupRepositoryPreparation {
             plan_fingerprint.as_str(),
         ));
         Ok(Self {
-            session_id: session_id.to_string(),
+            session_id: crate::SessionId::from(session_id),
             workspace_id: workspace_id.to_string(),
             cleanup_effect_id,
             plan_fingerprint,
@@ -298,7 +298,7 @@ pub(super) struct SessionCleanupDisposing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCleanupDisposalCommand {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub effect_id: String,
     /// Fingerprint of the complete terminal Runtime/Artifact/Repository
     /// preparation set. This remains distinct from the provider predecessor:
@@ -323,7 +323,7 @@ impl SessionCleanupDisposalCommand {
             .operation_id()
             .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?;
         Ok(Self {
-            session_id: session_id.to_string(),
+            session_id: crate::SessionId::from(session_id),
             effect_id,
             preparation_fingerprint,
             provider_disposal,
@@ -349,7 +349,7 @@ impl SessionCleanupDisposalCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCleanupDisposalReceipt {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub effect_id: String,
     pub preparation_fingerprint: String,
     pub provider_disposal: awaken_provisioning_contract::SandboxDisposalPreparation,
@@ -406,8 +406,8 @@ impl SessionCleanupDisposalReceipt {
         if self
             != &Self::new(
                 &SessionCleanupDisposalCommand::new(
-                    &command.session_id,
-                    &cleanup_effect_id(&command.session_id),
+                    command.session_id.as_str(),
+                    &cleanup_effect_id(command.session_id.as_str()),
                     command.preparation_fingerprint.clone(),
                     command.provider_disposal.clone(),
                 )?

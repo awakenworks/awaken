@@ -272,7 +272,10 @@ impl ManagedState {
     > {
         let snapshot = self
             .application
-            .session_thread_recovery_snapshot(session_id, thread_id)
+            .session_thread_recovery_snapshot(
+                &awaken_session_contract::SessionId::from(session_id),
+                thread_id,
+            )
             .await
             .map_err(StateError::Run)?;
         if snapshot
@@ -330,7 +333,10 @@ impl ManagedState {
     > {
         let mut links = self
             .application
-            .coordinated_threads(session_id, observed_root)
+            .coordinated_threads(
+                &awaken_session_contract::SessionId::from(session_id),
+                observed_root,
+            )
             .await
             .map_err(StateError::Run)?;
         let snapshots = self

@@ -267,7 +267,7 @@ impl SessionEventToolReply {
             }
         };
         SessionThreadToolReplyCommand {
-            session_id: session_id.to_string(),
+            session_id: crate::SessionId::from(session_id),
             tool_request_event_id: Some(self.tool_request_event_id.clone()),
             expected_thread_version: self.expected_thread_version,
             target: self.target.clone(),
@@ -295,7 +295,7 @@ pub struct SessionEventInterrupt {
 /// the Session application retains activity admission ownership.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionUserRunCommand {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub agent_id: String,
     pub operation_id: String,
     pub run_id: RunId,

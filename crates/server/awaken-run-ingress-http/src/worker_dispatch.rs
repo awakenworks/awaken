@@ -757,7 +757,7 @@ async fn bind_claimed_session_work_authority(
         .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
     let receipt = awaken_session_contract::work_queue::acquire_session_work_receipt(
         work.as_ref(),
-        session_id,
+        &awaken_session_contract::SessionId::from(session_id),
         &authority.owner,
         authority.now_ms,
         awaken_session_contract::work_queue::SessionWorkAcquisition::ClaimedRun,
@@ -906,7 +906,7 @@ async fn recovery_snapshot(
                 })?;
                 let observed = work
                     .acquire_session_work(
-                        &session.0,
+                        &awaken_session_contract::SessionId::from(&session.0),
                         &authority.owner,
                         authority.now_ms,
                         awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
@@ -1439,7 +1439,9 @@ async fn settle(
                     )));
                 }
                 Some(awaken_session_contract::SessionAgentBoundaryCommand {
-                    session_id: session_thread_id.0.clone(),
+                    session_id: awaken_session_contract::SessionId::from(
+                        session_thread_id.0.clone(),
+                    ),
                     source_thread_id: thread_id.clone(),
                     source_run_id: claim.run_id.clone(),
                     source_agent_id: guard.request().activation.snapshot.root_agent_id.0.clone(),
@@ -1462,7 +1464,7 @@ async fn settle(
         if owns_session_work && let Some(session_work) = service.session_work.as_ref() {
             let lease = match session_work
                 .acquire_session_work(
-                    &session_thread_id.0,
+                    &awaken_session_contract::SessionId::from(session_thread_id.0),
                     &claim.owner,
                     authority.now_ms,
                     awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,

@@ -482,7 +482,7 @@ impl SessionRuntime for ScriptFake {
     }
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -572,13 +572,13 @@ impl SessionRuntime for ScriptFake {
             // completion flag, are the read-side authority.
             durable.committed_run = Some(CommittedRunEvidence {
                 snapshot: profile.snapshot(
-                    &delivery.session_id,
+                    delivery.session_id.as_str(),
                     delivery.run_id.clone(),
                     &command,
                     outcome.clone(),
                 ),
                 lifecycle: profile.lifecycle(
-                    &delivery.session_id,
+                    delivery.session_id.as_str(),
                     delivery.run_id.clone(),
                     outcome.state().clone(),
                 ),
@@ -587,7 +587,7 @@ impl SessionRuntime for ScriptFake {
         self.completions.lock().unwrap().push(
             awaken_session_contract::SessionAgentBoundaryCommand {
                 session_id: delivery.session_id.clone(),
-                source_thread_id: ThreadId(delivery.session_id),
+                source_thread_id: ThreadId(delivery.session_id.into_string()),
                 source_run_id: delivery.run_id.clone(),
                 source_agent_id: command.agent_id,
                 session_activity_epoch: delivery.session_activity_epoch,
@@ -601,7 +601,7 @@ impl SessionRuntime for ScriptFake {
     }
     async fn session_run_state(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
         Ok(self
@@ -823,7 +823,11 @@ async fn a_rescheduled_run_projects_the_complete_thread_status_sequence() {
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
-    let persisted = state.session_application().session(&id).await.unwrap();
+    let persisted = state
+        .session_application()
+        .session(&awaken_session_contract::SessionId::from(&id))
+        .await
+        .unwrap();
     assert_eq!(
         persisted.event_batches[0].events[0]
             .projection_anchor

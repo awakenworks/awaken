@@ -14,8 +14,14 @@ use std::collections::BTreeMap;
 /// triggering the next, and all backends run this same sequence.
 pub async fn capability_and_metadata_contract(q: &impl WorkQueue) {
     let hc = q.enqueue_healthcheck("env_a").await.expect("enqueue");
-    let w1 = q.enqueue_session("env_a", "s1").await.expect("enqueue");
-    let w2 = q.enqueue_session("env_a", "s2").await.expect("enqueue");
+    let w1 = q
+        .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+        .await
+        .expect("enqueue");
+    let w2 = q
+        .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s2"))
+        .await
+        .expect("enqueue");
     // list is enqueue-ordered
     let ids: Vec<String> = q
         .list("env_a")

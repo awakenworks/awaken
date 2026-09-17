@@ -36,12 +36,12 @@ impl SharedHost {
     /// each then lowers its own closed effect type exactly once.
     pub(crate) fn authorize_terminal_cleanup_lease(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<awaken_session_contract::SessionRealizationLease, HostError> {
         self
             .session_slots
-            .read(session_id, |slot| {
+            .read(session_id.as_str(), |slot| {
                 let current = slot.realization_authority.lease().ok_or_else(|| {
                     HostError::unavailable_classified(
                         "session_terminal_cleanup_projection_missing",
@@ -920,7 +920,7 @@ impl SharedHost {
         };
         let effect_fence = self.terminal_cleanup_effect_fence(effect)?;
         let authority = self.session_slots.provider_effect_authority(
-            &effect.command.session_id,
+            effect.command.session_id.as_str(),
             &effect_fence,
             self.execution_authority.as_ref(),
         )?;
@@ -960,7 +960,7 @@ impl SharedHost {
         })?;
         let terminal_effect_fence = self.terminal_cleanup_effect_fence(effect)?;
         let authority = self.session_slots.provider_effect_authority(
-            &effect.command.session_id,
+            effect.command.session_id.as_str(),
             &terminal_effect_fence,
             self.execution_authority.as_ref(),
         )?;

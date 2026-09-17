@@ -142,7 +142,10 @@ pub(super) async fn session_cleanup_poll(
             .await?;
         let work = session_control(&service)
             .map_err(RealizationHttpError::from)?
-            .terminal_cleanup_work(&request.session_id, &request.lease)
+            .terminal_cleanup_work(
+                &awaken_session_contract::SessionId::from(request.session_id),
+                &request.lease,
+            )
             .await
             .map_err(RealizationHttpError::from)?;
         Ok(json!({ "work": work }))
@@ -298,7 +301,7 @@ pub(super) async fn session_resume(
         }
         let observed = session_work_ownership(
             &service,
-            &request.session_id,
+            &awaken_session_contract::SessionId::from(&request.session_id),
             &request.identity.lease_owner(),
             authority.now_ms,
             awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
@@ -336,7 +339,9 @@ pub(super) async fn session_resume(
             // explicitly take the ordinary assignment path without this proof.
             let renewed = control
                 .renew_session_realization(awaken_session_contract::RenewSessionRealization {
-                    session_id: request.session_id.clone(),
+                    session_id: awaken_session_contract::SessionId::from(
+                        request.session_id.clone(),
+                    ),
                     asserted_lease: asserted.clone(),
                     requested_expires_at_unix_ms: realization_expiry
                         .max(asserted.expires_at_unix_ms),
@@ -354,7 +359,7 @@ pub(super) async fn session_resume(
         }
         let realization = match control
             .begin_session_realization(awaken_session_contract::BeginSessionRealization {
-                session_id: request.session_id.clone(),
+                session_id: awaken_session_contract::SessionId::from(&request.session_id),
                 expected_resources,
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: request.identity.worker_id.clone(),
@@ -492,7 +497,7 @@ pub(super) async fn persist_session_environment_receipt(
             &service,
             &worker,
             &request.identity,
-            &request.receipt.session_id,
+            request.receipt.session_id.as_str(),
             lease,
         )
         .await?;
@@ -553,9 +558,15 @@ async fn acquire_session_work_owner(
     now_ms: u64,
     acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
 ) -> Result<(), RealizationHttpError> {
-    let ownership = session_work_ownership(service, session_id, worker_owner, now_ms, acquisition)
-        .await
-        .map_err(RealizationHttpError::from)?;
+    let ownership = session_work_ownership(
+        service,
+        &awaken_session_contract::SessionId::from(session_id),
+        worker_owner,
+        now_ms,
+        acquisition,
+    )
+    .await
+    .map_err(RealizationHttpError::from)?;
     if ownership.permits_effect_for(worker_owner) {
         Ok(())
     } else {
@@ -567,7 +578,7 @@ async fn acquire_session_work_owner(
 
 async fn session_work_ownership(
     service: &WorkerDispatchService,
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     worker_owner: &str,
     now_ms: u64,
     acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
@@ -685,7 +696,7 @@ pub(super) async fn activate_session_realization(
             &service,
             &worker,
             &request.identity,
-            &request.command.session_id,
+            request.command.session_id.as_str(),
             &request.command.lease,
         )
         .await?;
@@ -712,7 +723,7 @@ pub(super) async fn acknowledge_session_realization(
             &service,
             &worker,
             &request.identity,
-            &request.command.session_id,
+            request.command.session_id.as_str(),
             &request.command.lease,
         )
         .await?;
@@ -737,7 +748,7 @@ pub(super) async fn fail_session_realization(
             &service,
             &worker,
             &request.identity,
-            &request.command.session_id,
+            request.command.session_id.as_str(),
             &request.command.lease,
         )
         .await?;

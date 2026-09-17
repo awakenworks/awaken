@@ -1042,7 +1042,7 @@ impl SharedHost {
                 "budget resume requires a newly admitted Session activity",
             ));
         }
-        let commit = self.commit_for_read(&delivery.session_id).await?;
+        let commit = self.commit_for_read(delivery.session_id.as_str()).await?;
         let snapshot = commit
             .recovery_snapshot(&delivery.thread_id, &delivery.run_id)
             .await
@@ -1071,7 +1071,7 @@ impl SharedHost {
         let store = if let Some(dispatch) = dispatch {
             if dispatch.thread_id != delivery.thread_id
                 || dispatch.session_thread_id.as_ref()
-                    != Some(&ThreadId(delivery.session_id.clone()))
+                    != Some(&ThreadId(delivery.session_id.to_string()))
             {
                 return Err(HostError::bad_request(
                     "budget resume dispatch affinity is inconsistent",
@@ -1100,7 +1100,7 @@ impl SharedHost {
                 ));
             }
             self.enqueue_foreground_session_resume_dispatch(
-                &delivery.session_id,
+                delivery.session_id.as_str(),
                 &ticket,
                 delivery.session_activity_epoch,
             )
@@ -1134,7 +1134,7 @@ impl SharedHost {
         store
             .stage_session_resume(
                 input,
-                &ThreadId(delivery.session_id),
+                &ThreadId(delivery.session_id.into_string()),
                 delivery.prior_session_activity_epoch,
                 Some(delivery.session_activity_epoch),
             )

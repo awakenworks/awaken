@@ -21,7 +21,7 @@ impl SessionMcpAttachmentSet {
                     .as_ref()
                     .ok_or(McpAttachmentError::StaleRealizationClaim)?;
                 Ok(McpGenerationRef {
-                    session_id: session_id.to_owned(),
+                    session_id: crate::SessionId::from(session_id),
                     generation: attachment.generation.clone(),
                     runtime_incarnation: claim.runtime_incarnation.clone(),
                     lease_epoch: claim.lease_epoch,

@@ -90,7 +90,7 @@ impl CoordinationEndpoint {
 
     async fn list(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         source_run_id: &str,
     ) -> Result<Vec<SessionAgentRosterEntry>, ToolError> {
         match self {
@@ -103,9 +103,9 @@ impl CoordinationEndpoint {
                 .await
                 .map_err(tool_error),
             Self::Remote { control, slots } => {
-                let claim = Self::current_claim(slots, session_id, source_run_id)?;
+                let claim = Self::current_claim(slots, session_id.as_str(), source_run_id)?;
                 control
-                    .list_session_agents(&claim, session_id)
+                    .list_session_agents(&claim, session_id.as_str())
                     .await
                     .map_err(|error| ToolError::Execution(error.to_string()))
             }
@@ -114,7 +114,7 @@ impl CoordinationEndpoint {
 
     async fn admit_model_request(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         request: &ModelRequestAdmissionRequest,
     ) -> Result<bool, String> {
         match self {
@@ -125,12 +125,12 @@ impl CoordinationEndpoint {
                 .await
                 .map_err(|error| error.to_string()),
             Self::Remote { control, slots } => {
-                let claim = Self::current_claim(slots, session_id, &request.run_id.0)
+                let claim = Self::current_claim(slots, session_id.as_str(), &request.run_id.0)
                     .map_err(|error| error.to_string())?;
                 control
                     .admit_session_model_request(
                         &claim,
-                        session_id,
+                        session_id.as_str(),
                         &request.thread_id,
                         &request.run_id,
                     )
@@ -143,7 +143,7 @@ impl CoordinationEndpoint {
     async fn admit_run_activity(
         &self,
         claim: &RunClaim,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         agent_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
         mode: SessionRunActivityAdmissionMode,
@@ -160,7 +160,7 @@ impl CoordinationEndpoint {
                 .await
                 .map_err(|error| DispatchSettlementError(error.to_string())),
             Self::Remote { control, .. } => control
-                .admit_session_run_activity(claim, session_id, agent_id, run_id, mode)
+                .admit_session_run_activity(claim, session_id.as_str(), agent_id, run_id, mode)
                 .await
                 .map_err(|error| DispatchSettlementError(error.to_string())),
         }
@@ -189,7 +189,7 @@ impl CoordinationEndpoint {
                 .map_err(tool_error)
             }
             Self::Remote { control, slots } => {
-                let claim = Self::current_claim(slots, &command.session_id, source_run_id)?;
+                let claim = Self::current_claim(slots, command.session_id.as_str(), source_run_id)?;
                 control
                     .send_session_agent_message(&claim, command)
                     .await
@@ -268,7 +268,10 @@ impl ModelRequestGate for HostModelRequestGate {
         request: ModelRequestAdmissionRequest,
     ) -> Result<ModelRequestAdmission, String> {
         self.endpoint
-            .admit_model_request(&self.session_id, &request)
+            .admit_model_request(
+                &awaken_session_contract::SessionId::from(&self.session_id),
+                &request,
+            )
             .await
             .map(|admitted| {
                 if admitted {
@@ -314,7 +317,10 @@ impl AgentCoordinator for HostAgentCoordinator {
             ));
         }
         self.endpoint
-            .list(&request.source_thread_id, &request.source_run_id)
+            .list(
+                &awaken_session_contract::SessionId::from(request.source_thread_id),
+                &request.source_run_id,
+            )
             .await
             .map(|entries| {
                 entries
@@ -346,7 +352,7 @@ impl AgentCoordinator for HostAgentCoordinator {
             .send(
                 &source_run_id,
                 SessionAgentMessageCommand {
-                    session_id,
+                    session_id: awaken_session_contract::SessionId::from(session_id),
                     source_thread_id: awaken_agent_contract::agent::thread::Id(
                         request.source_thread_id,
                     ),
@@ -405,7 +411,7 @@ impl HostDispatchSettlementObserver {
             ));
         }
         Ok(Some(SessionAgentBoundaryCommand {
-            session_id: session_id.0.clone(),
+            session_id: awaken_session_contract::SessionId::from(&session_id.0),
             source_thread_id: dispatch.thread_id().clone(),
             source_run_id: dispatch.run_id().clone(),
             source_agent_id: dispatch.activation.snapshot.root_agent_id.0.clone(),
@@ -439,7 +445,7 @@ impl DispatchSettlementObserver for HostDispatchSettlementObserver {
         self.endpoint
             .admit_run_activity(
                 claim,
-                &session_id.0,
+                &awaken_session_contract::SessionId::from(&session_id.0),
                 &dispatch.activation.snapshot.root_agent_id.0,
                 dispatch.run_id(),
                 mode,
@@ -513,7 +519,7 @@ impl Drop for AdmissionDropReceipt {
 impl SessionAgentCoordination for RecordingSessionAgentCoordination {
     async fn list_session_agents(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
     ) -> Result<Vec<SessionAgentRosterEntry>, awaken_session_contract::RunError> {
         Ok(Vec::new())
     }
@@ -551,7 +557,7 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
 
     async fn interrupt_session_thread(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
         _child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), awaken_session_contract::RunError> {
         Ok(())

@@ -1,4 +1,5 @@
 use super::*;
+use awaken_session_contract::SessionId;
 use awaken_session_contract::{
     ActivateSessionRealization, BeginSessionRealization, FrozenResourceTransitionUse,
     SessionRealizationControl, SessionRealizationLease, SessionRealizationTarget,
@@ -55,7 +56,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                 if replace {
                     let replaced = app
                         .replace_session_resource_manifest(
-                            id,
+                            &SessionId::from(id),
                             ReplaceSessionResourceManifest {
                                 resources: desired.clone(),
                                 expected_resource_revision: Some(1),
@@ -92,7 +93,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     SessionResourceManifest::at_revision("workspace", 99, active.clone()),
                     SessionResourceManifest::at_revision("workspace", 1, desired.clone()),
                 ] {
-                    let before = repo.get(id).await.unwrap();
+                    let before = repo.get(&SessionId::from(id)).await.unwrap();
                     assert!(
                         app.begin_session_realization(BeginSessionRealization {
                             expected_resources: Some(wrong),
@@ -102,7 +103,11 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                         .is_err(),
                         "R4"
                     );
-                    assert_eq!(repo.get(id).await.unwrap(), before, "R4 no mutation");
+                    assert_eq!(
+                        repo.get(&SessionId::from(id)).await.unwrap(),
+                        before,
+                        "R4 no mutation"
+                    );
                 }
                 let directive = app.begin_session_realization(begin.clone()).await.unwrap();
                 assert_eq!(
@@ -164,7 +169,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     &carried,
                     "R2 activation preserves A"
                 );
-                let current = repo.get(id).await.unwrap();
+                let current = repo.get(&SessionId::from(id)).await.unwrap();
                 assert_eq!(current.resources.active, active);
                 assert_eq!(
                     current.resources.pending,
@@ -202,8 +207,15 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                         settled.projection.resource_revision, 2,
                         "R3 commits B only after its Stage"
                     );
-                    assert!(repo.get(id).await.unwrap().resources.pending.is_none());
-                    let before = repo.get(id).await.unwrap();
+                    assert!(
+                        repo.get(&SessionId::from(id))
+                            .await
+                            .unwrap()
+                            .resources
+                            .pending
+                            .is_none()
+                    );
+                    let before = repo.get(&SessionId::from(id)).await.unwrap();
                     assert!(
                         app.authorize_resource_materialization_intent(&intent)
                             .await
@@ -222,7 +234,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                         "retired Stage A cannot roll back committed B"
                     );
                     assert_eq!(
-                        repo.get(id).await.unwrap(),
+                        repo.get(&SessionId::from(id)).await.unwrap(),
                         before,
                         "late A has no mutation"
                     );
@@ -275,7 +287,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
             _ => {}
         }
         create(repo.as_ref(), session).await;
-        let before = repo.get(id).await.unwrap();
+        let before = repo.get(&SessionId::from(id)).await.unwrap();
         for revision in [1, 2, 3] {
             for (source, bindings) in [(1, &active), (2, &desired)] {
                 for forged in [false, true] {
@@ -319,7 +331,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
                             assert!(matches!(result, Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))), "{lifecycle}/{revision}/{source}/{forged}");
                         }
                         assert_eq!(
-                            repo.get(id).await.unwrap(),
+                            repo.get(&SessionId::from(id)).await.unwrap(),
                             before,
                             "authorization never mutates"
                         );
@@ -357,7 +369,7 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
         session.resources.prepare(id, file_resources("b")).unwrap();
         session.resources.start_attempt().unwrap();
         create(repo.as_ref(), session).await;
-        let before = repo.get(id).await.unwrap();
+        let before = repo.get(&SessionId::from(id)).await.unwrap();
         let result = app
             .fail_session_realization(awaken_session_contract::FailSessionRealization {
                 session_id: id.into(),
@@ -368,7 +380,7 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
                 reason: "read unavailable".into(),
             })
             .await;
-        let after = repo.get(id).await.unwrap();
+        let after = repo.get(&SessionId::from(id)).await.unwrap();
         if revision == 99 {
             assert!(matches!(
                 result,
@@ -430,7 +442,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
             .note_retryable_failure("process stopped before settlement")
             .unwrap();
         create(repository.as_ref(), session).await;
-        let before_restart = repository.get(session_id).await.unwrap();
+        let before_restart = repository.get(&SessionId::from(session_id)).await.unwrap();
         assert_eq!(before_restart.resources.revision, pending_revision, "R1/E1");
         assert_eq!(
             before_restart.resources.pending,
@@ -444,7 +456,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
         awaken_session_store::SqliteManagedSessionRepository::open(&path)
             .expect("reopen Session authority"),
     );
-    let reopened = repository.get(session_id).await.unwrap();
+    let reopened = repository.get(&SessionId::from(session_id)).await.unwrap();
     assert_eq!(reopened.resources.revision, pending_revision, "R1/E1");
     assert_eq!(reopened.resources.pending, Some(pending.clone()), "R1/E1");
     assert_eq!(reopened.resources.activations[0].attempts, 1, "R1/E1");
@@ -457,7 +469,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
     assert!(report.failures.is_empty(), "R2/E2-E4: {report:?}");
     assert_eq!(report.settled.len(), 1, "R2/E2-E4");
 
-    let settled = repository.get(session_id).await.unwrap();
+    let settled = repository.get(&SessionId::from(session_id)).await.unwrap();
     assert_eq!(settled.resources.revision, pending_revision, "R2/E3");
     assert_eq!(
         settled.resources.active_generation(),
@@ -534,7 +546,7 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
         "R2/E1"
     );
 
-    let terminal = repository.get(session_id).await.unwrap();
+    let terminal = repository.get(&SessionId::from(session_id)).await.unwrap();
     assert!(terminal.resources.active.inputs().is_empty(), "R2/E2-E4");
     assert!(terminal.resources.pending.is_none(), "R2/E3-E4");
     assert!(!terminal.resources.has_references(), "R2/E4");

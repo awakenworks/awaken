@@ -15,7 +15,7 @@ use super::{FrozenSessionProjection, SessionRealizationControlFailure};
 /// completion registry.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionTerminalCleanupAssignment {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub projection: FrozenSessionProjection,
     #[serde(flatten)]
     pub authority: super::SessionRealizationLeaseReceipt,

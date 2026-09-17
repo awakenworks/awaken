@@ -169,12 +169,12 @@ REQUIRED = {
     SESSION_REPOSITORY_PORT: (
         "Unavailable(String)",
         "Corrupt(String)",
-        "async fn get(&self, session_id: &str) -> Result<PersistedSession",
-        "async fn owner(&self, session_id: &str) -> Result<String",
+        "async fn get(&self, session_id: &SessionId)\n    -> Result<PersistedSession",
+        "async fn owner(&self, session_id: &SessionId) -> Result<String",
     ),
     SESSION_REPOSITORY_PUBLICATION_AGGREGATE: (
         "pub fn verified_terminal_cleanup(",
-        "self.terminal_cleanup.verify_for(&self.session_id)?",
+        "self.terminal_cleanup.verify_for(self.session_id.as_str())?",
     ),
     SESSION_DELETE_DISPOSITION: (
         'event_type: "session.deleted"',
@@ -238,7 +238,7 @@ REQUIRED = {
         '"terminal-cleanup-disposal"',
         ".verified_terminal_cleanup()",
         "record_terminal_repository_publication_effect_from_root",
-        ".record_repository_publication_rejection(session_id, rejection)",
+        ".record_repository_publication_rejection(session_id.as_str(), rejection)",
         '"terminal-repository-publication-worker-outcome"',
     ),
     APPLICATION_TERMINAL: (
@@ -246,8 +246,8 @@ REQUIRED = {
         "commit_delete_intent",
         "pub async fn delete_session(",
         ".wake_lifecycle_supervisor()",
-        ".repository_publication_rejection(&command.session_id)",
-        ".repository_publication_receipt(&command.session_id)",
+        ".repository_publication_rejection(command.session_id.as_str())",
+        ".repository_publication_receipt(command.session_id.as_str())",
     ),
     APPLICATION_WORK_DISPATCH: ("if session.is_terminal()",),
     PROTOCOL_SESSIONS: (
@@ -554,7 +554,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             APPLICATION_RESOURCE_RECONCILIATION,
             "record_terminal_repository_publication_effect_from_root",
             (
-                ".record_repository_publication_rejection(session_id, rejection)",
+                ".record_repository_publication_rejection(session_id.as_str(), rejection)",
                 '"terminal-repository-publication-worker-outcome"',
             ),
             "one root-CAS Repository publication outcome",
@@ -575,8 +575,8 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             APPLICATION_TERMINAL,
             "archive_with_repository_publication",
             (
-                ".repository_publication_rejection(&command.session_id)",
-                ".repository_publication_receipt(&command.session_id)",
+                ".repository_publication_rejection(command.session_id.as_str())",
+                ".repository_publication_receipt(command.session_id.as_str())",
             ),
             "permanent Repository rejection before successful replay",
         )
@@ -1106,7 +1106,7 @@ fn record_terminal_repository_publication_effect_from_root() {
     session.verified_terminal_cleanup();
     match effect {
         Published(receipt) => session.record_repository_publication_receipt(session_id, receipt),
-        Rejected(rejection) => session.record_repository_publication_rejection(session_id, rejection),
+        Rejected(rejection) => session.record_repository_publication_rejection(session_id.as_str(), rejection),
     }
     "terminal-repository-publication-worker-outcome";
 }
@@ -1122,8 +1122,8 @@ async fn record_terminal_repository_publication_rejection() {
     canonical[APPLICATION_EVENT_BATCHES] = "session.verified_terminal_cleanup();"
     canonical[APPLICATION_TERMINAL] = """
 fn archive_with_repository_publication() {
-    durable.terminal_cleanup.repository_publication_rejection(&command.session_id);
-    durable.terminal_cleanup.repository_publication_receipt(&command.session_id);
+    durable.terminal_cleanup.repository_publication_rejection(command.session_id.as_str());
+    durable.terminal_cleanup.repository_publication_receipt(command.session_id.as_str());
 }
 SessionDeleteCommand
 commit_delete_intent
@@ -1298,7 +1298,7 @@ fn recover_terminal_receipts() {
         (
             "Session-bound aggregate verification",
             SESSION_REPOSITORY_PUBLICATION_AGGREGATE,
-            "self.terminal_cleanup.verify_for(&self.session_id)?",
+            "self.terminal_cleanup.verify_for(self.session_id.as_str())?",
         ),
         ("store encode aggregate binding", SESSION_ROW_CODEC, "verify_aggregate(session)?;"),
         ("store decode aggregate binding", SESSION_ROW_CODEC, "verify_aggregate(&aggregate)?;"),
@@ -1500,14 +1500,14 @@ fn recover_terminal_receipts() {
         (
             "root rejection before outcome CAS",
             APPLICATION_RESOURCE_RECONCILIATION,
-            ".record_repository_publication_rejection(session_id, rejection)",
+            ".record_repository_publication_rejection(session_id.as_str(), rejection)",
             '"terminal-repository-publication-worker-outcome"',
         ),
         (
             "permanent rejection before successful replay",
             APPLICATION_TERMINAL,
-            ".repository_publication_rejection(&command.session_id)",
-            ".repository_publication_receipt(&command.session_id)",
+            ".repository_publication_rejection(command.session_id.as_str())",
+            ".repository_publication_receipt(command.session_id.as_str())",
         ),
         (
             "Git admission before exact ref lease",

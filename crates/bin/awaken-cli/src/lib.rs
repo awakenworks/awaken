@@ -1197,11 +1197,11 @@ mod runtime_session_store_tests {
         }
     }
 
-    fn session(id: &str) -> PersistedSession {
+    fn session(id: &awaken_session_contract::SessionId) -> PersistedSession {
         PersistedSession {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
-            session_id: id.to_string(),
+            session_id: id.clone(),
             revision: Default::default(),
             baseline: SessionBaselineState::Preparing(creation_intent()),
             title: None,
@@ -1235,7 +1235,7 @@ mod runtime_session_store_tests {
                 .coordinator
                 .as_ref()
                 .expect("test startup owns Managed Execution");
-            let value = session("sesn-restart");
+            let value = session(&awaken_session_contract::SessionId::from("sesn-restart"));
             let payload_hash = stable_fingerprint(&value);
             execution
                 .sessions
@@ -1258,13 +1258,17 @@ mod runtime_session_store_tests {
             .as_ref()
             .expect("test startup owns Managed Execution");
         assert_eq!(
-            execution.sessions.owner("sesn-restart").await.as_deref(),
+            execution
+                .sessions
+                .owner(&awaken_session_contract::SessionId::from("sesn-restart"))
+                .await
+                .as_deref(),
             Ok("workspace-a")
         );
         assert_eq!(
             execution
                 .sessions
-                .get("sesn-restart")
+                .get(&awaken_session_contract::SessionId::from("sesn-restart"))
                 .await
                 .expect("session survives restart")
                 .baseline,

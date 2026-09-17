@@ -276,7 +276,7 @@ impl SessionApplication {
     /// field is re-lowered or re-authored by this recovery mutation.
     async fn retry_failed_mcp_update_realization(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<PersistedSession, SessionUpdateError> {
         let owner_scope = self
             .owner(session_id)
@@ -349,7 +349,7 @@ impl SessionApplication {
     /// sole root CAS, then reconcile realization and disposable Runtime effects.
     pub async fn update_session(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         command: SessionUpdateCommand,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
         let command_record = command
@@ -358,7 +358,7 @@ impl SessionApplication {
             .map(|key| IdempotencyRecord {
                 key: format!(
                     "managed:update-command:{session_id}:{}",
-                    Self::update_operation_id(session_id, key)
+                    Self::update_operation_id(session_id.as_str(), key)
                 ),
                 payload_hash: command.request_fingerprint.clone(),
             });
@@ -506,7 +506,10 @@ impl SessionApplication {
             && (outcome.changes.tools || !outcome.command_applied)
             && let Err(source) = self
                 .runtime()
-                .replace_session_tools(&outcome.session.session_id, outcome.session.tools.clone())
+                .replace_session_tools(
+                    outcome.session.session_id.as_str(),
+                    outcome.session.tools.clone(),
+                )
                 .await
         {
             return Err(SessionUpdateError::ProjectionAfterCommit {
@@ -581,7 +584,7 @@ impl SessionApplication {
                     // before executing it. Reclaim the just-opened activity;
                     // dependency/internal failures remain active because their
                     // staging outcome is ambiguous and update replay repairs it.
-                    self.settle_activity(&session_id, session_activity_epoch)
+                    self.settle_activity(session_id.as_str(), session_activity_epoch)
                         .await
                         .map_err(|error| SessionUpdateError::ProjectionAfterCommit {
                             outcome: Box::new(outcome.clone()),
@@ -600,7 +603,7 @@ impl SessionApplication {
                 }
             };
             if disposition == SessionBudgetResumeDisposition::Stale {
-                self.settle_activity(&session_id, session_activity_epoch)
+                self.settle_activity(session_id.as_str(), session_activity_epoch)
                     .await
                     .map_err(|error| SessionUpdateError::ProjectionAfterCommit {
                         outcome: Box::new(outcome.clone()),
@@ -619,7 +622,7 @@ impl SessionApplication {
 
     async fn update_session_once(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         command: &SessionUpdateCommand,
         command_record: Option<IdempotencyRecord>,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {

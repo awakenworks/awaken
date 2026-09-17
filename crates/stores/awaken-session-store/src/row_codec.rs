@@ -446,7 +446,7 @@ mod tests {
                 connection
                     .execute(
                         "UPDATE managed_session SET aggregate_json = ?1, revision = ?3 WHERE session_id = ?2",
-                        params![bytes, session.session_id, i64::try_from(session.revision.0).unwrap()],
+                        params![bytes, session.session_id.as_str(), i64::try_from(session.revision.0).unwrap()],
                     )
                     .unwrap();
                 drop(connection);
@@ -484,7 +484,7 @@ mod tests {
                     let connection = rusqlite::Connection::open(&path).unwrap();
                     let stored: (String, i64) = connection.query_row(
                         "SELECT aggregate_json, revision FROM managed_session WHERE session_id = ?1",
-                        params![session.session_id],
+                        params![session.session_id.as_str()],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     ).unwrap();
                     assert_eq!(
@@ -500,7 +500,7 @@ mod tests {
         connection
             .execute(
                 "UPDATE managed_session SET aggregate_json = ?1, revision = ?3 WHERE session_id = ?2",
-                params![current, session.session_id, i64::try_from(session.revision.0).unwrap()],
+                params![current, session.session_id.as_str(), i64::try_from(session.revision.0).unwrap()],
             )
             .unwrap();
         drop(connection);
@@ -533,9 +533,12 @@ mod tests {
         let mut legacy: serde_json::Value = serde_json::from_str(&current).unwrap();
         legacy["format"] = serde_json::json!("awaken.session.v1");
         legacy["aggregate"]["mcp"]["attachments"][0]["generation"] = serde_json::json!(1);
-        let (upgraded, _) =
-            super::normalize_published_row(&session.session_id, Some(legacy.to_string()), 1)
-                .unwrap();
+        let (upgraded, _) = super::normalize_published_row(
+            session.session_id.as_str(),
+            Some(legacy.to_string()),
+            1,
+        )
+        .unwrap();
         let mut expected = session.clone();
         expected.revision = SessionRevision(2);
         assert_eq!(upgraded, expected, "U1 no lifecycle/effect mutation");
@@ -575,7 +578,7 @@ mod tests {
             *invalid.pointer_mut(pointer).unwrap() = value;
             assert!(
                 super::normalize_published_row(
-                    &session.session_id,
+                    session.session_id.as_str(),
                     Some(invalid.to_string()),
                     index_revision
                 )
@@ -590,8 +593,12 @@ mod tests {
                 .unwrap()
                 .remove(field);
             assert!(
-                super::normalize_published_row(&session.session_id, Some(invalid.to_string()), 1)
-                    .is_err(),
+                super::normalize_published_row(
+                    session.session_id.as_str(),
+                    Some(invalid.to_string()),
+                    1
+                )
+                .is_err(),
                 "U2 missing {field}"
             );
         }
@@ -646,7 +653,7 @@ mod tests {
         session.freeze_terminal_cleanup_targets([], 3, 5).unwrap();
         let command = session
             .terminal_cleanup
-            .publication_command(&session_id)
+            .publication_command(session_id.as_str())
             .unwrap()
             .unwrap();
         if rejected {
@@ -657,7 +664,7 @@ mod tests {
             .unwrap();
             session
                 .terminal_cleanup
-                .record_repository_publication_rejection(&session_id, rejection)
+                .record_repository_publication_rejection(session_id.as_str(), rejection)
                 .unwrap();
         } else {
             let receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
@@ -671,7 +678,7 @@ mod tests {
             );
             session
                 .terminal_cleanup
-                .record_repository_publication_receipt(&session_id, receipt)
+                .record_repository_publication_receipt(session_id.as_str(), receipt)
                 .unwrap();
         }
         let Some(awaken_session_contract::SessionTerminalCleanupAction::Prepare { mut commands }) =
@@ -691,7 +698,7 @@ mod tests {
         .unwrap();
         let repository_preparation =
             awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-                &session_id,
+                session_id.as_str(),
                 "default",
                 &session.resources,
             )
@@ -727,7 +734,12 @@ mod tests {
         // aggregate structurally unrepresentable in the current baseline.
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
         create_fixture(&repo, "default", sample("strict-row"), Vec::new()).await;
-        assert!(repo.get("strict-row").await.is_ok(), "C1");
+        assert!(
+            repo.get(&awaken_session_contract::SessionId::from("strict-row"))
+                .await
+                .is_ok(),
+            "C1"
+        );
 
         create_fixture(&repo, "default", sample("drifted-row"), Vec::new()).await;
         repo.conn
@@ -738,7 +750,12 @@ mod tests {
                 params!["drifted-row"],
             )
             .unwrap();
-        assert!(repo.get("drifted-row").await.is_err(), "C2");
+        assert!(
+            repo.get(&awaken_session_contract::SessionId::from("drifted-row"))
+                .await
+                .is_err(),
+            "C2"
+        );
     }
 
     /// Persisted normalization cause/effect table: C1 a valid historical row
@@ -766,7 +783,7 @@ mod tests {
             .collect();
         let raw = super::encode(&session).expect("N1 historical row");
         let normalized = super::normalize_published_row(
-            &session.session_id,
+            session.session_id.as_str(),
             Some(raw),
             i64::try_from(session.revision.0).unwrap(),
         )
@@ -782,7 +799,7 @@ mod tests {
         assert_eq!(decoded.resources.activations[0].revision, 128, "N1/E1");
         assert!(
             super::normalize_published_row(
-                &session.session_id,
+                session.session_id.as_str(),
                 Some(normalized),
                 i64::try_from(session.revision.0).unwrap(),
             )
@@ -851,7 +868,7 @@ mod tests {
         // coordinate synthesis or compatibility projection.
         let mut session = sample("codec-admission-fence");
         let mut batch = awaken_session_contract::SessionEventBatch::compile(
-            &session.session_id,
+            session.session_id.as_str(),
             "accepted",
             vec![awaken_session_contract::SessionEventInput::UserMessage {
                 content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -919,7 +936,7 @@ mod tests {
 
             let foreign_id = format!("foreign-{label}");
             let mut foreign = session.clone();
-            foreign.session_id = foreign_id.clone();
+            foreign.session_id = awaken_session_contract::SessionId::from(&foreign_id);
             assert!(
                 super::encode(&foreign).is_err(),
                 "{label}: encode rejects foreign command binding"

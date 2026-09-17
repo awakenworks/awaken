@@ -681,7 +681,7 @@ async fn verify_terminal_repository_binding(
     let transport = match authorizer
         .authorize(RepositoryTransportAuthorization {
             worker: identity.clone(),
-            session_id: canonical.session_id.clone(),
+            session_id: canonical.session_id.to_string(),
             workspace_id: projection.workspace_id.clone(),
             input: canonical.intent.input.clone(),
             authority: RepositoryTransportAuthority::TerminalPublication {

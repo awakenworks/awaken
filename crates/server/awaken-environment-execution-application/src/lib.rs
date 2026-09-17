@@ -446,7 +446,12 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         environment_id: &str,
         session_id: &str,
     ) -> Result<String, WorkQueueError> {
-        self.work.enqueue_session(environment_id, session_id).await
+        self.work
+            .enqueue_session(
+                environment_id,
+                &awaken_session_contract::SessionId::from(session_id),
+            )
+            .await
     }
 
     async fn wake_session_work(
@@ -454,7 +459,12 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         environment_id: &str,
         session_id: &str,
     ) -> Result<String, WorkQueueError> {
-        self.work.wake_session(environment_id, session_id).await
+        self.work
+            .wake_session(
+                environment_id,
+                &awaken_session_contract::SessionId::from(session_id),
+            )
+            .await
     }
 
     async fn retire_session_work(
@@ -462,7 +472,12 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         environment_id: &str,
         session_id: &str,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.work.retire_session(environment_id, session_id).await
+        self.work
+            .retire_session(
+                environment_id,
+                &awaken_session_contract::SessionId::from(session_id),
+            )
+            .await
     }
 
     async fn release_session_work(
@@ -480,7 +495,12 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         now_ms: u64,
     ) -> Result<Option<awaken_session_contract::work_queue::SessionWorkLease>, WorkQueueError> {
         self.work
-            .acquire_session(environment_id, session_id, worker_owner, now_ms)
+            .acquire_session(
+                environment_id,
+                &awaken_session_contract::SessionId::from(session_id),
+                worker_owner,
+                now_ms,
+            )
             .await
     }
 
@@ -1334,11 +1354,15 @@ mod tests {
         async fn enqueue_session(
             &self,
             env: &str,
-            session: &str,
+            session: &awaken_session_contract::SessionId,
         ) -> Result<String, WorkQueueError> {
             self.inner.enqueue_session(env, session).await
         }
-        async fn wake_session(&self, env: &str, session: &str) -> Result<String, WorkQueueError> {
+        async fn wake_session(
+            &self,
+            env: &str,
+            session: &awaken_session_contract::SessionId,
+        ) -> Result<String, WorkQueueError> {
             self.inner.wake_session(env, session).await
         }
         async fn enqueue_healthcheck(&self, env: &str) -> Result<String, WorkQueueError> {
@@ -1402,14 +1426,14 @@ mod tests {
         async fn retire_session(
             &self,
             env: &str,
-            session: &str,
+            session: &awaken_session_contract::SessionId,
         ) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.retire_session(env, session).await
         }
         async fn acquire_session(
             &self,
             env: &str,
-            session: &str,
+            session: &awaken_session_contract::SessionId,
             worker: &str,
             now: u64,
         ) -> Result<Option<awaken_session_contract::work_queue::SessionWorkLease>, WorkQueueError>
@@ -1483,7 +1507,12 @@ mod tests {
             "C2"
         );
         assert_eq!(work.list("converge").await.unwrap().len(), 1, "C2");
-        work.enqueue_session("converge", "session-a").await.unwrap();
+        work.enqueue_session(
+            "converge",
+            &awaken_session_contract::SessionId::from("session-a"),
+        )
+        .await
+        .unwrap();
         let withdrawal = ExecutableEnvironmentWithdrawal {
             environment_id: "converge".into(),
             lifecycle_revision: EnvironmentRevision(2),

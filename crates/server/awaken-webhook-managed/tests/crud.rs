@@ -3,6 +3,7 @@
 //! never an ownership disclosure), secret sealing (minted once, never echoed), and
 //! the seal-failure / missing-url faults.
 
+use awaken_session_contract::SessionId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -74,7 +75,7 @@ impl ManagedSessionRepository for SessionOutbox {
     async fn replay_create(
         &self,
         _owner_scope: &str,
-        _session_id: &str,
+        _session_id: &SessionId,
         _idempotency: &awaken_session_contract::IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
         Err(
@@ -131,7 +132,7 @@ impl ManagedSessionRepository for SessionOutbox {
     }
     async fn get(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
     ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
         Err(awaken_session_contract::SessionRepositoryError::NotFound)
     }
@@ -160,7 +161,7 @@ impl ManagedSessionRepository for SessionOutbox {
 
     async fn idempotency_receipt(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _key: &str,
     ) -> Result<
         Option<awaken_session_contract::SessionIdempotencyReceipt>,
@@ -171,7 +172,7 @@ impl ManagedSessionRepository for SessionOutbox {
 
     async fn owner(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
     ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
         Err(awaken_session_contract::SessionRepositoryError::NotFound)
     }

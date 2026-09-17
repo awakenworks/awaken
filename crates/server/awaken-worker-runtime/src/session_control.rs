@@ -194,14 +194,14 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlSession
 
     async fn terminal_cleanup_work(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionTerminalCleanupWork>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.control
-            .terminal_cleanup_work(&self.identity, session_id, lease)
+            .terminal_cleanup_work(&self.identity, session_id.as_str(), lease)
             .await
     }
 
@@ -260,27 +260,27 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlSession
 
     async fn terminal_repository_publication_command(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.control
-            .terminal_repository_publication_command(&self.identity, session_id, lease)
+            .terminal_repository_publication_command(&self.identity, session_id.as_str(), lease)
             .await
     }
 
     async fn record_terminal_repository_publication_receipt(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
         self.control
             .record_terminal_repository_publication_receipt(
                 &self.identity,
-                session_id,
+                session_id.as_str(),
                 lease,
                 receipt,
             )
@@ -288,14 +288,14 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlSession
     }
     async fn record_terminal_repository_publication_rejection(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
         self.control
             .record_terminal_repository_publication_rejection(
                 &self.identity,
-                session_id,
+                session_id.as_str(),
                 lease,
                 rejection,
             )

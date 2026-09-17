@@ -34,7 +34,14 @@ async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
         .expect("C2 writer reservation");
     let queued = {
         let queue = queue.clone();
-        tokio::spawn(async move { queue.enqueue_session("env_local", "session_waits").await })
+        tokio::spawn(async move {
+            queue
+                .enqueue_session(
+                    "env_local",
+                    &awaken_session_contract::SessionId::from("session_waits"),
+                )
+                .await
+        })
     };
     tokio::time::sleep(Duration::from_millis(100)).await;
     transaction.commit().expect("release writer reservation");

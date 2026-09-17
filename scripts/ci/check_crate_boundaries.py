@@ -1400,7 +1400,6 @@ NON_IDENTITY_COMPOSITES: dict[str, str] = {
     "PlacementContext": "placement reads requirements and attributes; the two ids are carried for identification",
     "SessionExecutionEvidence": "a read-only wire projection of SessionExecutionObservation",
     "SessionExecutionObservation": "a read-only projection handed straight to wire projection",
-    "SessionResourceActivation": "every decision keys on state and revision; activation_id is derived and never read back",
     "SessionToolUseObservation": "its coordinates are only formatted into a public tool-event id",
     "SessionUserRunCommand": "forwarded into AdmitSessionRun, which owns the reservation fence",
     "WorkDispatchFailure": "a reconciliation report entry; consumers count and log it",
@@ -1415,7 +1414,7 @@ NON_IDENTITY_COMPOSITES: dict[str, str] = {
 # *new* unstated composite identity today rather than only after the migration
 # finishes. Lower this number as witnesses are converted or recorded above;
 # never raise it.
-UNSTATED_COMPOSITE_IDENTITY_BASELINE = 59
+UNSTATED_COMPOSITE_IDENTITY_BASELINE = 52
 
 
 def _unstated_composite_identities(

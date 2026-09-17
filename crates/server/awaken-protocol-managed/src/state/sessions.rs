@@ -185,7 +185,7 @@ impl ManagedState {
         &self,
         persisted: &PersistedSession,
     ) -> Result<(), StateError> {
-        let result = self.publish_projection_update(&persisted.session_id, |candidate| {
+        let result = self.publish_projection_update(persisted.session_id.as_str(), |candidate| {
             if persisted.revision >= candidate.checkpoint.source.session_revision {
                 Self::apply_persisted_session(candidate, persisted);
             }
@@ -435,7 +435,11 @@ impl ManagedState {
                                 sequence,
                             ))
                         );
-                        let repository_absent = match self.application.session(&candidate).await {
+                        let repository_absent = match self
+                            .application
+                            .session(&awaken_session_contract::SessionId::from(&candidate))
+                            .await
+                        {
                             Err(awaken_session_contract::SessionRepositoryError::NotFound) => true,
                             Ok(_) => false,
                             Err(error) => return Err(StateError::from(error)),
@@ -1038,7 +1042,11 @@ impl ManagedState {
         if let Some(scope) = self.owner_scope(session_id) {
             return Ok(Some(scope));
         }
-        match self.application.owner(session_id).await {
+        match self
+            .application
+            .owner(&awaken_session_contract::SessionId::from(session_id))
+            .await
+        {
             Ok(owner) => Ok(Some(owner)),
             Err(awaken_session_application::SessionMutationError::NotFound) => Ok(None),
             Err(error) => Err(Self::map_application_mutation_error(error)),
@@ -1223,7 +1231,7 @@ impl ManagedState {
         }
         let persisted = self
             .application
-            .session(id)
+            .session(&awaken_session_contract::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         if persisted.is_hidden() {
@@ -1231,7 +1239,7 @@ impl ManagedState {
         }
         let owner_scope = self
             .application
-            .owner(id)
+            .owner(&awaken_session_contract::SessionId::from(id))
             .await
             .map_err(Self::map_application_mutation_error)?;
         let record = SessionRecord::new(
@@ -1340,11 +1348,11 @@ impl ManagedState {
             if session.is_hidden() {
                 continue;
             }
-            if let Some(record) = cached.get(&session_id) {
+            if let Some(record) = cached.get(session_id.as_str()) {
                 out.push(record.session_projection());
             } else {
                 out.push(self.rehydrated_session_for(
-                    &session_id,
+                    session_id.as_str(),
                     scope,
                     session,
                     RehydrationPurpose::CollectionRead,

@@ -53,7 +53,7 @@ impl SessionApplication {
                 Err(error) => {
                     report
                         .failures
-                        .push((candidate.session_id.clone(), error.to_string()));
+                        .push((candidate.session_id.to_string(), error.to_string()));
                     continue;
                 }
             };
@@ -71,19 +71,25 @@ impl SessionApplication {
             let owner = match self.owner(&session_id).await {
                 Ok(owner) => owner,
                 Err(error) => {
-                    report.failures.push((session_id, error.to_string()));
+                    report
+                        .failures
+                        .push((String::from(session_id), error.to_string()));
                     continue;
                 }
             };
             if let Err(error) = self.install_dispatch_projection(&owner, &session).await {
-                report.failures.push((session_id, error.to_string()));
+                report
+                    .failures
+                    .push((String::from(session_id), error.to_string()));
                 continue;
             }
-            match self.runtime().continue_outcome(&session_id).await {
+            match self.runtime().continue_outcome(session_id.as_str()).await {
                 Ok(Some(OutcomeDrive::Completed(_))) => report.settled += 1,
                 Ok(Some(OutcomeDrive::Awaiting)) => report.pending += 1,
                 Ok(None) => {}
-                Err(error) => report.failures.push((session_id, error.to_string())),
+                Err(error) => report
+                    .failures
+                    .push((String::from(session_id), error.to_string())),
             }
         }
         report

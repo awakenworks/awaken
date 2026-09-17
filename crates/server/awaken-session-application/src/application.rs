@@ -348,7 +348,7 @@ impl SessionApplication {
             .frozen_baseline()
             .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
         self.validate_session_sandbox_layout(
-            &session.session_id,
+            session.session_id.as_str(),
             &awaken_session_contract::SessionSandboxLayout {
                 workspace_id: workspace_id.to_string(),
                 agent_id: baseline.agent_id.clone(),
@@ -897,7 +897,10 @@ async fn dispatch_session_work(
     // cleanup driver. A second reconciler would duplicate the external attempt
     // and obscure its durable completion boundary.
     environments
-        .enqueue_session_work(&baseline.environment.environment_id, &session.session_id)
+        .enqueue_session_work(
+            &baseline.environment.environment_id,
+            session.session_id.as_str(),
+        )
         .await?;
     Ok(true)
 }
@@ -926,7 +929,7 @@ async fn reconcile_work_dispatches(
             Ok(true) => report.settled += 1,
             Ok(false) => {}
             Err(error) => report.failures.push(WorkDispatchFailure {
-                session_id: session.session_id.clone(),
+                session_id: session.session_id.to_string(),
                 environment_id: session.environment_id().to_string(),
                 message: error.to_string(),
             }),
@@ -941,7 +944,7 @@ fn claim_once(fence: &AtomicBool) -> bool {
 
 async fn self_hosted_work_environment(
     application: &SessionApplication,
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
 ) -> Result<Option<(String, bool)>, awaken_session_contract::work_queue::WorkQueueError> {
     let session = match application.session_repository().get(session_id).await {
         Ok(session) => session,
@@ -971,7 +974,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
 
     async fn acquire_session_work(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         worker_owner: &str,
         now_ms: u64,
         acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
@@ -988,7 +991,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
         };
         let acquired = self
             .environments
-            .acquire_session_work(&environment_id, session_id, worker_owner, now_ms)
+            .acquire_session_work(&environment_id, session_id.as_str(), worker_owner, now_ms)
             .await?;
         if !awaken_session_contract::work_queue::session_work_revival_is_authorized(
             acquisition,
@@ -1005,11 +1008,11 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
         // the one WorkQueue path and retry acquisition exactly once. Terminal
         // Sessions are excluded above and can never be resurrected here.
         self.environments
-            .wake_session_work(&environment_id, session_id)
+            .wake_session_work(&environment_id, session_id.as_str())
             .await?;
         Ok(self
             .environments
-            .acquire_session_work(&environment_id, session_id, worker_owner, now_ms)
+            .acquire_session_work(&environment_id, session_id.as_str(), worker_owner, now_ms)
             .await?
             .map(SessionWorkOwnership::Leased)
             .unwrap_or(SessionWorkOwnership::Unowned))
@@ -1113,7 +1116,11 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
     ) -> Result<awaken_session_contract::SessionEnvironmentEffectAuthorization, RunError> {
         intent.verify().map_err(Self::receipt_error)?;
         let session_id = intent.session_id();
-        let owner = match self.repo.owner(session_id).await {
+        let owner = match self
+            .repo
+            .owner(&awaken_session_contract::SessionId::from(session_id))
+            .await
+        {
             Ok(owner) => owner,
             Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned);
@@ -1122,7 +1129,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
         };
         let session = self
             .repo
-            .get(session_id)
+            .get(&awaken_session_contract::SessionId::from(session_id))
             .await
             .map_err(session_repository_error)?;
         session
@@ -1139,12 +1146,12 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
         for attempt in 0..CAS_ATTEMPTS {
             let owner = self
                 .repo
-                .owner(session_id)
+                .owner(&awaken_session_contract::SessionId::from(session_id))
                 .await
                 .map_err(session_repository_error)?;
             let mut session = self
                 .repo
-                .get(session_id)
+                .get(&awaken_session_contract::SessionId::from(session_id))
                 .await
                 .map_err(session_repository_error)?;
             let now_unix_ms = self.clock.now_ms();
@@ -1220,7 +1227,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 | awaken_session_contract::SessionMutationResult::Replayed { .. } => {
                     let committed = self
                         .repo
-                        .get(session_id)
+                        .get(&awaken_session_contract::SessionId::from(session_id))
                         .await
                         .map_err(session_repository_error)?;
                     return Self::committed_authority(&committed, &receipt);

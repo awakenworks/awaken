@@ -33,7 +33,7 @@ pub struct DreamRequest {
     pub workspace_id: String,
     pub source_memory_store_id: String,
     pub output_behavior: DreamOutputBehavior,
-    pub session_ids: Vec<String>,
+    pub session_ids: Vec<awaken_session_contract::SessionId>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
     /// Ordinary published Agent id used by the auxiliary Session. The stable
@@ -61,7 +61,7 @@ pub trait DreamSessionSource: Send + Sync {
         workspace_id: &str,
         updated_after_ms: u64,
         limit: usize,
-    ) -> Vec<String>;
+    ) -> Vec<awaken_session_contract::SessionId>;
 
     /// Read the ordinary auxiliary Session's cumulative committed usage. Dream
     /// never persists a second copy of these execution facts.
@@ -147,12 +147,12 @@ struct DreamProcess {
     status: DreamStatus,
     source_memory_store_id: String,
     output_behavior: DreamOutputBehavior,
-    session_ids: Vec<String>,
+    session_ids: Vec<awaken_session_contract::SessionId>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
     agent_id: String,
     result_memory_store_id: Option<String>,
-    session_id: Option<String>,
+    session_id: Option<awaken_session_contract::SessionId>,
     transcript_file_ids: Vec<String>,
     cleanup_pending: bool,
     created_at: u64,
@@ -230,7 +230,7 @@ fn process_preparation(process: &DreamProcess) -> Option<DreamPreparation> {
     match (&process.result_memory_store_id, &process.session_id) {
         (Some(result_memory_store_id), Some(session_id)) => Some(DreamPreparation {
             result_memory_store_id: result_memory_store_id.clone(),
-            session_id: session_id.clone(),
+            session_id: session_id.to_string(),
             transcript_file_ids: process.transcript_file_ids.clone(),
         }),
         _ => None,
@@ -275,7 +275,10 @@ fn process_from_record(record: DreamProcessRecord) -> DreamProcess {
         request_guidance: record.request_guidance,
         agent_id: record.agent_id,
         result_memory_store_id: record.result_memory_store_id,
-        session_id: record.session_id,
+        session_id: record
+            .session_id
+            .map(String::from)
+            .map(awaken_session_contract::SessionId::from),
         transcript_file_ids: record.transcript_file_ids,
         cleanup_pending: record.cleanup_pending,
         created_at: record.created_at,
@@ -476,7 +479,13 @@ impl DreamApplication {
 
     async fn project_process(&self, process: &DreamProcess) -> Dream {
         let source = self.session_source.lock().unwrap().clone();
-        let usage = match (source, process.session_id.as_deref()) {
+        let usage = match (
+            source,
+            process
+                .session_id
+                .as_ref()
+                .map(awaken_session_contract::SessionId::as_str),
+        ) {
             (Some(source), Some(session_id)) => source
                 .session_usage(&process.workspace_id, session_id)
                 .await
@@ -887,7 +896,9 @@ impl DreamApplication {
         };
         let prepared_job = match self.commit_job_update(&id, |job| {
             job.result_memory_store_id = Some(preparation.result_memory_store_id.clone());
-            job.session_id = Some(preparation.session_id.clone());
+            job.session_id = Some(awaken_session_contract::SessionId::from(
+                preparation.session_id.clone(),
+            ));
             job.transcript_file_ids = preparation.transcript_file_ids.clone();
             Ok(())
         }) {
@@ -1265,7 +1276,9 @@ fn parse_bound(value: Option<&str>) -> Result<Option<u64>, DreamApiError> {
         .transpose()
 }
 
-fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), DreamApiError> {
+fn validate_create(
+    params: &DreamCreateParams,
+) -> Result<(String, Vec<awaken_session_contract::SessionId>), DreamApiError> {
     if params.inputs.len() != 2 {
         return Err(DreamApiError::BadRequest(
             "inputs must contain exactly one memory_store and one sessions input".into(),
@@ -1328,7 +1341,7 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
         )));
     }
     let unique = sessions.iter().collect::<BTreeSet<_>>();
-    if unique.len() != sessions.len() || sessions.iter().any(|id| id.trim().is_empty()) {
+    if unique.len() != sessions.len() || sessions.iter().any(|id| id.as_str().trim().is_empty()) {
         return Err(DreamApiError::BadRequest(
             "session ids must be non-empty and unique".into(),
         ));

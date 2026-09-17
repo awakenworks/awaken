@@ -1,5 +1,6 @@
 //! Direct execution of the existing asynchronous replacement boundary.
 use crate::mutation::commit_observed_snapshot;
+use awaken_session_contract::SessionId;
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
     SessionCreateResult, SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload,
@@ -48,7 +49,7 @@ impl ManagedSessionRepository for ObservedCommitPort {
     async fn replay_create(
         &self,
         _owner_scope: &str,
-        _session_id: &str,
+        _session_id: &SessionId,
         _idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         panic!("unexpected repository operation")
@@ -65,7 +66,10 @@ impl ManagedSessionRepository for ObservedCommitPort {
     async fn complete_lifecycle(&self, _fact_id: &str) -> Result<(), SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
-    async fn get(&self, _session_id: &str) -> Result<PersistedSession, SessionRepositoryError> {
+    async fn get(
+        &self,
+        _session_id: &SessionId,
+    ) -> Result<PersistedSession, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
     async fn sessions_referencing_credential_source(
@@ -77,12 +81,12 @@ impl ManagedSessionRepository for ObservedCommitPort {
     }
     async fn idempotency_receipt(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _key: &str,
     ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
-    async fn owner(&self, _session_id: &str) -> Result<String, SessionRepositoryError> {
+    async fn owner(&self, _session_id: &SessionId) -> Result<String, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
 }

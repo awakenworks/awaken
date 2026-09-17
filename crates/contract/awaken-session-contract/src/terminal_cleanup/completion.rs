@@ -45,7 +45,7 @@ pub(super) fn canonical_thread_artifact_receipt_fingerprint(
 /// Untrusted Runtime report that one per-thread cleanup command completed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct SessionCleanupCompletion {
-    pub(super) session_id: String,
+    pub(super) session_id: crate::SessionId,
     pub(super) thread_id: String,
     pub(super) effect_id: String,
     pub(super) artifact_receipts: Vec<ArtifactPublicationReceipt>,
@@ -80,7 +80,7 @@ enum RemovedArtifactBundlePurpose {
 
 #[derive(Deserialize)]
 struct SessionCleanupCompletionWire {
-    session_id: String,
+    session_id: crate::SessionId,
     thread_id: String,
     effect_id: String,
     artifact_receipts: Vec<ArtifactPublicationReceipt>,

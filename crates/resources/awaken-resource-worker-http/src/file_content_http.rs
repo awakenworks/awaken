@@ -452,13 +452,19 @@ async fn application_session_file_is_frozen(
     ) else {
         return false;
     };
-    let Ok(owner_scope) = sessions.owner(&session_id.0).await else {
+    let Ok(owner_scope) = sessions
+        .owner(&awaken_session_contract::SessionId::from(&session_id.0))
+        .await
+    else {
         return false;
     };
     if owner_scope != request.workspace_id {
         return false;
     }
-    let Ok(session) = sessions.get(&session_id.0).await else {
+    let Ok(session) = sessions
+        .get(&awaken_session_contract::SessionId::from(&session_id.0))
+        .await
+    else {
         return false;
     };
     let lease_matches = session.realization.as_ref().is_some_and(|lease| {

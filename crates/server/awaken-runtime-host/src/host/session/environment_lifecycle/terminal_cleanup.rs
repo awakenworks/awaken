@@ -24,7 +24,7 @@ impl SharedHost {
             )
         })?;
         let workspace_id = self
-            .registered_thread_workspace(&effect.command.session_id)
+            .registered_thread_workspace(effect.command.session_id.as_str())
             .ok_or_else(|| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_workspace_missing",
@@ -39,7 +39,9 @@ impl SharedHost {
         }
         let root_realization = self
             .session_slots
-            .read(&effect.command.session_id, |slot| slot.realization.clone())
+            .read(effect.command.session_id.as_str(), |slot| {
+                slot.realization.clone()
+            })
             .ok_or_else(|| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_projection_missing",
@@ -71,7 +73,7 @@ impl SharedHost {
         if let Some(prepared) = root_environment.as_ref() {
             let expected_restore = prepared
                 .state
-                .restoring_request(&workspace_id, &effect.command.session_id);
+                .restoring_request(&workspace_id, effect.command.session_id.as_str());
             if expected_restore.as_ref() != effect.command.restore_target.as_ref() {
                 return Err(HostError::unavailable_classified(
                     "session_terminal_restore_target_mismatch",
@@ -90,7 +92,7 @@ impl SharedHost {
 
         self.session_slots
             .update(&effect.command.thread_id, |slot| {
-                slot.terminal_cleanup_root = Some(effect.command.session_id.clone());
+                slot.terminal_cleanup_root = Some(effect.command.session_id.to_string());
             });
 
         let primary_active = self
@@ -270,7 +272,7 @@ impl SharedHost {
             {
                 let provider_effect_fence = self.terminal_cleanup_effect_fence(&effect)?;
                 let authority = self.session_slots.provider_effect_authority(
-                    &effect.command.session_id,
+                    effect.command.session_id.as_str(),
                     &provider_effect_fence,
                     self.execution_authority.as_ref(),
                 )?;
@@ -310,7 +312,7 @@ impl SharedHost {
         let session_id = &effect.command.session_id;
         let root_realization = self
             .session_slots
-            .read(session_id, |slot| slot.realization.clone())
+            .read(session_id.as_str(), |slot| slot.realization.clone())
             .ok_or_else(|| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_projection_missing",
@@ -321,7 +323,7 @@ impl SharedHost {
         self.terminal_cleanup_disposal_authorization(&effect)?;
         let lifecycle = self
             .session_slots
-            .update(session_id, |slot| slot.lifecycle.clone());
+            .update(session_id.as_str(), |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
         let authorization = self.terminal_cleanup_disposal_authorization(&effect)?;
         let prepared_environment = if effect.command.restore_target.is_none() {
@@ -336,7 +338,7 @@ impl SharedHost {
             // cold=>E1+E2+E3; absent=>E1+E2 without a guessed delete.
             Some(
                 self.prepare_terminal_environment_under_lifecycle(
-                    session_id,
+                    session_id.as_str(),
                     authorization.effect_fence(),
                     BoundEnvironmentPreparationMode::TerminalDisposal,
                 )
@@ -350,7 +352,7 @@ impl SharedHost {
             .is_some_and(|prepared| prepared.environment.environment.is_none());
         let owner = self
             .session_slots
-            .read(session_id, |slot| slot.environment_owner.clone())
+            .read(session_id.as_str(), |slot| slot.environment_owner.clone())
             .ok_or_else(|| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_projection_missing",
@@ -364,22 +366,23 @@ impl SharedHost {
                 ),
                 Some(expected),
             ) if &request == expected => {
-                let provider = self.projected_session_environment_provider(session_id, None)?;
+                let provider =
+                    self.projected_session_environment_provider(session_id.as_str(), None)?;
                 let previous_resources = self
                     .session_slots
-                    .read(session_id, |slot| {
+                    .read(session_id.as_str(), |slot| {
                         slot.resource_transition
                             .as_ref()
                             .map(|transition| transition.previous().resources.clone())
                     })
                     .flatten();
                 let spec = self.session_environment_adoption_spec(
-                    session_id,
+                    session_id.as_str(),
                     provider,
                     previous_resources.as_ref(),
                 );
                 let authority = self.session_slots.provider_effect_authority(
-                    session_id,
+                    session_id.as_str(),
                     authorization.effect_fence(),
                     self.execution_authority.as_ref(),
                 )?;
@@ -436,7 +439,7 @@ impl SharedHost {
                         ));
                     }
                     let authority = self.session_slots.provider_effect_authority(
-                        &effect.command.session_id,
+                        effect.command.session_id.as_str(),
                         authorization.effect_fence(),
                         self.execution_authority.as_ref(),
                     )?;
@@ -468,7 +471,7 @@ impl SharedHost {
                 ));
             }
         }
-        self.session_slots.update(session_id, |slot| {
+        self.session_slots.update(session_id.as_str(), |slot| {
             slot.runtime = None;
             slot.environment_resource_reconciliation =
                 crate::session_slot::EnvironmentResourceReconciliation::None;
@@ -489,7 +492,7 @@ impl SharedHost {
             return;
         }
         self.retire_terminal_projection_for_generation(
-            &effect.command.session_id,
+            effect.command.session_id.as_str(),
             &effect.lease,
             Some(&effect.command.thread_id),
         )
@@ -503,7 +506,7 @@ impl SharedHost {
         effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         self.retire_terminal_projection_for_generation(
-            &effect.command.session_id,
+            effect.command.session_id.as_str(),
             &effect.lease,
             None,
         )

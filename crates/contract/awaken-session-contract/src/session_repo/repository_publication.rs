@@ -28,7 +28,7 @@ impl PersistedSession {
     pub fn verified_terminal_cleanup(
         &self,
     ) -> Result<&crate::SessionCleanupOperation, crate::SessionCleanupError> {
-        self.terminal_cleanup.verify_for(&self.session_id)?;
+        self.terminal_cleanup.verify_for(self.session_id.as_str())?;
         Ok(&self.terminal_cleanup)
     }
 
@@ -59,7 +59,7 @@ impl PersistedSession {
             }
             SessionDisposition::Archived { .. } => {
                 self.terminal_cleanup
-                    .request_with_publication(&self.session_id, intent)?;
+                    .request_with_publication(self.session_id.as_str(), intent)?;
                 return Ok(false);
             }
             SessionDisposition::Active => {}
@@ -86,7 +86,7 @@ impl PersistedSession {
             );
         }
         self.terminal_cleanup
-            .request_with_publication(&self.session_id, intent)?;
+            .request_with_publication(self.session_id.as_str(), intent)?;
         self.archive(archived_at).map_err(Into::into)
     }
 }

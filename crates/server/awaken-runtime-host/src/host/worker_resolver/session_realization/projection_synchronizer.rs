@@ -107,7 +107,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
 
     async fn synchronize_session_projection(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         projection: &awaken_session_contract::FrozenSessionProjection,
         lease: &awaken_session_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
@@ -115,7 +115,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         let retained_publication = self
             .host
             .session_slots
-            .read(session_id, |slot| slot.published_snapshot.clone())
+            .read(session_id.as_str(), |slot| slot.published_snapshot.clone())
             .flatten();
         if let Some(claimed) = self.published_snapshot
             && !matches!(
@@ -165,7 +165,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         let lifecycle = self
             .host
             .session_slots
-            .update(session_id, |slot| slot.lifecycle.clone());
+            .update(session_id.as_str(), |slot| slot.lifecycle.clone());
         let lifecycle_guard = lifecycle.lock().await;
         if self.claim.is_some() {
             let (canonical_publication, model_candidate) = self
@@ -182,7 +182,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             let has_local_environment_owner = self
                 .host
                 .session_slots
-                .read(session_id, |slot| {
+                .read(session_id.as_str(), |slot| {
                     slot.environment_owner.has_local_environment()
                 })
                 .unwrap_or(false);
@@ -197,18 +197,21 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             if self.rebuild_unavailable_environment && !a2a_only {
                 let provider = if let Some(candidate) = model_candidate.as_ref() {
                     self.host.session_environment_provider_for_thread(
-                        session_id,
+                        session_id.as_str(),
                         candidate.provisioning(),
                     )
                 } else {
                     self.host.session_environment_provider_for_thread(
-                        session_id,
+                        session_id.as_str(),
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
                 }
                 .map_err(crate::managed_adapter_error::to_run_error)?;
                 self.host
-                    .rebuild_claimed_legacy_environment_after_revocation(session_id, provider)
+                    .rebuild_claimed_legacy_environment_after_revocation(
+                        session_id.as_str(),
+                        provider,
+                    )
                     .await
                     .map_err(crate::managed_adapter_error::to_run_error)?;
             }
@@ -235,7 +238,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         }
         self.host
             .install_frozen_session_projection(
-                session_id,
+                session_id.as_str(),
                 projection.clone(),
                 self.claim,
                 synchronize_resources,
@@ -251,12 +254,12 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         // generation.
         self.host
             .session_slots
-            .update(session_id, |slot| slot.session_dispatch = true);
+            .update(session_id.as_str(), |slot| slot.session_dispatch = true);
         drop(lifecycle_guard);
         let published_snapshot = self
             .host
             .session_slots
-            .read(session_id, |slot| slot.published_snapshot.clone())
+            .read(session_id.as_str(), |slot| slot.published_snapshot.clone())
             .flatten();
         // A resident Arc is process-local ownership, not evidence that its
         // physical Sandbox survived. Revalidate every durable binding through
@@ -266,7 +269,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         let runtime_authority_resident = self
             .host
             .session_slots
-            .read(session_id, |slot| {
+            .read(session_id.as_str(), |slot| {
                 slot.runtime.is_some() || slot.environment_owner.is_resident()
             })
             .unwrap_or(false);
@@ -286,11 +289,11 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         let adoption = if let Some(binding) = projection.environment.binding() {
             let provider = self
                 .host
-                .projected_session_environment_provider(session_id, None)
+                .projected_session_environment_provider(session_id.as_str(), None)
                 .map_err(crate::managed_adapter_error::to_run_error)?;
             self.host
                 .adopt_bound_session_environment(
-                    session_id,
+                    session_id.as_str(),
                     Some(binding),
                     provider,
                     source_generation_id,
@@ -310,7 +313,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             // Environment receipt must still pass the ordinary durable sink.
             debug_assert!(
                 self.host
-                    .durable_session_environment_binding(session_id)
+                    .durable_session_environment_binding(session_id.as_str())
                     .is_none(),
                 "terminated recovery owner clears its durable binding"
             );
@@ -329,7 +332,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             && (has_environment_binding || self.requires_runtime_before_effects)
         {
             self.host
-                .session_child_execution_substrate(session_id, published_snapshot.as_ref())
+                .session_child_execution_substrate(session_id.as_str(), published_snapshot.as_ref())
                 .await
                 .map_err(crate::managed_adapter_error::to_run_error)?;
             true
@@ -339,7 +342,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         if synchronize_resources && !reconciled_by_substrate {
             self.host
                 .apply_dispatched_resource_transition(
-                    session_id,
+                    session_id.as_str(),
                     &projection.resource_transition(
                         awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects,
                     )?,
@@ -353,11 +356,11 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
 
     async fn invalidate_session_realization_lease(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<(), awaken_session_contract::RunError> {
         self.host
-            .invalidate_session_realization_lease(session_id, lease);
+            .invalidate_session_realization_lease(session_id.as_str(), lease);
         Ok(())
     }
 }
@@ -1119,7 +1122,7 @@ mod tests {
                 claimed_binding,
             )
             .synchronize_session_projection(
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 &projection,
                 &crate::session_slot::test_observed_lease(lease.clone()),
                 true,
@@ -1187,7 +1190,7 @@ mod tests {
                         projection.environment.binding(),
                     )
                     .synchronize_session_projection(
-                        thread,
+                        &awaken_session_contract::SessionId::from(thread),
                         &projection,
                         &crate::session_slot::test_observed_lease(lease.clone()),
                         true,
@@ -1584,7 +1587,7 @@ mod tests {
             claimed_environment_binding: Some(&raw_binding),
         }
         .synchronize_session_projection(
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             &projection,
             &crate::session_slot::test_observed_lease(lease.clone()),
             true,
@@ -1710,7 +1713,7 @@ mod tests {
             None,
         )
         .synchronize_session_projection(
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             &remote_projection,
             &crate::session_slot::test_observed_lease(lease.clone()),
             true,

@@ -67,7 +67,7 @@ pub async fn get_session_execution_evidence(
 ) -> Result<Json<awaken_protocol_awaken::SessionExecutionEvidence>, WireErr> {
     let observation = state
         .session_application()
-        .session_execution_observation(&owner_scope, &id)
+        .session_execution_observation(&owner_scope, &awaken_session_contract::SessionId::from(id))
         .await
         .map_err(session_projection_error)?;
     Ok(Json(project_execution_evidence(observation)))

@@ -16,7 +16,7 @@ const fn realization_publication_selects(
 }
 
 pub(super) fn publication_generations(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     attachments: &[SessionMcpAttachment],
 ) -> Result<Vec<McpGenerationRef>, SessionRealizationControlFailure> {
     attachments
@@ -31,7 +31,7 @@ pub(super) fn publication_generations(
 }
 
 pub(super) fn draining_generations(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     attachments: &[SessionMcpAttachment],
 ) -> Result<Vec<McpGenerationRef>, SessionRealizationControlFailure> {
     attachments
@@ -51,7 +51,10 @@ pub(super) fn publication_action(
     attachments: &[SessionMcpAttachment],
     receipts: Vec<McpGenerationRef>,
 ) -> Result<SessionRealizationAction, SessionRealizationControlFailure> {
-    let expected_publish = publication_generations(session_id, attachments)?;
+    let expected_publish = publication_generations(
+        &awaken_session_contract::SessionId::from(session_id),
+        attachments,
+    )?;
     let publish = receipts
         .into_iter()
         .filter(|receipt| {
@@ -65,7 +68,10 @@ pub(super) fn publication_action(
             "activated publication set has no exact staged receipt set".into(),
         ));
     }
-    let drain = draining_generations(session_id, attachments)?;
+    let drain = draining_generations(
+        &awaken_session_contract::SessionId::from(session_id),
+        attachments,
+    )?;
     Ok(SessionRealizationAction::Publish { publish, drain })
 }
 

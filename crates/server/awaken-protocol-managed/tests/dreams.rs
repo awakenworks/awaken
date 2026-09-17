@@ -1,3 +1,4 @@
+use awaken_session_contract::SessionId;
 mod support;
 
 use std::sync::Arc;
@@ -41,7 +42,7 @@ impl DreamSessionSource for FixedSessionFacts {
         _workspace_id: &str,
         _updated_after_ms: u64,
         _limit: usize,
-    ) -> Vec<String> {
+    ) -> Vec<SessionId> {
         Vec::new()
     }
 
@@ -63,7 +64,7 @@ impl DreamSessionSource for AlternateSessionFacts {
         _workspace_id: &str,
         _updated_after_ms: u64,
         _limit: usize,
-    ) -> Vec<String> {
+    ) -> Vec<SessionId> {
         Vec::new()
     }
 
@@ -86,7 +87,7 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
             _workspace_id: &str,
             updated_after_ms: u64,
             limit: usize,
-        ) -> Vec<String> {
+        ) -> Vec<SessionId> {
             if updated_after_ms > 0 {
                 Vec::new()
             } else if self.0.load(std::sync::atomic::Ordering::SeqCst) {
@@ -95,7 +96,7 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
                 ["s1", "s2", "s3"]
                     .into_iter()
                     .take(limit)
-                    .map(str::to_string)
+                    .map(SessionId::from)
                     .collect()
             }
         }
@@ -265,7 +266,7 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
             _workspace_id: &str,
             _updated_after_ms: u64,
             _limit: usize,
-        ) -> Vec<String> {
+        ) -> Vec<SessionId> {
             vec!["s1".into()]
         }
     }
@@ -1091,7 +1092,7 @@ async fn canceled_dream_keeps_projecting_trailing_session_usage() {
             _workspace_id: &str,
             _updated_after_ms: u64,
             _limit: usize,
-        ) -> Vec<String> {
+        ) -> Vec<SessionId> {
             Vec::new()
         }
         async fn session_usage(

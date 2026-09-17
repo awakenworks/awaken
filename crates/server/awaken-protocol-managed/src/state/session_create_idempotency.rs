@@ -114,7 +114,11 @@ impl ManagedState {
         };
         if let Some(persisted) = self
             .application
-            .replay_session_create(&owner_scope, &session_id, &idempotency)
+            .replay_session_create(
+                &owner_scope,
+                &awaken_session_contract::SessionId::from(&session_id),
+                &idempotency,
+            )
             .await
             .map_err(Self::map_create_replay_error)?
         {
@@ -192,7 +196,7 @@ mod tests {
         );
         assert_eq!(restarted.list_sessions().len(), 1, "R3 does not replace");
         assert_eq!(
-            repo.get(&created.id)
+            repo.get(&awaken_session_contract::SessionId::from(created.id))
                 .await
                 .expect("durable Session remains")
                 .title

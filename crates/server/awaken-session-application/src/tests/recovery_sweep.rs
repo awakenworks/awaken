@@ -174,7 +174,7 @@ async fn recovery_sweeps_isolate_slow_sessions_with_a_bounded_owned_sweep() {
                     .iter()
                     .map(|id| SessionRecoveryCandidate {
                         workspace_id: "test".into(),
-                        session_id: id.clone(),
+                        session_id: awaken_session_contract::SessionId::from(id.as_str()),
                         interests: SessionRecoveryInterests::default(),
                     })
                     .collect(),
@@ -287,7 +287,7 @@ async fn event_sweep_keeps_the_measured_fleet_and_existing_session_in_one_wave()
             .iter()
             .map(|id| SessionRecoveryCandidate {
                 workspace_id: "test".into(),
-                session_id: id.clone(),
+                session_id: awaken_session_contract::SessionId::from(id.as_str()),
                 interests: SessionRecoveryInterests::default(),
             })
             .collect(),

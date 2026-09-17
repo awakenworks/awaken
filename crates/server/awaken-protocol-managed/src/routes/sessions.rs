@@ -1093,7 +1093,10 @@ async fn stream_thread_events(
     let thread_preview = if previews.any() && !thread.agent.is_advisor() {
         state
             .session_application()
-            .subscribe_session_thread_live(&id, &project_thread)
+            .subscribe_session_thread_live(
+                &awaken_session_contract::SessionId::from(&id),
+                &project_thread,
+            )
             .await
             .map_err(StateError::Run)
             .map_err(error_response)?
@@ -1226,7 +1229,7 @@ pub async fn create_profiled_session(
         return Ok((
             StatusCode::ACCEPTED,
             Json(awaken_protocol_awaken::ProfiledSessionCreated {
-                id: existing.session_id,
+                id: existing.session_id.into_string(),
                 metadata: existing.metadata,
             }),
         ));
@@ -1306,7 +1309,7 @@ pub async fn create_profiled_session(
     Ok((
         StatusCode::ACCEPTED,
         Json(awaken_protocol_awaken::ProfiledSessionCreated {
-            id: session.session_id,
+            id: session.session_id.into_string(),
             metadata: session.metadata,
         }),
     ))
@@ -1363,7 +1366,7 @@ pub async fn release_profiled_session(
             .archive_with_repository_publication(
                 awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
                     owner_scope: owner_scope.clone(),
-                    session_id: id.clone(),
+                    session_id: awaken_session_contract::SessionId::from(&id),
                     archived_at: awaken_session_contract::epoch_millis_to_rfc3339(observed_at),
                     lifecycle_fact: lifecycle_fact(
                         format!("session:{id}:terminated"),
@@ -1536,7 +1539,7 @@ async fn stream_events(
     let thread_preview = if previews.any() {
         state
             .session_application()
-            .subscribe_session_thread_live(&id, &id)
+            .subscribe_session_thread_live(&awaken_session_contract::SessionId::from(&id), &id)
             .await
             .map_err(StateError::Run)
             .map_err(error_response)?

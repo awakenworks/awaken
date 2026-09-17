@@ -76,7 +76,7 @@ impl WorkQueue for SqliteWorkQueue {
     async fn enqueue_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<String, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
@@ -84,7 +84,11 @@ impl WorkQueue for SqliteWorkQueue {
             .await
     }
 
-    async fn wake_session(&self, env_id: &str, session_id: &str) -> Result<String, WorkQueueError> {
+    async fn wake_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<String, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
         self.with_connection(move |conn| {
@@ -244,7 +248,7 @@ impl WorkQueue for SqliteWorkQueue {
                     Ok(WorkSessionAccess {
                         work_id: row.get(0)?,
                         environment_id: row.get(1)?,
-                        session_id: row.get(2)?,
+                        session_id: awaken_session_contract::SessionId::from(row.get::<_, String>(2)?),
                         lease_owner: row.get(3)?,
                         lease_epoch: row.get::<_, u64>(4)?,
                         expires_at_unix_ms: row.get::<_, u64>(5)?,
@@ -379,7 +383,7 @@ impl WorkQueue for SqliteWorkQueue {
     async fn retire_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
@@ -482,7 +486,7 @@ impl WorkQueue for SqliteWorkQueue {
     async fn acquire_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
@@ -614,13 +618,20 @@ impl WorkQueue for PostgresWorkQueue {
     async fn enqueue_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<String, WorkQueueError> {
-        self.insert(env_id, "session", Some(session_id)).await
+        self.insert(env_id, "session", Some(session_id.as_str()))
+            .await
     }
 
-    async fn wake_session(&self, env_id: &str, session_id: &str) -> Result<String, WorkQueueError> {
-        let work_id = self.insert(env_id, "session", Some(session_id)).await?;
+    async fn wake_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<String, WorkQueueError> {
+        let work_id = self
+            .insert(env_id, "session", Some(session_id.as_str()))
+            .await?;
         sqlx::query(
             "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
              latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
@@ -630,7 +641,7 @@ impl WorkQueue for PostgresWorkQueue {
         )
         .bind(&work_id)
         .bind(env_id)
-        .bind(session_id)
+        .bind(session_id.as_str())
         .execute(&self.pool)
         .await
         .map_err(storage)?;
@@ -751,7 +762,9 @@ impl WorkQueue for PostgresWorkQueue {
             Ok(WorkSessionAccess {
                 work_id: row.try_get(0).map_err(storage)?,
                 environment_id: row.try_get(1).map_err(storage)?,
-                session_id: row.try_get(2).map_err(storage)?,
+                session_id: awaken_session_contract::SessionId::from(
+                    row.try_get::<String, _>(2).map_err(storage)?,
+                ),
                 lease_owner: row.try_get(3).map_err(storage)?,
                 lease_epoch: u64::try_from(row.try_get::<i64, _>(4).map_err(storage)?)
                     .map_err(storage)?,
@@ -858,14 +871,14 @@ impl WorkQueue for PostgresWorkQueue {
     async fn retire_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let work_id: Option<String> = sqlx::query_scalar(
             "SELECT work_id FROM work_queue_item WHERE environment_id = $1 \
              AND data_type = 'session' AND data_id = $2 ORDER BY seq ASC LIMIT 1",
         )
         .bind(env_id)
-        .bind(session_id)
+        .bind(session_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(storage)?;
@@ -955,11 +968,13 @@ impl WorkQueue for PostgresWorkQueue {
     async fn acquire_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        let work_id = self.insert(env_id, "session", Some(session_id)).await?;
+        let work_id = self
+            .insert(env_id, "session", Some(session_id.as_str()))
+            .await?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let _: Vec<String> = sqlx::query_scalar(
             "SELECT work_id FROM work_queue_item WHERE environment_id = $1 FOR UPDATE",
@@ -1002,7 +1017,7 @@ impl WorkQueue for PostgresWorkQueue {
             return Ok(Some(SessionWorkLease {
                 work_id,
                 environment_id: env_id.to_string(),
-                session_id: session_id.to_string(),
+                session_id: session_id.clone(),
                 owner,
                 epoch,
                 expires_at_unix_ms,
@@ -1080,7 +1095,7 @@ impl WorkQueue for PostgresWorkQueue {
         Ok(Some(SessionWorkLease {
             work_id,
             environment_id: env_id.to_string(),
-            session_id: session_id.to_string(),
+            session_id: session_id.clone(),
             owner: worker_owner.to_string(),
             epoch,
             expires_at_unix_ms: now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000),
@@ -1206,7 +1221,16 @@ mod tests {
         });
         let acquire = tokio::spawn({
             let queue = Arc::clone(&queue);
-            async move { queue.acquire_session("env", "session", "owner", 0).await }
+            async move {
+                queue
+                    .acquire_session(
+                        "env",
+                        &awaken_session_contract::SessionId::from("session"),
+                        "owner",
+                        0,
+                    )
+                    .await
+            }
         });
         let stats = tokio::spawn({
             let queue = Arc::clone(&queue);
@@ -1286,7 +1310,11 @@ mod tests {
             assert!(matches!(result, Err(WorkQueueError::Storage(_))));
         };
 
-        is_storage(q.enqueue_session("env", "session").await.map(|_| ()));
+        is_storage(
+            q.enqueue_session("env", &awaken_session_contract::SessionId::from("session"))
+                .await
+                .map(|_| ()),
+        );
         is_storage(q.enqueue_healthcheck("env").await.map(|_| ()));
         is_storage(q.ensure_healthcheck("env").await.map(|_| ()));
         is_storage(q.list("env").await.map(|_| ()));
@@ -1337,7 +1365,7 @@ mod tests {
             let queue = queue.clone();
             tasks.push(tokio::spawn(async move {
                 queue
-                    .enqueue_session("env", "session")
+                    .enqueue_session("env", &awaken_session_contract::SessionId::from("session"))
                     .await
                     .expect("C1 enqueue")
             }));
@@ -1353,8 +1381,14 @@ mod tests {
     #[tokio::test]
     async fn claim_leases_oldest_and_caps_at_one_active() {
         let q = q();
-        let w1 = q.enqueue_session("env_a", "s1").await.expect("enqueue");
-        let _w2 = q.enqueue_session("env_a", "s2").await.expect("enqueue");
+        let w1 = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
+        let _w2 = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s2"))
+            .await
+            .expect("enqueue");
         let leased = q
             .claim("env_a", "w", 0)
             .await
@@ -1380,7 +1414,10 @@ mod tests {
     #[tokio::test]
     async fn durable_reclaims_an_expired_lease_on_the_next_poll() {
         let q = q();
-        let w1 = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let w1 = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         assert_eq!(
             q.claim("env_a", "a", 0)
                 .await
@@ -1415,7 +1452,9 @@ mod tests {
         let path = path.to_str().unwrap();
         {
             let q = SqliteWorkQueue::open(path).expect("open first store");
-            q.enqueue_session("env", "session").await.expect("enqueue");
+            q.enqueue_session("env", &awaken_session_contract::SessionId::from("session"))
+                .await
+                .expect("enqueue");
             assert!(
                 q.claim("env", "worker-a", 0)
                     .await
@@ -1470,7 +1509,9 @@ mod tests {
         let (work_id, token, first_access) = {
             let q = SqliteWorkQueue::open(path).expect("open first store");
             let health = q.enqueue_healthcheck("env").await.unwrap();
-            q.enqueue_session("env", "sesn_1").await.unwrap();
+            q.enqueue_session("env", &awaken_session_contract::SessionId::from("sesn_1"))
+                .await
+                .unwrap();
             let claimed = q
                 .claim_with_session_access("env", "owner-a", "poller", 0, None)
                 .await
@@ -1560,7 +1601,10 @@ mod tests {
     #[tokio::test]
     async fn ack_heartbeat_and_membership_match_the_in_memory_contract() {
         let q = q();
-        let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let id = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         q.claim("env_a", "worker", 0)
             .await
             .expect("claim query")
@@ -1608,7 +1652,10 @@ mod tests {
     async fn stats_and_metadata_and_remove_env() {
         let q = q();
         q.enqueue_healthcheck("env_a").await.expect("enqueue");
-        let s = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let s = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         let st = q.stats("env_a", 0).await.expect("stats");
         assert_eq!((st.depth, st.pending, st.workers_polling), (2, 0, 0));
         q.claim("env_a", "w1", 0).await.expect("claim");
@@ -1637,8 +1684,14 @@ mod tests {
     #[tokio::test]
     async fn list_is_enqueue_ordered() {
         let q = q();
-        let a = q.enqueue_session("e", "s1").await.expect("enqueue");
-        let b = q.enqueue_session("e", "s2").await.expect("enqueue");
+        let a = q
+            .enqueue_session("e", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
+        let b = q
+            .enqueue_session("e", &awaken_session_contract::SessionId::from("s2"))
+            .await
+            .expect("enqueue");
         let ids: Vec<String> = q
             .list("e")
             .await
@@ -1656,7 +1709,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wq.db");
         let q = SqliteWorkQueue::open(path.to_str().unwrap()).expect("open file db");
-        let id = q.enqueue_session("e", "s").await.expect("enqueue");
+        let id = q
+            .enqueue_session("e", &awaken_session_contract::SessionId::from("s"))
+            .await
+            .expect("enqueue");
         assert!(q.get("e", &id).await.expect("get").is_some());
         std::fs::remove_dir_all(&dir).ok();
         // The `connect(url)` path over a live Postgres (skips when unreachable).
@@ -1711,7 +1767,9 @@ mod tests {
         let q = Arc::new(PostgresWorkQueue::with_pool(pool).await.expect("store"));
 
         // One queued item, N workers race to claim it concurrently.
-        q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        q.enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         let mut handles = Vec::new();
         for w in 0..8u32 {
             let q = q.clone();

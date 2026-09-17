@@ -1,6 +1,7 @@
 //! Adapter integration tests with fake runtimes: the happy path, and the HITL
 //! await -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
 
+use awaken_session_contract::SessionId;
 mod support;
 
 use std::collections::HashMap;
@@ -265,7 +266,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     );
     let stored = state
         .session_application()
-        .session_event_batch_idempotency(id, "foreign-key", "any")
+        .session_event_batch_idempotency(&SessionId::from(id), "foreign-key", "any")
         .await
         .unwrap();
     assert_eq!(
@@ -286,7 +287,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         .unwrap();
     let repo = state.session_application().session_repository_handle();
     assert!(matches!(
-        repo.get(id).await,
+        repo.get(&SessionId::from(id)).await,
         Err(awaken_session_contract::SessionRepositoryError::NotFound)
     ));
     let restarted = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo));
@@ -605,7 +606,10 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
         .await
         .expect_for(StatusCode::OK, "F1 fixture create");
     let id = created["id"].as_str().unwrap().to_string();
-    let mut failed = repo.get(&id).await.expect("durable Session");
+    let mut failed = repo
+        .get(&SessionId::from(&id))
+        .await
+        .expect("durable Session");
     failed.execution = SessionExecutionState::ActivationFailed;
     failed.realization_progress.last_error = Some("repository realization timed out".into());
     let failed = support::replace_session_fixture(
@@ -693,7 +697,11 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
         cold_events["data"], first_events["data"],
         "F1/E4 cold idempotency"
     );
-    assert_eq!(repo.get(&id).await.unwrap(), failed, "F1/E3 durable truth");
+    assert_eq!(
+        repo.get(&SessionId::from(id)).await.unwrap(),
+        failed,
+        "F1/E3 durable truth"
+    );
 }
 
 fn ended(messages: Vec<Message>) -> StepOutcome {
@@ -859,7 +867,7 @@ impl SessionRuntime for EchoFake {
             .settlements
             .push(awaken_session_contract::SessionAgentBoundaryCommand {
                 session_id: delivery.session_id.clone(),
-                source_thread_id: ThreadId(delivery.session_id),
+                source_thread_id: ThreadId(delivery.session_id.into_string()),
                 source_run_id: delivery.run_id,
                 source_agent_id: command.agent_id.clone(),
                 session_activity_epoch: delivery.session_activity_epoch,
@@ -872,7 +880,7 @@ impl SessionRuntime for EchoFake {
         let opening_commit_cursor = u64::try_from(
             state
                 .lifecycle
-                .get(&command.session_id)
+                .get(command.session_id.as_str())
                 .map_or(1, |lifecycle| lifecycle.len() + 1),
         )
         .unwrap();
@@ -888,7 +896,7 @@ impl SessionRuntime for EchoFake {
         {
             let transcript = state
                 .messages
-                .entry(command.session_id.clone())
+                .entry(command.session_id.to_string())
                 .or_default();
             for message in command.messages {
                 if !transcript.iter().any(|existing| existing.id == message.id) {
@@ -905,7 +913,7 @@ impl SessionRuntime for EchoFake {
         }
         state
             .message_commit_cursors
-            .entry(command.session_id.clone())
+            .entry(command.session_id.to_string())
             .or_default()
             .extend(new_message_commit_cursors);
 
@@ -915,12 +923,12 @@ impl SessionRuntime for EchoFake {
         // causally consistent with the production Thread commit boundary.
         let lifecycle = state
             .lifecycle
-            .entry(command.session_id.clone())
+            .entry(command.session_id.to_string())
             .or_default();
         lifecycle.push(RunLifecycleEvent {
             cursor: encode_run_lifecycle_cursor(opening_commit_cursor, 0).unwrap(),
             source_commit_cursor: opening_commit_cursor,
-            thread_id: ThreadId(command.session_id.clone()),
+            thread_id: ThreadId(command.session_id.to_string()),
             run_id: RunId(command.run_id.0.clone()),
             kind: RunLifecycleEventKind::Running,
             state: RunState::Running,
@@ -929,7 +937,7 @@ impl SessionRuntime for EchoFake {
         lifecycle.push(RunLifecycleEvent {
             cursor: encode_run_lifecycle_cursor(terminal_commit_cursor, 0).unwrap(),
             source_commit_cursor: terminal_commit_cursor,
-            thread_id: ThreadId(command.session_id),
+            thread_id: ThreadId(command.session_id.into_string()),
             run_id: RunId(command.run_id.0),
             kind: RunLifecycleEventKind::Completed,
             state: RunState::Ended(EndCause::NaturalEnd),
@@ -940,7 +948,7 @@ impl SessionRuntime for EchoFake {
 
     async fn session_run_state(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<RunState>, RunError> {
         Ok(self.state.lock().unwrap().runs.get(&run_id.0).cloned())
@@ -959,7 +967,7 @@ impl SessionRuntime for EchoFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -1396,7 +1404,7 @@ async fn happy_path_projects_message_and_idle() {
     // input observation, reproducing the terminal-anchor misclassification.
     support::drive_retained_session_events(&state, &id).await;
     let application = state.session_application();
-    let unsettled = application.session(&id).await.unwrap();
+    let unsettled = application.session(&SessionId::from(&id)).await.unwrap();
     assert!(
         !unsettled.active_activity_epochs.is_empty(),
         "S1 retains activity"
@@ -1447,7 +1455,7 @@ async fn happy_path_projects_message_and_idle() {
     );
     assert_eq!(list["data"][0]["id"], sent["data"][0]["id"], "R1/R2 W2");
     assert!(list["data"][0]["processed_at"].is_string(), "R1/R2 W2");
-    let settled = application.session(&id).await.unwrap();
+    let settled = application.session(&SessionId::from(&id)).await.unwrap();
     assert!(settled.active_activity_epochs.is_empty(), "S2");
     assert_eq!(settled.closed_runtime_intervals.len(), 1, "S2 one interval");
     let cold = router(Arc::new(
@@ -1515,7 +1523,7 @@ impl SessionRuntime for CapableFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -1931,7 +1939,7 @@ impl SessionRuntime for ToolAwaitingFake {
             RunLifecycleEvent {
                 cursor: encode_run_lifecycle_cursor(opening_commit_cursor, 0).unwrap(),
                 source_commit_cursor: opening_commit_cursor,
-                thread_id: ThreadId(command.session_id.clone()),
+                thread_id: ThreadId(command.session_id.to_string()),
                 run_id: command.run_id.clone(),
                 kind: RunLifecycleEventKind::Running,
                 state: RunState::Running,
@@ -1940,7 +1948,7 @@ impl SessionRuntime for ToolAwaitingFake {
             RunLifecycleEvent {
                 cursor: encode_run_lifecycle_cursor(awaiting_commit_cursor, 0).unwrap(),
                 source_commit_cursor: awaiting_commit_cursor,
-                thread_id: ThreadId(command.session_id.clone()),
+                thread_id: ThreadId(command.session_id.to_string()),
                 run_id: command.run_id.clone(),
                 kind: RunLifecycleEventKind::Awaiting,
                 state: RunState::Awaiting,
@@ -1948,7 +1956,7 @@ impl SessionRuntime for ToolAwaitingFake {
             },
         ];
         *slot = Some(AdapterToolRun {
-            session_id: command.session_id,
+            session_id: command.session_id.into_string(),
             run_id: command.run_id,
             state: RunState::Awaiting,
             message_commit_cursors: vec![opening_commit_cursor, awaiting_commit_cursor],
@@ -1961,7 +1969,7 @@ impl SessionRuntime for ToolAwaitingFake {
 
     async fn session_run_state(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
         Ok(self
@@ -1969,7 +1977,7 @@ impl SessionRuntime for ToolAwaitingFake {
             .lock()
             .unwrap()
             .as_ref()
-            .filter(|run| run.session_id == session_id && run.run_id == *run_id)
+            .filter(|run| run.session_id == session_id.as_str() && run.run_id == *run_id)
             .map(|run| run.state.clone()))
     }
 
@@ -1996,11 +2004,11 @@ impl SessionRuntime for ToolAwaitingFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        Ok(self.recovery_snapshot(session_id, thread_id))
+        Ok(self.recovery_snapshot(session_id.as_str(), thread_id))
     }
 
     async fn committed_run_lifecycle(
@@ -2082,7 +2090,7 @@ impl SessionRuntime for ToolAwaitingFake {
                 source_thread_id: delivery
                     .command
                     .target
-                    .thread_id(&delivery.command.session_id),
+                    .thread_id(delivery.command.session_id.as_str()),
                 source_run_id: delivery.command.expected_run_id.clone(),
                 source_agent_id: String::new(),
                 session_activity_epoch: delivery
@@ -2265,7 +2273,7 @@ impl SessionRuntime for OutcomeFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -2852,7 +2860,7 @@ async fn hitl_await_confirm_resume() {
         "H6/E1 receipt is the immutable admission view"
     );
     let application = state.session_application();
-    let before_settlement = application.session(&id).await.unwrap();
+    let before_settlement = application.session(&SessionId::from(&id)).await.unwrap();
     let boundary = runtime
         .settlement
         .lock()
@@ -2898,7 +2906,7 @@ async fn hitl_await_confirm_resume() {
             }
         }
     }
-    let settled = application.session(&id).await.unwrap();
+    let settled = application.session(&SessionId::from(&id)).await.unwrap();
     assert_eq!(settled.execution, SessionExecutionState::Idle, "H8");
     assert_eq!(
         settled.closed_runtime_intervals.len(),
@@ -3229,7 +3237,7 @@ impl SessionRuntime for RecordingFake {
 
     async fn session_run_state(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
         self.committed.session_run_state(session_id, run_id).await
@@ -3241,7 +3249,7 @@ impl SessionRuntime for RecordingFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -3637,7 +3645,7 @@ impl SessionRuntime for InterruptRedirectFake {
 
     async fn session_run_state(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
         self.committed.session_run_state(session_id, run_id).await
@@ -3649,7 +3657,7 @@ impl SessionRuntime for InterruptRedirectFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {

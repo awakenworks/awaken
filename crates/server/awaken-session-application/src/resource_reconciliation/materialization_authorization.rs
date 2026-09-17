@@ -13,7 +13,9 @@ impl SessionApplication {
     ) -> Result<String, SessionRealizationControlFailure> {
         let session = self
             .session_repository()
-            .get(intent.session_id())
+            .get(&awaken_session_contract::SessionId::from(
+                intent.session_id(),
+            ))
             .await
             .map_err(repository_control)?;
         if session.is_terminal() {
@@ -53,7 +55,9 @@ impl SessionApplication {
             ));
         }
         self.session_repository()
-            .owner(intent.session_id())
+            .owner(&awaken_session_contract::SessionId::from(
+                intent.session_id(),
+            ))
             .await
             .map_err(repository_control)
     }

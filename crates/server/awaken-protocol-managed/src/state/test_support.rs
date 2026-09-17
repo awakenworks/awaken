@@ -60,7 +60,7 @@ mod session_repository {
         async fn replay_create(
             &self,
             owner_scope: &str,
-            session_id: &str,
+            session_id: &awaken_session_contract::SessionId,
             idempotency: &awaken_session_contract::IdempotencyRecord,
         ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError>
         {
@@ -116,7 +116,7 @@ mod session_repository {
 
         async fn get(
             &self,
-            session_id: &str,
+            session_id: &awaken_session_contract::SessionId,
         ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
             self.reads.on_read("session").await.map_err(|port| {
                 awaken_session_contract::SessionRepositoryError::Unavailable(format!(
@@ -149,7 +149,7 @@ mod session_repository {
 
         async fn idempotency_receipt(
             &self,
-            session_id: &str,
+            session_id: &awaken_session_contract::SessionId,
             key: &str,
         ) -> Result<
             Option<awaken_session_contract::SessionIdempotencyReceipt>,
@@ -160,7 +160,7 @@ mod session_repository {
 
         async fn owner(
             &self,
-            session_id: &str,
+            session_id: &awaken_session_contract::SessionId,
         ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
             self.inner.owner(session_id).await
         }
@@ -579,7 +579,7 @@ impl SessionRuntime for RehydrateFake {
 
     async fn session_thread_usage(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.reads
@@ -597,7 +597,7 @@ impl SessionRuntime for RehydrateFake {
 
     async fn coordinated_threads(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
         _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         self.reads
@@ -610,7 +610,7 @@ impl SessionRuntime for RehydrateFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -892,7 +892,7 @@ impl SessionRuntime for RehydrateFake {
 
     async fn session_thread_disposition(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
         Ok(self
@@ -906,7 +906,7 @@ impl SessionRuntime for RehydrateFake {
 
     async fn archive_session_thread(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<(), RunError> {
         let key = (session_id.to_string(), thread_id.to_string());
@@ -925,7 +925,7 @@ impl SessionRuntime for RehydrateFake {
         &self,
         command: &awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError> {
-        let thread_id = command.target.thread_id(&command.session_id);
+        let thread_id = command.target.thread_id(command.session_id.as_str());
         let pending = self
             .pending_by_thread
             .lock()
@@ -965,7 +965,7 @@ impl SessionRuntime for RehydrateFake {
         delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
         let command = delivery.command;
-        let thread_id = command.target.thread_id(&command.session_id);
+        let thread_id = command.target.thread_id(command.session_id.as_str());
         let expected_fence = self.session_thread_tool_reply_fence(&command).await?;
         if delivery.fence != expected_fence {
             return Err(RunError::bad_request("reply fence is stale"));

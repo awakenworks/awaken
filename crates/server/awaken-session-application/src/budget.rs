@@ -15,7 +15,7 @@ pub struct BudgetSettlementOutcome {
 impl SessionApplication {
     pub async fn reconcile_managed_budget_usage(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         usage: SessionUsage,
     ) -> Result<BudgetSettlementOutcome, SessionMutationError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
@@ -87,7 +87,7 @@ impl SessionApplication {
             let lifecycle_facts = if let Some(transition) = &reach_transition {
                 vec![ManagedLifecycleFact {
                     id: format!("budget-reached:{session_id}:{}", transition.generation),
-                    object_id: session_id.to_owned(),
+                    object_id: session_id.to_string(),
                     workspace_id: Some(owner_scope.clone()),
                     event_type: "session.budget_reached".into(),
                     timestamp: i64::try_from(super::activity::now_unix_ms() / 1_000)

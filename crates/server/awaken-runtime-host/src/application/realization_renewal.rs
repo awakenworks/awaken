@@ -210,7 +210,7 @@ impl crate::SharedHost {
                 .map_err(|error| (crate::HostError::internal(error.to_string()), true))?;
             match control
                 .renew_session_realization(awaken_session_contract::RenewSessionRealization {
-                    session_id: session_id.clone(),
+                    session_id: awaken_session_contract::SessionId::from(&session_id),
                     asserted_lease: lease.clone(),
                     requested_expires_at_unix_ms: requested_expiry_unix_ms,
                 })

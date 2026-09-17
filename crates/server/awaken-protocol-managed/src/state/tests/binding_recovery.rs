@@ -1,6 +1,7 @@
 use super::*;
 use crate::state::test_support::{ConflictInjectingRepo, ReadControl};
 use awaken_runtime_contract::tool_batch::ToolBatch;
+use awaken_session_contract::SessionId;
 
 struct RecordingProjectionRefresh {
     calls: std::sync::atomic::AtomicUsize,
@@ -332,10 +333,10 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     )
     .for_environment("env-1");
     sink.persist(receipt.clone()).await.unwrap();
-    let first = repo.get("binding-now").await.unwrap();
+    let first = repo.get(&SessionId::from("binding-now")).await.unwrap();
     assert_eq!(first.environment.binding(), Some("opaque-handle"));
     sink.persist(receipt).await.unwrap();
-    let replay = repo.get("binding-now").await.unwrap();
+    let replay = repo.get(&SessionId::from("binding-now")).await.unwrap();
     assert_eq!(replay.revision, first.revision);
     assert_eq!(replay.environment, first.environment);
 }
@@ -491,8 +492,14 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         persisted_with_mcp_source("source-other-workspace", "source-a", "vault-event"),
     )
     .await;
-    let unrelated_before = repo.get("source-unrelated").await.unwrap();
-    let other_workspace_before = repo.get("source-other-workspace").await.unwrap();
+    let unrelated_before = repo
+        .get(&SessionId::from("source-unrelated"))
+        .await
+        .unwrap();
+    let other_workspace_before = repo
+        .get(&SessionId::from("source-other-workspace"))
+        .await
+        .unwrap();
     let state = ManagedState::new_with_mcp(RehydrateFake::default())
         .with_session_repo(repo.clone())
         .with_credential_source(Arc::new(RolloutCredentialSource));
@@ -510,7 +517,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
             .await
             .unwrap();
     assert!(outcome.is_converged(), "V1/E1: {outcome:?}");
-    let affected = repo.get("source-affected").await.unwrap();
+    let affected = repo.get(&SessionId::from("source-affected")).await.unwrap();
     assert_eq!(
         affected.mcp.desired_attachments()[0]
             .credential
@@ -522,12 +529,16 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         "V1/E1"
     );
     assert_eq!(
-        repo.get("source-unrelated").await.unwrap(),
+        repo.get(&SessionId::from("source-unrelated"))
+            .await
+            .unwrap(),
         unrelated_before,
         "V2/E4"
     );
     assert_eq!(
-        repo.get("source-other-workspace").await.unwrap(),
+        repo.get(&SessionId::from("source-other-workspace"))
+            .await
+            .unwrap(),
         other_workspace_before,
         "V3/E4"
     );
@@ -554,7 +565,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         .is_empty(),
         "V4/E2"
     );
-    let after_archive = repo.get("source-affected").await.unwrap();
+    let after_archive = repo.get(&SessionId::from("source-affected")).await.unwrap();
     assert!(after_archive.mcp.desired_attachments().is_empty(), "V4/E2");
 
     let deleted = rollout_event(
@@ -570,17 +581,21 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         "V5/E3"
     );
     assert_eq!(
-        repo.get("source-affected").await.unwrap(),
+        repo.get(&SessionId::from("source-affected")).await.unwrap(),
         after_archive,
         "V5/E3"
     );
     assert_eq!(
-        repo.get("source-unrelated").await.unwrap(),
+        repo.get(&SessionId::from("source-unrelated"))
+            .await
+            .unwrap(),
         unrelated_before,
         "V2/E4"
     );
     assert_eq!(
-        repo.get("source-other-workspace").await.unwrap(),
+        repo.get(&SessionId::from("source-other-workspace"))
+            .await
+            .unwrap(),
         other_workspace_before,
         "V3/E4"
     );
@@ -622,7 +637,7 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
         assert_eq!(result.is_ok(), accepted, "{case}");
         assert_eq!(
             inner
-                .get(&format!("binding-{conflicts}"))
+                .get(&SessionId::from(format!("binding-{conflicts}")))
                 .await
                 .unwrap()
                 .environment
@@ -684,7 +699,7 @@ async fn application_root_cas_decision_table() {
         let id = format!("sesn_application_cas_{index}");
         let repo = Arc::new(ephemeral_session_repo());
         create_session_fixture(repo.as_ref(), "workspace-a", sample_persisted(&id)).await;
-        let stale = repo.get(&id).await.unwrap();
+        let stale = repo.get(&SessionId::from(&id)).await.unwrap();
         let state =
             ManagedState::new_with_mcp(RehydrateFake::default()).with_session_repo(repo.clone());
         let applied = state
@@ -727,7 +742,10 @@ async fn application_root_cas_decision_table() {
                         .await,
                     Err(StateError::Conflict)
                 ));
-                assert_eq!(repo.get(&id).await.unwrap().revision, applied.revision);
+                assert_eq!(
+                    repo.get(&SessionId::from(id)).await.unwrap().revision,
+                    applied.revision
+                );
             }
         }
     }
@@ -1021,7 +1039,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         restored_environments.lock().unwrap().is_empty(),
         "read-only"
     );
-    let durable = repo.get("sesn_1").await.unwrap();
+    let durable = repo.get(&SessionId::from("sesn_1")).await.unwrap();
     assert_eq!(
         durable.resources.active,
         sample_inputs(),
@@ -1300,8 +1318,14 @@ async fn active_active_session_id_mint_is_collision_free() {
     let left_session = left_result.expect("S1 left Session");
     let right_session = right_result.expect("S1 right Session");
     assert_ne!(left_session.id, right_session.id, "S1");
-    assert!(repo.get(&left_session.id).await.is_ok(), "S1");
-    assert!(repo.get(&right_session.id).await.is_ok(), "S1");
+    assert!(
+        repo.get(&SessionId::from(&left_session.id)).await.is_ok(),
+        "S1"
+    );
+    assert!(
+        repo.get(&SessionId::from(&right_session.id)).await.is_ok(),
+        "S1"
+    );
 
     let next = left
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
@@ -1332,7 +1356,7 @@ async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation(
 
     assert_eq!(restored.lock().unwrap().len(), 1);
     assert_eq!(restored.lock().unwrap()[0].2, desired);
-    let durable = repo.get("sesn_pending").await.unwrap();
+    let durable = repo.get(&SessionId::from("sesn_pending")).await.unwrap();
     assert!(durable.resources.pending.is_none());
     assert_eq!(durable.resources.active, desired);
     assert_eq!(durable.resources.activations[0].attempts, 2);
@@ -1368,7 +1392,7 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
     assert_eq!(report.settled.len(), 1);
     assert!(
         matches!(
-            repo.get("sesn_deleted").await,
+            repo.get(&SessionId::from("sesn_deleted")).await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "D3: a successful retry converges the hidden cleanup row to a tombstone"
@@ -1442,18 +1466,21 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
         "R4/R5; exactly the terminal and deleted Sessions release their environment"
     );
     for status in ["idle", "running", "rescheduling"] {
-        let session = repo.get(&format!("sesn_{status}")).await.unwrap();
+        let session = repo
+            .get(&SessionId::from(format!("sesn_{status}")))
+            .await
+            .unwrap();
         assert!(session.resources.has_active(), "R1-R3 {status}");
         assert_eq!(
             session.environment.binding(),
             Some(format!("binding-{status}").as_str())
         );
     }
-    let terminated = repo.get("sesn_terminated").await.unwrap();
+    let terminated = repo.get(&SessionId::from("sesn_terminated")).await.unwrap();
     assert!(!terminated.resources.has_active(), "R4");
     assert!(
         matches!(
-            repo.get("sesn_deleted_empty").await,
+            repo.get(&SessionId::from("sesn_deleted_empty")).await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "R5"
@@ -1494,7 +1521,7 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
     assert!(ended.lock().unwrap().is_empty(), "E2 no terminal teardown");
     assert!(restored_environment.lock().unwrap().is_empty(), "E2");
     assert!(
-        repo.get("sesn_running_rehydrate")
+        repo.get(&SessionId::from("sesn_running_rehydrate"))
             .await
             .unwrap()
             .resources
@@ -1607,7 +1634,7 @@ async fn startup_mcp_recovery_adopts_the_durable_environment_before_staging() {
         "E1/E2/E4"
     );
     assert_eq!(
-        repo.get("sesn_startup_mcp")
+        repo.get(&SessionId::from("sesn_startup_mcp"))
             .await
             .unwrap()
             .environment
@@ -1653,7 +1680,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .await
             .expect("attach");
         let resource_id = resource.id().unwrap().to_string();
-        let mut after_attach = repo.get(&id).await.unwrap();
+        let mut after_attach = repo.get(&SessionId::from(&id)).await.unwrap();
         assert_eq!(after_attach.resources.revision, 2);
         assert_eq!(
             after_attach
@@ -1699,7 +1726,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .delete_resource(&id, &resource_id)
             .await
             .expect("detach");
-        let mut after_delete = repo.get(&id).await.unwrap();
+        let mut after_delete = repo.get(&SessionId::from(&id)).await.unwrap();
         assert_eq!(after_delete.resources.revision, 3);
         assert!(after_delete.resources.activations.iter().all(|activation| {
             activation.state != awaken_session_contract::ActivationState::Active
@@ -1765,7 +1792,7 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
             persisted_with_mcp_source("idle", "source-a", "vault-event"),
         )
         .await;
-        let busy_before = repo.get("busy").await.ok();
+        let busy_before = repo.get(&SessionId::from("busy")).await.ok();
         let refresh = Arc::new(RecordingProjectionRefresh {
             calls: std::sync::atomic::AtomicUsize::new(0),
             fail: std::sync::atomic::AtomicBool::new(failed_refresh),
@@ -1805,7 +1832,11 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
         );
         assert!(!format!("{diagnostics:?}").contains("secret-"));
         assert_eq!(
-            repo.get("idle").await.unwrap().mcp.desired_attachments()[0]
+            repo.get(&SessionId::from("idle"))
+                .await
+                .unwrap()
+                .mcp
+                .desired_attachments()[0]
                 .credential
                 .as_ref()
                 .unwrap()
@@ -1814,7 +1845,11 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
             if failed_refresh { 1 } else { 2 }
         );
         if let Some(before) = busy_before {
-            assert_eq!(repo.get("busy").await.unwrap(), before, "R1");
+            assert_eq!(
+                repo.get(&SessionId::from("busy")).await.unwrap(),
+                before,
+                "R1"
+            );
         } else {
             runtime
                 .reject_mcp_publication
@@ -1827,13 +1862,13 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
                 ManagedCredentialAdoptionProgress::Converged,
                 "R3"
             );
-            let recovered = repo.get("idle").await.unwrap();
+            let recovered = repo.get(&SessionId::from("idle")).await.unwrap();
             assert_eq!(
                 state.rollout(&event).await.unwrap(),
                 ManagedCredentialAdoptionProgress::Converged
             );
             assert_eq!(
-                repo.get("idle").await.unwrap(),
+                repo.get(&SessionId::from("idle")).await.unwrap(),
                 recovered,
                 "exact replay does not mutate"
             );

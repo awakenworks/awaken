@@ -626,7 +626,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             .push(awaken_agent_contract::RunLifecycleEvent {
                 cursor: awaken_agent_contract::RunLifecycleCursor(base + 1),
                 source_commit_cursor: base + 1,
-                thread_id: awaken_agent_contract::agent::thread::Id(command.session_id.clone()),
+                thread_id: awaken_agent_contract::agent::thread::Id(command.session_id.to_string()),
                 run_id: command.run_id.clone(),
                 kind: awaken_agent_contract::RunLifecycleEventKind::Running,
                 state: awaken_agent_contract::agent::run::RunState::Running,
@@ -641,7 +641,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         let outcome = Box::pin(<Self as awaken_session_contract::SessionRuntime>::run(
             self,
             &command.agent_id,
-            &command.session_id,
+            command.session_id.as_str(),
             command
                 .messages
                 .last()
@@ -652,7 +652,9 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         let root_terminal_cursor = if deferred { base + 3 } else { base + 4 };
         let boundary = awaken_session_contract::SessionAgentBoundaryCommand {
             session_id: delivery.session_id.clone(),
-            source_thread_id: awaken_agent_contract::agent::thread::Id(delivery.session_id),
+            source_thread_id: awaken_agent_contract::agent::thread::Id(String::from(
+                delivery.session_id,
+            )),
             source_run_id: delivery.run_id,
             source_agent_id: command.agent_id.clone(),
             session_activity_epoch: delivery.session_activity_epoch,
@@ -664,7 +666,9 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             .push(awaken_agent_contract::RunLifecycleEvent {
                 cursor: awaken_agent_contract::RunLifecycleCursor(root_terminal_cursor),
                 source_commit_cursor: root_terminal_cursor,
-                thread_id: awaken_agent_contract::agent::thread::Id(command.session_id),
+                thread_id: awaken_agent_contract::agent::thread::Id(String::from(
+                    command.session_id,
+                )),
                 run_id: command.run_id.clone(),
                 kind: awaken_agent_contract::RunLifecycleEventKind::Completed,
                 state: outcome.state().clone(),
@@ -719,7 +723,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
 
     async fn session_run_state(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<
         Option<awaken_agent_contract::agent::run::RunState>,
@@ -913,7 +917,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
 
     async fn interrupt_session_thread(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), awaken_session_contract::RunError> {
         let target = format!("child:{session_id}:{}", child_thread_id.0);
@@ -948,7 +952,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
@@ -1067,7 +1071,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
 
     async fn coordinated_threads(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<
         Vec<awaken_session_contract::CoordinatedThreadLink>,
@@ -1078,7 +1082,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         Ok(operation_id
             .map(
                 |created_by_operation_id| awaken_session_contract::CoordinatedThreadLink {
-                    session_id: session_id.into(),
+                    session_id: session_id.clone(),
                     thread_id: awaken_agent_contract::agent::thread::Id(
                         Self::CHILD_THREAD_ID.into(),
                     ),
@@ -1097,7 +1101,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
 
     async fn subscribe_session_thread_live(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<
         Option<Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>,
@@ -1115,7 +1119,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
 
     async fn session_thread_disposition(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_contract::RunError> {
         Ok(self
@@ -1129,7 +1133,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
 
     async fn archive_session_thread(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<(), awaken_session_contract::RunError> {
         if self
@@ -1211,7 +1215,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
 
     async fn session_thread_usage(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
         _thread_id: &str,
     ) -> Result<awaken_session_contract::SessionUsage, awaken_session_contract::RunError> {
         Ok(awaken_session_contract::SessionUsage {

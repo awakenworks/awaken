@@ -3,6 +3,7 @@
 //! the session's in-flight queue, and the error mapping (404 unknown message,
 //! 409 stale order, 410 inactive queue, 404 unknown session).
 
+use awaken_session_contract::SessionId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -155,7 +156,7 @@ impl SessionRuntime for QueueFake {
 
     async fn session_run_state(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
         Ok(self
@@ -168,7 +169,7 @@ impl SessionRuntime for QueueFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -384,7 +385,7 @@ fn app_with_session_application(
 
         async fn session_run_state(
             &self,
-            session_id: &str,
+            session_id: &SessionId,
             run_id: &awaken_agent_contract::agent::run::Id,
         ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
             self.0.session_run_state(session_id, run_id).await
@@ -392,7 +393,7 @@ fn app_with_session_application(
 
         async fn session_thread_recovery_snapshot(
             &self,
-            session_id: &str,
+            session_id: &SessionId,
             thread_id: &str,
         ) -> Result<
             Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
@@ -637,7 +638,7 @@ async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
     .await;
     assert_eq!(status, StatusCode::OK, "F2: {body}");
     session_application
-        .drive_session_event_batches(&session, None)
+        .drive_session_event_batches(&SessionId::from(&session), None)
         .await
         .expect("F2 lifecycle drive");
 

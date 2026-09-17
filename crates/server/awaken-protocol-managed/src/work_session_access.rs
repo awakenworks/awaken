@@ -152,7 +152,11 @@ pub async fn work_session_guard(
             ));
         }
     };
-    let scope = match state.sessions.work_session_scope(&access.session_id).await {
+    let scope = match state
+        .sessions
+        .work_session_scope(access.session_id.as_str())
+        .await
+    {
         Ok(scope) => scope,
         Err(_) => {
             return crate::with_unscoped_managed_response_context(error(

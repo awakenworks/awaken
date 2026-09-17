@@ -610,7 +610,7 @@ mod repository_publication_projection_tests {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BeginSessionRealization {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub target: SessionRealizationTarget,
     /// Exact manifest decoded from a live guarded dispatch, never a browser
     /// hint. Unclaimed Control realization selects the current desired state.
@@ -624,7 +624,7 @@ pub struct BeginSessionRealization {
 /// owner, Runtime incarnation, or epoch.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RenewSessionRealization {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub asserted_lease: SessionRealizationLease,
     pub requested_expires_at_unix_ms: u64,
 }
@@ -652,7 +652,7 @@ pub struct SessionRealizationProgress {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActivateSessionRealization {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub lease: SessionRealizationLease,
     /// Exact Resource generation prepared by the Stage effect. `None` means
     /// this was an MCP-only phase and must not settle an independently pending
@@ -665,7 +665,7 @@ pub struct ActivateSessionRealization {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AcknowledgeSessionRealization {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub lease: SessionRealizationLease,
     #[serde(default)]
     pub published: Vec<McpGenerationRef>,
@@ -675,7 +675,7 @@ pub struct AcknowledgeSessionRealization {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FailSessionRealization {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub lease: SessionRealizationLease,
     /// Exact Resource generation whose preparation failed, when this failure
     /// crossed the Resource effect boundary. MCP-only failures leave pending
@@ -706,7 +706,7 @@ pub enum SessionResourceMaterializationTarget {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionResourceMaterializationIntent {
-    session_id: String,
+    session_id: crate::SessionId,
     resource_revision: u64,
     target: SessionResourceMaterializationTarget,
     lease: SessionRealizationLease,
@@ -714,13 +714,13 @@ pub struct SessionResourceMaterializationIntent {
 
 impl SessionResourceMaterializationIntent {
     pub fn try_new(
-        session_id: impl Into<String>,
+        session_id: impl Into<crate::SessionId>,
         resource_revision: u64,
         input: crate::ResolvedInput,
         lease: SessionRealizationLease,
     ) -> Result<Self, String> {
         let session_id = session_id.into();
-        if session_id.trim().is_empty() || resource_revision == 0 {
+        if session_id.as_str().trim().is_empty() || resource_revision == 0 {
             return Err(
                 "Session Resource materialization intent requires identity and revision".into(),
             );
@@ -734,13 +734,13 @@ impl SessionResourceMaterializationIntent {
     }
 
     pub fn try_new_skill(
-        session_id: impl Into<String>,
+        session_id: impl Into<crate::SessionId>,
         resource_revision: u64,
         binding: crate::ResolvedSkillBinding,
         lease: SessionRealizationLease,
     ) -> Result<Self, String> {
         let session_id = session_id.into();
-        if session_id.trim().is_empty() || resource_revision == 0 {
+        if session_id.as_str().trim().is_empty() || resource_revision == 0 {
             return Err(
                 "Session Resource materialization intent requires identity and revision".into(),
             );
@@ -755,7 +755,7 @@ impl SessionResourceMaterializationIntent {
 
     #[must_use]
     pub fn session_id(&self) -> &str {
-        &self.session_id
+        self.session_id.as_str()
     }
 
     #[must_use]
@@ -845,7 +845,7 @@ pub trait SessionRealizationControl: Send + Sync {
     /// [`crate::SessionCleanupOperation`] remains the only queue.
     async fn terminal_cleanup_work(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _lease: &SessionRealizationLease,
     ) -> Result<Option<SessionTerminalCleanupWork>, SessionRealizationControlFailure> {
         Ok(None)
@@ -883,7 +883,7 @@ pub trait SessionRealizationControl: Send + Sync {
     /// advances the Environment state nor creates a cleanup receipt.
     async fn authorize_checkpoint_release_artifact_effect(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _operation: &crate::SessionEnvironmentOperation,
     ) -> Result<String, SessionRealizationControlFailure> {
         Err(SessionRealizationControlFailure::Invalid(
@@ -911,7 +911,7 @@ pub trait SessionRealizationControl: Send + Sync {
     /// terminal cleanup commands.
     async fn terminal_repository_publication_command(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _lease: &SessionRealizationLease,
     ) -> Result<Option<SessionRepositoryPublicationProjection>, SessionRealizationControlFailure>
     {
@@ -924,7 +924,7 @@ pub trait SessionRealizationControl: Send + Sync {
     /// from that Session root before the root-CAS mutation.
     async fn record_terminal_repository_publication_receipt(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _lease: &SessionRealizationLease,
         _receipt: crate::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
@@ -938,7 +938,7 @@ pub trait SessionRealizationControl: Send + Sync {
     /// a terminal effect observation, not a Worker-local retry queue.
     async fn record_terminal_repository_publication_rejection(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _lease: &SessionRealizationLease,
         _rejection: crate::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
@@ -986,7 +986,7 @@ pub trait SessionProjectionSynchronizer: Send + Sync {
 
     async fn synchronize_session_projection(
         &self,
-        session_id: &str,
+        session_id: &crate::SessionId,
         projection: &FrozenSessionProjection,
         lease: &ObservedSessionRealizationLease,
         prepare_session: bool,
@@ -997,7 +997,7 @@ pub trait SessionProjectionSynchronizer: Send + Sync {
     /// failure command expired (or may have expired before response loss).
     async fn invalidate_session_realization_lease(
         &self,
-        session_id: &str,
+        session_id: &crate::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<(), RunError>;
 }
@@ -1055,7 +1055,7 @@ async fn drain_mcp_projection(
 /// the caller-visible result, and response loss on either side must still force
 /// the next attempt to reload aggregate truth.
 async fn fail_realization_effect(
-    session_id: &str,
+    session_id: &crate::SessionId,
     source_run_id: Option<&awaken_agent_contract::agent::run::Id>,
     control: &dyn SessionRealizationControl,
     synchronizer: &dyn SessionProjectionSynchronizer,
@@ -1065,7 +1065,7 @@ async fn fail_realization_effect(
 ) {
     let _ = control
         .fail_session_realization(FailSessionRealization {
-            session_id: session_id.to_string(),
+            session_id: session_id.clone(),
             lease: lease.clone(),
             prepared_resource_revision,
             retryable: error.kind == crate::RunErrorKind::Unavailable,
@@ -1089,7 +1089,7 @@ pub async fn drive_session_realization(
 ) -> Result<(), SessionRealizationDriveError> {
     // The Session is taken from the exclusion the caller holds, never passed
     // beside it: a permit for another Session cannot drive this one.
-    let session_id = permit.session_id();
+    let session_id = &crate::SessionId::from(permit.session_id());
     loop {
         let previous = directive.clone();
         let prepare_session = match &directive.action {
@@ -1135,7 +1135,7 @@ pub async fn drive_session_realization(
             };
             crate::realization_observation::checkpoint(
                 "projection",
-                session_id,
+                session_id.as_str(),
                 serde_json::json!({"lease": directive.authority.lease, "action": action}),
             )
             .await;
@@ -1177,13 +1177,13 @@ pub async fn drive_session_realization(
                     return Err(error.into());
                 }
                 #[cfg(feature = "test-support")]
-                crate::realization_observation::checkpoint("stage", session_id,
+                crate::realization_observation::checkpoint("stage", session_id.as_str(),
                     serde_json::json!({"lease": directive.authority.lease,
                         "generations": receipts.iter().map(|r| crate::realization_observation::observed_generation(&r.generation)).collect::<Vec<_>>()})).await;
                 request_started = synchronizer.observe_realization_request()?;
                 directive = match control
                     .activate_session_realization(ActivateSessionRealization {
-                        session_id: session_id.to_string(),
+                        session_id: session_id.clone(),
                         lease: directive.authority.lease,
                         prepared_resource_revision: prepare_session
                             .then_some(directive.projection.resource_revision),
@@ -1207,7 +1207,7 @@ pub async fn drive_session_realization(
                         #[cfg(feature = "test-support")]
                         crate::realization_observation::checkpoint(
                             "publish-one",
-                            session_id,
+                            session_id.as_str(),
                             serde_json::json!({
                                 "generation": crate::realization_observation::observed_generation(generation)
                             }),
@@ -1219,7 +1219,7 @@ pub async fn drive_session_realization(
                         #[cfg(feature = "test-support")]
                         crate::realization_observation::checkpoint(
                             "drain-one",
-                            session_id,
+                            session_id.as_str(),
                             serde_json::json!({
                                 "generation": crate::realization_observation::observed_generation(generation)
                             }),
@@ -1243,14 +1243,14 @@ pub async fn drive_session_realization(
                     return Err(error.into());
                 }
                 #[cfg(feature = "test-support")]
-                crate::realization_observation::checkpoint("published", session_id,
+                crate::realization_observation::checkpoint("published", session_id.as_str(),
                     serde_json::json!({"lease": directive.authority.lease,
                         "published": publish.iter().map(crate::realization_observation::observed_generation).collect::<Vec<_>>(),
                         "drained": drain.iter().map(crate::realization_observation::observed_generation).collect::<Vec<_>>()})).await;
                 request_started = synchronizer.observe_realization_request()?;
                 directive = control
                     .acknowledge_session_realization(AcknowledgeSessionRealization {
-                        session_id: session_id.to_string(),
+                        session_id: session_id.clone(),
                         lease: directive.authority.lease,
                         published: publish,
                         drained: drain,
@@ -1261,7 +1261,7 @@ pub async fn drive_session_realization(
                 #[cfg(feature = "test-support")]
                 crate::realization_observation::checkpoint(
                     "complete",
-                    session_id,
+                    session_id.as_str(),
                     serde_json::json!({"lease": directive.authority.lease}),
                 )
                 .await;
@@ -1275,7 +1275,7 @@ pub async fn drive_session_realization(
             #[cfg(feature = "test-support")]
             crate::realization_observation::checkpoint(
                 "complete",
-                session_id,
+                session_id.as_str(),
                 serde_json::json!({"lease": directive.authority.lease}),
             )
             .await;
@@ -1720,7 +1720,7 @@ mod tests {
         };
         assert!(
             control
-                .terminal_repository_publication_command("session", &lease)
+                .terminal_repository_publication_command(&crate::SessionId::from("session"), &lease)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1741,7 +1741,11 @@ mod tests {
         assert!(
             matches!(
                 control
-                    .record_terminal_repository_publication_receipt("session", &lease, receipt,)
+                    .record_terminal_repository_publication_receipt(
+                        &crate::SessionId::from("session"),
+                        &lease,
+                        receipt,
+                    )
                     .await,
                 Err(SessionRealizationControlFailure::Invalid(_))
             ),
