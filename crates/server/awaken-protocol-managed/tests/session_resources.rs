@@ -2658,19 +2658,22 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
     // dependencies, and failure triggers used by this case.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    // Cause/effect graph: C1 the lifecycle-supervisor-owned recovery seam
-    // reserves a retained User Event and commits its durable activity epoch; C2
-    // the one-shot test gate holds that exact canonical activation; C3 its next
-    // sequential scan observes the released Run's committed terminal truth; C4
-    // the in-process fake's missing Runtime Host callback is represented by the
-    // application-owned activity-settlement port used by that real callback.
-    // Effects: E1 the Event receipt is returned without awaiting execution; E2
-    // GET projects Running while C2 holds; E3 the same aggregate commits Idle
-    // and GET projects it. Decision rules: A1=C1+C2=>E1+E2,
-    // A2=C1+C2+C3+C4=>E3. Constraint: the gate wraps the shared
-    // `CoordinatedRuntimeFake`, and the two sequential scans model the sole
-    // supervisor; no parallel driver, request-local executor, dispatch lookup,
-    // or protocol-only status owner participates.
+    // Cause/effect graph: C1 the accepted User Event is the global FIFO head,
+    // so the request-local canonical Event driver reserves it and commits its
+    // durable activity epoch before activation; C2 the one-shot test gate holds
+    // that exact canonical activation inside the request; C3 the next
+    // sequential supervisor scan observes the released Run's committed terminal
+    // truth; C4 the in-process fake's missing Runtime Host callback is
+    // represented by the application-owned activity-settlement port used by
+    // that real callback.
+    // Effects: E1 the Event receipt is returned once the canonical activation
+    // port returns (the production Host only publishes the Dispatch row there);
+    // E2 GET projects Running while C2 holds; E3 the same aggregate commits
+    // Idle and GET projects it. Decision rules: A1=C1+C2=>E2,
+    // A2=C1+C2+C3+C4=>E1+E3. Constraint: the gate wraps the shared
+    // `CoordinatedRuntimeFake`; the request drive and the one supervisor scan
+    // never overlap, and no dispatch lookup or protocol-only status owner
+    // participates.
     let runtime = CoordinatedRuntimeFake::default();
     runtime.hold_next_user_run_activation();
     let state = std::sync::Arc::new(ManagedState::new(runtime.clone()));
@@ -2680,24 +2683,23 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
         .expect(StatusCode::OK);
     let session_id = session["id"].as_str().unwrap().to_owned();
 
-    let _body = call(
-        &app,
-        "POST",
-        &format!("/v1/sessions/{session_id}/events"),
-        Some(json!({
-            "events": [{
-                "type": "user.message",
-                "content": [{"type": "text", "text": "hold"}]
-            }]
-        })),
-    )
-    .await
-    .expect_for(StatusCode::OK, "A1/E1");
-    let application = state.session_application();
-    let first_scan = tokio::spawn({
-        let application = application.clone();
-        let session_id = session_id.clone();
-        async move { Box::pin(application.drive_session_event_batches(&session_id, None)).await }
+    let submission = tokio::spawn({
+        let app = app.clone();
+        let uri = format!("/v1/sessions/{session_id}/events");
+        async move {
+            call(
+                &app,
+                "POST",
+                &uri,
+                Some(json!({
+                    "events": [{
+                        "type": "user.message",
+                        "content": [{"type": "text", "text": "hold"}]
+                    }]
+                })),
+            )
+            .await
+        }
     });
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -2712,10 +2714,12 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
     assert_eq!(running["status"], "running", "A1/E2");
 
     runtime.release_user_run_activation();
-    first_scan
+    let receipt = submission
         .await
-        .expect("A1 first recovery scan task")
-        .expect("A1 first recovery scan");
+        .expect("A2 Event submission task")
+        .expect_for(StatusCode::OK, "A2/E1");
+    assert_eq!(receipt["data"][0]["type"], "user.message", "A2/E1");
+    let application = state.session_application();
     Box::pin(application.drive_session_event_batches(&session_id, None))
         .await
         .expect("A2 terminal recovery scan");
@@ -2735,16 +2739,18 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph:
-    // C1 Published -> E1 a Session may be admitted; C2 the supervisor-owned
-    // recovery seam commits a Run activity receipt and the canonical one-shot
-    // activation gate holds it; C3 lifecycle changes to Disabled; C4 the next
-    // sequential scan observes terminal truth and the canonical Runtime Host
-    // settlement port closes its activity -> E2 that already-admitted Run still
-    // settles, while E3 a new Session and a new Event on the existing Session
-    // both fail before any second activation. Constraint: the shared
-    // `CoordinatedRuntimeFake` remains the sole reservation/activation driver;
-    // its ordinary `researcher` child is frozen in the fixture roster, and
-    // recovery scans never overlap.
+    // C1 Published -> E1 a Session may be admitted; C2 the accepted User Event
+    // is the FIFO head, so the request-local canonical Event driver commits a
+    // Run activity receipt and the canonical one-shot activation gate holds it
+    // inside that request; C3 lifecycle changes to Disabled; C4 the next
+    // sequential supervisor scan observes terminal truth and the canonical
+    // Runtime Host settlement port closes its activity -> E2 that
+    // already-admitted Run still settles and its receipt is returned, while E3
+    // a new Session and a new Event on the existing Session both fail before
+    // any second activation. Constraint: the shared `CoordinatedRuntimeFake`
+    // remains the sole reservation/activation implementation; its ordinary
+    // `researcher` child is frozen in the fixture roster, and the request drive
+    // and supervisor scan never overlap.
     //
     // Decision table:
     // | rule | lifecycle at admission | target                  | outcome |
@@ -2771,24 +2777,23 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
     .expect_for(StatusCode::OK, "L1");
     let session_id = session["id"].as_str().unwrap();
 
-    let _body = call(
-        &app,
-        "POST",
-        &format!("/v1/sessions/{session_id}/events"),
-        Some(json!({
-            "events": [{
-                "type": "user.message",
-                "content": [{"type": "text", "text": "already admitted"}]
-            }]
-        })),
-    )
-    .await
-    .expect_for(StatusCode::OK, "L2 admitted receipt");
-    let application = state.session_application();
-    let first_scan = tokio::spawn({
-        let application = application.clone();
-        let session_id = session_id.to_owned();
-        async move { Box::pin(application.drive_session_event_batches(&session_id, None)).await }
+    let submission = tokio::spawn({
+        let app = app.clone();
+        let uri = format!("/v1/sessions/{session_id}/events");
+        async move {
+            call(
+                &app,
+                "POST",
+                &uri,
+                Some(json!({
+                    "events": [{
+                        "type": "user.message",
+                        "content": [{"type": "text", "text": "already admitted"}]
+                    }]
+                })),
+            )
+            .await
+        }
     });
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -2800,10 +2805,15 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
         .unavailable
         .store(true, std::sync::atomic::Ordering::SeqCst);
     runtime.release_user_run_activation();
-    first_scan
+    let receipt = submission
         .await
-        .expect("L2 first recovery scan task")
-        .expect("L2 first recovery scan");
+        .expect("L2 Event submission task")
+        .expect_for(StatusCode::OK, "L2 admitted receipt");
+    assert_eq!(
+        receipt["data"][0]["type"], "user.message",
+        "L2 admitted receipt"
+    );
+    let application = state.session_application();
     Box::pin(application.drive_session_event_batches(session_id, None))
         .await
         .expect("L2 terminal recovery scan");
