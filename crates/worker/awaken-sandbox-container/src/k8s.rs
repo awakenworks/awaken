@@ -1304,8 +1304,12 @@ impl K8sRuntime {
         // aggregate cleanup cannot supply provenance without current authority.
         let admit = || {
             if let Some((authorization, authority)) = authorization {
-                pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
-                    .map_err(backend)?;
+                pc::with_current_sandbox_effect(
+                    authorization.effect_fence(),
+                    authority,
+                    |_| Ok(()),
+                )
+                .map_err(backend)?;
             }
             Ok(())
         };

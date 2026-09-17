@@ -967,7 +967,7 @@ impl SharedHost {
         awaken_provisioning_contract::with_current_sandbox_effect(
             &terminal_effect_fence,
             &authority,
-            || Ok(()),
+            |_| Ok(()),
         )
         .map_err(|error| HostError::unavailable(error.to_string()))?;
         match (checkpoint, pending_checkpoint) {
@@ -1014,7 +1014,7 @@ impl SharedHost {
         awaken_provisioning_contract::with_current_sandbox_effect(
             &terminal_effect_fence,
             &authority,
-            || Ok(()),
+            |_| Ok(()),
         )
         .map_err(|error| HostError::unavailable(error.to_string()))
     }

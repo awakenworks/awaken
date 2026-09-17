@@ -851,7 +851,7 @@ pub trait Sandbox: Send + Sync {
         complete_materializations: &[MemoryMaterializationEvidence],
         authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
-        with_current_sandbox_effect(effect_fence, authority, || {
+        with_current_sandbox_effect(effect_fence, authority, |_| {
             default_memory_reconciliation_ack(complete_materializations)
         })
     }
@@ -1155,7 +1155,7 @@ mod terminal_memory_reconciliation_contract_tests {
             };
             let calls = calls.clone();
             assert!(
-                ack.acknowledge(fence, &authority, &expected, supplied, || {
+                ack.acknowledge(fence, &authority, &expected, supplied, |_| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 })
@@ -1172,7 +1172,7 @@ mod terminal_memory_reconciliation_contract_tests {
             &expected,
             {
                 let calls = calls.clone();
-                move || {
+                move |_| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 }
@@ -1186,7 +1186,7 @@ mod terminal_memory_reconciliation_contract_tests {
             &expected,
             {
                 let calls = calls.clone();
-                move || {
+                move |_| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 }
@@ -1202,7 +1202,7 @@ mod terminal_memory_reconciliation_contract_tests {
             &expected,
             {
                 let calls = calls.clone();
-                move || {
+                move |_| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 }
@@ -1215,7 +1215,7 @@ mod terminal_memory_reconciliation_contract_tests {
                 &expected,
                 &live,
                 &crate::test_support::EffectAuthority::new(&live),
-                || Ok(())
+                |_| Ok(())
             )
             .is_err(),
             "K4 supersedes the old operation"
@@ -1224,7 +1224,7 @@ mod terminal_memory_reconciliation_contract_tests {
             &expected,
             &takeover,
             &crate::test_support::EffectAuthority::new(&takeover),
-            || Ok(()),
+            |_| Ok(()),
         )
         .expect("K4 latest gate");
 
@@ -1234,7 +1234,7 @@ mod terminal_memory_reconciliation_contract_tests {
                 &crate::test_support::EffectAuthority::new(&foreign),
                 &expected,
                 &expected,
-                || Ok(())
+                |_| Ok(())
             )
             .is_err(),
             "K5 foreign owner"
@@ -1245,7 +1245,7 @@ mod terminal_memory_reconciliation_contract_tests {
                 &crate::test_support::EffectAuthority::new(&higher),
                 &expected,
                 &expected,
-                || Ok(())
+                |_| Ok(())
             )
             .is_err(),
             "K5 higher epoch"
@@ -1255,7 +1255,7 @@ mod terminal_memory_reconciliation_contract_tests {
                 &expected,
                 &foreign,
                 &crate::test_support::EffectAuthority::new(&foreign),
-                || Ok(())
+                |_| Ok(())
             )
             .is_err(),
             "K5 gate"
@@ -1268,7 +1268,7 @@ mod terminal_memory_reconciliation_contract_tests {
                 &crate::test_support::EffectAuthority::new(&live),
                 &[],
                 &[],
-                || panic!("empty evidence has no Copy drain"),
+                |_| panic!("empty evidence has no Copy drain"),
             )
             .expect("empty evidence");
         empty
@@ -1276,7 +1276,7 @@ mod terminal_memory_reconciliation_contract_tests {
                 &[],
                 &foreign,
                 &crate::test_support::EffectAuthority::new(&foreign),
-                || Ok(()),
+                |_| Ok(()),
             )
             .expect("empty evidence leaves FUSE to ordinary disposal");
     }

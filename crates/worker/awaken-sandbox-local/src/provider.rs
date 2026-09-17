@@ -762,7 +762,7 @@ impl LocalProvider {
         let effect_fence = effect.map(|(fence, _)| fence);
         let admit = || {
             effect.map_or(Ok(()), |(fence, authority)| {
-                pc::with_current_sandbox_effect(fence, authority, || Ok(()))
+                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
             })
         };
         admit()?;
@@ -1876,12 +1876,13 @@ impl pc::Sandbox for LocalSandbox {
                     .unwrap_or_default()
                     .to_vec())
             },
-            || {
+            |admitted| {
                 crate::authorize_terminal_disposal(
                     self.root.root(),
                     &self.realization,
                     &self.terminal_removal,
                     effect_fence,
+                    admitted,
                 )
                 .map(|_| ())
             },

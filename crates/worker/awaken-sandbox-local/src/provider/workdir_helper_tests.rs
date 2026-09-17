@@ -1215,7 +1215,9 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     let root = crate::sandbox_dir(tmp.path(), &spec.scope);
     let mut creation =
         crate::realization_marker::begin(&root, &fingerprint, &create, None, None).unwrap();
-    creation.prepare_root().unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
     std::fs::create_dir(root.join("memory")).unwrap();
     std::fs::write(root.join("memory/value"), b"candidate").unwrap();
     let evidence = pc::MemoryMaterializationEvidence::new(
@@ -1240,7 +1242,9 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         vec![evidence.clone()],
     )
     .unwrap();
-    let realization = creation.complete(&completion).unwrap();
+    let realization = creation
+        .recorded_admission(|held, admitted| held.complete(&completion, admitted))
+        .unwrap();
     let payload = crate::LocalSandboxHandleV2 {
         previous: crate::LocalSandboxHandleV1 {
             outputs_path: spec.outputs_path.clone(),

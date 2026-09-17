@@ -18,7 +18,7 @@ impl<'a> ProviderCreationGuard<'a> {
         source: Option<RebuildSource<'_>>,
         authority: &'a dyn pc::CurrentExecutionAuthority,
     ) -> Result<Self, pc::SandboxError> {
-        pc::with_current_sandbox_effect(fence, authority, || {
+        pc::with_current_sandbox_effect(fence, authority, |_| {
             Ok(Self::Current {
                 guard: Box::new(begin(root, fingerprint, fence, source, None)?),
                 authority,
@@ -34,7 +34,7 @@ impl<'a> ProviderCreationGuard<'a> {
     ) -> Result<T, pc::SandboxError> {
         match self {
             Self::Current { guard, authority } => {
-                pc::with_current_sandbox_effect(&guard.marker.effect_fence, *authority, apply)
+                pc::with_current_sandbox_effect(&guard.marker.effect_fence, *authority, |_| apply())
             }
             Self::Legacy(_) => apply(),
         }
@@ -78,7 +78,7 @@ impl<'a> ProviderCreationGuard<'a> {
             Self::Current { guard, authority } => pc::with_current_sandbox_effect(
                 &guard.marker.effect_fence.clone(),
                 *authority,
-                || guard.prepare_root(),
+                |admitted| guard.prepare_root(admitted),
             ),
             Self::Legacy(guard) => guard.prepare_root(),
         }
@@ -94,7 +94,11 @@ impl<'a> ProviderCreationGuard<'a> {
             Self::Current { guard, authority } => pc::with_current_sandbox_effect(
                 &guard.marker.effect_fence.clone(),
                 *authority,
-                || guard.complete(receipt).map(LiveRealization::Current),
+                |admitted| {
+                    guard
+                        .complete(receipt, admitted)
+                        .map(LiveRealization::Current)
+                },
             ),
             Self::Legacy(guard) => guard.complete().map(LiveRealization::LegacyCreated),
         }
@@ -123,7 +127,7 @@ impl<'a> ProviderCreationGuard<'a> {
             Self::Current { guard, authority } => pc::with_current_sandbox_effect(
                 &guard.marker.effect_fence.clone(),
                 authority,
-                || (*guard).abort_creation(),
+                |admitted| (*guard).abort_creation(admitted),
             ),
             Self::Legacy(guard) => guard.abort_creation(),
         }

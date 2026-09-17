@@ -944,7 +944,7 @@ impl SharedHost {
             .transpose()?;
         let admit_original = || match (effect.provider_fence.as_ref(), authority.as_ref()) {
             (Some(fence), Some(authority)) => {
-                awaken_provisioning_contract::with_current_sandbox_effect(fence, authority, || {
+                awaken_provisioning_contract::with_current_sandbox_effect(fence, authority, |_| {
                     Ok(())
                 })
                 .map_err(|error| {

@@ -203,7 +203,7 @@ pub(crate) async fn prepare_adoption_memory_replay(
             authority.ok_or_else(|| {
                 pc::SandboxError::fence_rejected("adoption has no current authority")
             })?,
-            || Ok(()),
+            |_| Ok(()),
         ),
         None => Ok(()),
     };
@@ -301,7 +301,7 @@ pub(crate) async fn prepare_terminal_memory_replay(
     ordinary_realization: pc::Realization,
     host_paths: &[PathBuf],
 ) -> Result<Option<TerminalMemoryReplay>, pc::SandboxError> {
-    pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()))?;
+    pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()))?;
     let rebuild_source = handle
         .map(super::realization_marker::rebuild_source)
         .transpose()?;
@@ -336,7 +336,7 @@ pub(crate) async fn prepare_terminal_memory_replay(
     // exact session-scoped partial realization with zero materializations.
     // A durable handle above remains contradictory and is rejected.
 
-    let terminal = pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+    let terminal = pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| {
         super::realization_marker::begin_terminal_takeover(
             root,
             fingerprint,
@@ -348,7 +348,7 @@ pub(crate) async fn prepare_terminal_memory_replay(
     })?;
     let Some((realization, removal)) = terminal else {
         let state = memory_mounts.lock().await;
-        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| {
             state.require_empty()
         })?;
         return Ok(None);
@@ -377,12 +377,12 @@ pub(crate) async fn prepare_terminal_memory_replay(
             .lock()
             .await
             .release_unconfirmed(|| {
-                pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+                pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| {
                     removal.validate_before_reconstruction(terminal_effect_fence)
                 })
             })
             .await?;
-        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(memory_mounts))?
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(memory_mounts))?
     } else {
         replay_memory_mount_guards(
             memory_mounter,
@@ -391,7 +391,7 @@ pub(crate) async fn prepare_terminal_memory_replay(
             &realized,
             host_paths,
             || {
-                pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+                pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| {
                     removal.validate_before_reconstruction(terminal_effect_fence)
                 })
             },

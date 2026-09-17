@@ -399,7 +399,7 @@ impl SessionEnvironmentProvider {
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         let admit = || match (effect_fence, effect_fence_source) {
             (Some(fence), Some(authority)) => {
-                pc::with_current_sandbox_effect(fence, authority, || Ok(()))
+                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
             }
             (Some(_), None) => Err(pc::SandboxError::fence_rejected(
                 "fenced creation has no current authority",
@@ -809,7 +809,9 @@ impl SessionEnvironmentProvider {
             })
         };
         let admit = || match effect_fence {
-            Some(fence) => pc::with_current_sandbox_effect(fence, required_authority()?, || Ok(())),
+            Some(fence) => {
+                pc::with_current_sandbox_effect(fence, required_authority()?, |_| Ok(()))
+            }
             None => Ok(()),
         };
         admit()?;

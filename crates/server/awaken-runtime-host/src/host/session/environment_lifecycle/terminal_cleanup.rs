@@ -393,7 +393,7 @@ impl SharedHost {
                 awaken_provisioning_contract::with_current_sandbox_effect(
                     authorization.effect_fence(),
                     &authority,
-                    || Ok(()),
+                    |_| Ok(()),
                 )
                 .map_err(|error| HostError::unavailable(error.to_string()))?;
                 // Keep the exact Restoring request as the response-loss fence.

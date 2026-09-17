@@ -13,6 +13,7 @@ pub(crate) fn authorize_terminal_disposal(
     realization: &realization_marker::LiveRealization,
     terminal_removal: &tokio::sync::Mutex<Option<realization_marker::RemovalGuard>>,
     effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
+    admitted: &awaken_provisioning_contract::SandboxEffectGuard<'_>,
 ) -> Result<
     awaken_provisioning_contract::SandboxEffectFence,
     awaken_provisioning_contract::SandboxError,
@@ -47,7 +48,7 @@ pub(crate) fn authorize_terminal_disposal(
             "Memory reconciliation lost its exact physical Sandbox participant",
         ));
     };
-    removal.prepare_disposal_effect(effect_fence)
+    removal.prepare_disposal_effect(effect_fence, admitted)
 }
 
 /// Validate the provider-neutral Memory acknowledgement and bind the exact
@@ -66,9 +67,14 @@ pub(crate) fn prepare_terminal_disposal(
     awaken_provisioning_contract::SandboxEffectFence,
     awaken_provisioning_contract::SandboxError,
 > {
-    acknowledgement.require_for_disposal(expected_materializations, effect_fence, authority, || {
-        authorize_terminal_disposal(root, realization, terminal_removal, effect_fence)
-    })
+    acknowledgement.require_for_disposal(
+        expected_materializations,
+        effect_fence,
+        authority,
+        |admitted| {
+            authorize_terminal_disposal(root, realization, terminal_removal, effect_fence, admitted)
+        },
+    )
 }
 
 /// Borrow the original prepared participant through every await. Cancellation
@@ -93,25 +99,27 @@ pub(crate) async fn dispose_terminal_realization(
             "physical disposal requires an exact prepared filesystem participant",
         )
     })?;
-    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
-        removal.authorize_disposal(authorization)
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |admitted| {
+        removal.authorize_disposal(authorization, admitted)
     })?;
     quiesce.await;
     release_memory_mounts(memory_mounts, || {
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
-            removal.authorize_disposal(authorization)
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |admitted| {
+            removal.authorize_disposal(authorization, admitted)
         })
     })
     .await?;
-    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
-        removal.authorize_disposal(authorization)?;
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |admitted| {
+        removal.authorize_disposal(authorization, admitted)?;
         shred_secret_paths_for_removal(removal, sandbox_root, secret_paths)
     })?;
-    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
-        removal.remove_root()
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |admitted| {
+        removal.remove_root(admitted)
     })?;
-    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || removal.finish())?;
-    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |admitted| {
+        removal.finish(admitted)
+    })?;
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| {
         slot.take();
         Ok(())
     })?;

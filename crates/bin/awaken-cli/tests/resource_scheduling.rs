@@ -78,7 +78,7 @@ impl ContainerEnvironmentProvider for RecordingProvider {
             intent,
             awaken_sandbox_container::ContainerRealizationIntent::Create
         ));
-        pc::with_current_sandbox_effect(fence, source, || {
+        pc::with_current_sandbox_effect(fence, source, |_| {
             let mut specs = self.specs.lock().unwrap();
             if let Some(prior) = specs.iter().find(|prior| prior.scope == spec.scope) {
                 assert_eq!(

@@ -26,7 +26,7 @@ impl ContainerCheckpointAccess<'_> {
                 "invalid container checkpoint access",
             ));
         }
-        pc::with_current_sandbox_effect(self.effect_fence, self.authority, || Ok(()))
+        pc::with_current_sandbox_effect(self.effect_fence, self.authority, |_| Ok(()))
     }
 
     #[cfg(feature = "k8s")]

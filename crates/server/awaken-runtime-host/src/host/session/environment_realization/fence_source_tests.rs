@@ -192,7 +192,7 @@ fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                 let ack = awaken_provisioning_contract::MemoryReconciliationAck::default();
                 let mut drained = 0;
                 for _ in 0..2 {
-                    let result = ack.acknowledge(&asserted, &source, materials, materials, || {
+                    let result = ack.acknowledge(&asserted, &source, materials, materials, |_| {
                         drained += 1;
                         if registered {
                             assert!(worker.0.try_lock().is_err());

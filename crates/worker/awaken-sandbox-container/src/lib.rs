@@ -1647,7 +1647,7 @@ impl ContainerCleanupState {
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.remove_done.lock().await;
         let admit = |effect: &mut dyn FnMut() -> Result<(), pc::SandboxError>| {
-            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, effect)
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| effect())
         };
         // A cached result and a completed lock wait both consume current proof.
         // Backend admission below is asynchronous: its response can arrive
@@ -1834,7 +1834,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
             authority,
             expected_materializations,
             complete_materializations,
-            || {
+            |_| {
                 if let Some(mounts) = memory.as_mut() {
                     if mounts
                         .iter()
@@ -1876,21 +1876,15 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         // finalizer) is reachable from this method.
         self.lifecycle
             .memory_reconciliation_ack
-            .require_for_disposal(
-                expected_materializations,
-                effect_fence,
-                authority,
-                || Ok(()),
-            )?;
+            .require_for_disposal(expected_materializations, effect_fence, authority, |_| {
+                Ok(())
+            })?;
         self.prepare_disposal(Some(effect_fence), || {
             self.lifecycle
                 .memory_reconciliation_ack
-                .require_for_disposal(
-                    expected_materializations,
-                    effect_fence,
-                    authority,
-                    || Ok(()),
-                )
+                .require_for_disposal(expected_materializations, effect_fence, authority, |_| {
+                    Ok(())
+                })
         })
         .await?;
         // Container/Kubernetes install their exact physical gate only at the
@@ -1898,7 +1892,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         // returns the caller's exact fence without claiming marker evidence.
         self.lifecycle
             .memory_reconciliation_ack
-            .require_for_disposal(expected_materializations, effect_fence, authority, || {
+            .require_for_disposal(expected_materializations, effect_fence, authority, |_| {
                 Ok(effect_fence.clone())
             })
     }

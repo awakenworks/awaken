@@ -17995,7 +17995,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
             )
         })?;
         effect_fence.validate_identity()?;
-        pc::with_current_sandbox_effect(effect_fence, authority.unwrap(), || {
+        pc::with_current_sandbox_effect(effect_fence, authority.unwrap(), |_| {
             self.events.lock().unwrap().push("adopt-live-memory");
             Ok(())
         })?;
@@ -18018,7 +18018,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
     {
         pc::with_current_sandbox_effect::<
             Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
-        >(terminal_effect_fence, authority, || match self.scenario {
+        >(terminal_effect_fence, authority, |_| match self.scenario {
             TerminalRecoveryScenario::OrphanClaim => Err(pc::SandboxError::unsupported(
                 "orphan-claim observation must fail before terminal preparation",
             )),
@@ -18093,7 +18093,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
             ));
         }
         authorization.validate()?;
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))?;
         self.restored_disposals
             .lock()
             .unwrap()
@@ -18145,7 +18145,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| {
             self.events.lock().unwrap().push("checkpoint-live-io");
             Ok(())
         })?;
@@ -18153,7 +18153,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
             probe.record("checkpoint", terminal_effect_fence);
             probe.checkpoint_entered.notify_one();
             probe.checkpoint_release.notified().await;
-            return pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()));
+            return pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()));
         }
         Err(pc::SandboxError::not_found(
             "terminal recovery fixture has no pending checkpoint upload",
@@ -18238,7 +18238,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
             authority,
             expected,
             complete_materializations,
-            || {
+            |_| {
                 if matches!(
                     self.mode,
                     TerminalRecoveryEnvironmentMode::LiveMemory
@@ -18262,7 +18262,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
             &[],
             effect_fence,
             authority,
-            || Ok(()),
+            |_| Ok(()),
         )?;
         self.events.lock().unwrap().push("prepare-source");
         if let Some(probe) = &self.fence_refresh_probe {
@@ -18276,7 +18276,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         authorization: &pc::SandboxDisposalAuthorization,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| {
             self.events.lock().unwrap().push("dispose-physical");
             Ok(())
         })

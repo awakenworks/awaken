@@ -256,12 +256,13 @@ impl pc::Sandbox for NamespaceSandbox {
                     .unwrap_or_default()
                     .to_vec())
             },
-            || {
+            |admitted| {
                 crate::authorize_terminal_disposal(
                     &self.realization_root,
                     &self.realization,
                     &self.terminal_removal,
                     effect_fence,
+                    admitted,
                 )
                 .map(|_| ())
             },

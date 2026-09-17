@@ -3724,7 +3724,7 @@ impl ContainerRuntime for FakeRuntime {
             ));
         }
         let admit = || {
-            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
                 .map_err(|error| RuntimeError::Backend(error.to_string()))
         };
         admit()?;

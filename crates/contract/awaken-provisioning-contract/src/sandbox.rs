@@ -127,7 +127,11 @@ mod tests {
             authorization: &crate::SandboxDisposalAuthorization,
             authority: &dyn crate::CurrentExecutionAuthority,
         ) -> Result<(), SandboxError> {
-            crate::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+            crate::with_current_sandbox_effect(
+                authorization.effect_fence(),
+                authority,
+                |_| Ok(()),
+            )?;
             self.dispose().await
         }
     }
@@ -174,7 +178,7 @@ mod tests {
                 crate::test_support::retain_abandoned_effect(spec.scope.clone()),
             );
             crate::ClaimedEffect::new(claim, async move {
-                crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+                crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
                 self.create(spec).await
             })
         }
@@ -185,7 +189,7 @@ mod tests {
             effect_fence: &crate::SandboxEffectFence,
             authority: &dyn crate::CurrentExecutionAuthority,
         ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
             self.adopt(handle).await
         }
     }
@@ -435,7 +439,7 @@ mod tests {
                 crate::test_support::retain_abandoned_effect(spec.scope.clone()),
             );
             crate::ClaimedEffect::new(claim, async move {
-                crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+                crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
                 self.create(spec).await
             })
         }
@@ -446,7 +450,7 @@ mod tests {
             effect_fence: &crate::SandboxEffectFence,
             authority: &dyn crate::CurrentExecutionAuthority,
         ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
             self.adopt(handle).await
         }
     }

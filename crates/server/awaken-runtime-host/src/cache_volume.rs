@@ -429,7 +429,7 @@ mod tests {
             authorization: &pc::SandboxDisposalAuthorization,
             authority: &dyn pc::CurrentExecutionAuthority,
         ) -> Result<(), pc::SandboxError> {
-            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))?;
             self.dispose().await
         }
 

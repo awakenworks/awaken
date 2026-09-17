@@ -271,7 +271,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                         "fenced container creation requires current Session authority",
                     )
                 })?,
-                || Ok(()),
+                |_| Ok(()),
             ),
             None => Ok(()),
         };
@@ -1044,7 +1044,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        let admit = || pc::with_current_sandbox_effect(effect_fence, authority, || Ok(()));
+        let admit = || pc::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()));
         admit()?;
         if adoption.handle.restoration().is_some() {
             return self
@@ -1089,7 +1089,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<ContainerSandbox<R>>, pc::SandboxError> {
-        let admit = || pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()));
+        let admit =
+            || pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()));
         admit()?;
         let Some(handle) = handle else {
             let (plan, _) = self.adoption_plan(spec)?;
