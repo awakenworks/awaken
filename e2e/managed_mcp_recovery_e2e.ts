@@ -275,7 +275,20 @@ async function main(): Promise<void> {
       );
       const observed = readTrace();
       const terminalIndex = observed.findIndex((event, index) => index > interrupted.length && event.point === 'complete');
-      const events = observed.slice(0, terminalIndex + 1);
+      // Arming selects a Session, so the ordinary recovery supervisor may have
+      // completed one whole realization pass for this candidate before the
+      // faulted pass began. Those passes are real and separately ordered, but
+      // they are not this rule's measured window: the relation reads physical
+      // publication from the window it starts in, so a completed predecessor
+      // would present already-active generations as never published. Measure
+      // from the root read of the pass the fault interrupted.
+      const precedingPass = observed
+        .slice(0, interrupted.length)
+        .map(event => event.point)
+        .lastIndexOf('complete');
+      const events = observed
+        .slice(precedingPass + 1, terminalIndex + 1)
+        .map((event, sequence) => ({ ...event, sequence }));
       const finalRoot = events.filter(event => event.data.attachments).at(-1).data;
       const finalActive = finalRoot.attachments.filter((a: any) => a.state === 'active');
       assert.equal(finalRoot.created, lastRoot.created, `${rule}: creation observation retained`);
