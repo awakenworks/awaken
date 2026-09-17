@@ -51,23 +51,27 @@ impl RegistryApplication {
         Self { repository, clock }
     }
 
-    fn memory(
+    async fn memory(
         &self,
         id: &str,
     ) -> Result<Option<Stored<MemoryStoreAggregate>>, ResourceRegistryError> {
         self.repository
             .load_memory_store(id)
+            .await
             .map_err(registry_error)
     }
 
-    fn repository(
+    async fn repository(
         &self,
         id: &str,
     ) -> Result<Option<Stored<RepositoryAggregate>>, ResourceRegistryError> {
-        self.repository.load_repository(id).map_err(registry_error)
+        self.repository
+            .load_repository(id)
+            .await
+            .map_err(registry_error)
     }
 
-    fn replace_memory(
+    async fn replace_memory(
         &self,
         id: &str,
         stored: Stored<MemoryStoreAggregate>,
@@ -75,6 +79,7 @@ impl RegistryApplication {
         match self
             .repository
             .replace_memory_store(stored.revision, &stored.aggregate)
+            .await
             .map_err(registry_error)?
         {
             ReplaceOutcome::Replaced { .. } => Ok(()),
@@ -84,7 +89,7 @@ impl RegistryApplication {
         }
     }
 
-    fn replace_repository(
+    async fn replace_repository(
         &self,
         id: &str,
         stored: Stored<RepositoryAggregate>,
@@ -92,6 +97,7 @@ impl RegistryApplication {
         match self
             .repository
             .replace_repository(stored.revision, &stored.aggregate)
+            .await
             .map_err(registry_error)?
         {
             ReplaceOutcome::Replaced { .. } => Ok(()),
@@ -118,25 +124,27 @@ fn registry_error(error: RegistryRepositoryError) -> ResourceRegistryError {
     }
 }
 
+#[async_trait::async_trait]
 impl ResourceInventory for RegistryApplication {
-    fn find_memory_store(
+    async fn find_memory_store(
         &self,
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<MemoryStoreDefinition>, ResourceRegistryError> {
-        Ok(self.memory(id)?.and_then(|stored| {
+        Ok(self.memory(id).await?.and_then(|stored| {
             (stored.aggregate.definition().workspace_id == workspace_id)
                 .then(|| stored.aggregate.into_definition())
         }))
     }
 
-    fn list_memory_stores(
+    async fn list_memory_stores(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<MemoryStoreDefinition>, ResourceRegistryError> {
         let mut definitions = self
             .repository
             .list_memory_stores(workspace_id)
+            .await
             .map_err(registry_error)?
             .into_iter()
             .filter_map(|stored| {
@@ -149,50 +157,51 @@ impl ResourceInventory for RegistryApplication {
         Ok(definitions)
     }
 
-    fn find_memory_store_config(
+    async fn find_memory_store_config(
         &self,
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
     ) -> Result<Option<MemoryStoreConfigVersion>, ResourceRegistryError> {
-        Ok(self.memory(id)?.and_then(|stored| {
+        Ok(self.memory(id).await?.and_then(|stored| {
             (stored.aggregate.definition().workspace_id == workspace_id)
                 .then(|| stored.aggregate.into_config(version))
                 .flatten()
         }))
     }
 
-    fn find_repository(
+    async fn find_repository(
         &self,
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<RepositoryDefinition>, ResourceRegistryError> {
-        Ok(self.repository(id)?.and_then(|stored| {
+        Ok(self.repository(id).await?.and_then(|stored| {
             (stored.aggregate.definition().workspace_id == workspace_id)
                 .then(|| stored.aggregate.into_definition())
         }))
     }
 
-    fn find_repository_config(
+    async fn find_repository_config(
         &self,
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
     ) -> Result<Option<RepositoryConfigVersion>, ResourceRegistryError> {
-        Ok(self.repository(id)?.and_then(|stored| {
+        Ok(self.repository(id).await?.and_then(|stored| {
             (stored.aggregate.definition().workspace_id == workspace_id)
                 .then(|| stored.aggregate.into_config(version))
                 .flatten()
         }))
     }
 
-    fn list_repositories(
+    async fn list_repositories(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<RepositoryDefinition>, ResourceRegistryError> {
         let mut definitions = self
             .repository
             .list_repositories(workspace_id)
+            .await
             .map_err(registry_error)?
             .into_iter()
             .filter_map(|stored| {
@@ -206,8 +215,9 @@ impl ResourceInventory for RegistryApplication {
     }
 }
 
+#[async_trait::async_trait]
 impl ResourceAdministration for RegistryApplication {
-    fn register_memory_store_idempotent(
+    async fn register_memory_store_idempotent(
         &self,
         command: RegisterMemoryStore,
     ) -> Result<MemoryStoreDefinition, ResourceRegistryError> {
@@ -216,13 +226,15 @@ impl ResourceAdministration for RegistryApplication {
         match self
             .repository
             .insert_memory_store(&candidate)
+            .await
             .map_err(registry_error)?
         {
             InsertOutcome::Inserted => Ok(candidate.into_definition()),
             InsertOutcome::AlreadyRegistered => {
                 let id = candidate.definition().id.as_str();
                 let stored = self
-                    .memory(id)?
+                    .memory(id)
+                    .await?
                     .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?;
                 if !stored.aggregate.is_creation_replay_of(&candidate) {
                     return Err(ResourceRegistryError::AlreadyRegistered(id.into()));
@@ -235,7 +247,7 @@ impl ResourceAdministration for RegistryApplication {
         }
     }
 
-    fn register_memory_store(
+    async fn register_memory_store(
         &self,
         command: RegisterMemoryStore,
     ) -> Result<(), ResourceRegistryError> {
@@ -243,6 +255,7 @@ impl ResourceAdministration for RegistryApplication {
         match self
             .repository
             .insert_memory_store(&aggregate)
+            .await
             .map_err(registry_error)?
         {
             InsertOutcome::Inserted => Ok(()),
@@ -252,13 +265,14 @@ impl ResourceAdministration for RegistryApplication {
         }
     }
 
-    fn update_memory_store_profile(
+    async fn update_memory_store_profile(
         &self,
         command: UpdateMemoryStoreProfile,
     ) -> Result<(), ResourceRegistryError> {
         let id = command.id.to_string();
         let Some(mut stored) = self
-            .memory(&id)?
+            .memory(&id)
+            .await?
             .filter(|stored| stored.aggregate.definition().workspace_id == command.workspace_id)
         else {
             return Err(ResourceRegistryError::NotFound(id));
@@ -269,15 +283,15 @@ impl ResourceAdministration for RegistryApplication {
             command.metadata,
             self.clock.now_unix_nanos(),
         );
-        self.replace_memory(&id, stored)
+        self.replace_memory(&id, stored).await
     }
 
-    fn publish_memory_store_config(
+    async fn publish_memory_store_config(
         &self,
         command: PublishMemoryStoreConfig,
     ) -> Result<(), ResourceRegistryError> {
         let id = command.config.memory_store_id.to_string();
-        let Some(mut stored) = self.memory(&id)? else {
+        let Some(mut stored) = self.memory(&id).await? else {
             return Err(ResourceRegistryError::NotFound(id));
         };
         stored.aggregate.publish_config(
@@ -286,15 +300,15 @@ impl ResourceAdministration for RegistryApplication {
             command.config,
             self.clock.now_unix_nanos(),
         )?;
-        self.replace_memory(&id, stored)
+        self.replace_memory(&id, stored).await
     }
 
-    fn change_memory_store_state(
+    async fn change_memory_store_state(
         &self,
         command: ChangeMemoryStoreState,
     ) -> Result<(), ResourceRegistryError> {
         let id = command.id.to_string();
-        let Some(mut stored) = self.memory(&id)? else {
+        let Some(mut stored) = self.memory(&id).await? else {
             return Err(ResourceRegistryError::NotFound(id));
         };
         stored.aggregate.change_state(
@@ -302,10 +316,10 @@ impl ResourceAdministration for RegistryApplication {
             command.state,
             self.clock.now_unix_nanos(),
         )?;
-        self.replace_memory(&id, stored)
+        self.replace_memory(&id, stored).await
     }
 
-    fn register_repository(
+    async fn register_repository(
         &self,
         command: RegisterRepository,
     ) -> Result<(), ResourceRegistryError> {
@@ -313,6 +327,7 @@ impl ResourceAdministration for RegistryApplication {
         match self
             .repository
             .insert_repository(&aggregate)
+            .await
             .map_err(registry_error)?
         {
             InsertOutcome::Inserted => Ok(()),
@@ -322,7 +337,7 @@ impl ResourceAdministration for RegistryApplication {
         }
     }
 
-    fn register_repository_idempotent(
+    async fn register_repository_idempotent(
         &self,
         command: RegisterRepository,
     ) -> Result<RepositoryDefinition, ResourceRegistryError> {
@@ -331,13 +346,15 @@ impl ResourceAdministration for RegistryApplication {
         match self
             .repository
             .insert_repository(&candidate)
+            .await
             .map_err(registry_error)?
         {
             InsertOutcome::Inserted => Ok(candidate.into_definition()),
             InsertOutcome::AlreadyRegistered => {
                 let id = candidate.definition().id.as_str();
                 let stored = self
-                    .repository(id)?
+                    .repository(id)
+                    .await?
                     .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?;
                 if !stored.aggregate.is_creation_replay_of(&candidate) {
                     return Err(ResourceRegistryError::AlreadyRegistered(id.into()));
@@ -350,12 +367,12 @@ impl ResourceAdministration for RegistryApplication {
         }
     }
 
-    fn publish_repository_config(
+    async fn publish_repository_config(
         &self,
         command: PublishRepositoryConfig,
     ) -> Result<(), ResourceRegistryError> {
         let id = command.config.repository_id.to_string();
-        let Some(mut stored) = self.repository(&id)? else {
+        let Some(mut stored) = self.repository(&id).await? else {
             return Err(ResourceRegistryError::NotFound(id));
         };
         stored.aggregate.publish_config(
@@ -364,15 +381,15 @@ impl ResourceAdministration for RegistryApplication {
             command.config,
             self.clock.now_unix_nanos(),
         )?;
-        self.replace_repository(&id, stored)
+        self.replace_repository(&id, stored).await
     }
 
-    fn change_repository_state(
+    async fn change_repository_state(
         &self,
         command: ChangeRepositoryState,
     ) -> Result<(), ResourceRegistryError> {
         let id = command.id.to_string();
-        let Some(mut stored) = self.repository(&id)? else {
+        let Some(mut stored) = self.repository(&id).await? else {
             return Err(ResourceRegistryError::NotFound(id));
         };
         stored.aggregate.change_state(
@@ -380,54 +397,60 @@ impl ResourceAdministration for RegistryApplication {
             command.state,
             self.clock.now_unix_nanos(),
         )?;
-        self.replace_repository(&id, stored)
+        self.replace_repository(&id, stored).await
     }
 }
 
+#[async_trait::async_trait]
 impl ExecutionResourceResolver for RegistryApplication {
-    fn resolve_memory_store(
+    async fn resolve_memory_store(
         &self,
         workspace_id: &str,
         id: &str,
     ) -> Result<MemoryStoreConfigVersion, ResourceRegistryError> {
-        self.memory(id)?
+        self.memory(id)
+            .await?
             .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?
             .aggregate
             .resolve_for_execution(workspace_id)
     }
 
-    fn resolve_repository(
+    async fn resolve_repository(
         &self,
         workspace_id: &str,
         id: &str,
     ) -> Result<RepositoryConfigVersion, ResourceRegistryError> {
-        self.repository(id)?
+        self.repository(id)
+            .await?
             .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?
             .aggregate
             .resolve_for_execution(workspace_id)
     }
 }
 
+#[async_trait::async_trait]
 impl LiveResourceBindingVerifier for RegistryApplication {
-    fn verify_memory_binding(
+    async fn verify_memory_binding(
         &self,
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
     ) -> Result<(), ResourceRegistryError> {
-        self.memory(id)?
+        self.memory(id)
+            .await?
             .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?
             .aggregate
             .verify_live_binding(workspace_id, version)
     }
 
-    fn verify_repository_binding(
+    async fn verify_repository_binding(
         &self,
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
     ) -> Result<(), ResourceRegistryError> {
-        self.repository(id)?
+        self.repository(id)
+            .await?
             .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?
             .aggregate
             .verify_live_binding(workspace_id, version)
@@ -452,8 +475,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn application_owns_profile_timestamps_with_an_injected_clock() {
+    #[tokio::test]
+    async fn application_owns_profile_timestamps_with_an_injected_clock() {
         // Responsibility test: driving adapters supply intent but never time.
         // A profile mutation commits the application clock exactly once; the
         // repository only preserves that already-decided aggregate state.
@@ -480,6 +503,7 @@ mod tests {
                     retention_policy: RetentionPolicy::default(),
                 },
             })
+            .await
             .expect("register clock fixture");
         registry
             .update_memory_store_profile(UpdateMemoryStoreProfile {
@@ -489,17 +513,19 @@ mod tests {
                 description: String::new(),
                 metadata: Default::default(),
             })
+            .await
             .expect("update profile");
         let definition = registry
             .find_memory_store("workspace", "memory-clock")
+            .await
             .expect("read profile")
             .expect("profile exists");
         assert_eq!(definition.name, "Renamed");
         assert_eq!(definition.timestamps.updated_unix_nanos, 42);
     }
 
-    #[test]
-    fn inventory_retains_archived_definitions_but_never_deleted_tombstones() {
+    #[tokio::test]
+    async fn inventory_retains_archived_definitions_but_never_deleted_tombstones() {
         // Cause/effect graph: lifecycle is independent from inventory identity.
         // Archived definitions remain queryable by management callers, while
         // Deleted is a terminal tombstone and cannot re-enter a public list.
@@ -532,11 +558,13 @@ mod tests {
                         retention_policy: RetentionPolicy::default(),
                     },
                 })
+                .await
                 .expect("register lifecycle fixture");
         }
 
         let definitions = registry
             .list_memory_stores("workspace")
+            .await
             .expect("list inventory");
         assert_eq!(
             definitions
@@ -546,7 +574,7 @@ mod tests {
             ["active", "archived"]
         );
         assert!(matches!(
-            registry.resolve_memory_store("workspace", "archived"),
+            registry.resolve_memory_store("workspace", "archived").await,
             Err(awaken_resource_contract::ResourceRegistryError::NotActive { .. })
         ));
     }

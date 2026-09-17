@@ -20,7 +20,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 object_store = { version = "0.14" }
 
 [features]

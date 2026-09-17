@@ -12,10 +12,8 @@ use awaken_resource_contract::{
     ResourcePurgeIntent, ResourcePurgeRepository, ResourceReclamationFence, ResourceReference,
     ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
-pub(crate) use awaken_sql_storage::block_on_ambient_runtime as block;
 use sqlx::postgres::PgPool;
 use sqlx::{Postgres, Row, Transaction};
-use tokio::runtime::Handle;
 
 use crate::schema::{NS, REGISTRY_NS, resource_reclamation_bundle, resource_registry_bundle};
 use crate::{
@@ -28,7 +26,6 @@ use crate::{
 /// Multi-node durable resource lifecycle state.
 pub struct PostgresResourceStore {
     pub(crate) pool: PgPool,
-    pub(crate) handle: Handle,
 }
 
 impl PostgresResourceStore {
@@ -74,10 +71,7 @@ impl PostgresResourceStore {
     /// Wrap a shared pool without running migrations.
     #[must_use]
     pub fn with_pool(pool: PgPool) -> Self {
-        Self {
-            pool,
-            handle: Handle::current(),
-        }
+        Self { pool }
     }
 
     /// Apply the namespaced migration bundle idempotently.

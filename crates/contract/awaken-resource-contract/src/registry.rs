@@ -868,32 +868,33 @@ pub struct ChangeRepositoryState {
 }
 
 /// Query definitions and immutable configuration history.
+#[async_trait::async_trait]
 pub trait ResourceInventory: Send + Sync {
-    fn find_memory_store(
+    async fn find_memory_store(
         &self,
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<MemoryStoreDefinition>, ResourceRegistryError>;
-    fn list_memory_stores(
+    async fn list_memory_stores(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<MemoryStoreDefinition>, ResourceRegistryError>;
-    fn find_memory_store_config(
+    async fn find_memory_store_config(
         &self,
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
     ) -> Result<Option<MemoryStoreConfigVersion>, ResourceRegistryError>;
-    fn find_repository(
+    async fn find_repository(
         &self,
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<RepositoryDefinition>, ResourceRegistryError>;
-    fn list_repositories(
+    async fn list_repositories(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<RepositoryDefinition>, ResourceRegistryError>;
-    fn find_repository_config(
+    async fn find_repository_config(
         &self,
         workspace_id: &str,
         id: &str,
@@ -902,55 +903,59 @@ pub trait ResourceInventory: Send + Sync {
 }
 
 /// Register resources, publish configuration, and change lifecycle state.
+#[async_trait::async_trait]
 pub trait ResourceAdministration: Send + Sync {
-    fn register_memory_store(
+    async fn register_memory_store(
         &self,
         command: RegisterMemoryStore,
     ) -> Result<(), ResourceRegistryError>;
     /// Atomic registration with a retained request receipt. Exact retries return
     /// the current active definition; changed payloads and retired stores fail.
-    fn register_memory_store_idempotent(
+    async fn register_memory_store_idempotent(
         &self,
         command: RegisterMemoryStore,
     ) -> Result<MemoryStoreDefinition, ResourceRegistryError>;
-    fn update_memory_store_profile(
+    async fn update_memory_store_profile(
         &self,
         command: UpdateMemoryStoreProfile,
     ) -> Result<(), ResourceRegistryError>;
-    fn publish_memory_store_config(
+    async fn publish_memory_store_config(
         &self,
         command: PublishMemoryStoreConfig,
     ) -> Result<(), ResourceRegistryError>;
-    fn change_memory_store_state(
+    async fn change_memory_store_state(
         &self,
         command: ChangeMemoryStoreState,
     ) -> Result<(), ResourceRegistryError>;
-    fn register_repository(&self, command: RegisterRepository)
-    -> Result<(), ResourceRegistryError>;
+    async fn register_repository(
+        &self,
+        command: RegisterRepository,
+    ) -> Result<(), ResourceRegistryError>;
     /// Exact creation retries return the current active definition, without
     /// overwriting later versions or reviving a retired repository.
-    fn register_repository_idempotent(
+    async fn register_repository_idempotent(
         &self,
         command: RegisterRepository,
     ) -> Result<RepositoryDefinition, ResourceRegistryError>;
-    fn publish_repository_config(
+    async fn publish_repository_config(
         &self,
         command: PublishRepositoryConfig,
     ) -> Result<(), ResourceRegistryError>;
-    fn change_repository_state(
+    async fn change_repository_state(
         &self,
         command: ChangeRepositoryState,
     ) -> Result<(), ResourceRegistryError>;
 }
 
 /// Resolve the current active configuration selected for execution.
+#[async_trait::async_trait]
 pub trait ExecutionResourceResolver: Send + Sync {
-    fn resolve_memory_store(
+    async fn resolve_memory_store(
         &self,
         workspace_id: &str,
         id: &str,
     ) -> Result<MemoryStoreConfigVersion, ResourceRegistryError>;
-    fn resolve_repository(
+    async fn resolve_repository(
         &self,
         workspace_id: &str,
         id: &str,
@@ -958,14 +963,15 @@ pub trait ExecutionResourceResolver: Send + Sync {
 }
 
 /// Verify that a frozen binding remains owned, active, and intact.
+#[async_trait::async_trait]
 pub trait LiveResourceBindingVerifier: Send + Sync {
-    fn verify_memory_binding(
+    async fn verify_memory_binding(
         &self,
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
     ) -> Result<(), ResourceRegistryError>;
-    fn verify_repository_binding(
+    async fn verify_repository_binding(
         &self,
         workspace_id: &str,
         id: &str,
@@ -988,37 +994,38 @@ impl<T> ResourceRegistry for T where
 
 /// Backend-neutral aggregate repository. SQL, transaction APIs, JSON types,
 /// and vendor error codes must not cross this boundary.
+#[async_trait::async_trait]
 pub trait ResourceRegistryRepository: Send + Sync {
-    fn load_memory_store(
+    async fn load_memory_store(
         &self,
         id: &str,
     ) -> Result<Option<Stored<MemoryStoreAggregate>>, RegistryRepositoryError>;
-    fn insert_memory_store(
+    async fn insert_memory_store(
         &self,
         aggregate: &MemoryStoreAggregate,
     ) -> Result<InsertOutcome, RegistryRepositoryError>;
-    fn replace_memory_store(
+    async fn replace_memory_store(
         &self,
         expected_revision: AggregateRevision,
         aggregate: &MemoryStoreAggregate,
     ) -> Result<ReplaceOutcome, RegistryRepositoryError>;
-    fn list_memory_stores(
+    async fn list_memory_stores(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<Stored<MemoryStoreAggregate>>, RegistryRepositoryError>;
-    fn load_repository(
+    async fn load_repository(
         &self,
         id: &str,
     ) -> Result<Option<Stored<RepositoryAggregate>>, RegistryRepositoryError>;
-    fn list_repositories(
+    async fn list_repositories(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<Stored<RepositoryAggregate>>, RegistryRepositoryError>;
-    fn insert_repository(
+    async fn insert_repository(
         &self,
         aggregate: &RepositoryAggregate,
     ) -> Result<InsertOutcome, RegistryRepositoryError>;
-    fn replace_repository(
+    async fn replace_repository(
         &self,
         expected_revision: AggregateRevision,
         aggregate: &RepositoryAggregate,

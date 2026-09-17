@@ -158,6 +158,7 @@ impl<C: Sync> RepositoryBindingVerifier<C> for RegistryRepositoryBindingVerifier
     ) -> Result<awaken_resource_contract::RepositoryTransport, RepositoryBindingVerifierError> {
         self.verifier
             .verify_repository_binding(workspace_id, repository_id, config_version)
+            .await
             .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))?;
         Ok(awaken_resource_contract::RepositoryTransport::Direct)
     }

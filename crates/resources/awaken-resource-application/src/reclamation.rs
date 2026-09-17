@@ -33,6 +33,7 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
             ResourceKind::MemoryStore => match self
                 .registry
                 .find_memory_store(&target.workspace_id, &target.resource_id)
+                .await
                 .map_err(storage)?
             {
                 Some(definition)
@@ -50,6 +51,7 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
             ResourceKind::Repository => self
                 .registry
                 .find_repository(&target.workspace_id, &target.resource_id)
+                .await
                 .map_err(storage)?
                 .filter(|definition| definition.state != ResourceState::Deleted)
                 .map(|definition| format!("repository:{:?}", definition.state)),

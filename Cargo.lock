@@ -1940,7 +1940,6 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
- "awaken-sql-storage",
  "awaken-sqlite-pool",
  "parking_lot",
  "proptest",

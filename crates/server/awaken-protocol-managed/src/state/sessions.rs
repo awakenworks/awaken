@@ -496,8 +496,9 @@ impl ManagedState {
             .as_ref()
             .map(|view| view.resources.as_slice())
             .unwrap_or_default();
-        let prepared_resources =
-            self.prepare_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)?;
+        let prepared_resources = self
+            .prepare_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)
+            .await?;
         // Cause/effect decision table for Session model authority: R1 absent ->
         // inherit the Agent publication; R2 equal override -> reuse its route and
         // replace inference controls;
@@ -828,11 +829,11 @@ impl ManagedState {
         // selection has already produced one exact snapshot above; the final
         // SessionCreationIntent is the only value that combines and freezes both
         // families. Runtime never re-opens Agent or Resource stores.
-        let mut resolved_resources = match self.application.resolve_session_inputs(
-            &owner_scope,
-            agent_defaults,
-            &attachments,
-        ) {
+        let mut resolved_resources = match self
+            .application
+            .resolve_session_inputs(&owner_scope, agent_defaults, &attachments)
+            .await
+        {
             Ok(resources) => resources,
             Err(first) => {
                 if !self

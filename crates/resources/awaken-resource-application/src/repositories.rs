@@ -29,7 +29,7 @@ impl RepositoryApplication {
         }
     }
 
-    fn details(
+    async fn details(
         &self,
         definition: RepositoryDefinition,
     ) -> Result<RepositoryDetails, ResourceRegistryError> {
@@ -39,7 +39,8 @@ impl RepositoryApplication {
                 &definition.workspace_id,
                 definition.id.as_str(),
                 definition.current_config_version,
-            )?
+            )
+            .await?
             .ok_or_else(|| {
                 ResourceRegistryError::CorruptData("Repository config is missing".into())
             })?;
@@ -165,8 +166,9 @@ impl RepositoryApplicationService for RepositoryApplication {
                     initial_commit: command.initial_commit,
                     clone_policy: command.clone_policy,
                 },
-            })?;
-        self.details(definition)
+            })
+            .await?;
+        self.details(definition).await
     }
 
     async fn list(
@@ -175,7 +177,8 @@ impl RepositoryApplicationService for RepositoryApplication {
     ) -> Result<Vec<RepositoryDefinition>, ResourceRegistryError> {
         Ok(self
             .registry
-            .list_repositories(workspace_id)?
+            .list_repositories(workspace_id)
+            .await?
             .into_iter()
             .filter(|definition| !is_session_owned_repository(definition))
             .collect())
@@ -186,13 +189,16 @@ impl RepositoryApplicationService for RepositoryApplication {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<RepositoryDetails>, ResourceRegistryError> {
-        self.registry
-            .find_repository(workspace_id, id)?
+        match self
+            .registry
+            .find_repository(workspace_id, id)
+            .await?
             .filter(|definition| {
                 definition.state != ResourceState::Deleted
                     && !is_session_owned_repository(definition)
-            })
-            .map(|definition| self.details(definition))
-            .transpose()
+            }) {
+            Some(definition) => self.details(definition).await.map(Some),
+            None => Ok(None),
+        }
     }
 }

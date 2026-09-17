@@ -580,6 +580,7 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
         assert_eq!(
             catalog
                 .find_repository("workspace", configured.repository_id.as_str())
+                .await
                 .unwrap()
                 .unwrap()
                 .state,
@@ -2000,6 +2001,7 @@ async fn assert_profiled_direct_resource_rules() {
     assert!(
         registry
             .find_repository("workspace", &disjoint_repository_id)
+            .await
             .expect("D4 inventory")
             .is_some(),
         "D4 Repository configuration is admitted"
@@ -2051,6 +2053,7 @@ async fn assert_profiled_direct_resource_rules() {
                     "workspace",
                     &format!("profiled:{overlapping_session}:repository:{index}"),
                 )
+                .await
                 .expect("D5 inventory"),
             None,
             "D5 no Registry effect"
