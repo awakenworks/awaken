@@ -32,6 +32,7 @@ use crate::{
 mod control;
 mod process;
 mod seatbelt;
+use crate::FilesystemHandleCodec as _;
 use control::{
     NamespaceControlPublicationRegistry, private_control_host_directory, private_control_mount,
 };
@@ -368,11 +369,11 @@ impl NamespaceProvider {
     /// adapter. Runtime-side adoption preflight consumes this same classifier,
     /// so handle validation cannot drift from the provider that later opens it.
     #[must_use]
-    pub fn provider_kind() -> pc::NamespaceProviderKind {
+    pub fn provider_kind() -> crate::NamespaceProviderKind {
         if cfg!(target_os = "macos") {
-            pc::NamespaceProviderKind::Seatbelt
+            crate::NamespaceProviderKind::Seatbelt
         } else {
-            pc::NamespaceProviderKind::Bubblewrap
+            crate::NamespaceProviderKind::Bubblewrap
         }
     }
 

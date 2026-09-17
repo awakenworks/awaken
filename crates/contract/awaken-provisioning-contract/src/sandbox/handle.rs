@@ -21,8 +21,6 @@ mod payload;
 
 pub use builtin::{
     ContainerContinuationHandle, ContainerSandboxHandleV1, ContainerSandboxHandleV2,
-    LocalSandboxHandleV1, LocalSandboxHandleV2, NamespaceProviderKind, NamespaceSandboxHandleV1,
-    NamespaceSandboxHandleV2,
 };
 
 use serde::de::DeserializeOwned;

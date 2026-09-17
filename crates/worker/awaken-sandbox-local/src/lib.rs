@@ -1077,6 +1077,7 @@ mod abandoned_realization;
 mod artifacts;
 mod blob_cache;
 mod git_transport;
+mod handle;
 mod namespace;
 mod provider;
 #[cfg(target_os = "linux")]
@@ -1093,6 +1094,10 @@ pub use abandoned_realization::AbandonedRealizations;
 pub use awaken_local_process::LocalProcess;
 pub use blob_cache::{BlobLru, WorkspaceBlobCache};
 pub(crate) use git_transport::{git_bytes, provision_repo_at, push_repo_to_at, run_git};
+pub use handle::{
+    FilesystemHandleCodec, LocalSandboxHandleV1, LocalSandboxHandleV2, NamespaceProviderKind,
+    NamespaceSandboxHandleV1, NamespaceSandboxHandleV2,
+};
 pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProvider, LocalSandbox};
 pub use repo_bundle::{clone_repo_bundle, push_repo_bundle};

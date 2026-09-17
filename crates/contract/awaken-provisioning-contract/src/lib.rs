@@ -64,10 +64,9 @@ pub use prepare::{
 pub use sandbox::{
     BlobSource, CheckpointObjectMetadata, ContainerContinuationHandle, ContainerSandboxHandleV1,
     ContainerSandboxHandleV2, ExitStatus, HandleEvidence, HostBindRestorationHandle,
-    IsolationClass, IsolationPolicy, KubernetesPodUid, LocalSandboxHandleV1, LocalSandboxHandleV2,
-    MemoryMaterializationEvidence, MemoryMaterializationHead, MemoryMount, MemoryMountOutcome,
-    MemoryMounter, MemoryReconciliationAck, NamespaceProviderKind, NamespaceSandboxHandleV1,
-    NamespaceSandboxHandleV2, OnUnmet, PolicySelection, ProcessHandle,
+    IsolationClass, IsolationPolicy, KubernetesPodUid, MemoryMaterializationEvidence,
+    MemoryMaterializationHead, MemoryMount, MemoryMountOutcome, MemoryMounter,
+    MemoryReconciliationAck, OnUnmet, PolicySelection, ProcessHandle,
     RepositoryHttpBasicCredential, RepositoryPublicationError, RepositoryPublicationExpectation,
     RepositoryPublicationReceipt, RepositoryPublicationRejection, RepositoryRealizationPlan,
     RepositoryRealizer, ResourceInputDefaultMounts, Sandbox, SandboxCapabilities,

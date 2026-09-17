@@ -3243,26 +3243,21 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
                         lease_ttl_secs: None,
                     },
                 );
-            let handle = awaken_provisioning_contract::SandboxHandle::local_v2(
+            let handle = awaken_provisioning_contract::test_support::fixture_current_handle(
                 session_id,
-                awaken_provisioning_contract::LocalSandboxHandleV2 {
-                    previous: awaken_provisioning_contract::LocalSandboxHandleV1 {
-                        outputs_path: "/mnt/session/outputs".into(),
-                        base_env: Vec::new(),
-                        continuation_excluded_paths: Vec::new(),
-                        deny_tool_egress: false,
-                    },
-                    realization_fingerprint,
-                    effect_fence: asserted
-                        .sandbox_effect_fence("create-terminal-authority-memory")
-                        .expect("terminal authority Memory creation fence"),
+                &awaken_provisioning_contract::test_support::FixtureHandleLocator {
+                    outputs_path: "/mnt/session/outputs".into(),
                     physical_incarnation: format!("{session_id}:physical"),
-                    owned_paths: vec![
-                        awaken_provisioning_contract::memory_materialization_mount_path(
-                            &memory_input.mount_path,
-                        ),
-                    ],
                 },
+                &realization_fingerprint,
+                &asserted
+                    .sandbox_effect_fence("create-terminal-authority-memory")
+                    .expect("terminal authority Memory creation fence"),
+                &[
+                    awaken_provisioning_contract::memory_materialization_mount_path(
+                        &memory_input.mount_path,
+                    ),
+                ],
             )
             .with_memory_materializations(vec![materialization.clone()])
             .expect("terminal authority durable Memory evidence");

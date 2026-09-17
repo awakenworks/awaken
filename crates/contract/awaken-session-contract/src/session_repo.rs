@@ -383,24 +383,15 @@ mod mutation_tests {
                 lease_ttl_secs: None,
             },
         );
-        let handle = awaken_provisioning_contract::SandboxHandle::local_v2(
+        let handle = awaken_provisioning_contract::test_support::fixture_current_handle(
             "sandbox-memory",
-            awaken_provisioning_contract::LocalSandboxHandleV2 {
-                previous: awaken_provisioning_contract::LocalSandboxHandleV1 {
-                    outputs_path: "/mnt/session/outputs".into(),
-                    base_env: Vec::new(),
-                    continuation_excluded_paths: Vec::new(),
-                    deny_tool_egress: false,
-                },
-                realization_fingerprint: fingerprint,
-                effect_fence: lease.sandbox_effect_fence("create-memory").unwrap(),
+            &awaken_provisioning_contract::test_support::FixtureHandleLocator {
+                outputs_path: "/mnt/session/outputs".into(),
                 physical_incarnation: "physical-memory".into(),
-                owned_paths: vec![
-                    awaken_provisioning_contract::memory_materialization_mount_path(
-                        &input.mount_path,
-                    ),
-                ],
             },
+            &fingerprint,
+            &lease.sandbox_effect_fence("create-memory").unwrap(),
+            &[awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path)],
         )
         .with_memory_materializations(vec![evidence.clone()])
         .unwrap();
@@ -482,15 +473,15 @@ mod mutation_tests {
 
         let mut legacy = aggregate.clone();
         legacy.environment.set_resident(
-            serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::local(
-                "sandbox-memory",
-                awaken_provisioning_contract::LocalSandboxHandleV1 {
-                    outputs_path: "/mnt/session/outputs".into(),
-                    base_env: Vec::new(),
-                    continuation_excluded_paths: Vec::new(),
-                    deny_tool_egress: false,
-                },
-            ))
+            serde_json::to_string(
+                &awaken_provisioning_contract::test_support::fixture_legacy_handle(
+                    "sandbox-memory",
+                    &awaken_provisioning_contract::test_support::FixtureHandleLocator {
+                        outputs_path: "/mnt/session/outputs".into(),
+                        physical_incarnation: "physical-memory".into(),
+                    },
+                ),
+            )
             .unwrap(),
         );
         assert_eq!(

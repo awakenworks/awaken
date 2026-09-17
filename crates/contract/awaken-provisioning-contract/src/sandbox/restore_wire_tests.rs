@@ -138,33 +138,30 @@ fn sandbox_control_incarnation_is_typed_and_legacy_handle_compatible() {
 }
 
 /*
- * Phase-A writer decision table. Causes: C1 unmanaged, C2 local, C3 namespace,
- * C4 container typed constructors. Effect E1: every current constructor emits
+ * Phase-A writer decision table. Causes: C1 unmanaged, C2 legacy and C3 current
+ * provider payloads through the one neutral constructor every provider codec
+ * uses, C4 container typed constructors. Effect E1: every current constructor emits
  * legacy None (the field is absent), so only a later gated composition can write
  * Some. Rules R1=C1=>E1, R2=C2=>E1, R3=C3=>E1, R4=C4=>E1.
  */
+fn fixture_locator() -> crate::test_support::FixtureHandleLocator {
+    crate::test_support::FixtureHandleLocator {
+        outputs_path: "/outputs".into(),
+        physical_incarnation: "physical-a".into(),
+    }
+}
+
 #[test]
 fn every_phase_a_constructor_omits_restoration() {
     let handles = [
         SandboxHandle::new("fake", "sandbox-a"),
-        SandboxHandle::local(
+        crate::test_support::fixture_legacy_handle("sandbox-a", &fixture_locator()),
+        crate::test_support::fixture_current_handle(
             "sandbox-a",
-            LocalSandboxHandleV1 {
-                outputs_path: "/outputs".into(),
-                base_env: Vec::new(),
-                continuation_excluded_paths: Vec::new(),
-                deny_tool_egress: false,
-            },
-        ),
-        SandboxHandle::namespace(
-            NamespaceProviderKind::Bubblewrap,
-            "sandbox-a",
-            NamespaceSandboxHandleV1 {
-                outputs_path: "/outputs".into(),
-                base_env: Vec::new(),
-                network: crate::NetworkPolicy::None,
-                control_services: Default::default(),
-            },
+            &fixture_locator(),
+            &serde_json::from_value(serde_json::json!("fingerprint-a")).unwrap(),
+            &SandboxEffectFence::new("effect-a", "owner-a", "runtime-a", 1, u64::MAX).unwrap(),
+            &["/workspace/a".to_owned()],
         ),
         SandboxHandle::container(
             "sandbox-a",

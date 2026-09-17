@@ -14,7 +14,7 @@ impl pc::Sandbox for NamespaceSandbox {
         if let Some(handle) = &self.adopted_handle {
             return handle.clone();
         }
-        let previous = pc::NamespaceSandboxHandleV1 {
+        let previous = crate::NamespaceSandboxHandleV1 {
             outputs_path: self.outputs_path.clone(),
             base_env: self.base_env.clone(),
             network: self.network.clone(),
@@ -24,7 +24,7 @@ impl pc::Sandbox for NamespaceSandbox {
             Some(realization) => pc::SandboxHandle::namespace_v2(
                 NamespaceProvider::provider_kind(),
                 &self.id,
-                pc::NamespaceSandboxHandleV2 {
+                crate::NamespaceSandboxHandleV2 {
                     previous,
                     realization_fingerprint: realization.fingerprint().clone(),
                     effect_fence: realization.effect_fence().clone(),

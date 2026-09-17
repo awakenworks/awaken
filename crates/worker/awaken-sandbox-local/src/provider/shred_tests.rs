@@ -302,7 +302,7 @@ async fn legacy_local_adoption_reemits_v1_without_invented_evidence() {
     std::fs::create_dir_all(crate::sandbox_dir(tmp.path(), scope)).unwrap();
     let legacy = pc::SandboxHandle::local(
         scope,
-        pc::LocalSandboxHandleV1 {
+        crate::LocalSandboxHandleV1 {
             outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.into(),
             base_env: Vec::new(),
             continuation_excluded_paths: Vec::new(),

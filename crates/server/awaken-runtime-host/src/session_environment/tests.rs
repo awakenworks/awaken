@@ -11,6 +11,7 @@ use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
     SandboxControlServiceKind, SandboxControlServicePublisher,
 };
+use awaken_sandbox_local::FilesystemHandleCodec as _;
 use awaken_sandbox_local::NamespaceProvider;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

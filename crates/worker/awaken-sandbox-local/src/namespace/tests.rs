@@ -186,7 +186,7 @@ async fn legacy_namespace_adoption_reemits_v1_without_invented_evidence() {
     let legacy = pc::SandboxHandle::namespace(
         NamespaceProvider::provider_kind(),
         scope,
-        pc::NamespaceSandboxHandleV1 {
+        crate::NamespaceSandboxHandleV1 {
             outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.into(),
             base_env: Vec::new(),
             network: pc::NetworkPolicy::Unrestricted,
@@ -512,8 +512,8 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     let handle = pc::SandboxHandle::namespace_v2(
         NamespaceProvider::provider_kind(),
         spec.scope.clone(),
-        pc::NamespaceSandboxHandleV2 {
-            previous: pc::NamespaceSandboxHandleV1 {
+        crate::NamespaceSandboxHandleV2 {
+            previous: crate::NamespaceSandboxHandleV1 {
                 outputs_path: spec.outputs_path.clone(),
                 base_env: spec.env.clone(),
                 network: spec.network.clone(),
@@ -751,7 +751,7 @@ async fn adoption_preserves_network_policy_and_rejects_corrupt_handles() {
     let legacy = pc::SandboxHandle::namespace(
         NamespaceProvider::provider_kind(),
         "t-ns-network-recovery",
-        pc::NamespaceSandboxHandleV1 {
+        crate::NamespaceSandboxHandleV1 {
             outputs_path: spec.outputs_path.clone(),
             base_env: spec.env.clone(),
             network: pc::NetworkPolicy::None,

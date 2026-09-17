@@ -473,16 +473,20 @@ mod tests {
 
     #[test]
     fn phase_a_identity_ignores_provider_payload() {
-        let with_payload = SandboxHandle::local(
+        let with_payload = crate::test_support::fixture_legacy_handle(
             "a",
-            crate::LocalSandboxHandleV1 {
+            &crate::test_support::FixtureHandleLocator {
                 outputs_path: "/outputs".into(),
-                base_env: Vec::new(),
-                continuation_excluded_paths: Vec::new(),
-                deny_tool_egress: false,
+                physical_incarnation: "physical-a".into(),
             },
         );
-        let plan = reconcile_adoption(&[with_payload], &[SandboxHandle::new("local", "a")]);
+        let plan = reconcile_adoption(
+            &[with_payload],
+            &[SandboxHandle::new(
+                crate::test_support::FIXTURE_HANDLE_PROVIDER,
+                "a",
+            )],
+        );
         assert_eq!(
             plan.adopt.len(),
             1,

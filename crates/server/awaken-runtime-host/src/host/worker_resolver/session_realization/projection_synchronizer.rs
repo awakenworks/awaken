@@ -401,6 +401,7 @@ mod tests {
     use crate::host::worker_resolver::test_support::{
         AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
+    use awaken_sandbox_local::FilesystemHandleCodec as _;
     use std::sync::Arc;
 
     /// Compatibility fixture for an aggregate-Unowned legacy claim. Returning

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::{LocalProvider, LocalSandbox, pc};
+use crate::FilesystemHandleCodec as _;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -234,7 +235,7 @@ impl LocalProvider {
             spec,
             pc::SandboxHandle::local(
                 &spec.scope,
-                pc::LocalSandboxHandleV1 {
+                crate::LocalSandboxHandleV1 {
                     outputs_path: spec.outputs_path.clone(),
                     base_env: spec.env.clone(),
                     continuation_excluded_paths: request.checkpoint.excluded_mounts.clone(),

@@ -1229,22 +1229,20 @@ mod tests {
 
     #[test]
     fn v2_handles_round_trip_complete_owned_path_evidence() {
-        // Durable-layout decision table: H1 current Local/Namespace/Container
-        // V2 payload => exact owned paths survive wire round-trip; H2 legacy V1
-        // => still decodes and exposes no invented evidence. Runtime may adopt
-        // H2 only when no Repository requires an overlap proof.
-        let local_v1 = LocalSandboxHandleV1 {
+        // Durable-layout decision table: H1 a current payload => exact owned
+        // paths survive wire round-trip through the neutral envelope; H2 a
+        // legacy payload => still decodes and exposes no invented evidence;
+        // H3 current evidence that lost its immutable fingerprint is refused
+        // at decode. Runtime may adopt H2 only when no Repository requires an
+        // overlap proof. Provider-specific payloads are pinned by their codecs.
+        let locator = crate::test_support::FixtureHandleLocator {
             outputs_path: "/outputs".into(),
-            base_env: Vec::new(),
-            continuation_excluded_paths: Vec::new(),
-            deny_tool_egress: false,
+            physical_incarnation: "incarnation".into(),
         };
-        let namespace_v1 = NamespaceSandboxHandleV1 {
-            outputs_path: "/outputs".into(),
-            base_env: Vec::new(),
-            network: crate::NetworkPolicy::None,
-            control_services: Default::default(),
-        };
+        let realization_fingerprint = SandboxRealizationFingerprint::from_spec(&spec());
+        let fence =
+            SandboxEffectFence::new("handle-round-trip", "test-owner", "runtime-1", 1, u64::MAX)
+                .unwrap();
         let container_v1 = ContainerSandboxHandleV1 {
             container_id: "container-1".into(),
             outputs_path: "/outputs".into(),
@@ -1255,31 +1253,13 @@ mod tests {
             sandbox_control_incarnation: None,
             control_services: Default::default(),
         };
-        let realization_fingerprint = SandboxRealizationFingerprint::from_spec(&spec());
-        let filesystem_fence =
-            SandboxEffectFence::new("handle-round-trip", "test-owner", "runtime-1", 1, u64::MAX)
-                .unwrap();
         let cases = [
-            SandboxHandle::local_v2(
-                "local",
-                LocalSandboxHandleV2 {
-                    previous: local_v1.clone(),
-                    realization_fingerprint: realization_fingerprint.clone(),
-                    effect_fence: filesystem_fence.clone(),
-                    physical_incarnation: "local-incarnation".into(),
-                    owned_paths: vec!["/workspace/local-repo".into()],
-                },
-            ),
-            SandboxHandle::namespace_v2(
-                NamespaceProviderKind::Bubblewrap,
-                "namespace",
-                NamespaceSandboxHandleV2 {
-                    previous: namespace_v1,
-                    realization_fingerprint: realization_fingerprint.clone(),
-                    effect_fence: filesystem_fence,
-                    physical_incarnation: "namespace-incarnation".into(),
-                    owned_paths: vec!["/workspace/namespace-repo".into()],
-                },
+            crate::test_support::fixture_current_handle(
+                "fixture",
+                &locator,
+                &realization_fingerprint,
+                &fence,
+                &["/workspace/fixture-repo".to_owned()],
             ),
             SandboxHandle::container_v2(
                 "container",
@@ -1298,9 +1278,9 @@ mod tests {
             .remove("realization_fingerprint");
         assert!(
             serde_json::from_value::<SandboxHandle>(missing_fingerprint).is_err(),
-            "H1 current V2 never accepts missing immutable realization evidence"
+            "H3 current evidence never accepts missing immutable realization evidence"
         );
-        let mut missing_adoption = serde_json::to_value(&cases[2]).unwrap();
+        let mut missing_adoption = serde_json::to_value(&cases[1]).unwrap();
         missing_adoption["payload"]
             .as_object_mut()
             .unwrap()
@@ -1319,10 +1299,16 @@ mod tests {
             assert_eq!(decoded.owned_paths(), Some(expected.as_slice()), "H1");
         }
 
-        let legacy = SandboxHandle::local("legacy", local_v1);
+        let legacy = crate::test_support::fixture_legacy_handle("legacy", &locator);
         let decoded: SandboxHandle =
             serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
-        assert!(decoded.local_payload().is_ok(), "H2 V1 decode");
+        assert_eq!(
+            decoded
+                .decode_provider_payload::<crate::test_support::FixtureHandleLocator>()
+                .unwrap(),
+            locator,
+            "H2 legacy decode"
+        );
         assert_eq!(decoded.owned_paths(), None, "H2 no fabricated evidence");
     }
 
@@ -1396,34 +1382,34 @@ mod tests {
         // V1->V1/V2 evidence minting; R3 !C2 rejects another substrate/spec;
         // R4 !C3 rejects path loss; R5 !C4 rejects a changed terminal CAS base.
         // No rule mutates either durable handle.
-        let previous = LocalSandboxHandleV1 {
+        let previous = crate::test_support::FixtureHandleLocator {
             outputs_path: "/outputs".into(),
-            base_env: Vec::new(),
-            continuation_excluded_paths: Vec::new(),
-            deny_tool_egress: false,
+            physical_incarnation: "incarnation-1".into(),
+        };
+        let v2 = |id: &str,
+                  fingerprint: &SandboxRealizationFingerprint,
+                  fence: &SandboxEffectFence,
+                  paths: &[&str]| {
+            crate::test_support::fixture_current_handle(
+                id,
+                &previous,
+                fingerprint,
+                fence,
+                &paths
+                    .iter()
+                    .map(|path| (*path).to_owned())
+                    .collect::<Vec<_>>(),
+            )
         };
         let fingerprint = SandboxRealizationFingerprint::from_spec(&spec());
         let fence =
             SandboxEffectFence::new("reservation", "test-owner", "runtime-1", 1, u64::MAX).unwrap();
-        let current = SandboxHandle::local_v2(
+        let current = v2("sandbox", &fingerprint, &fence, &["/workspace/a"]);
+        let superset = v2(
             "sandbox",
-            LocalSandboxHandleV2 {
-                previous: previous.clone(),
-                realization_fingerprint: fingerprint.clone(),
-                effect_fence: fence.clone(),
-                physical_incarnation: "incarnation-1".into(),
-                owned_paths: vec!["/workspace/a".into()],
-            },
-        );
-        let superset = SandboxHandle::local_v2(
-            "sandbox",
-            LocalSandboxHandleV2 {
-                previous: previous.clone(),
-                realization_fingerprint: fingerprint.clone(),
-                effect_fence: fence.clone(),
-                physical_incarnation: "incarnation-1".into(),
-                owned_paths: vec!["/workspace/a".into(), "/workspace/b".into()],
-            },
+            &fingerprint,
+            &fence,
+            &["/workspace/a", "/workspace/b"],
         );
         assert!(current.owned_paths_are_monotonic_to(&current), "R1 replay");
         assert!(
@@ -1478,72 +1464,50 @@ mod tests {
             "R5 changed Memory authority"
         );
 
-        let legacy = SandboxHandle::local("sandbox", previous.clone());
+        let legacy = crate::test_support::fixture_legacy_handle("sandbox", &previous);
         assert!(!legacy.owned_paths_are_monotonic_to(&legacy), "R2 V1->V1");
         assert!(!legacy.owned_paths_are_monotonic_to(&superset), "R2 V1->V2");
 
         let mut different_spec = spec();
         different_spec.scope = "different".into();
-        let different_spec = SandboxHandle::local_v2(
+        let different_spec = v2(
             "sandbox",
-            LocalSandboxHandleV2 {
-                previous: previous.clone(),
-                realization_fingerprint: SandboxRealizationFingerprint::from_spec(&different_spec),
-                effect_fence: fence.clone(),
-                physical_incarnation: "incarnation-1".into(),
-                owned_paths: vec!["/workspace/a".into(), "/workspace/b".into()],
-            },
+            &SandboxRealizationFingerprint::from_spec(&different_spec),
+            &fence,
+            &["/workspace/a", "/workspace/b"],
         );
         assert!(
             !current.owned_paths_are_monotonic_to(&different_spec),
             "R3 spec"
         );
-        let different_id = SandboxHandle::local_v2(
+        let different_id = v2(
             "other",
-            LocalSandboxHandleV2 {
-                previous,
-                realization_fingerprint: fingerprint,
-                effect_fence: fence.clone(),
-                physical_incarnation: "incarnation-1".into(),
-                owned_paths: vec!["/workspace/a".into(), "/workspace/b".into()],
-            },
+            &fingerprint,
+            &fence,
+            &["/workspace/a", "/workspace/b"],
         );
         assert!(
             !current.owned_paths_are_monotonic_to(&different_id),
             "R3 id"
         );
 
-        let different_effect = SandboxHandle::local_v2(
+        let different_effect = v2(
             "sandbox",
-            LocalSandboxHandleV2 {
-                previous: current.local_payload().unwrap().clone(),
-                realization_fingerprint: current.realization_fingerprint().unwrap().clone(),
-                effect_fence: SandboxEffectFence::new(
-                    "other-reservation",
-                    "test-owner",
-                    "runtime-1",
-                    1,
-                    u64::MAX,
-                )
+            current.realization_fingerprint().unwrap(),
+            &SandboxEffectFence::new("other-reservation", "test-owner", "runtime-1", 1, u64::MAX)
                 .unwrap(),
-                physical_incarnation: "incarnation-1".into(),
-                owned_paths: vec!["/workspace/a".into(), "/workspace/b".into()],
-            },
+            &["/workspace/a", "/workspace/b"],
         );
         assert!(
             !current.owned_paths_are_monotonic_to(&different_effect),
             "R3 effect fence"
         );
 
-        let missing = SandboxHandle::local_v2(
+        let missing = v2(
             "sandbox",
-            LocalSandboxHandleV2 {
-                previous: current.local_payload().unwrap().clone(),
-                realization_fingerprint: current.realization_fingerprint().unwrap().clone(),
-                effect_fence: fence,
-                physical_incarnation: "incarnation-1".into(),
-                owned_paths: Vec::new(),
-            },
+            current.realization_fingerprint().unwrap(),
+            &fence,
+            &[],
         );
         assert!(!current.owned_paths_are_monotonic_to(&missing), "R4");
     }

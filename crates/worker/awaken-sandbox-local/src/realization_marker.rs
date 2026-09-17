@@ -10,6 +10,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::FilesystemHandleCodec as _;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_fs::{DirectoryIdentity, PathEntry};
 use serde::{Deserialize, Serialize};

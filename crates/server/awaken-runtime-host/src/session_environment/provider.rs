@@ -2,6 +2,7 @@
 
 use super::{HandExecutorFactory, SessionEnvironment, container_files};
 use crate::deployment_config::ContainerHandResidency;
+use awaken_sandbox_local::FilesystemHandleCodec as _;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;

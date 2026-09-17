@@ -469,15 +469,15 @@ fn memory_input(
 }
 
 fn legacy_memory_binding(id: &str) -> String {
-    serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::local(
-        id,
-        awaken_provisioning_contract::LocalSandboxHandleV1 {
-            outputs_path: "/mnt/session/outputs".into(),
-            base_env: Vec::new(),
-            continuation_excluded_paths: Vec::new(),
-            deny_tool_egress: false,
-        },
-    ))
+    serde_json::to_string(
+        &awaken_provisioning_contract::test_support::fixture_legacy_handle(
+            id,
+            &awaken_provisioning_contract::test_support::FixtureHandleLocator {
+                outputs_path: "/mnt/session/outputs".into(),
+                physical_incarnation: format!("{id}:physical"),
+            },
+        ),
+    )
     .unwrap()
 }
 
