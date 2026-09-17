@@ -178,6 +178,12 @@ if [ "${1:-}" = "--build-identity" ] && [ "$#" -eq 1 ]; then
   # recorded file instead of guessed at. Claims nothing about qualification.
   build_identity
   exit $?
+elif [ "${1:-}" = "--solver-tools" ] && [ "$#" -eq 1 ]; then
+  # Read-only: the released Kani bundle ships the external SAT solvers (kissat)
+  # that the source-built driver execs by name. It claims nothing about
+  # qualification; a caller only appends it to PATH.
+  printf '%s\n' "$HOME/.kani/kani-$kani_backend_version/bin"
+  exit 0
 elif [ "${1:-}" = "--paths" ] && [ "$#" -eq 1 ]; then
   # Selection is read-only and does not claim qualification. The runner invokes
   # --verify-source before any proof, using these frozen physical directories.
@@ -194,7 +200,7 @@ elif [ "${1:-}" = "--verify-source" ] && [ "$#" -eq 2 ]; then
   backend_identity
   exit 0
 elif [ "$#" -ne 0 ]; then
-  echo "usage: bootstrap_kani.sh [--build-identity | --paths | --verify-source PATH]" >&2
+  echo "usage: bootstrap_kani.sh [--build-identity | --solver-tools | --paths | --verify-source PATH]" >&2
   exit 1
 fi
 
