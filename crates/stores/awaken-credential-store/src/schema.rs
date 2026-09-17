@@ -82,26 +82,103 @@ const SPECS: [(i64, &str, &str); 8] = [
     ),
 ];
 
+/// V9 backfills the Managed Vault/credential `created_at`/`updated_at` facts
+/// that rows written before those fields existed never carried.
+///
+/// Legacy decision: the only real, durable instant such a row has is its own
+/// `created_at` column (the insert time, `DEFAULT now`). It becomes both the
+/// object's `created_at` and `updated_at`; no mutation history exists to date a
+/// later update. Credential snapshots embedded in a pending mutation fact take
+/// the instant of the child row they describe (falling back to the mutation
+/// row's own insert time for a not-yet-published create), so a snapshot and the
+/// durable child it must equal stay byte-identical after the backfill. Only
+/// rows lacking the field are touched; the migration is a one-shot data fix.
+const TIMESTAMP_BACKFILL_VERSION: i64 = 9;
+const TIMESTAMP_BACKFILL_DESCRIPTION: &str =
+    "managed vault objects: backfill created_at/updated_at from durable insert time";
+
+const TIMESTAMP_BACKFILL_SQLITE: &str = "\
+UPDATE {prefix}_managed_credential_mutation SET data = json_set(data, \
+    '$.after_credential.created_at', COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%SZ', c.created_at) \
+        FROM {prefix}_managed_vault_credential c \
+        WHERE c.id = json_extract({prefix}_managed_credential_mutation.data, '$.after_credential.id')), \
+        strftime('%Y-%m-%dT%H:%M:%SZ', {prefix}_managed_credential_mutation.created_at)), \
+    '$.after_credential.updated_at', COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%SZ', c.created_at) \
+        FROM {prefix}_managed_vault_credential c \
+        WHERE c.id = json_extract({prefix}_managed_credential_mutation.data, '$.after_credential.id')), \
+        strftime('%Y-%m-%dT%H:%M:%SZ', {prefix}_managed_credential_mutation.created_at))) \
+WHERE json_type(data, '$.after_credential') = 'object' \
+    AND json_type(data, '$.after_credential.created_at') IS NULL;
+UPDATE {prefix}_managed_credential_mutation SET data = json_set(data, \
+    '$.before_credential.created_at', COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%SZ', c.created_at) \
+        FROM {prefix}_managed_vault_credential c \
+        WHERE c.id = json_extract({prefix}_managed_credential_mutation.data, '$.before_credential.id')), \
+        strftime('%Y-%m-%dT%H:%M:%SZ', {prefix}_managed_credential_mutation.created_at)), \
+    '$.before_credential.updated_at', COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%SZ', c.created_at) \
+        FROM {prefix}_managed_vault_credential c \
+        WHERE c.id = json_extract({prefix}_managed_credential_mutation.data, '$.before_credential.id')), \
+        strftime('%Y-%m-%dT%H:%M:%SZ', {prefix}_managed_credential_mutation.created_at))) \
+WHERE json_type(data, '$.before_credential') = 'object' \
+    AND json_type(data, '$.before_credential.created_at') IS NULL;
+UPDATE {prefix}_managed_vault_credential SET data = json_set(data, \
+    '$.created_at', strftime('%Y-%m-%dT%H:%M:%SZ', created_at), \
+    '$.updated_at', strftime('%Y-%m-%dT%H:%M:%SZ', created_at)) \
+WHERE json_type(data, '$.created_at') IS NULL;
+UPDATE {prefix}_managed_vault SET data = json_set(data, \
+    '$.created_at', strftime('%Y-%m-%dT%H:%M:%SZ', created_at), \
+    '$.updated_at', strftime('%Y-%m-%dT%H:%M:%SZ', created_at)) \
+WHERE json_type(data, '$.created_at') IS NULL;";
+
+const TIMESTAMP_BACKFILL_POSTGRES: &str = "\
+UPDATE {prefix}_managed_credential_mutation AS m SET data = jsonb_set(jsonb_set(m.data, \
+    '{after_credential,created_at}', to_jsonb(to_char(COALESCE((SELECT c.created_at \
+        FROM {prefix}_managed_vault_credential c WHERE c.id = m.data->'after_credential'->>'id'), \
+        m.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))), \
+    '{after_credential,updated_at}', to_jsonb(to_char(COALESCE((SELECT c.created_at \
+        FROM {prefix}_managed_vault_credential c WHERE c.id = m.data->'after_credential'->>'id'), \
+        m.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))) \
+WHERE jsonb_typeof(m.data->'after_credential') = 'object' \
+    AND m.data->'after_credential'->'created_at' IS NULL;
+UPDATE {prefix}_managed_credential_mutation AS m SET data = jsonb_set(jsonb_set(m.data, \
+    '{before_credential,created_at}', to_jsonb(to_char(COALESCE((SELECT c.created_at \
+        FROM {prefix}_managed_vault_credential c WHERE c.id = m.data->'before_credential'->>'id'), \
+        m.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))), \
+    '{before_credential,updated_at}', to_jsonb(to_char(COALESCE((SELECT c.created_at \
+        FROM {prefix}_managed_vault_credential c WHERE c.id = m.data->'before_credential'->>'id'), \
+        m.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))) \
+WHERE jsonb_typeof(m.data->'before_credential') = 'object' \
+    AND m.data->'before_credential'->'created_at' IS NULL;
+UPDATE {prefix}_managed_vault_credential SET data = jsonb_set(jsonb_set(data, \
+    '{created_at}', to_jsonb(to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))), \
+    '{updated_at}', to_jsonb(to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))) \
+WHERE data->'created_at' IS NULL;
+UPDATE {prefix}_managed_vault SET data = jsonb_set(jsonb_set(data, \
+    '{created_at}', to_jsonb(to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))), \
+    '{updated_at}', to_jsonb(to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))) \
+WHERE data->'created_at' IS NULL;";
+
 /// Build the credential-schema migration bundle (prefix `credential`).
 pub fn credential_bundle() -> Result<MigrationBundle, MigrationError> {
-    credential_bundle_through(SPECS.len())
+    credential_bundle_through(SPECS.len() + 1)
 }
 
+/// The bundle as published through `count` migrations. Tests use a prefix to
+/// materialize a pre-upgrade database and then apply the rest for real.
 fn credential_bundle_through(count: usize) -> Result<MigrationBundle, MigrationError> {
-    let migrations = SPECS[..count]
+    let mut migrations = SPECS[..count.min(SPECS.len())]
         .iter()
         .map(|(version, description, sql)| Migration::new(*version, *description, *sql))
         .collect::<Result<Vec<_>, _>>()?;
+    if count > SPECS.len() {
+        migrations.push(Migration::per_dialect(
+            TIMESTAMP_BACKFILL_VERSION,
+            TIMESTAMP_BACKFILL_DESCRIPTION,
+            TIMESTAMP_BACKFILL_POSTGRES,
+            TIMESTAMP_BACKFILL_SQLITE,
+        )?);
+    }
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn credential_bundle_lints() {
-        let bundle = credential_bundle().expect("bundle builds");
-        awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
-    }
-}
+mod tests;

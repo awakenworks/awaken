@@ -1284,6 +1284,8 @@ mod tests {
             },
             metadata: Default::default(),
             display_name: None,
+            created_at: "2026-09-17T00:00:00Z".into(),
+            updated_at: "2026-09-17T00:00:00Z".into(),
             revision: 1,
             lifecycle: ManagedCredentialLifecycle::Active,
         }
@@ -1295,6 +1297,8 @@ mod tests {
             workspace_id: "ws".into(),
             display_name: "Managed atomic".into(),
             metadata: Default::default(),
+            created_at: "2026-09-17T00:00:00Z".into(),
+            updated_at: "2026-09-17T00:00:00Z".into(),
             archived_at: None,
             deletion: None,
             revision: 1,
@@ -1370,6 +1374,7 @@ mod tests {
             after_child,
             CredentialMaterialPatch::default(),
             true,
+            "2026-09-17T00:00:01Z".into(),
             &InMemorySecretStore::new(),
             &repo,
         )

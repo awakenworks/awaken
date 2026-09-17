@@ -434,28 +434,88 @@ pub enum CredentialValidationStatus {
     Unknown,
 }
 
-/// The live MCP handshake detail of a credential validation — either a successful
-/// handshake or the auth-challenge HTTP status. Present only when a probe ran.
-#[derive(Debug, Clone, Serialize)]
-pub struct McpProbeResult {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub handshake: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub http_status: Option<u16>,
+/// `BetaManagedAgentsRefreshHTTPResponse` — an HTTP response captured during a
+/// credential validation probe (the MCP server's, or the token endpoint's).
+/// `body` has sensitive values scrubbed and is bounded; `content_type` is empty
+/// when the response carried no `Content-Type` header.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CredentialProbeHttpResponse {
+    pub body: String,
+    pub body_truncated: bool,
+    pub content_type: String,
+    pub status_code: u16,
 }
 
-impl McpProbeResult {
-    pub fn ok() -> Self {
+impl From<awaken_session_contract::ProbeHttpResponse> for CredentialProbeHttpResponse {
+    fn from(response: awaken_session_contract::ProbeHttpResponse) -> Self {
         Self {
-            handshake: Some("ok"),
-            http_status: None,
+            body: response.body,
+            body_truncated: response.body_truncated,
+            content_type: response.content_type,
+            status_code: response.status_code,
         }
     }
+}
 
-    pub fn invalid(http_status: u16) -> Self {
+/// `BetaManagedAgentsMCPProbe` — the failing step of an MCP validation probe:
+/// the MCP method that failed (for example `initialize` or `tools/list`) and,
+/// when the server answered, its HTTP response. Absent (`null`) when the probe
+/// completed or never ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CredentialMcpProbe {
+    pub http_response: Option<CredentialProbeHttpResponse>,
+    pub method: String,
+}
+
+impl From<awaken_session_contract::McpProbeFailure> for CredentialMcpProbe {
+    fn from(failure: awaken_session_contract::McpProbeFailure) -> Self {
         Self {
-            handshake: None,
-            http_status: Some(http_status),
+            http_response: failure.http_response.map(Into::into),
+            method: failure.method,
+        }
+    }
+}
+
+/// SDK: inline — `BetaManagedAgentsRefreshObject.status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialRefreshStatus {
+    Succeeded,
+    Failed,
+    ConnectError,
+    NoRefreshToken,
+}
+
+/// `BetaManagedAgentsRefreshObject` — the outcome of a refresh-token exchange
+/// attempted during credential validation. `http_response` is the token
+/// endpoint's response whenever one arrived.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CredentialRefreshResult {
+    pub http_response: Option<CredentialProbeHttpResponse>,
+    pub status: CredentialRefreshStatus,
+}
+
+impl CredentialRefreshResult {
+    /// An auth-rejected credential that holds no refresh token to exchange.
+    #[must_use]
+    pub fn no_refresh_token() -> Self {
+        Self {
+            http_response: None,
+            status: CredentialRefreshStatus::NoRefreshToken,
+        }
+    }
+}
+
+impl From<awaken_session_contract::RefreshExchangeOutcome> for CredentialRefreshResult {
+    fn from(outcome: awaken_session_contract::RefreshExchangeOutcome) -> Self {
+        use awaken_session_contract::RefreshExchangeStatus;
+        Self {
+            http_response: outcome.http_response.map(Into::into),
+            status: match outcome.status {
+                RefreshExchangeStatus::Succeeded => CredentialRefreshStatus::Succeeded,
+                RefreshExchangeStatus::Failed => CredentialRefreshStatus::Failed,
+                RefreshExchangeStatus::ConnectError => CredentialRefreshStatus::ConnectError,
+            },
         }
     }
 }
@@ -465,8 +525,8 @@ impl McpProbeResult {
 pub struct CredentialValidation {
     pub credential_id: String,
     pub has_refresh_token: bool,
-    pub mcp_probe: Option<McpProbeResult>,
-    pub refresh: Option<McpOauthRefreshResponse>,
+    pub mcp_probe: Option<CredentialMcpProbe>,
+    pub refresh: Option<CredentialRefreshResult>,
     pub status: CredentialValidationStatus,
     #[serde(rename = "type")]
     pub object_type: &'static str,

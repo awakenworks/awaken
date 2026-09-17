@@ -103,6 +103,12 @@ pub(super) async fn control_component_for_process(
         model_supply,
         managed_runtime_available,
         mcp_probe: Some(Arc::new(ExtMcpProbe)),
+        mcp_refresh_exchange: Some(Arc::new(
+            awaken_credential_materializer::VaultRefreshFactory::new(
+                control.credentials.clone(),
+                control.secrets.clone(),
+            ),
+        )),
         assistant_model_selection,
         global_tools: awaken_session_executor::authorable_tools(),
         platform_plugins: awaken_session_executor::platform_plugin_capabilities_with_web_search(

@@ -462,7 +462,7 @@
           "type": "string"
         },
         "WorkState": {
-          "description": "`BetaSelfHostedWork` — a work item on an environment's queue. `secret` is\npresent only on the one Session poll response that acquired the lease;\nlist/retrieve and HealthCheck projections keep it `null`.",
+          "description": "The lifecycle state of a work item.\n\nSDK: inline — `BetaSelfHostedWork.state` (the same literal union is\n`BetaSelfHostedWorkHeartbeatResponse.state`).",
           "enum": [
             "queued",
             "starting",
@@ -474,7 +474,7 @@
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "`Work`.",
+      "description": "`BetaSelfHostedWork` — a work item on an environment's queue. `secret` is\npresent only on the one Session poll response that acquired the lease;\nlist/retrieve and HealthCheck projections keep it `null`.",
       "properties": {
         "acknowledged_at": {
           "description": "A response field that is required on the wire while its value may be JSON\n`null`. Keeping this distinct from `Option<T>` prevents generated schemas\nfrom confusing Anthropic's `field: T | null` with `field?: T | null`.\n\nSDK: none — serde/schema helper that marks a required-but-nullable field (`T | null`); not a wire type of its own.",
@@ -571,7 +571,7 @@
           "type": "string"
         },
         "WorkState": {
-          "description": "`BetaSelfHostedWork` — a work item on an environment's queue. `secret` is\npresent only on the one Session poll response that acquired the lease;\nlist/retrieve and HealthCheck projections keep it `null`.",
+          "description": "The lifecycle state of a work item.\n\nSDK: inline — `BetaSelfHostedWork.state` (the same literal union is\n`BetaSelfHostedWorkHeartbeatResponse.state`).",
           "enum": [
             "queued",
             "starting",

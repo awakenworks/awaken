@@ -148,7 +148,11 @@ pub use mcp_attachment::{
     McpTarget, McpTargetError, McpTargetIdentity, SessionMcpAttachment, SessionMcpAttachmentSet,
     StageMcpAttachment,
 };
-pub use mcp_probe::{McpInspection, McpProbe, McpProbeStatus, McpProbeTool};
+pub use mcp_probe::{
+    CredentialRefreshExchange, McpInspection, McpProbe, McpProbeFailure, McpProbeStatus,
+    McpProbeTool, PROBE_HTTP_BODY_LIMIT, ProbeHttpResponse, RefreshExchangeOutcome,
+    RefreshExchangeStatus,
+};
 pub use model_resolution::{
     SessionModelOverride, SessionModelOverrideDecision, SessionModelPublication,
     SessionModelPublicationResolver, SessionModelResolutionError, session_model_override_decision,

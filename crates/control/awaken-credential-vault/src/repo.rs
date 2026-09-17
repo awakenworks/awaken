@@ -586,6 +586,8 @@ mod publication_proofs {
                 },
                 metadata: Default::default(),
                 display_name: None,
+                created_at: "2026-09-17T00:00:00Z".into(),
+                updated_at: "2026-09-17T00:00:00Z".into(),
                 revision: 1,
                 lifecycle: ManagedCredentialLifecycle::Active,
             },
@@ -813,7 +815,10 @@ impl PendingManagedCredentialMutation {
             && self.before_source == candidate.before_source
             && logical_credential_source_matches(&self.after_source, &candidate.after_source)
             && self.before_credential == candidate.before_credential
-            && self.after_credential == candidate.after_credential
+            // A retry of the same logical command samples a fresh clock.
+            && self
+                .after_credential
+                .same_logical_content(&candidate.after_credential)
     }
 
     pub fn claim_after_expiry(
@@ -1411,6 +1416,10 @@ pub struct ManagedCredentialCreateCommand {
     pub auth: crate::catalog::ManagedCredentialAuth,
     pub metadata: BTreeMap<String, String>,
     pub display_name: Option<String>,
+    /// RFC 3339 instant the command was accepted, sampled once by the owner's
+    /// clock. Becomes the child's immutable `created_at` (and its initial
+    /// `updated_at`); idempotent replay ignores it when comparing content.
+    pub created_at: String,
 }
 
 #[derive(Debug, thiserror::Error)]

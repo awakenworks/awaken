@@ -57,6 +57,100 @@ use crate::types::{
 
 const SESSION_HEADER: &str = "Mcp-Session-Id";
 
+/// Upper bound on the body bytes a [`McpRequestTrace`] retains from one failed
+/// HTTP response. Reading stops there, so a hostile peer cannot grow it.
+pub const HTTP_FAILURE_BODY_LIMIT: usize = 64 * 1024;
+
+/// One non-success HTTP response that ended an MCP request. Raw evidence for a
+/// diagnostic caller: it is NOT scrubbed, so the caller that installed the
+/// trace owns redaction before projecting it anywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpHttpFailure {
+    pub status: u16,
+    /// The `Content-Type` response header, when present and valid ASCII.
+    pub content_type: Option<String>,
+    /// At most [`HTTP_FAILURE_BODY_LIMIT`] bytes, lossily decoded as UTF-8.
+    pub body: String,
+    /// The body was cut at the limit or its stream ended in an error.
+    pub body_truncated: bool,
+}
+
+/// Opt-in diagnostic trace of a transport's JSON-RPC requests: the method of
+/// the most recent request attempted and, when that request ended with a
+/// non-success HTTP response, the response itself. Installed only by callers
+/// that report which probe step failed (credential validation); a transport
+/// without a trace never reads a failed response's body.
+#[derive(Debug, Default)]
+pub struct McpRequestTrace {
+    state: Mutex<(Option<String>, Option<McpHttpFailure>)>,
+}
+
+impl McpRequestTrace {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The JSON-RPC method of the most recent request attempted.
+    pub fn last_method(&self) -> Option<String> {
+        self.state.lock().unwrap().0.clone()
+    }
+
+    /// The HTTP response that ended the most recent request, when it failed
+    /// with one. `None` when it succeeded or failed without a response.
+    pub fn last_failure(&self) -> Option<McpHttpFailure> {
+        self.state.lock().unwrap().1.clone()
+    }
+
+    fn attempt(&self, body: &Value) {
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        *self.state.lock().unwrap() = (method, None);
+    }
+
+    fn fail(&self, failure: McpHttpFailure) {
+        self.state.lock().unwrap().1 = Some(failure);
+    }
+}
+
+fn response_content_type(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// Read at most [`HTTP_FAILURE_BODY_LIMIT`] body bytes of a failed response.
+async fn bounded_failure(response: reqwest::Response) -> McpHttpFailure {
+    let status = response.status().as_u16();
+    let content_type = response_content_type(&response);
+    let mut bytes = Vec::new();
+    let mut body_truncated = false;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            body_truncated = true;
+            break;
+        };
+        let room = HTTP_FAILURE_BODY_LIMIT - bytes.len();
+        if chunk.len() > room {
+            bytes.extend_from_slice(&chunk[..room]);
+            body_truncated = true;
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    McpHttpFailure {
+        status,
+        content_type,
+        body: String::from_utf8_lossy(&bytes).into_owned(),
+        body_truncated,
+    }
+}
+
 /// State shared between the request path and the background SSE listener.
 struct HttpShared {
     client: reqwest::Client,
@@ -68,6 +162,8 @@ struct HttpShared {
     headers: Vec<(String, String)>,
     /// Host hook consulted once per 401/403 before the failure is surfaced.
     refresher: Option<Arc<dyn CredentialRefresher>>,
+    /// Opt-in diagnostic trace of request methods and failed HTTP responses.
+    trace: Option<Arc<McpRequestTrace>>,
     /// Deadline for control-plane requests such as initialize and discovery.
     control_request_timeout: Duration,
     /// Independently bounded deadline for effectful `tools/call` requests.
@@ -123,6 +219,14 @@ impl HttpShared {
                 .header("Accept", "application/json, text/event-stream")
                 .json(body),
         )
+    }
+
+    /// Record `response` as the failure that ended the current request when a
+    /// trace is installed; otherwise drop it unread.
+    async fn trace_failure(&self, response: reqwest::Response) {
+        if let Some(trace) = &self.trace {
+            trace.fail(bounded_failure(response).await);
+        }
     }
 
     /// Ask the host refresher for a fresh credential; store it on success.
@@ -221,6 +325,9 @@ impl HttpShared {
         id: i64,
         timeout: Duration,
     ) -> Result<Option<Value>, McpTransportError> {
+        if let Some(trace) = &self.trace {
+            trace.attempt(body);
+        }
         let mut response = self
             .record_send(self.post_builder(body, timeout).send().await)
             .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
@@ -229,25 +336,26 @@ impl HttpShared {
         // method had no effect upstream.
         if is_auth_failure(response.status()) {
             let challenge = challenge_from(&response);
-            if !self.try_refresh(&challenge).await {
-                return Err(unauthorized_error(&challenge));
-            }
-            if auth_retry_safety(body) == AuthRetrySafety::Never {
+            if !self.try_refresh(&challenge).await
+                || auth_retry_safety(body) == AuthRetrySafety::Never
+            {
+                self.trace_failure(response).await;
                 return Err(unauthorized_error(&challenge));
             }
             response = self
                 .record_send(self.post_builder(body, timeout).send().await)
                 .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
             if is_auth_failure(response.status()) {
-                return Err(unauthorized_error(&challenge_from(&response)));
+                let challenge = challenge_from(&response);
+                self.trace_failure(response).await;
+                return Err(unauthorized_error(&challenge));
             }
         }
         self.capture_session(&response);
         let status = response.status();
-        let is_sse = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
+        let content_type = response_content_type(&response);
+        let is_sse = content_type
+            .as_deref()
             .is_some_and(|s| s.contains("text/event-stream"));
 
         if !is_sse {
@@ -256,6 +364,18 @@ impl HttpShared {
                 .await
                 .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
             if !status.is_success() {
+                if let Some(trace) = &self.trace {
+                    let mut end = text.len().min(HTTP_FAILURE_BODY_LIMIT);
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    trace.fail(McpHttpFailure {
+                        status: status.as_u16(),
+                        content_type,
+                        body: text[..end].to_owned(),
+                        body_truncated: end < text.len(),
+                    });
+                }
                 return Err(McpTransportError::ServerError(format!(
                     "HTTP {status}: {text}"
                 )));
@@ -264,6 +384,7 @@ impl HttpShared {
         }
 
         if !status.is_success() {
+            self.trace_failure(response).await;
             return Err(McpTransportError::ServerError(format!("HTTP {status}")));
         }
         // Stream the SSE body: route notifications/requests, return the response.
@@ -359,6 +480,7 @@ pub struct HttpTransportBuilder {
     credential: Credential,
     headers: Vec<(String, String)>,
     refresher: Option<Arc<dyn CredentialRefresher>>,
+    trace: Option<Arc<McpRequestTrace>>,
     sampling: Option<Arc<dyn crate::sampling::SamplingHandler>>,
     control_request_timeout: Duration,
     tool_call_timeout: Duration,
@@ -371,6 +493,7 @@ impl HttpTransportBuilder {
             credential: Credential::None,
             headers: Vec::new(),
             refresher: None,
+            trace: None,
             sampling: None,
             control_request_timeout: crate::stdio::DEFAULT_TIMEOUT,
             tool_call_timeout: crate::stdio::DEFAULT_TIMEOUT,
@@ -393,6 +516,13 @@ impl HttpTransportBuilder {
     /// Register the host hook consulted on 401/403.
     pub fn refresher(mut self, refresher: Arc<dyn CredentialRefresher>) -> Self {
         self.refresher = Some(refresher);
+        self
+    }
+
+    /// Record request methods and the failed HTTP response that ended a
+    /// request into `trace` (diagnostic probes only).
+    pub fn request_trace(mut self, trace: Arc<McpRequestTrace>) -> Self {
+        self.trace = Some(trace);
         self
     }
 
@@ -421,6 +551,7 @@ impl HttpTransportBuilder {
                 credential: RwLock::new(self.credential),
                 headers: self.headers,
                 refresher: self.refresher,
+                trace: self.trace,
                 control_request_timeout: self.control_request_timeout,
                 tool_call_timeout: self.tool_call_timeout,
                 session_id: Mutex::new(None),
@@ -1355,6 +1486,82 @@ mod tests {
             seen[0].www_authenticate.as_deref(),
             Some("Bearer realm=\"mcp\"")
         );
+    }
+
+    #[tokio::test]
+    async fn request_trace_records_the_failing_method_and_bounded_response() {
+        // Decision table. T1 auth challenge without a refresher -> method +
+        // exact 401 response. T2 non-auth JSON failure -> method + status +
+        // content type + body. T3 success -> method, no failure. T4 body over
+        // the limit -> exactly the limit, flagged truncated. T5 no trace -> the
+        // same error surface (tested by the sibling challenge test).
+        let body_401 = r#"{"error":"invalid_token"}"#;
+        let (url, _server) = serve(vec![format!(
+            "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"mcp\"\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body_401}",
+            body_401.len()
+        )])
+        .await;
+        let trace = Arc::new(McpRequestTrace::new());
+        let transport = HttpTransportBuilder::new(url)
+            .request_trace(Arc::clone(&trace))
+            .build();
+        transport.list_tools().await.expect_err("T1 401 surfaces");
+        assert_eq!(trace.last_method().as_deref(), Some("tools/list"), "T1");
+        assert_eq!(
+            trace.last_failure(),
+            Some(McpHttpFailure {
+                status: 401,
+                content_type: Some("application/json".into()),
+                body: body_401.into(),
+                body_truncated: false,
+            }),
+            "T1"
+        );
+
+        let (url, _server) = serve(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 4\r\nConnection: close\r\n\r\nboom".to_string(),
+            ok_response(EMPTY_TOOLS),
+        ])
+        .await;
+        let trace = Arc::new(McpRequestTrace::new());
+        let transport = HttpTransportBuilder::new(url)
+            .request_trace(Arc::clone(&trace))
+            .build();
+        transport.list_tools().await.expect_err("T2 500 surfaces");
+        let failure = trace.last_failure().expect("T2 failure");
+        assert_eq!(
+            (
+                failure.status,
+                failure.content_type.as_deref(),
+                failure.body.as_str()
+            ),
+            (500, Some("text/plain"), "boom"),
+            "T2"
+        );
+        transport.list_tools().await.expect("T3 success");
+        assert_eq!(trace.last_method().as_deref(), Some("tools/list"), "T3");
+        assert_eq!(
+            trace.last_failure(),
+            None,
+            "T3 a success clears the failure"
+        );
+
+        let oversized = "x".repeat(HTTP_FAILURE_BODY_LIMIT + 10);
+        let (url, _server) = serve(vec![format!(
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{oversized}",
+            oversized.len()
+        )])
+        .await;
+        let trace = Arc::new(McpRequestTrace::new());
+        let transport = HttpTransportBuilder::new(url)
+            .request_trace(Arc::clone(&trace))
+            .build();
+        transport.list_tools().await.expect_err("T4 403 surfaces");
+        let failure = trace.last_failure().expect("T4 failure");
+        assert_eq!(failure.status, 403, "T4");
+        assert_eq!(failure.content_type, None, "T4 absent header");
+        assert_eq!(failure.body.len(), HTTP_FAILURE_BODY_LIMIT, "T4");
+        assert!(failure.body_truncated, "T4");
     }
 
     #[tokio::test]

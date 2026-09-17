@@ -47,7 +47,7 @@ use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_session_executor::ExtMcpProbe;
 use awaken_scenario_host::McpToolModel;
-use awaken_session_contract::{McpProbe, McpProbeStatus};
+use awaken_session_contract::{McpProbe, McpProbeFailure, McpProbeStatus, ProbeHttpResponse};
 
 // This test drives the REAL management router but needs a deterministic model that
 // calls the MCP tool on `add <a> <b>` — that is a test concern, so it injects the
@@ -1244,6 +1244,44 @@ async fn ext_mcp_probe_classifies_valid_invalid_and_unknown() {
         McpProbeStatus::Unknown,
         "an unreachable server yields no verdict"
     );
+
+    // The failing step of each non-completion: a refused bearer fails the
+    // `initialize` request with the server's exact 401 response; an
+    // unreachable server fails `initialize` with no HTTP response at all; a
+    // completed probe reports no failing step.
+    let valid = probe
+        .inspect(&url, Some(&RedactedString::new(CALC_TOKEN.to_string())))
+        .await;
+    assert_eq!(valid.failure, None);
+    assert_eq!(valid.tools.len(), 1, "tools/list completed");
+    let refused = probe
+        .inspect(&url, Some(&RedactedString::new("wrong-token".to_string())))
+        .await;
+    assert_eq!(
+        refused.failure,
+        Some(McpProbeFailure {
+            method: "initialize".into(),
+            http_response: Some(ProbeHttpResponse {
+                status_code: 401,
+                content_type: String::new(),
+                body: String::new(),
+                body_truncated: false,
+            }),
+        })
+    );
+    let unreachable = probe
+        .inspect(
+            "http://127.0.0.1:1/",
+            Some(&RedactedString::new("x".to_string())),
+        )
+        .await;
+    assert_eq!(
+        unreachable.failure,
+        Some(McpProbeFailure {
+            method: "initialize".into(),
+            http_response: None,
+        })
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1260,28 +1298,35 @@ async fn mcp_oauth_validate_live_probes_over_the_management_router() {
     assert_eq!(s, StatusCode::OK);
     let vault_id = vault["id"].as_str().unwrap().to_string();
 
-    // (access token, server url, expected status, expected probe detail)
-    let arms: [(&str, String, &str, Value); 3] = [
-        (
-            CALC_TOKEN,
-            url.clone(),
-            "valid",
-            json!({ "handshake": "ok" }),
-        ),
+    // (access token, server url, expected status, expected failing step,
+    // expected refresh outcome). None of these credentials holds a refresh
+    // token, so a refused bearer reports `no_refresh_token`.
+    let arms: [(&str, String, &str, Value, Value); 3] = [
+        (CALC_TOKEN, url.clone(), "valid", Value::Null, Value::Null),
         (
             "wrong-token",
             url.clone(),
             "invalid",
-            json!({ "http_status": 401 }),
+            json!({
+                "method": "initialize",
+                "http_response": {
+                    "body": "",
+                    "body_truncated": false,
+                    "content_type": "",
+                    "status_code": 401
+                }
+            }),
+            json!({ "http_response": null, "status": "no_refresh_token" }),
         ),
         (
             "whatever",
             "http://127.0.0.1:1/".to_string(),
             "unknown",
+            json!({ "method": "initialize", "http_response": null }),
             Value::Null,
         ),
     ];
-    for (token, server_url, expected_status, expected_probe) in arms {
+    for (token, server_url, expected_status, expected_probe, expected_refresh) in arms {
         let (s, cred) = call(
             &app,
             "POST",
@@ -1305,10 +1350,154 @@ async fn mcp_oauth_validate_live_probes_over_the_management_router() {
         assert_eq!(s, StatusCode::OK);
         assert_eq!(validation["status"], expected_status, "{validation:?}");
         assert_eq!(validation["mcp_probe"], expected_probe, "{validation:?}");
+        assert_eq!(validation["refresh"], expected_refresh, "{validation:?}");
         // The probe detail never carries the token.
         assert!(
             !serde_json::to_string(&validation).unwrap().contains(token),
             "{validation:?}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_oauth_validate_attempts_the_refresh_exchange_over_the_management_router() {
+    // Cause-effect graph over the real process composition (ExtMcpProbe +
+    // VaultRefreshFactory + a live token endpoint). C1 the access token is
+    // refused; C2 the token endpoint issues a token; C3 it is reachable.
+    // | Rule | C1  | C2  | C3  | status  | refresh       | mcp_probe          |
+    // | X1   | yes | yes | yes | valid   | succeeded+200 | null (re-probed)   |
+    // | X2   | yes | no  | yes | invalid | failed+400    | initialize+401     |
+    // | X3   | yes | -   | no  | invalid | connect_error | initialize+401     |
+    let issuing = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(
+            json!({ "access_token": "issued-token", "refresh_token": "rt-rotated", "token_type": "Bearer" }), // awaken-allow: secret
+        ),
+        ..OauthMock::default()
+    }));
+    let refusing = Arc::new(Mutex::new(OauthMock::default()));
+    let issuing_url = mock_oauth_calc_mcp(issuing.clone()).await;
+    let refusing_url = mock_oauth_calc_mcp(refusing.clone()).await;
+    let app = build_all_in_one_router().await;
+    let (s, vault) = call(
+        &app,
+        "POST",
+        "/v1/vaults",
+        Some(json!({ "display_name": "refresh" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let vault_id = vault["id"].as_str().unwrap().to_string();
+    let refused = json!({
+        "method": "initialize",
+        "http_response": {
+            "body": "",
+            "body_truncated": false,
+            "content_type": "",
+            "status_code": 401
+        }
+    });
+    let arms = [
+        (
+            "X1",
+            issuing_url.clone(),
+            format!("{issuing_url}token"),
+            "valid",
+            Value::Null,
+            json!({
+                "http_response": {
+                    "body": r#"{"access_token":"[REDACTED]","refresh_token":"[REDACTED]","token_type":"Bearer"}"#,
+                    "body_truncated": false,
+                    "content_type": "application/json",
+                    "status_code": 200
+                },
+                "status": "succeeded"
+            }),
+        ),
+        (
+            "X2",
+            refusing_url.clone(),
+            format!("{refusing_url}token"),
+            "invalid",
+            refused.clone(),
+            json!({
+                "http_response": {
+                    "body": r#"{"error":"invalid_grant"}"#,
+                    "body_truncated": false,
+                    "content_type": "application/json",
+                    "status_code": 400
+                },
+                "status": "failed"
+            }),
+        ),
+        (
+            "X3",
+            refusing_url.clone(),
+            "http://127.0.0.1:1/token".to_string(),
+            "invalid",
+            refused,
+            json!({ "http_response": null, "status": "connect_error" }),
+        ),
+    ];
+    for (rule, server_url, token_endpoint, status, mcp_probe, refresh) in arms {
+        let (s, cred) = call(
+            &app,
+            "POST",
+            &format!("/v1/vaults/{vault_id}/credentials"),
+            Some(json!({
+                "type": "mcp_oauth",
+                "mcp_server_url": server_url,
+                "access_token": "expired-token", // awaken-allow: secret
+                "refresh": {
+                    "client_id": "cli-validate",
+                    "refresh_token": "rt-validate", // awaken-allow: secret
+                    "token_endpoint": token_endpoint,
+                    "token_endpoint_auth": { "type": "none" }
+                }
+            })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{rule}: {cred:?}");
+        let cred_id = cred["id"].as_str().unwrap().to_string();
+        let (s, validation) = call(
+            &app,
+            "POST",
+            &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{rule}");
+        assert_eq!(validation["status"], status, "{rule}: {validation:?}");
+        assert_eq!(validation["has_refresh_token"], true, "{rule}");
+        assert_eq!(validation["mcp_probe"], mcp_probe, "{rule}: {validation:?}");
+        assert_eq!(validation["refresh"], refresh, "{rule}: {validation:?}");
+        let rendered = validation.to_string();
+        for secret in ["expired-token", "rt-validate", "issued-token", "rt-rotated"] {
+            assert!(!rendered.contains(secret), "{rule}: {secret} leaked");
+        }
+    }
+    // X1 re-probed with the issued token; X2/X3 never presented anything but
+    // the refused one.
+    let issuing = issuing.lock().unwrap();
+    assert_eq!(issuing.grants.len(), 1, "X1 exchanged exactly once");
+    assert!(issuing.grants[0].contains("refresh_token=rt-validate"));
+    assert!(
+        issuing
+            .requests
+            .iter()
+            .any(|(method, bearer)| method == "initialize" && bearer == "Bearer issued-token"),
+        "X1 re-probed with the resealed token: {:?}",
+        issuing.requests
+    );
+    let refusing = refusing.lock().unwrap();
+    assert_eq!(
+        refusing.grants.len(),
+        1,
+        "X2 reached the endpoint; X3 could not"
+    );
+    assert!(
+        refusing
+            .requests
+            .iter()
+            .all(|(_, bearer)| bearer == "Bearer expired-token")
+    );
 }
