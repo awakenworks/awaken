@@ -21,6 +21,17 @@ use serde::{Deserialize, Serialize};
 pub struct McpAttachmentContentDigest(String);
 
 impl McpAttachmentContentDigest {
+    /// A one-byte equality representative for bounded proofs of predicates
+    /// that only compare digests. Proof builds only: every other build can
+    /// still mint a digest solely from real content. Digesting real content
+    /// inside such a proof runs URL parsing and hashing under the harness's
+    /// unwind bound and proves nothing about the comparison.
+    #[cfg(kani)]
+    #[must_use]
+    pub(crate) fn proof_representative(same: bool) -> Self {
+        Self(if same { "a" } else { "b" }.into())
+    }
+
     /// Digest the complete desired content of one attachment generation.
     #[must_use]
     pub fn of_content(
