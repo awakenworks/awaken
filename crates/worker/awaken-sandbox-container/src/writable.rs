@@ -106,7 +106,7 @@ pub fn checkpoint_writable_roots_from_output_path(
 ) -> Result<Vec<String>, pc::SandboxError> {
     let output = outputs_path.trim_end_matches('/');
     if !bounded_absolute(output) {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::invalid(
             "sandbox output root must be an absolute bounded path",
         ));
     }
@@ -133,7 +133,7 @@ pub fn validate_checkpoint_writable_roots(roots: &[String]) -> Result<(), pc::Sa
         _ => false,
     };
     if !valid_shape {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::invalid(
             "persisted sandbox writable roots are not canonical",
         ));
     }

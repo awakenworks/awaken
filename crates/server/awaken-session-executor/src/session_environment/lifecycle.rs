@@ -138,7 +138,7 @@ impl SessionEnvironment {
                 Ok(EnvironmentQuiescenceProof)
             }
             EnvironmentStopProof::Hand(HandStopProof::ResidentProcessRetained) => {
-                Err(pc::SandboxError::new(
+                Err(pc::SandboxError::unsupported(
                     "resident Session Hand remains owned by the sandbox and cannot be checkpointed after release",
                 ))
             }

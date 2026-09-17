@@ -1,6 +1,6 @@
 //! Bind bubblewrap's trusted child report to the existing local lifecycle port.
 //! No PID discovery through task-visible files, argv, or host process scans.
-use super::{LocalProcess, TokioCommand, err, pc};
+use super::{LocalProcess, TokioCommand, pc};
 
 pub(super) struct LaunchInfo {
     #[cfg(target_os = "linux")]
@@ -14,18 +14,21 @@ impl LaunchInfo {
             use command_fds::{CommandFdExt, FdMapping};
             // LocalProcess::spawn owns process-group and cancellation policy;
             // this adapter only supplies the trusted namespace identity report.
-            let (read, write) = std::os::unix::net::UnixStream::pair().map_err(err)?;
-            read.set_nonblocking(true).map_err(err)?;
+            let (read, write) = std::os::unix::net::UnixStream::pair()
+                .map_err(|error| pc::SandboxError::backend("attach", error))?;
+            read.set_nonblocking(true)
+                .map_err(|error| pc::SandboxError::backend("attach", error))?;
             command
                 .as_std_mut()
                 .fd_mappings(vec![FdMapping {
                     parent_fd: write.into(),
                     child_fd: 3,
                 }])
-                .map_err(err)?;
+                .map_err(|error| pc::SandboxError::backend("attach", error))?;
             command.args(["--info-fd", "3"]);
             Ok(Self {
-                report: tokio::net::UnixStream::from_std(read).map_err(err)?,
+                report: tokio::net::UnixStream::from_std(read)
+                    .map_err(|error| pc::SandboxError::backend("attach", error))?,
             })
         }
         #[cfg(not(target_os = "linux"))]
@@ -57,13 +60,13 @@ impl LaunchInfo {
                     .take(4097)
                     .read_to_end(&mut bytes)
                     .await
-                    .map_err(err)?;
+                    .map_err(|error| pc::SandboxError::backend("bind", error))?;
                 let group = reported_group(&bytes)?;
                 process.bind_private_signal_group(group).await
             };
             let result = tokio::time::timeout(Duration::from_secs(6), binding)
                 .await
-                .map_err(|_| err("bubblewrap process report timed out"))
+                .map_err(|_| pc::SandboxError::timeout("bubblewrap process report timed out"))
                 .and_then(|result| result);
             if let Err(cause) = result {
                 // Startup failed before the handle could be published. Reap the
@@ -71,7 +74,9 @@ impl LaunchInfo {
                 process.signal(pc::Signal::Kill).await?;
                 tokio::time::timeout(Duration::from_secs(5), process.wait())
                     .await
-                    .map_err(|_| err("bubblewrap setup cleanup timed out"))??;
+                    .map_err(|_| {
+                        pc::SandboxError::timeout("bubblewrap setup cleanup timed out")
+                    })??;
                 return Err(cause);
             }
             Ok(process)
@@ -87,9 +92,12 @@ fn reported_group(bytes: &[u8]) -> Result<u32, pc::SandboxError> {
         child_pid: u32,
     }
     if bytes.len() > 4096 {
-        return Err(err("bubblewrap process report is oversized"));
+        return Err(pc::SandboxError::invalid(
+            "bubblewrap process report is oversized",
+        ));
     }
-    let report: Report = serde_json::from_slice(bytes).map_err(err)?;
+    let report: Report = serde_json::from_slice(bytes)
+        .map_err(|error| pc::SandboxError::backend("reported_group", error))?;
     Ok(report.child_pid)
 }
 

@@ -143,7 +143,9 @@ impl pc::ProcessHandle for K8sExecProcess {
             return Ok(Some(status.clone()));
         }
         let Some(completion) = state.completion.as_ref() else {
-            return Err(pc::SandboxError::new("k8s exec completion is unavailable"));
+            return Err(pc::SandboxError::transport(
+                "k8s exec completion is unavailable",
+            ));
         };
         if !completion.is_finished() {
             return Ok(None);
@@ -151,10 +153,11 @@ impl pc::ProcessHandle for K8sExecProcess {
         let completion = state.completion.take().expect("checked above");
         let status = completion
             .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| pc::SandboxError::backend("poll", error))?;
         let status = k8s_exit_status(status);
         if status.code.is_none() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::backend(
+                "poll",
                 "Kubernetes exec ended without an observed exit status",
             ));
         }
@@ -188,16 +191,16 @@ impl pc::ProcessHandle for K8sExecProcess {
                     .stderr(false),
             )
             .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| pc::SandboxError::backend("signal", error))?;
         let mut stdout = attached
             .stdout()
-            .ok_or_else(|| pc::SandboxError::new("k8s signal exec has no stdout"))?;
+            .ok_or_else(|| pc::SandboxError::backend("signal", "k8s signal exec has no stdout"))?;
         let status = attached
             .take_status()
-            .ok_or_else(|| pc::SandboxError::new("k8s signal exec has no status"))?;
+            .ok_or_else(|| pc::SandboxError::backend("signal", "k8s signal exec has no status"))?;
         let mut ignored = Vec::new();
         let (read, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
-        read.map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        read.map_err(|error| pc::SandboxError::backend("signal", error))?;
         let signal_status = k8s_exit_status(status);
         let process_status = if signal_status.code == Some(0) {
             None
@@ -207,7 +210,10 @@ impl pc::ProcessHandle for K8sExecProcess {
         if signal_effect_is_complete(&signal_status, process_status.as_ref()) {
             Ok(())
         } else {
-            Err(pc::SandboxError::new("k8s exec signal failed"))
+            Err(pc::SandboxError::backend(
+                "signal",
+                "k8s exec signal failed",
+            ))
         }
     }
 }

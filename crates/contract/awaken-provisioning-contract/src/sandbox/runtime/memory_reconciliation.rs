@@ -58,7 +58,7 @@ impl MemoryReconciliationAck {
         MemoryMaterializationEvidence::validate_all(expected_materializations)?;
         MemoryMaterializationEvidence::validate_all(supplied_materializations)?;
         if expected_materializations != supplied_materializations {
-            return Err(SandboxError::new(
+            return Err(SandboxError::conflict(
                 "Memory reconciliation evidence differs from the complete provider projection",
             ));
         }
@@ -69,11 +69,14 @@ impl MemoryReconciliationAck {
         }
 
         let mut applied = self.applied.lock().map_err(|_| {
-            SandboxError::new("Memory reconciliation acknowledgement lock poisoned")
+            SandboxError::backend(
+                "acknowledge_current",
+                "Memory reconciliation acknowledgement lock poisoned",
+            )
         })?;
         if let Some(previous) = applied.as_mut() {
             if previous.materializations != expected_materializations {
-                return Err(SandboxError::new(
+                return Err(SandboxError::conflict(
                     "Memory reconciliation replay changed its complete provider evidence",
                 ));
             }
@@ -81,7 +84,7 @@ impl MemoryReconciliationAck {
                 return Ok(());
             }
             if !previous.effect_fence.same_realization_lease(effect_fence) {
-                return Err(SandboxError::new(
+                return Err(SandboxError::fence_rejected(
                     "Memory reconciliation acknowledgement belongs to another realization lease",
                 ));
             }
@@ -131,7 +134,10 @@ impl MemoryReconciliationAck {
             return Ok(());
         }
         let applied = self.applied.lock().map_err(|_| {
-            SandboxError::new("Memory reconciliation acknowledgement lock poisoned")
+            SandboxError::backend(
+                "require_current_for_disposal",
+                "Memory reconciliation acknowledgement lock poisoned",
+            )
         })?;
         match applied.as_ref() {
             Some(applied)
@@ -140,7 +146,7 @@ impl MemoryReconciliationAck {
             {
                 Ok(())
             }
-            _ => Err(SandboxError::new(
+            _ => Err(SandboxError::not_ready(
                 "copy-backed Memory must be acknowledged by this aggregate effect before Sandbox disposal",
             )),
         }
@@ -154,7 +160,7 @@ pub(super) fn default_memory_reconciliation_ack(
     if materializations.is_empty() {
         Ok(())
     } else {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox provider does not implement copy-backed Memory reconciliation acknowledgement",
         ))
     }
@@ -220,7 +226,7 @@ mod tests {
                                 &expected,
                                 &fence,
                                 &authority,
-                                || Err::<(), _>(SandboxError::new("prepare failed"))
+                                || Err::<(), _>(SandboxError::backend("disposal_preparation_uses_current_authority_for_empty_missing_and_cached_evidence", "prepare failed"))
                             )
                             .is_err()
                         );
@@ -437,7 +443,10 @@ mod tests {
             let authority = EffectAuthority::new(fence);
             assert!(
                 ack.acknowledge(fence, &authority, &evidence, &evidence, || {
-                    Err(SandboxError::new("provider drain failed"))
+                    Err(SandboxError::backend(
+                        "provider_drain_failure_does_not_publish_ack_or_supersede_prior_effect",
+                        "provider drain failed",
+                    ))
                 })
                 .is_err()
             );

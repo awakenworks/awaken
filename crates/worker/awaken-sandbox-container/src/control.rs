@@ -5,9 +5,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_sandbox_control::{
-    PublishedSandboxControlService, SandboxControlPublicationLease, SandboxControlPublicationSlot,
-    SandboxControlPublicationTask, SandboxControlPublishError, SandboxControlService,
-    SandboxControlServiceKind, SandboxControlServicePublisher, serve_one_after_first_byte,
+    PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
+    SandboxControlServiceKind, SandboxControlServicePublisher,
+};
+use awaken_sandbox_control_transport::{
+    SandboxControlPublicationLease, SandboxControlPublicationSlot, SandboxControlPublicationTask,
+    serve_one_after_first_byte,
 };
 use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;

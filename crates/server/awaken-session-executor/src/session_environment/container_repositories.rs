@@ -6,9 +6,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::{SandboxControlService, SandboxControlServiceKind};
 use awaken_sandbox_control::{
-    CapabilityExpiresAtUnixMs, REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, RepositoryGitCredentialQuery,
-    SandboxControlRequest, SandboxControlResponse, SandboxControlSecret,
+    CapabilityExpiresAtUnixMs, RepositoryGitCredentialQuery, SandboxControlRequest,
+    SandboxControlResponse, SandboxControlSecret,
 };
+use awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
 
 const CREDENTIAL_OPERATION_TTL: Duration = Duration::from_secs(120);
 
@@ -27,15 +28,15 @@ impl OperationRepositoryCredential {
         credential: &pc::RepositoryHttpBasicCredential,
     ) -> Result<Self, pc::SandboxError> {
         let url = url::Url::parse(remote_url)
-            .map_err(|_| pc::SandboxError::new("Repository transport URL is invalid"))?;
+            .map_err(|_| pc::SandboxError::invalid("Repository transport URL is invalid"))?;
         if url.scheme() != "https" || url.query().is_some() || url.fragment().is_some() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "credentialed Repository transport must use a canonical HTTPS URL",
             ));
         }
         let mut host = url
             .host_str()
-            .ok_or_else(|| pc::SandboxError::new("Repository transport URL has no host"))?
+            .ok_or_else(|| pc::SandboxError::invalid("Repository transport URL has no host"))?
             .to_owned();
         if let Some(port) = url.port() {
             host.push(':');
@@ -43,15 +44,17 @@ impl OperationRepositoryCredential {
         }
         let path = url.path().trim_start_matches('/').to_owned();
         if path.is_empty() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "Repository transport URL has no path",
             ));
         }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| pc::SandboxError::new("system clock is before Unix epoch"))?;
+            .map_err(|_| pc::SandboxError::backend("new", "system clock is before Unix epoch"))?;
         let expires_at_unix_ms = u64::try_from((now + CREDENTIAL_OPERATION_TTL).as_millis())
-            .map_err(|_| pc::SandboxError::new("Repository credential expiry overflow"))?;
+            .map_err(|_| {
+                pc::SandboxError::backend("new", "Repository credential expiry overflow")
+            })?;
         Ok(Self {
             protocol: url.scheme().to_owned(),
             host,
@@ -113,7 +116,9 @@ async fn publish_credential(
         )
         .await
         .map(Some)
-        .map_err(|_| pc::SandboxError::new("Sandbox Repository credential channel is unavailable"))
+        .map_err(|_| {
+            pc::SandboxError::transport("Sandbox Repository credential channel is unavailable")
+        })
 }
 
 pub(super) async fn provision(
@@ -137,10 +142,10 @@ pub(super) async fn provision(
         sandbox.record_owned_path(&plan.mount_path)?;
         Ok(())
     } else {
-        Err(pc::SandboxError::new(format!(
-            "container Repository clone exited {:?}",
-            status.code
-        )))
+        Err(pc::SandboxError::backend(
+            "provision",
+            format!("container Repository clone exited {:?}", status.code),
+        ))
     }
 }
 
@@ -154,7 +159,7 @@ fn repository_clone_command(
         .rsplit_once('/')
         .map(|(parent, _)| parent)
         .filter(|parent| !parent.is_empty())
-        .ok_or_else(|| pc::SandboxError::new("Repository destination has no sandbox parent"))?;
+        .ok_or_else(|| pc::SandboxError::invalid("Repository destination has no sandbox parent"))?;
     let stage = format!(
         "{parent}/.awaken-repository-{}.stage",
         stage_identity.simple()
@@ -215,7 +220,7 @@ pub(super) async fn push(
         .map_err(pc::RepositoryPublicationError::Unavailable)?;
     if plan.access == pc::MountAccess::ReadOnly {
         return Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::new("read-only repository cannot be published"),
+            pc::SandboxError::unauthorized("read-only repository cannot be published"),
         ));
     }
     let publication = publish_credential(sandbox, &plan.transport_url, credential)
@@ -239,10 +244,10 @@ pub(super) async fn push(
         // must classify a failed CAS as unavailable, never invent a permanent
         // rejection that could close a retryable Session effect.
         Some(42) => Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::new("container Repository publication coordinate was rejected"),
+            pc::SandboxError::invalid("container Repository publication coordinate was rejected"),
         )),
         code => Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::new(format!("container Repository push exited {code:?}")),
+            pc::SandboxError::backend("push", format!("container Repository push exited {code:?}")),
         )),
     }
 }

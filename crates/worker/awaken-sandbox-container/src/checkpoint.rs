@@ -21,7 +21,9 @@ impl ContainerCheckpointAccess<'_> {
                 .source_effect_fence
                 .authorizes_successor(self.effect_fence)
         {
-            return Err(pc::SandboxError::new("invalid container checkpoint access"));
+            return Err(pc::SandboxError::invalid(
+                "invalid container checkpoint access",
+            ));
         }
         pc::with_current_sandbox_effect(self.effect_fence, self.authority, || Ok(()))
     }
@@ -67,7 +69,7 @@ impl ContainerCheckpointParticipant {
                     || previous.request_fingerprint != access.request_fingerprint
                     || (previous.terminal && !access.is_terminal())
                 {
-                    return Err(pc::SandboxError::new(
+                    return Err(pc::SandboxError::conflict(
                         "container checkpoint participant conflicts with its original upload or terminal takeover",
                     ));
                 }
@@ -94,7 +96,7 @@ impl ContainerCheckpointParticipant {
                 upload: None,
             },
             None => {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::not_found(
                     "container checkpoint participant was not acquired",
                 ));
             }
@@ -107,13 +109,13 @@ impl ContainerCheckpointParticipant {
                     || pending.request_fingerprint() != access.request_fingerprint
                     || pending.reference().is_some()
                 {
-                    return Err(pc::SandboxError::new(
+                    return Err(pc::SandboxError::conflict(
                         "container checkpoint pending evidence differs from its admitted request",
                     ));
                 }
                 match &next.upload {
                     Some(recorded) if !recorded.matches_pending(pending) => {
-                        return Err(pc::SandboxError::new(
+                        return Err(pc::SandboxError::conflict(
                             "container checkpoint replay changed snapshot bytes",
                         ));
                     }
@@ -125,7 +127,7 @@ impl ContainerCheckpointParticipant {
                 next.upload
                     .as_mut()
                     .ok_or_else(|| {
-                        pc::SandboxError::new("container checkpoint has no pending upload")
+                        pc::SandboxError::not_found("container checkpoint has no pending upload")
                     })?
                     .complete(
                         &access.source_effect_fence.operation_id,

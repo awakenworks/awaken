@@ -37,7 +37,9 @@ async fn close(
             process.signal(pc::Signal::Kill).await?;
             tokio::time::timeout(Duration::from_secs(5), process.wait())
                 .await
-                .map_err(|_| pc::SandboxError::new("attached MCP process cleanup timed out"))??;
+                .map_err(|_| {
+                    pc::SandboxError::timeout("attached MCP process cleanup timed out")
+                })??;
         }
     }
     state.stopped = true;

@@ -54,7 +54,7 @@ impl SandboxDisposalPreparation {
     pub fn operation_id(&self) -> Result<String, SandboxError> {
         self.prepared_effect_fence.validate_identity()?;
         if self.preparation_fingerprint.trim().is_empty() {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "Sandbox disposal preparation requires a fingerprint",
             ));
         }
@@ -157,7 +157,7 @@ impl SandboxDisposalAuthorization {
         let expected_operation_id = preparation.operation_id()?;
         self.effect_fence.validate_identity()?;
         if self.effect_fence.operation_id != expected_operation_id {
-            return Err(SandboxError::new(
+            return Err(SandboxError::invalid(
                 "Sandbox physical disposal operation does not bind its durable preparation",
             ));
         }
@@ -165,7 +165,7 @@ impl SandboxDisposalAuthorization {
             .prepared_effect_fence
             .authorizes_successor(&self.effect_fence)
         {
-            return Err(SandboxError::new(
+            return Err(SandboxError::fence_rejected(
                 "Sandbox physical disposal is not an authorized realization successor",
             ));
         }

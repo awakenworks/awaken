@@ -442,7 +442,8 @@ mod tests {
             awaken_provisioning_contract::SandboxError,
         > {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Err(awaken_provisioning_contract::SandboxError::new(
+            Err(awaken_provisioning_contract::SandboxError::backend(
+                "create_environment",
                 "scripted Environment entry",
             ))
         }
@@ -454,7 +455,8 @@ mod tests {
             Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
-            Err(awaken_provisioning_contract::SandboxError::new(
+            Err(awaken_provisioning_contract::SandboxError::backend(
+                "adopt_environment",
                 "scripted Environment adoption",
             ))
         }

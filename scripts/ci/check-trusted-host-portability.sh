@@ -68,6 +68,7 @@ cargo test -p awaken-cli --lib acp_local_credentials
 # adapter races on every matrix runner; Namespace's Unix-socket rows remain
 # Linux-gated inside the Local suite. No container daemon is needed here.
 cargo test -p awaken-sandbox-control --lib
+cargo test -p awaken-sandbox-control-transport --lib
 # Include the neutral provider/Memory preparation decision tables and actual
 # credential-response wait faults, not only control publication. This expands
 # the existing provider invocation; it does not run the control group twice.

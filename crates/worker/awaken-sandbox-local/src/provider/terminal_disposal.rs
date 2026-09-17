@@ -20,11 +20,13 @@ pub(crate) fn authorize_terminal_disposal(
     use awaken_provisioning_contract as pc;
 
     let evidence = realization.current().ok_or_else(|| {
-        pc::SandboxError::new("legacy sandbox handle cannot authorize fenced Memory reconciliation")
+        pc::SandboxError::unsupported(
+            "legacy sandbox handle cannot authorize fenced Memory reconciliation",
+        )
     })?;
     let mut slot = terminal_removal
         .try_lock()
-        .map_err(|_| pc::SandboxError::new("terminal removal participant is busy"))?;
+        .map_err(|_| pc::SandboxError::not_ready("terminal removal participant is busy"))?;
     if slot.is_none() {
         *slot = realization_marker::begin_terminal_takeover(
             root,
@@ -41,7 +43,7 @@ pub(crate) fn authorize_terminal_disposal(
         .map(|(_, removal)| removal);
     }
     let Some(removal) = slot.as_mut() else {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::gone(
             "Memory reconciliation lost its exact physical Sandbox participant",
         ));
     };
@@ -87,7 +89,9 @@ pub(crate) async fn dispose_terminal_realization(
 
     let mut slot = terminal_removal.lock().await;
     let removal = slot.as_mut().ok_or_else(|| {
-        pc::SandboxError::new("physical disposal requires an exact prepared filesystem participant")
+        pc::SandboxError::invalid(
+            "physical disposal requires an exact prepared filesystem participant",
+        )
     })?;
     pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
         removal.authorize_disposal(authorization)
@@ -129,7 +133,7 @@ fn shred_secret_paths_for_removal(
             path.strip_prefix(sandbox_root)
                 .map(|relative| owned.root().join(relative))
                 .map_err(|_| {
-                    awaken_provisioning_contract::SandboxError::new(format!(
+                    awaken_provisioning_contract::SandboxError::invalid(format!(
                         "secret path `{}` is outside sandbox root `{}`",
                         path.display(),
                         sandbox_root.display()

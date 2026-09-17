@@ -242,7 +242,7 @@ fn creation_record_leaf(root: &Path) -> Result<PathBuf, pc::SandboxError> {
     let name = root
         .file_name()
         .and_then(|value| value.to_str())
-        .ok_or_else(|| error("sandbox root has no portable final component"))?;
+        .ok_or_else(|| pc::SandboxError::invalid("sandbox root has no portable final component"))?;
     Ok(PathBuf::from(format!(
         ".{name}.awaken-legacy-creation.json"
     )))
@@ -253,20 +253,23 @@ pub(crate) fn read_creation_record(
     root: &Path,
 ) -> Result<Option<LegacyCreationRecord>, pc::SandboxError> {
     let leaf = creation_record_leaf(root)?;
-    match lock.classify_sibling_nofollow(&leaf).map_err(error)? {
+    match lock
+        .classify_sibling_nofollow(&leaf)
+        .map_err(|error| pc::SandboxError::backend("read_creation_record", error))?
+    {
         PathEntry::Absent => Ok(None),
         PathEntry::RegularFile => {
             let bytes = lock
                 .read_sibling_regular_file_nofollow(&leaf)
-                .map_err(error)?;
+                .map_err(|error| pc::SandboxError::backend("read_creation_record", error))?;
             let record: LegacyCreationRecord = serde_json::from_slice(&bytes).map_err(|cause| {
-                error(format!(
+                pc::SandboxError::invalid(format!(
                     "decode legacy sandbox creation record `{}`: {cause}",
                     leaf.display()
                 ))
             })?;
             if record.schema != LEGACY_CREATION_SCHEMA {
-                return Err(error(format!(
+                return Err(pc::SandboxError::unsupported(format!(
                     "legacy sandbox creation record `{}` has unsupported schema {}",
                     leaf.display(),
                     record.schema
@@ -274,7 +277,7 @@ pub(crate) fn read_creation_record(
             }
             Ok(Some(record))
         }
-        _ => Err(error(format!(
+        _ => Err(pc::SandboxError::invalid(format!(
             "legacy sandbox creation record `{}` is not a regular file",
             leaf.display()
         ))),
@@ -287,17 +290,21 @@ pub(crate) fn write_creation_record(
     record: &LegacyCreationRecord,
 ) -> Result<(), pc::SandboxError> {
     let leaf = creation_record_leaf(root)?;
-    let bytes = serde_json::to_vec(record).map_err(error)?;
+    let bytes = serde_json::to_vec(record)
+        .map_err(|error| pc::SandboxError::backend("write_creation_record", error))?;
     // Both edges go through the same no-follow inode checks the realization
     // marker uses; only the first write has nothing to replace.
-    match lock.classify_sibling_nofollow(&leaf).map_err(error)? {
+    match lock
+        .classify_sibling_nofollow(&leaf)
+        .map_err(|error| pc::SandboxError::backend("write_creation_record", error))?
+    {
         PathEntry::Absent => lock
             .publish_sibling_file_noreplace(&leaf, &bytes)
-            .map_err(error),
+            .map_err(|error| pc::SandboxError::backend("write_creation_record", error)),
         PathEntry::RegularFile => lock
             .replace_sibling_regular_file_atomic(&leaf, &bytes)
-            .map_err(error),
-        _ => Err(error(format!(
+            .map_err(|error| pc::SandboxError::backend("write_creation_record", error)),
+        _ => Err(pc::SandboxError::invalid(format!(
             "legacy sandbox creation record `{}` is not a regular file",
             leaf.display()
         ))),
@@ -318,9 +325,12 @@ pub(crate) fn retain_creation_record(
     match write_creation_record(lock, root, &record.retained()) {
         Ok(()) => Ok(()),
         Err(cause) => clear_creation_record(lock, root).map_err(|removal| {
-            error(format!(
-                "retain legacy sandbox creation record: {cause}; removal also failed: {removal}"
-            ))
+            pc::SandboxError::backend(
+                "retain_creation_record",
+                format!(
+                    "retain legacy sandbox creation record: {cause}; removal also failed: {removal}"
+                ),
+            )
         }),
     }
 }
@@ -330,16 +340,15 @@ pub(crate) fn clear_creation_record(
     root: &Path,
 ) -> Result<(), pc::SandboxError> {
     let leaf = creation_record_leaf(root)?;
-    match lock.classify_sibling_nofollow(&leaf).map_err(error)? {
+    match lock
+        .classify_sibling_nofollow(&leaf)
+        .map_err(|error| pc::SandboxError::backend("clear_creation_record", error))?
+    {
         PathEntry::Absent => Ok(()),
         _ => lock
             .remove_sibling_regular_file_nofollow(&leaf)
-            .map_err(error),
+            .map_err(|error| pc::SandboxError::backend("clear_creation_record", error)),
     }
-}
-
-fn error(cause: impl ToString) -> pc::SandboxError {
-    pc::SandboxError::new(cause.to_string())
 }
 
 #[cfg(test)]

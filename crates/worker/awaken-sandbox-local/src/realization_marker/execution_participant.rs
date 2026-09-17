@@ -3,6 +3,7 @@
 //! serializes pre-GO publication against cold adoption, snapshot and deletion.
 
 use super::*;
+#[cfg(target_os = "linux")]
 use awaken_local_process::ProcessExecutionIdentity;
 
 const MAX_EXECUTIONS: usize = 128;
@@ -23,12 +24,18 @@ pub(super) fn validate(marker: &RealizationMarker) -> Result<(), pc::SandboxErro
                         | RealizationPhase::Removed
                 ))
         {
-            return Err(err("invalid execution participant phase or capacity"));
+            return Err(pc::SandboxError::invalid(
+                "invalid execution participant phase or capacity",
+            ));
         }
         for (index, identity) in executions.iter().enumerate() {
-            identity.validate().map_err(err)?;
+            identity
+                .validate()
+                .map_err(|error| pc::SandboxError::backend("validate", error))?;
             if executions[..index].contains(identity) {
-                return Err(err("duplicate execution participant identity"));
+                return Err(pc::SandboxError::invalid(
+                    "duplicate execution participant identity",
+                ));
             }
         }
     }
@@ -42,7 +49,10 @@ pub(super) fn is_quiescent(marker: &RealizationMarker) -> Result<bool, pc::Sandb
             .iter()
             .flat_map(|source| source.executions.iter()),
     ) {
-        if !identity.is_quiescent().map_err(err)? {
+        if !identity
+            .is_quiescent()
+            .map_err(|error| pc::SandboxError::backend("is_quiescent", error))?
+        {
             return Ok(false);
         }
     }
@@ -53,7 +63,7 @@ pub(super) fn require_quiescent(marker: &RealizationMarker) -> Result<(), pc::Sa
     if is_quiescent(marker)? {
         Ok(())
     } else {
-        Err(err(
+        Err(pc::SandboxError::not_ready(
             "filesystem realization still has a live execution participant",
         ))
     }
@@ -74,7 +84,9 @@ pub(crate) fn begin_execution(
         evidence.effect_fence(),
     )?;
     if guard.marker.checkpoint.is_some() {
-        return Err(err("checkpoint participant has closed execution admission"));
+        return Err(pc::SandboxError::gone(
+            "checkpoint participant has closed execution admission",
+        ));
     }
     Ok(guard)
 }
@@ -85,8 +97,9 @@ pub(crate) fn verify_execution_quiescence(
     evidence: &RealizationEvidence,
 ) -> Result<(), pc::SandboxError> {
     let lock = acquire(root)?;
-    let marker = read_marker_locked(root, &lock)?
-        .ok_or_else(|| err("execution quiescence lost its realization marker"))?;
+    let marker = read_marker_locked(root, &lock)?.ok_or_else(|| {
+        pc::SandboxError::gone("execution quiescence lost its realization marker")
+    })?;
     observation::validate_handle_marker(
         &marker,
         evidence.fingerprint(),
@@ -94,7 +107,7 @@ pub(crate) fn verify_execution_quiescence(
         evidence.physical_incarnation(),
     )?;
     if required_root_identity(&marker)? != evidence.root_identity() {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "execution quiescence changed its physical root evidence",
         ));
     }
@@ -106,7 +119,7 @@ impl RemovalGuard {
     pub(crate) fn verify_execution_quiescence(&self) -> Result<(), pc::SandboxError> {
         let observed = read_marker_locked(&self.root, &self.lock)?;
         if observed.as_ref() != Some(&self.marker) {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "execution quiescence changed its retained removal participant",
             ));
         }
@@ -123,10 +136,14 @@ impl ReadyOperationGuard {
         &mut self,
         identity: &ProcessExecutionIdentity,
     ) -> Result<(), pc::SandboxError> {
-        identity.validate().map_err(err)?;
+        identity
+            .validate()
+            .map_err(|error| pc::SandboxError::backend("record_execution", error))?;
         self.current_marker()?;
         if self.marker.checkpoint.is_some() {
-            return Err(err("checkpoint participant has closed execution admission"));
+            return Err(pc::SandboxError::gone(
+                "checkpoint participant has closed execution admission",
+            ));
         }
         if self.marker.executions.contains(identity) {
             return Ok(());
@@ -136,12 +153,17 @@ impl ReadyOperationGuard {
         // their evidence and conservatively block a new launch as well.
         let mut retained = Vec::new();
         for previous in &next.executions {
-            if !previous.is_quiescent().map_err(err)? {
+            if !previous
+                .is_quiescent()
+                .map_err(|error| pc::SandboxError::backend("record_execution", error))?
+            {
                 retained.push(previous.clone());
             }
         }
         if retained.len() >= MAX_EXECUTIONS {
-            return Err(err("execution participant capacity reached"));
+            return Err(pc::SandboxError::not_ready(
+                "execution participant capacity reached",
+            ));
         }
         retained.push(identity.clone());
         next.executions = retained;

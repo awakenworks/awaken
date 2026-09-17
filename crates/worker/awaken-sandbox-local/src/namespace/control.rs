@@ -2,12 +2,14 @@
 
 use super::*;
 use awaken_sandbox_control::{
-    PublishedSandboxControlService, SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlPublicationLease,
-    SandboxControlPublicationSlot, SandboxControlPublicationTask, SandboxControlPublishError,
+    PublishedSandboxControlService, SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlPublishError,
     SandboxControlService, SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 #[cfg(target_os = "linux")]
-use awaken_sandbox_control::{REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, serve_one};
+use awaken_sandbox_control_transport::{REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, serve_one};
+use awaken_sandbox_control_transport::{
+    SandboxControlPublicationLease, SandboxControlPublicationSlot, SandboxControlPublicationTask,
+};
 
 #[cfg(target_os = "linux")]
 const PRIVATE_CONTROL_HOST_PARENT: &str = ".awaken-control";
@@ -19,19 +21,22 @@ fn ensure_private_directory(path: &std::path::Path) -> Result<(), pc::SandboxErr
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
         Ok(_) => {
-            return Err(err(
+            return Err(pc::SandboxError::invalid(
                 "Namespace control rendezvous is not a private directory",
             ));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(path).map_err(err)?;
+            std::fs::create_dir(path)
+                .map_err(|error| pc::SandboxError::backend("ensure_private_directory", error))?;
         }
-        Err(error) => return Err(err(error)),
+        Err(error) => return Err(pc::SandboxError::backend("ensure_private_directory", error)),
     }
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(err)?;
-    let metadata = std::fs::symlink_metadata(path).map_err(err)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| pc::SandboxError::backend("ensure_private_directory", error))?;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| pc::SandboxError::backend("ensure_private_directory", error))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.mode() & 0o777 != 0o700 {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "Namespace control rendezvous lost its private directory identity",
         ));
     }
@@ -45,10 +50,10 @@ pub(super) fn private_control_host_directory(
     let root_path = root.root();
     let parent = root_path
         .parent()
-        .ok_or_else(|| err("Namespace root has no trusted parent"))?;
+        .ok_or_else(|| pc::SandboxError::invalid("Namespace root has no trusted parent"))?;
     let sandbox_name = root_path
         .file_name()
-        .ok_or_else(|| err("Namespace root has no stable name"))?;
+        .ok_or_else(|| pc::SandboxError::invalid("Namespace root has no stable name"))?;
     let rendezvous_parent = parent.join(PRIVATE_CONTROL_HOST_PARENT);
     ensure_private_directory(&rendezvous_parent)?;
     let host = rendezvous_parent.join(sandbox_name);
@@ -60,7 +65,7 @@ pub(super) fn private_control_host_directory(
 pub(super) fn private_control_host_directory(
     _root: &IsolatedRoot,
 ) -> Result<PathBuf, pc::SandboxError> {
-    Err(err(
+    Err(pc::SandboxError::unsupported(
         "Namespace Sandbox control services require the Linux namespace provider",
     ))
 }
@@ -1001,7 +1006,7 @@ mod tests {
             let mut channel = tokio::net::UnixStream::connect(address.path())
                 .await
                 .unwrap();
-            awaken_sandbox_control::write_frame(
+            awaken_sandbox_control_transport::write_frame(
                 &mut channel,
                 &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
                     query: awaken_sandbox_control::RepositoryGitCredentialQuery {
@@ -1081,7 +1086,7 @@ mod tests {
             let mut channel = tokio::net::UnixStream::connect(address.path())
                 .await
                 .unwrap();
-            awaken_sandbox_control::write_frame(
+            awaken_sandbox_control_transport::write_frame(
                 &mut channel,
                 &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
                     query: awaken_sandbox_control::RepositoryGitCredentialQuery {
@@ -1095,7 +1100,7 @@ mod tests {
             .unwrap();
             assert!(
                 matches!(
-                    awaken_sandbox_control::read_frame::<
+                    awaken_sandbox_control_transport::read_frame::<
                         _,
                         awaken_sandbox_control::SandboxControlResponse,
                     >(&mut channel)

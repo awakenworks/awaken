@@ -1,0 +1,25 @@
+[package]
+name = "awaken-sandbox-control-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "worker"
+layer = "infrastructure"
+authority = "sandbox-control-transport"
+
+[dependencies]
+awaken-sandbox-control.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "rt", "sync"] }
+tokio-util.workspace = true
+zeroize = "1"
+
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "io-util"] }
+
+[lints]
+workspace = true

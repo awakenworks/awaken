@@ -38,7 +38,9 @@ impl pc::SecretBroker for CredentialBroker {
     }
 
     async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("process secrets are not configured"))
+        Err(pc::SandboxError::unsupported(
+            "process secrets are not configured",
+        ))
     }
 
     async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
@@ -52,7 +54,9 @@ struct ProcessSecretBroker;
 #[async_trait]
 impl pc::SecretBroker for ProcessSecretBroker {
     async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("file secrets are not configured"))
+        Err(pc::SandboxError::unsupported(
+            "file secrets are not configured",
+        ))
     }
 
     async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
@@ -60,7 +64,9 @@ impl pc::SecretBroker for ProcessSecretBroker {
     }
 
     async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new("secret write-back is not configured"))
+        Err(pc::SandboxError::unsupported(
+            "secret write-back is not configured",
+        ))
     }
 }
 

@@ -287,7 +287,7 @@ impl SandboxHandle {
             .as_ref()
             .is_some_and(|current| current != &evidence)
         {
-            return Err(SandboxError::new(
+            return Err(SandboxError::conflict(
                 "sandbox handle already belongs to a different restore effect",
             ));
         }
@@ -309,7 +309,7 @@ impl SandboxHandle {
                 | SandboxHandlePayload::SeatbeltV2(_)
                 | SandboxHandlePayload::ContainerV2(_)
         ) {
-            return Err(SandboxError::new(
+            return Err(SandboxError::unsupported(
                 "legacy sandbox handle cannot carry Memory materialization evidence",
             ));
         }
@@ -379,7 +379,7 @@ impl SandboxHandle {
         let payload = match &self.payload {
             SandboxHandlePayload::ContainerV2(payload) => &payload.previous,
             SandboxHandlePayload::ContainerV1(_) => {
-                return Err(SandboxError::new(
+                return Err(SandboxError::unsupported(
                     "legacy container handle has no current realization evidence",
                 ));
             }
@@ -388,20 +388,24 @@ impl SandboxHandle {
         match payload.runtime_handle.as_ref() {
             Some(ContainerContinuationHandle::KubernetesContinuationV2 { pod_uid, .. }) => {
                 if pod_uid.trim().is_empty() {
-                    Err(SandboxError::new(
+                    Err(SandboxError::invalid(
                         "Kubernetes continuation handle has an empty Pod incarnation",
                     ))
                 } else {
                     Ok(pod_uid)
                 }
             }
-            Some(ContainerContinuationHandle::KubernetesContinuation { .. }) => Err(
-                SandboxError::new("legacy Kubernetes handle has no Pod incarnation evidence"),
-            ),
-            Some(ContainerContinuationHandle::HostBindRestoration(_)) => Err(SandboxError::new(
-                "host-bind restore handle cannot authorize ordinary container incarnation effects",
-            )),
-            None if payload.container_id.trim().is_empty() => Err(SandboxError::new(
+            Some(ContainerContinuationHandle::KubernetesContinuation { .. }) => {
+                Err(SandboxError::unsupported(
+                    "legacy Kubernetes handle has no Pod incarnation evidence",
+                ))
+            }
+            Some(ContainerContinuationHandle::HostBindRestoration(_)) => {
+                Err(SandboxError::invalid(
+                    "host-bind restore handle cannot authorize ordinary container incarnation effects",
+                ))
+            }
+            None if payload.container_id.trim().is_empty() => Err(SandboxError::invalid(
                 "container handle has an empty physical incarnation",
             )),
             None => Ok(&payload.container_id),
@@ -455,7 +459,7 @@ impl SandboxHandle {
             SandboxHandlePayload::LocalV2(payload) => Ok(Some(&payload.effect_fence)),
             SandboxHandlePayload::BubblewrapV2(payload)
             | SandboxHandlePayload::SeatbeltV2(payload) => Ok(Some(&payload.effect_fence)),
-            _ => Err(SandboxError::new(format!(
+            _ => Err(SandboxError::unsupported(format!(
                 "filesystem provider cannot inspect {:?} handle evidence",
                 self.provider_kind()
             ))),
@@ -474,14 +478,14 @@ impl SandboxHandle {
             SandboxHandlePayload::BubblewrapV2(payload)
             | SandboxHandlePayload::SeatbeltV2(payload) => payload.physical_incarnation.as_str(),
             _ => {
-                return Err(SandboxError::new(format!(
+                return Err(SandboxError::unsupported(format!(
                     "filesystem provider cannot inspect {:?} handle evidence",
                     self.provider_kind()
                 )));
             }
         };
         if incarnation.trim().is_empty() {
-            Err(SandboxError::new(
+            Err(SandboxError::invalid(
                 "current filesystem sandbox handle has an empty physical incarnation",
             ))
         } else {
@@ -600,7 +604,7 @@ impl SandboxHandle {
     }
 
     fn payload_mismatch(&self, expected_provider: &str) -> SandboxError {
-        SandboxError::new(format!(
+        SandboxError::invalid(format!(
             "{expected_provider} provider cannot adopt {:?} handle payload",
             self.provider_kind()
         ))
@@ -703,7 +707,7 @@ impl SandboxEffectFence {
             ("runtime incarnation", self.runtime_incarnation.as_str()),
         ] {
             if value.trim().is_empty() {
-                return Err(SandboxError::new(format!(
+                return Err(SandboxError::invalid(format!(
                     "Sandbox effect fence requires a non-empty {field}"
                 )));
             }
@@ -716,7 +720,7 @@ impl SandboxEffectFence {
     pub fn validate_live_at(&self, now_unix_ms: u64) -> Result<(), SandboxError> {
         self.validate_identity()?;
         if self.expired_at(now_unix_ms) {
-            return Err(SandboxError::new(
+            return Err(SandboxError::fence_rejected(
                 "Sandbox effect fence expired before the provider boundary",
             ));
         }
@@ -1332,7 +1336,7 @@ pub trait SandboxProvider: Send + Sync {
     /// can preserve backend `NotFound`/terminal evidence separately from
     /// transport, authorization, and timeout errors.
     async fn observe(&self, _handle: &SandboxHandle) -> Result<SandboxObservation, SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox provider does not implement effect-free adoption observation",
         ))
     }
@@ -1347,7 +1351,7 @@ pub trait SandboxProvider: Send + Sync {
         _handle: &SandboxHandle,
         _effect_fence: &SandboxEffectFence,
     ) -> Result<SandboxObservation, SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox provider does not implement fenced observation",
         ))
     }
@@ -1389,7 +1393,7 @@ pub trait SandboxProvider: Send + Sync {
         _terminal_effect_fence: &SandboxEffectFence,
         _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<Option<Box<dyn Sandbox>>, SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox provider does not implement fenced terminal authorization",
         ))
     }
@@ -1401,7 +1405,7 @@ pub trait SandboxProvider: Send + Sync {
         _spec: &SandboxSpec,
         _request: &SandboxRestoreRequest,
     ) -> Result<SandboxRestoreTarget<Box<dyn Sandbox>>, SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox provider does not implement exact restore target acquisition",
         ))
     }
@@ -1414,7 +1418,7 @@ pub trait SandboxProvider: Send + Sync {
         _request: &SandboxRestoreRequest,
         _store: &dyn SandboxCheckpointStore,
     ) -> Result<SandboxRestoreResult<Box<dyn Sandbox>>, SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox provider does not implement checkpoint restore",
         ))
     }
@@ -1432,7 +1436,7 @@ pub trait SandboxProvider: Send + Sync {
         _authorization: &SandboxDisposalAuthorization,
         _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox provider does not implement exact restored-target disposal",
         ))
     }
@@ -1460,7 +1464,7 @@ pub trait Sandbox: Send + Sync {
         _request: &SandboxCheckpointRequest,
         _store: &dyn SandboxCheckpointStore,
     ) -> Result<SandboxCheckpointRef, SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox does not implement filesystem checkpointing",
         ))
     }
@@ -1477,7 +1481,7 @@ pub trait Sandbox: Send + Sync {
         _effect_fence: &SandboxEffectFence,
         _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<SandboxCheckpointRef, SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox does not implement fenced filesystem checkpointing",
         ))
     }
@@ -1498,7 +1502,7 @@ pub trait Sandbox: Send + Sync {
         _terminal_effect_fence: &SandboxEffectFence,
         _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox does not implement terminal checkpoint cleanup",
         ))
     }
@@ -1571,7 +1575,7 @@ pub trait Sandbox: Send + Sync {
         _effect_fence: &SandboxEffectFence,
         _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<SandboxEffectFence, SandboxError> {
-        Err(SandboxError::new(
+        Err(SandboxError::unsupported(
             "sandbox does not implement fenced disposal preparation",
         ))
     }

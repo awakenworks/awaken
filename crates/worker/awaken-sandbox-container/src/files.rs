@@ -26,15 +26,15 @@ fn decode(bytes: &[u8]) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
     let mut files = Vec::new();
     for entry in archive
         .entries()
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?
+        .map_err(|error| pc::SandboxError::backend("decode", error))?
     {
-        let mut entry = entry.map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let mut entry = entry.map_err(|error| pc::SandboxError::backend("decode", error))?;
         if !entry.header().entry_type().is_file() {
             continue;
         }
         let path = entry
             .path()
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| pc::SandboxError::backend("decode", error))?;
         let safe: Vec<_> = path
             .components()
             .filter_map(|component| match component {
@@ -48,18 +48,20 @@ fn decode(bytes: &[u8]) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
                 .components()
                 .any(|component| matches!(component, Component::ParentDir | Component::RootDir))
         {
-            return Err(pc::SandboxError::new("unsafe path in container archive"));
+            return Err(pc::SandboxError::invalid(
+                "unsafe path in container archive",
+            ));
         }
         let mut content = Vec::new();
         entry
             .read_to_end(&mut content)
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| pc::SandboxError::backend("decode", error))?;
         files.push(EnvironmentFile {
             path: safe.join("/"),
             bytes: content,
         });
         if files.len() > MAX_FILES {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "container archive has too many files",
             ));
         }
@@ -73,7 +75,7 @@ pub(crate) async fn read_files<R: ContainerRuntime + 'static>(
     root: &str,
 ) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
     if !safe_root(root) {
-        return Err(pc::SandboxError::new("unsafe container file root"));
+        return Err(pc::SandboxError::invalid("unsafe container file root"));
     }
     let process = sandbox
         .spawn_agent(pc::Command {
@@ -93,19 +95,19 @@ pub(crate) async fn read_files<R: ContainerRuntime + 'static>(
         .take((MAX_ARCHIVE_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .await
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        .map_err(|error| pc::SandboxError::backend("read_files", error))?;
     if bytes.len() > MAX_ARCHIVE_BYTES {
         let _ = process.process.signal(pc::Signal::Kill).await;
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::invalid(
             "container file archive exceeds limit",
         ));
     }
     let status = process.process.wait().await?;
     if status.code != Some(0) {
-        return Err(pc::SandboxError::new(format!(
-            "container file scan exited {:?}",
-            status.code
-        )));
+        return Err(pc::SandboxError::backend(
+            "read_files",
+            format!("container file scan exited {:?}", status.code),
+        ));
     }
     decode(&bytes)
 }

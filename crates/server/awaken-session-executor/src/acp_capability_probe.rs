@@ -156,7 +156,6 @@ impl SessionAcpCapabilityNegotiator {
         cwd: &Path,
         auth_method_id: Option<&str>,
     ) -> Result<NegotiatedAcpCapabilities, pc::SandboxError> {
-        let fail = pc::SandboxError::new;
         let spec = crate::provisioning::agent_run_sandbox_spec(scope);
         let environment = self
             .host
@@ -176,9 +175,9 @@ impl SessionAcpCapabilityNegotiator {
                 } else {
                     String::new()
                 };
-                fail(format!(
-                    "create ACP capability probe environment: {error}{strand}"
-                ))
+                error.map_detail(|detail| {
+                    format!("create ACP capability probe environment: {detail}{strand}")
+                })
             })?;
         let result = async {
             let (process, mut channel) = environment
@@ -189,7 +188,9 @@ impl SessionAcpCapabilityNegotiator {
                     stdio: pc::Stdio::Piped,
                 })
                 .await
-                .map_err(|error| format!("spawn ACP capability probe: {error}"))?;
+                .map_err(|error| {
+                    error.map_detail(|detail| format!("spawn ACP capability probe: {detail}"))
+                })?;
             let config = AcpCapabilityProbeConfig {
                 session_cwd: Some(cwd.to_string_lossy().into_owned()),
                 auth_method_id: auth_method_id.map(str::to_string),
@@ -199,8 +200,11 @@ impl SessionAcpCapabilityNegotiator {
                 self.handshake.negotiate(channel.as_mut(), &config),
             )
             .await
-            .map_err(|_| "ACP capability probe timed out".to_string())
-            .and_then(|result| result);
+            .map_err(|_| pc::SandboxError::timeout("ACP capability probe timed out"))
+            .and_then(|result| {
+                result
+                    .map_err(|error| pc::SandboxError::backend("negotiate ACP capabilities", error))
+            });
             drop(channel);
             // A runtime signal is external I/O. If it stalls, proceeding to
             // environment disposal is the only path that can still reap the
@@ -216,9 +220,15 @@ impl SessionAcpCapabilityNegotiator {
         // Worker heartbeat/lease) forever.
         let dispose = tokio::time::timeout(Duration::from_secs(10), environment.dispose())
             .await
-            .map_err(|_| "dispose ACP capability probe environment timed out".to_string())
+            .map_err(|_| {
+                pc::SandboxError::timeout("dispose ACP capability probe environment timed out")
+            })
             .and_then(|result| {
-                result.map_err(|error| format!("dispose ACP capability probe environment: {error}"))
+                result.map_err(|error| {
+                    error.map_detail(|detail| {
+                        format!("dispose ACP capability probe environment: {detail}")
+                    })
+                })
             });
         // A disposal that did not prove the environment gone is a strand this
         // process *observed*, not one a cancellation hid; record it directly
@@ -230,7 +240,7 @@ impl SessionAcpCapabilityNegotiator {
         }
         match (result, dispose) {
             (Ok(negotiated), Ok(())) => Ok(negotiated),
-            (Err(error), _) | (Ok(_), Err(error)) => Err(fail(error)),
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
         }
     }
 }
@@ -253,7 +263,7 @@ impl AcpCapabilityNegotiator for SessionAcpCapabilityNegotiator {
         let claim = pc::EffectClaim::durable(PROBE_RECONCILER, self.stranded.retain(scope.clone()));
         pc::ClaimedEffect::new(claim, self.probe(&scope, argv, cwd, auth_method_id))
             .await
-            .map_err(|error| error.0)
+            .map_err(|error| error.to_string())
     }
 }
 

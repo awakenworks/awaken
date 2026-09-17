@@ -154,9 +154,11 @@ fn credential_writeback_request(
     bytes: Vec<u8>,
 ) -> Result<CredentialWritebackRequest, awaken_provisioning_contract::SandboxError> {
     let (source_id, revision) = split_exact_vault_reference(reference)
-        .map_err(awaken_provisioning_contract::SandboxError::new)?;
+        .map_err(awaken_provisioning_contract::SandboxError::invalid)?;
     let material = String::from_utf8(bytes).map_err(|_| {
-        awaken_provisioning_contract::SandboxError::new("credential write-back is not valid UTF-8")
+        awaken_provisioning_contract::SandboxError::invalid(
+            "credential write-back is not valid UTF-8",
+        )
     })?;
     Ok(CredentialWritebackRequest {
         source_id: source_id.to_owned(),
@@ -208,18 +210,19 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                 .pending_credential_artifacts
                 .lock()
                 .map_err(|_| {
-                    awaken_provisioning_contract::SandboxError::new(
+                    awaken_provisioning_contract::SandboxError::backend(
+                        "materialize",
                         "credential-artifact registry lock is poisoned",
                     )
                 })?
                 .remove(reference)
                 .ok_or_else(|| {
-                    awaken_provisioning_contract::SandboxError::new(
+                    awaken_provisioning_contract::SandboxError::gone(
                         "credential artifact is missing, expired, or already consumed",
                     )
                 })?;
             if pending.expires_at_unix_ms <= unix_time_ms() {
-                return Err(awaken_provisioning_contract::SandboxError::new(
+                return Err(awaken_provisioning_contract::SandboxError::gone(
                     "credential artifact expired",
                 ));
             }
@@ -236,33 +239,38 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                             .to_string()
                     })
                 })
-                .map_err(awaken_provisioning_contract::SandboxError::new)?;
+                .map_err(|error| {
+                    awaken_provisioning_contract::SandboxError::backend("materialize", error)
+                })?;
             return crate::credential_artifact::encode(pending.codec, material)
                 .map(|artifact| artifact.bytes)
-                .map_err(awaken_provisioning_contract::SandboxError::new);
+                .map_err(|error| {
+                    awaken_provisioning_contract::SandboxError::backend("materialize", error)
+                });
         }
         #[cfg(not(feature = "authority"))]
-        return Err(awaken_provisioning_contract::SandboxError::new(
+        return Err(awaken_provisioning_contract::SandboxError::unsupported(
             "database-less Worker cannot materialize a local Vault reference",
         ));
         #[cfg(feature = "authority")]
         {
             let (source_id, revision) = split_exact_vault_reference(reference)
-                .map_err(awaken_provisioning_contract::SandboxError::new)?;
-            let source = self.load_active_source(source_id).await.map_err(|error| {
-                awaken_provisioning_contract::SandboxError::new(error.to_string())
-            })?;
+                .map_err(awaken_provisioning_contract::SandboxError::invalid)?;
+            let source = self
+                .load_active_source(source_id)
+                .await
+                .map_err(|error| credential_material_error("materialize", error))?;
             verify_exact_vault_revision(&source, revision)
-                .map_err(awaken_provisioning_contract::SandboxError::new)?;
+                .map_err(awaken_provisioning_contract::SandboxError::conflict)?;
             if source.descriptor.is_some() {
-                return Err(awaken_provisioning_contract::SandboxError::new(
+                return Err(awaken_provisioning_contract::SandboxError::invalid(
                     "described credentials require an exact target and cannot use a targetless secret mount",
                 ));
             }
             self.materialize_source(&source)
                 .await
                 .map(|secret| secret.expose_secret().as_bytes().to_vec())
-                .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
+                .map_err(|error| credential_material_error("materialize", error))
         }
     }
 
@@ -271,7 +279,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         reference: &str,
     ) -> Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
         if !reference.starts_with(PROCESS_SECRET_REFERENCE_PREFIX) {
-            return Err(awaken_provisioning_contract::SandboxError::new(
+            return Err(awaken_provisioning_contract::SandboxError::invalid(
                 "process-secret reference is not a claim-fenced capability",
             ));
         }
@@ -279,18 +287,19 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
             .pending_process_secrets
             .lock()
             .map_err(|_| {
-                awaken_provisioning_contract::SandboxError::new(
+                awaken_provisioning_contract::SandboxError::backend(
+                    "materialize_process",
                     "process-secret registry lock is poisoned",
                 )
             })?
             .remove(reference)
             .ok_or_else(|| {
-                awaken_provisioning_contract::SandboxError::new(
+                awaken_provisioning_contract::SandboxError::gone(
                     "process-secret reference is missing, expired, or already consumed",
                 )
             })?;
         if pending.expires_at_unix_ms <= unix_time_ms() {
-            return Err(awaken_provisioning_contract::SandboxError::new(
+            return Err(awaken_provisioning_contract::SandboxError::gone(
                 "process-secret reference expired",
             ));
         }
@@ -304,7 +313,9 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
             secret.ok_or_else(|| "process-secret requirement has no material".to_string())
         })
         .map(|secret| secret.expose_secret().as_bytes().to_vec())
-        .map_err(awaken_provisioning_contract::SandboxError::new)
+        .map_err(|error| {
+            awaken_provisioning_contract::SandboxError::backend("materialize_process", error)
+        })
     }
 
     async fn write_back(
@@ -315,7 +326,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         #[cfg(not(feature = "authority"))]
         {
             let _ = (reference, bytes);
-            return Err(awaken_provisioning_contract::SandboxError::new(
+            return Err(awaken_provisioning_contract::SandboxError::unsupported(
                 "database-less Worker cannot write a local Vault reference",
             ));
         }
@@ -325,24 +336,22 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
             let source = self
                 .load_active_source(&request.source_id)
                 .await
-                .map_err(|error| {
-                    awaken_provisioning_contract::SandboxError::new(error.to_string())
-                })?;
+                .map_err(|error| credential_material_error("write_back", error))?;
             verify_exact_vault_revision(&source, request.revision)
-                .map_err(awaken_provisioning_contract::SandboxError::new)?;
+                .map_err(awaken_provisioning_contract::SandboxError::conflict)?;
             if source.descriptor.is_some() {
-                return Err(awaken_provisioning_contract::SandboxError::new(
+                return Err(awaken_provisioning_contract::SandboxError::invalid(
                     "described credentials require an exact target and cannot use targetless write-back",
                 ));
             }
             source.material_ref.as_ref().ok_or_else(|| {
-                awaken_provisioning_contract::SandboxError::new(format!(
+                awaken_provisioning_contract::SandboxError::not_found(format!(
                     "credential {} has no material",
                     source.id.0
                 ))
             })?;
             let (credentials, secrets) = self.local_stores().ok_or_else(|| {
-                awaken_provisioning_contract::SandboxError::new(
+                awaken_provisioning_contract::SandboxError::unsupported(
                     "credential write-back requires a local credential authority",
                 )
             })?;
@@ -359,7 +368,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
             )
             .await
             .map(|_| ())
-            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
+            .map_err(|error| credential_vault_error("write_back", error))
         }
     }
 
@@ -371,7 +380,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         #[cfg(not(feature = "authority"))]
         {
             let _ = (effect, bytes);
-            return Err(awaken_provisioning_contract::SandboxError::new(
+            return Err(awaken_provisioning_contract::SandboxError::unsupported(
                 "database-less Worker cannot write a local Vault reference",
             ));
         }
@@ -380,17 +389,17 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
             effect.authorization().validate_live_at(unix_time_ms())?;
             let request = credential_writeback_request(effect.reference(), bytes)?;
             let revision = request.revision.ok_or_else(|| {
-                awaken_provisioning_contract::SandboxError::new(
+                awaken_provisioning_contract::SandboxError::invalid(
                     "effect-fenced credential write-back requires an exact source revision",
                 )
             })?;
             let expected_version = i64::try_from(revision).map_err(|_| {
-                awaken_provisioning_contract::SandboxError::new(
+                awaken_provisioning_contract::SandboxError::invalid(
                     "credential reference revision exceeds the authority range",
                 )
             })?;
             let (credentials, secrets) = self.local_stores().ok_or_else(|| {
-                awaken_provisioning_contract::SandboxError::new(
+                awaken_provisioning_contract::SandboxError::unsupported(
                     "credential write-back requires a local credential authority",
                 )
             })?;
@@ -404,8 +413,57 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
             )
             .await
             .map(|_| ())
-            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
+            .map_err(|error| credential_vault_error("write_back_for_effect", error))
         }
+    }
+}
+
+/// Credential-material failures keep the distinction a Sandbox caller acts
+/// on: a stale or foreign binding, an expired capability, and a refused
+/// credential are not retryable backend faults.
+#[cfg(feature = "authority")]
+fn credential_material_error(
+    operation: &'static str,
+    error: awaken_credential_contract::CredentialMaterialError,
+) -> awaken_provisioning_contract::SandboxError {
+    use awaken_credential_contract::CredentialMaterialError as E;
+    use awaken_provisioning_contract::SandboxError as S;
+    let detail = error.to_string();
+    match error {
+        E::RevisionMismatch
+        | E::RecipientMismatch
+        | E::BindingMismatch
+        | E::PayloadMismatch
+        | E::ResolverMismatch => S::Conflict(detail),
+        E::EnvelopeExpired | E::Expired => S::Gone(detail),
+        E::MaterialKindMismatch => S::Unsupported(detail),
+        E::LoginRequired | E::Invalid | E::Disabled => S::Unauthorized(detail),
+        E::Unavailable | E::ProbeFailed => S::backend(operation, detail),
+    }
+}
+
+/// Vault write-back failures classified by the vault's own error vocabulary.
+#[cfg(feature = "authority")]
+fn credential_vault_error(
+    operation: &'static str,
+    error: awaken_credential_vault::CredentialError,
+) -> awaken_provisioning_contract::SandboxError {
+    use awaken_credential_vault::CredentialError as E;
+    use awaken_provisioning_contract::SandboxError as S;
+    let detail = error.to_string();
+    match error {
+        E::SecretNotFound(_)
+        | E::SourceNotFound(_)
+        | E::PoolNotFound(_)
+        | E::NoCredential
+        | E::MissingMaterialRef(_) => S::NotFound(detail),
+        E::NotActive(_) | E::OAuth(_) => S::Unauthorized(detail),
+        E::EnvironmentSourceUnsupported(_) | E::WorkerLocalSourceUnsupported(_) => {
+            S::Unsupported(detail)
+        }
+        E::InvalidSource(_) => S::Invalid(detail),
+        E::MutationConflict(_) => S::Conflict(detail),
+        E::Seal | E::Storage(_) => S::backend(operation, detail),
     }
 }
 

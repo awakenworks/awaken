@@ -32,10 +32,10 @@ fn parse_args(args: &[String]) -> Result<(PathBuf, SocketAddr, PathBuf), Control
         return Err(ControlForwarderError::InvalidInvocation);
     };
     if unix_flag != "--unix"
-        || unix != awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH
+        || unix != awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH
         || listen_flag != "--listen"
         || ready_flag != "--ready"
-        || ready != awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH
+        || ready != awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH
     {
         return Err(ControlForwarderError::InvalidInvocation);
     }
@@ -53,7 +53,7 @@ fn parse_ready_args(args: &[String]) -> Result<PathBuf, ControlForwarderError> {
         return Err(ControlForwarderError::InvalidInvocation);
     };
     if marker_flag != "--marker"
-        || marker != awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH
+        || marker != awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH
     {
         return Err(ControlForwarderError::InvalidInvocation);
     }
@@ -282,7 +282,7 @@ mod tests {
          * loopback address => the sole provider channel; workspace path,
          * wildcard address, or alternate role arguments => reject before bind.
          */
-        let socket = awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
+        let socket = awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
         assert!(
             parse_args(&[
                 "--unix".into(),
@@ -290,7 +290,8 @@ mod tests {
                 "--listen".into(),
                 "127.0.0.1:7778".into(),
                 "--ready".into(),
-                awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH.into(),
+                awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH
+                    .into(),
             ])
             .is_ok(),
             "R14 exact private channel",
@@ -302,7 +303,8 @@ mod tests {
                 "--listen".into(),
                 "127.0.0.1:7778".into(),
                 "--ready".into(),
-                awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH.into(),
+                awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH
+                    .into(),
             ])
             .is_err(),
             "R14 workspace rendezvous denied",
@@ -314,7 +316,8 @@ mod tests {
                 "--listen".into(),
                 "0.0.0.0:7778".into(),
                 "--ready".into(),
-                awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH.into(),
+                awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH
+                    .into(),
             ])
             .is_err(),
             "R14 non-loopback denied",

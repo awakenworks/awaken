@@ -142,9 +142,7 @@ pub fn prepare_environment(
     }
     if !spec.control_services.is_empty() {
         let control_dir =
-            std::path::Path::new(awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH)
-                .parent()
-                .expect("the canonical Sandbox control socket has one parent");
+            std::path::Path::new(awaken_sandbox_control::SANDBOX_CONTROL_DIRECTORY_PATH);
         let conflicts = |candidate: &str| {
             let candidate = std::path::Path::new(candidate);
             candidate.starts_with(control_dir) || control_dir.starts_with(candidate)

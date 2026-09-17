@@ -543,13 +543,13 @@ mod tests {
     impl pc::SecretBroker for ArtifactBroker {
         async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
             if reference != "credential-artifact://one-shot" {
-                return Err(pc::SandboxError::new("unexpected artifact reference"));
+                return Err(pc::SandboxError::not_found("unexpected artifact reference"));
             }
             Ok(br#"{"auth_mode":"chatgpt","tokens":{"access_token":"secret"}}"#.to_vec())
         }
 
         async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-            Err(pc::SandboxError::new("not a process credential"))
+            Err(pc::SandboxError::invalid("not a process credential"))
         }
 
         async fn write_back(
@@ -557,7 +557,9 @@ mod tests {
             _reference: &str,
             _bytes: Vec<u8>,
         ) -> Result<(), pc::SandboxError> {
-            Err(pc::SandboxError::new("per-run artifact is not durable"))
+            Err(pc::SandboxError::unsupported(
+                "per-run artifact is not durable",
+            ))
         }
     }
 

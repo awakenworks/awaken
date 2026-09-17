@@ -4,10 +4,6 @@ use awaken_provisioning_contract as pc;
 
 use crate::IsolatedRoot;
 
-fn err(error: impl ToString) -> pc::SandboxError {
-    pc::SandboxError::new(error.to_string())
-}
-
 pub(crate) fn materialize_read_only_tree_at(
     root: &IsolatedRoot,
     root_identity: awaken_sandbox_fs::DirectoryIdentity,
@@ -22,7 +18,9 @@ pub(crate) fn materialize_read_only_tree_at(
                 .components()
                 .any(|component| !matches!(component, std::path::Component::Normal(_)))
         {
-            return Err(err(format!("read-only tree path `{relative}` is unsafe")));
+            return Err(pc::SandboxError::invalid(format!(
+                "read-only tree path `{relative}` is unsafe"
+            )));
         }
         let logical = format!(
             "{}/{}",
@@ -36,7 +34,7 @@ pub(crate) fn materialize_read_only_tree_at(
             bytes,
             if *executable { 0o500 } else { 0o400 },
         )
-        .map_err(err)?;
+        .map_err(|error| pc::SandboxError::backend("materialize_read_only_tree_at", error))?;
     }
     Ok(())
 }

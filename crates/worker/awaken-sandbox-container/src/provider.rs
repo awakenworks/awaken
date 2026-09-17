@@ -31,7 +31,7 @@ fn refresh_effect_fence(
     source: Option<&dyn pc::CurrentExecutionAuthority>,
 ) -> Result<ContainerEffectFence, pc::SandboxError> {
     let source = source.ok_or_else(|| {
-        pc::SandboxError::new(
+        pc::SandboxError::fence_rejected(
             "container effect fence expired without a renewable Session authority",
         )
     })?;
@@ -39,7 +39,7 @@ fn refresh_effect_fence(
     if !asserted.same_effect_identity(&current)
         || current.expires_at_unix_ms <= asserted.expires_at_unix_ms
     {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::fence_rejected(
             "renewed container effect fence is not a strict successor of the admitted effect",
         ));
     }
@@ -91,7 +91,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     }
 
     async fn probe_runtime_ready(&self) -> Result<(), pc::SandboxError> {
-        self.runtime.probe_ready().await.map_err(err)
+        self.runtime
+            .probe_ready()
+            .await
+            .map_err(pc::SandboxError::from)
     }
 
     pub fn new(runtime: Arc<R>, default_image: impl Into<String>) -> Self {
@@ -197,7 +200,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             self.forward_proxy.as_ref(),
             self.allowlist_proxy.as_ref(),
         )
-        .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+        .map_err(pc::SandboxError::from)?;
         if let Some(hand) = &self.resident_hand {
             process_env::bind_resident_process_environment(&mut plan.env, &spec.outputs_path);
             plan.env
@@ -211,7 +214,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 hand.max_connections.to_string(),
             ));
         }
-        let runtime = self.runtime.realization_configuration().map_err(err)?;
+        let runtime = self
+            .runtime
+            .realization_configuration()
+            .map_err(pc::SandboxError::from)?;
         let adoption =
             container_adoption_fingerprint(spec, &plan, self.resident_hand.as_ref(), &runtime);
         Ok((plan, adoption))
@@ -232,7 +238,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         self.runtime
             .remove_unreceipted_scope(scope)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     /// Realize a Session-owned container environment. The trait `create` boxes this.
@@ -261,7 +267,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             Some(fence) => pc::with_current_sandbox_effect(
                 fence,
                 effect_fence_source.ok_or_else(|| {
-                    pc::SandboxError::new(
+                    pc::SandboxError::fence_rejected(
                         "fenced container creation requires current Session authority",
                     )
                 })?,
@@ -273,22 +279,21 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let create_attempt = ContainerCreateAttempt::fresh();
         // Fail closed against our capabilities before touching the runtime.
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
-            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+            .map_err(pc::SandboxError::from)?;
         if spec
             .mounts
             .iter()
             .any(pc::MountRequirement::is_secret_writeback)
             && !self.runtime.supports_secret_writeback()
         {
-            return Err(err(RuntimeError::Backend(
-                "this container runtime cannot persist a writable credential-file mount"
-                    .to_string(),
-            )));
+            return Err(pc::SandboxError::unsupported(
+                "this container runtime cannot persist a writable credential-file mount",
+            ));
         }
         if memory_projections(spec).iter().any(|projection| {
             projection.write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
         }) {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "container Memory cannot satisfy restart-safe write-through ownership; use a copy-compatible requirement",
             ));
         }
@@ -313,15 +318,15 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .preflight_create_for_effect(&initial_realization_context, &plan, None)
             .await;
         admit()?;
-        initial_preflight.map_err(err)?;
+        initial_preflight.map_err(pc::SandboxError::from)?;
         if !plan.packages.is_empty() {
             let base_image = match &plan.rootfs {
                 RootfsPlan::Image(reference) => reference.clone(),
                 RootfsPlan::HostUserland => plan.image.clone(),
                 _ => {
-                    return Err(err(RuntimeError::Backend(
-                        "package provisioning requires an OCI image rootfs".into(),
-                    )));
+                    return Err(pc::SandboxError::unsupported(
+                        "package provisioning requires an OCI image rootfs",
+                    ));
                 }
             };
             let prepared_image = if let Some(provisioner) = &self.package_provisioner {
@@ -334,7 +339,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .await
             };
             admit()?;
-            plan.image = prepared_image.map_err(err)?;
+            plan.image = prepared_image.map_err(pc::SandboxError::from)?;
             plan.rootfs = RootfsPlan::Image(plan.image.clone());
         }
         admit()?;
@@ -353,7 +358,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )
             .await;
         admit()?;
-        realization_preflight.map_err(err)?;
+        realization_preflight.map_err(pc::SandboxError::from)?;
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
         // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
@@ -427,7 +432,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 }
                 Err(RuntimeError::EffectFenceExpired) => {
                     let Some(asserted) = current_effect_fence.as_ref() else {
-                        return Err(pc::SandboxError::new(
+                        return Err(pc::SandboxError::fence_rejected(
                             "unfenced container realization reported an expired effect fence",
                         ));
                     };
@@ -442,7 +447,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                         guard.retain_for_restoration();
                     }
                     let current = admit().err().map(|error| error.to_string());
-                    return Err(err(RuntimeError::MayHaveCommitted(
+                    return Err(pc::SandboxError::from(RuntimeError::MayHaveCommitted(
                         current.map_or(message.clone(), |authority| {
                             format!("{message}; current authority changed: {authority}")
                         }),
@@ -450,7 +455,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 }
                 Err(error) => {
                     admit()?;
-                    return Err(err(error));
+                    return Err(pc::SandboxError::from(error));
                 }
             }
         };
@@ -463,7 +468,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             if let Some(guard) = staging.guard.as_mut() {
                 guard.retain_for_restoration();
             }
-            return Err(err(RuntimeError::MayHaveCommitted(
+            return Err(pc::SandboxError::from(RuntimeError::MayHaveCommitted(
                 "fresh container reservation returned a foreign attempt identity".into(),
             )));
         }
@@ -483,9 +488,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .await;
             admit()?;
             let recovered_root = recovered_root
-                .map_err(|error| err(error.after_mutation()))?
+                .map_err(|error| pc::SandboxError::from(error.after_mutation()))?
                 .ok_or_else(|| {
-                    pc::SandboxError::new(
+                    pc::SandboxError::not_found(
                         "prepared host-bind container has no exact staging-root evidence",
                     )
                 })?;
@@ -496,7 +501,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .map(ToOwned::to_owned);
             if current_root.as_deref() != Some(recovered_root.as_path()) {
                 if prepared.disposition == PreparedContainerDisposition::FreshReservation {
-                    return Err(err(RuntimeError::MayHaveCommitted(
+                    return Err(pc::SandboxError::from(RuntimeError::MayHaveCommitted(
                         "fresh container reservation reported a different staging root".into(),
                     )));
                 }
@@ -505,13 +510,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 }
                 drop(staging.guard.take());
                 let recovered = crate::restore_target::retained_host_staging_path(recovered_root)
-                    .map_err(err)?;
+                    .map_err(pc::SandboxError::from)?;
                 staging.guard = Some(recovered);
             }
         } else if self.runtime.uses_host_bind_materialization()
             && prepared.disposition != PreparedContainerDisposition::FreshReservation
         {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::gone(
                 "host-bind reservation cannot recover its staging root",
             ));
         } else if !self.runtime.uses_host_bind_materialization() && has_memory {
@@ -558,27 +563,27 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 let cleanup = staging.recover_memory_before_activation(&admit).await;
                 return Err(match cleanup {
                     Ok(()) => error,
-                    Err(cleanup_error) => pc::SandboxError::new(format!(
-                        "{error}; Memory participant cleanup failed: {cleanup_error}"
-                    )),
+                    Err(cleanup_error) => error.map_detail(|detail| {
+                        format!("{detail}; Memory participant cleanup failed: {cleanup_error}")
+                    }),
                 });
             }
             if let Err(error) = admit() {
                 let cleanup = staging.recover_memory_before_activation(&admit).await;
                 return Err(match cleanup {
                     Ok(()) => error,
-                    Err(cleanup_error) => pc::SandboxError::new(format!(
-                        "{error}; Memory participant cleanup failed: {cleanup_error}"
-                    )),
+                    Err(cleanup_error) => error.map_detail(|detail| {
+                        format!("{detail}; Memory participant cleanup failed: {cleanup_error}")
+                    }),
                 });
             }
             if let Err(error) = staging.write_memory_pre_activation_receipt() {
                 let cleanup = staging.recover_memory_before_activation(&admit).await;
                 return Err(match cleanup {
                     Ok(()) => error,
-                    Err(cleanup_error) => pc::SandboxError::new(format!(
-                        "{error}; Memory participant cleanup failed: {cleanup_error}"
-                    )),
+                    Err(cleanup_error) => error.map_detail(|detail| {
+                        format!("{detail}; Memory participant cleanup failed: {cleanup_error}")
+                    }),
                 });
             }
             let container_id = loop {
@@ -586,9 +591,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     let cleanup = staging.recover_memory_before_activation(&admit).await;
                     return Err(match cleanup {
                         Ok(()) => error,
-                        Err(cleanup_error) => pc::SandboxError::new(format!(
-                            "{error}; Memory participant cleanup failed: {cleanup_error}"
-                        )),
+                        Err(cleanup_error) => error.map_detail(|detail| {
+                            format!("{detail}; Memory participant cleanup failed: {cleanup_error}")
+                        }),
                     });
                 }
                 let realization_context = ContainerRealizationContext::new(
@@ -616,7 +621,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     Err(RuntimeError::EffectFenceExpired) => {
                         current_authority?;
                         let asserted = current_effect_fence.as_ref().ok_or_else(|| {
-                            pc::SandboxError::new(
+                            pc::SandboxError::fence_rejected(
                                 "unfenced container activation reported an expired effect fence",
                             )
                         })?;
@@ -624,7 +629,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                             Some(refresh_effect_fence(asserted, effect_fence_source)?);
                     }
                     Err(RuntimeError::MayHaveCommitted(message)) => {
-                        return Err(err(RuntimeError::MayHaveCommitted(
+                        return Err(pc::SandboxError::from(RuntimeError::MayHaveCommitted(
                             current_authority
                                 .err()
                                 .map_or(message.clone(), |authority| {
@@ -634,22 +639,20 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     }
                     Err(error) => {
                         if let Err(authority_error) = current_authority {
-                            return Err(pc::SandboxError::new(format!(
-                                "{error}; Memory participant cleanup was not authorized: {authority_error}"
+                            return Err(pc::SandboxError::from(error).map_detail(|detail| format!("{detail}; Memory participant cleanup was not authorized: {authority_error}"
                             )));
                         }
                         let cleanup = staging.recover_memory_before_activation(&admit).await;
                         return Err(match cleanup {
-                            Ok(()) => err(error),
-                            Err(cleanup_error) => pc::SandboxError::new(format!(
-                                "{error}; Memory participant cleanup failed: {cleanup_error}"
+                            Ok(()) => pc::SandboxError::from(error),
+                            Err(cleanup_error) => pc::SandboxError::from(error).map_detail(|detail| format!("{detail}; Memory participant cleanup failed: {cleanup_error}"
                             )),
                         });
                     }
                 }
             };
             if container_id != prepared.locator {
-                return Err(err(RuntimeError::MayHaveCommitted(
+                return Err(pc::SandboxError::from(RuntimeError::MayHaveCommitted(
                     "container activation returned a different physical locator".into(),
                 )));
             }
@@ -670,7 +673,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             // on a later evidence-read failure; the next root-driven retry must be
             // able to rediscover and converge it.
             Err(error) => {
-                return Err(err(error.after_mutation()));
+                return Err(pc::SandboxError::from(error.after_mutation()));
             }
         };
         let control_services = spec.control_services.clone();
@@ -690,12 +693,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             match binding {
                 Ok(Some(binding)) => Some(binding),
                 Ok(None) => {
-                    return Err(err(RuntimeError::MayHaveCommitted(
+                    return Err(pc::SandboxError::from(RuntimeError::MayHaveCommitted(
                         "container runtime omitted a demanded Sandbox control incarnation".into(),
                     )));
                 }
                 Err(error) => {
-                    return Err(err(error.after_mutation()));
+                    return Err(pc::SandboxError::from(error.after_mutation()));
                 }
             }
         };
@@ -769,39 +772,39 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         handle: &pc::SandboxHandle,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         if handle.restoration().is_some() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "restored container adoption requires the frozen SandboxSpec",
             ));
         }
         if handle.realization_fingerprint().is_some() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "current container adoption requires the frozen SandboxSpec and effect-aware provider seam",
             ));
         }
         match self.observe_container_handle(handle).await? {
             pc::SandboxObservation::Ready => {}
             pc::SandboxObservation::Provisioning => {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::not_ready(
                     "container realization is still provisioning",
                 ));
             }
             pc::SandboxObservation::DefinitivelyUnavailable { .. } => {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::gone(
                     "container realization is definitively unavailable",
                 ));
             }
             pc::SandboxObservation::Terminal { .. } => {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::conflict(
                     "container realization is terminal and requires fenced authorization",
                 ));
             }
             pc::SandboxObservation::Disposing { .. } => {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::gone(
                     "container realization is already disposing and cannot be adopted",
                 ));
             }
             pc::SandboxObservation::Incompatible { reason } => {
-                return Err(pc::SandboxError::new(reason));
+                return Err(pc::SandboxError::conflict(reason));
             }
         }
         self.adopt_observed_container(handle).await
@@ -824,19 +827,21 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 self.adopt_observed_container_with_spec(adoption.handle, adoption.spec, &|| Ok(()))
                     .await
             }
-            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::new(
+            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
                 "container realization is still provisioning",
             )),
-            pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::new(
+            pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::gone(
                 "container realization is definitively unavailable",
             )),
-            pc::SandboxObservation::Terminal { .. } => Err(pc::SandboxError::new(
+            pc::SandboxObservation::Terminal { .. } => Err(pc::SandboxError::conflict(
                 "container realization is terminal and requires fenced authorization",
             )),
-            pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::new(
+            pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::gone(
                 "container realization is already disposing and cannot be adopted",
             )),
-            pc::SandboxObservation::Incompatible { reason } => Err(pc::SandboxError::new(reason)),
+            pc::SandboxObservation::Incompatible { reason } => {
+                Err(pc::SandboxError::conflict(reason))
+            }
         }
     }
 
@@ -853,14 +858,17 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .runtime
                 .recovered_host_staging_root(&payload.container_id)
                 .await
-                .map_err(err)?
+                .map_err(pc::SandboxError::from)?
                 .ok_or_else(|| {
-                    pc::SandboxError::new(
+                    pc::SandboxError::not_found(
                         "host-bind container adoption has no exact staging-root evidence",
                     )
                 })?;
             admit()?;
-            Some(crate::restore_target::retained_host_staging_path(path).map_err(err)?)
+            Some(
+                crate::restore_target::retained_host_staging_path(path)
+                    .map_err(pc::SandboxError::from)?,
+            )
         } else {
             None
         };
@@ -910,11 +918,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             &payload.control_services,
             &self.runtime_sandbox_capabilities(),
         )
-        .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+        .map_err(pc::SandboxError::from)?;
         if payload.control_services.is_empty() != payload.sandbox_control_incarnation.is_none() {
-            return Err(err(RuntimeError::Backend(
-                "container handle control topology and incarnation are inconsistent".into(),
-            )));
+            return Err(pc::SandboxError::invalid(
+                "container handle control topology and incarnation are inconsistent",
+            ));
         }
         let container_id = payload.container_id;
         let sandbox_control_incarnation = if control_services.is_empty() {
@@ -930,12 +938,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                         },
                     )
                     .await
-                    .map_err(err)?
+                    .map_err(pc::SandboxError::from)?
                     .ok_or_else(|| {
-                        err(RuntimeError::Backend(
-                            "adopted container omitted a demanded Sandbox control incarnation"
-                                .into(),
-                        ))
+                        pc::SandboxError::conflict(
+                            "adopted container omitted a demanded Sandbox control incarnation",
+                        )
                     })?,
             )
         };
@@ -977,7 +984,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         self.runtime
             .observe(ContainerObservationExpectation::from_handle(handle)?)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     async fn observe_container_adoption(
@@ -999,7 +1006,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .historical_terminal_configuration(
                         adoption.handle.container_payload()?.runtime_handle.as_ref(),
                     )
-                    .map_err(err)?
+                    .map_err(pc::SandboxError::from)?
                     .is_some_and(|configuration| {
                         container_adoption_fingerprint(
                             adoption.spec,
@@ -1023,7 +1030,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         expectation.effect_fence = effect_fence;
         expectation.retained_attempt = adoption.retained_attempt;
         expectation.purpose = purpose;
-        self.runtime.observe(expectation).await.map_err(err)
+        self.runtime
+            .observe(expectation)
+            .await
+            .map_err(pc::SandboxError::from)
     }
 
     async fn adopt_container_with_adoption_for_effect(
@@ -1051,19 +1061,21 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 self.adopt_observed_container_with_spec(adoption.handle, adoption.spec, &admit)
                     .await
             }
-            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::new(
+            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
                 "container realization is still provisioning",
             )),
-            pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::new(
+            pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::gone(
                 "container realization is definitively unavailable",
             )),
-            pc::SandboxObservation::Terminal { .. } => Err(pc::SandboxError::new(
+            pc::SandboxObservation::Terminal { .. } => Err(pc::SandboxError::conflict(
                 "container realization is terminal and requires fenced authorization",
             )),
-            pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::new(
+            pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::gone(
                 "container realization is already disposing and cannot be adopted",
             )),
-            pc::SandboxObservation::Incompatible { reason } => Err(pc::SandboxError::new(reason)),
+            pc::SandboxObservation::Incompatible { reason } => {
+                Err(pc::SandboxError::conflict(reason))
+            }
         }
     }
 
@@ -1083,24 +1095,24 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .runtime
                 .prove_unmaterialized_absence(&spec.scope, &plan, expected_effect_fence)
                 .await
-                .map_err(err)?;
+                .map_err(pc::SandboxError::from)?;
             admit()?;
             if absent {
                 return Ok(None);
             }
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "container provider cannot dispose an in-flight restore without a durable handle",
             ));
         };
         if handle.restoration().is_some() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "restored container terminal cleanup requires its exact SandboxRestoreRequest",
             ));
         }
         if self.runtime.uses_host_bind_materialization()
             && !self.runtime.uses_host_live_input_bind()
         {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "host-bind container terminal participants cannot be reconstructed from a prior process-local realization attempt",
             ));
         }
@@ -1135,11 +1147,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 )
                 .await
                 .map(Some),
-            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::new(
+            pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
                 "terminal preparation observed a provisioning container realization",
             )),
             pc::SandboxObservation::DefinitivelyUnavailable { .. } => Ok(None),
-            pc::SandboxObservation::Incompatible { reason } => Err(pc::SandboxError::new(reason)),
+            pc::SandboxObservation::Incompatible { reason } => {
+                Err(pc::SandboxError::conflict(reason))
+            }
         }
     }
 }
@@ -1223,7 +1237,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
                     adoption,
                     effect_fence,
                     authority.ok_or_else(|| {
-                        pc::SandboxError::new("adoption has no current authority")
+                        pc::SandboxError::fence_rejected("adoption has no current authority")
                     })?,
                 )
                 .await?

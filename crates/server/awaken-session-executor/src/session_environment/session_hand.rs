@@ -87,7 +87,7 @@ impl SessionAgentLauncher {
     ) -> Result<Box<dyn awaken_run_executor_acp::AgentChannelType>, pc::SandboxError> {
         match self {
             Self::Container { sandbox } => sandbox.open_agent_channel().await,
-            Self::Workdir(_) | Self::Namespace(_) => Err(pc::SandboxError::new(
+            Self::Workdir(_) | Self::Namespace(_) => Err(pc::SandboxError::unsupported(
                 "host-backed Session environments do not own a resident Hand",
             )),
         }
@@ -743,7 +743,7 @@ impl SessionHandExecutor {
                         HandBindingPhase::Vacant,
                     ));
                     *state = HandBindingState::Vacant;
-                    return Err(pc::SandboxError::new(error));
+                    return Err(pc::SandboxError::backend("await_ready_binding", error));
                 }
             }
             drop(state);
@@ -817,7 +817,7 @@ impl SessionHandExecutor {
     ) -> Result<HandProjectionUpdate<'_>, pc::SandboxError> {
         let update = self.projection_update.lock().await;
         if !self.lifecycle.begin_projection_update() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::not_found(
                 "Session hand binding is unavailable for projection update",
             ));
         }
@@ -835,13 +835,14 @@ impl SessionHandExecutor {
             }
             Ok(RetireOutcome::Stale) => {
                 self.lifecycle.fence();
-                Err(pc::SandboxError::new(
+                Err(pc::SandboxError::conflict(
                     "Session hand activity changed during projection update",
                 ))
             }
             Err(RetireError::ReapFailed) => {
                 self.lifecycle.fence();
-                Err(pc::SandboxError::new(
+                Err(pc::SandboxError::backend(
+                    "begin_projection_update",
                     "failed to reap Session hand before projection update",
                 ))
             }
@@ -852,10 +853,11 @@ impl SessionHandExecutor {
         match self.lifecycle.hibernate_if_current(None, event).await {
             Ok(RetireOutcome::Retired(proof)) => Ok(proof),
             Ok(RetireOutcome::AlreadyVacant) => Ok(HandStopProof::NoBinding),
-            Ok(RetireOutcome::Stale) => Err(pc::SandboxError::new(
+            Ok(RetireOutcome::Stale) => Err(pc::SandboxError::conflict(
                 "Session hand binding changed while stop was quiescing",
             )),
-            Err(RetireError::ReapFailed) => Err(pc::SandboxError::new(
+            Err(RetireError::ReapFailed) => Err(pc::SandboxError::backend(
+                "finish_stop",
                 "failed to reap Session hand during stop",
             )),
         }

@@ -40,7 +40,7 @@ pub(crate) async fn mount_memory_requirement(
         .expect("memory mounter lock poisoned")
         .clone()
     else {
-        return Err(pc::SandboxError::new(format!(
+        return Err(pc::SandboxError::unsupported(format!(
             "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
             requirement.mount_id
         )));
@@ -69,30 +69,36 @@ pub(crate) async fn mount_memory_requirement(
                 heads,
             )
             .map_err(|cause| {
-                pc::SandboxError::new(format!(
+                pc::SandboxError::invalid(format!(
                     "mount {:?}: invalid memory materialization evidence: {cause}",
                     requirement.mount_id
                 ))
             })?,
         ),
         (pc::Realization::Copy, None) => {
-            return Err(pc::SandboxError::new(format!(
-                "mount {:?}: copy-backed memory_store returned no durable heads",
-                requirement.mount_id
-            )));
+            return Err(pc::SandboxError::backend(
+                "mount_memory_requirement",
+                format!(
+                    "mount {:?}: copy-backed memory_store returned no durable heads",
+                    requirement.mount_id
+                ),
+            ));
         }
         (_, Some(_)) => {
-            return Err(pc::SandboxError::new(format!(
-                "mount {:?}: non-copy memory_store returned copy materialization heads",
-                requirement.mount_id
-            )));
+            return Err(pc::SandboxError::backend(
+                "mount_memory_requirement",
+                format!(
+                    "mount {:?}: non-copy memory_store returned copy materialization heads",
+                    requirement.mount_id
+                ),
+            ));
         }
         (_, None) => None,
     };
     if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
         && realization != pc::Realization::Fuse
     {
-        return Err(pc::SandboxError::new(format!(
+        return Err(pc::SandboxError::invalid(format!(
             "mount {:?}: memory_store requires write-through FUSE realization",
             requirement.mount_id
         )));
@@ -119,7 +125,7 @@ pub(crate) fn validate_replay_memory_handle(
     handle: Option<&pc::SandboxHandle>,
 ) -> Result<(), pc::SandboxError> {
     if realized.len() != spec.mounts.len() {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::not_found(
             "Memory handle validation has no exact Ready realization for the frozen mount set",
         ));
     }
@@ -136,7 +142,7 @@ pub(crate) fn validate_replay_memory_handle(
         .collect();
     let handle_materializations = super::terminal_copy_materializations(&copy_spec, handle)?;
     if receipt_materializations != handle_materializations {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::conflict(
             "sandbox handle Memory evidence differs from the exact Ready receipt",
         ));
     }
@@ -157,7 +163,7 @@ fn validate_adoption_memory_replay_spec(
             .iter()
             .any(|mount| mount.realization == pc::Realization::Fuse)
     {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::invalid(
             "FUSE Memory replay requires the frozen Sandbox spec",
         ));
     }
@@ -194,7 +200,9 @@ pub(crate) async fn prepare_adoption_memory_replay(
     let admit = || match effect_fence {
         Some(fence) => pc::with_current_sandbox_effect(
             fence,
-            authority.ok_or_else(|| pc::SandboxError::new("adoption has no current authority"))?,
+            authority.ok_or_else(|| {
+                pc::SandboxError::fence_rejected("adoption has no current authority")
+            })?,
             || Ok(()),
         ),
         None => Ok(()),
@@ -208,7 +216,7 @@ pub(crate) async fn prepare_adoption_memory_replay(
     if let Some(spec) = spec {
         validate_replay_memory_handle(spec, &realized, &materializations, Some(handle))?;
     } else if handle.memory_materializations()?.unwrap_or_default() != materializations.as_slice() {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::conflict(
             "sandbox handle Memory evidence differs from the Ready receipt",
         ));
     }
@@ -222,14 +230,14 @@ pub(crate) async fn prepare_adoption_memory_replay(
                 .iter()
                 .any(|mount| mount.realization == pc::Realization::Fuse) =>
             {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::fence_rejected(
                     "FUSE replay requires exact Ready evidence and its adoption effect fence",
                 ));
             }
             _ => None,
         };
         let host_paths = host_paths.ok_or_else(|| {
-            pc::SandboxError::new("Memory replay has no provider-projected host paths")
+            pc::SandboxError::invalid("Memory replay has no provider-projected host paths")
         })?;
         if let Some(operation) = ready_operation.as_ref() {
             replay_memory_mount_guards(
@@ -317,7 +325,7 @@ pub(crate) async fn prepare_terminal_memory_replay(
         super::realization_marker::TerminalReceiptObservation::Closed => (None, false),
     };
     if incomplete && handle.is_some() {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::not_found(
             "terminal handle targets a realization without a Ready receipt",
         ));
     }
@@ -358,7 +366,7 @@ pub(crate) async fn prepare_terminal_memory_replay(
         }
         (None, None) => (Vec::new(), Vec::new()),
         _ => {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::conflict(
                 "terminal takeover changed the preflight phase or exact Ready receipt",
             ));
         }
@@ -416,7 +424,7 @@ where
     F: FnMut() -> Result<(), pc::SandboxError>,
 {
     if realized.len() != spec.mounts.len() || host_paths.len() != spec.mounts.len() {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::not_found(
             "Memory replay has no exact Ready realization or host path for the frozen mount set",
         ));
     }
@@ -445,10 +453,10 @@ where
             // failure flows through the shared teardown compensation below.
             validate_before_mount()?;
             let (recovered, materialization) = recovered.ok_or_else(|| {
-                pc::SandboxError::new("Memory replay did not produce the required participant")
+                pc::SandboxError::invalid("Memory replay did not produce the required participant")
             })?;
             if recovered != *expected || materialization.is_some() {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::conflict(
                     "Memory replay changed the exact Ready realization",
                 ));
             }
@@ -469,9 +477,9 @@ where
             .await
         {
             Ok(()) => Err(cause),
-            Err(teardown) => Err(pc::SandboxError::new(format!(
-                "Memory replay failed: {cause}; Memory replay teardown failed: {teardown}"
-            ))),
+            Err(teardown) => Err(cause.map_detail(|detail| {
+                format!("Memory replay failed: {detail}; Memory replay teardown failed: {teardown}")
+            })),
         },
     }
 }

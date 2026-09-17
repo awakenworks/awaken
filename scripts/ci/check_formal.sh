@@ -614,7 +614,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_identity_and_create_shapes_require_one_owned_live_row
   run_kani awaken-webhook-managed \
     --harness pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity
-  run_kani awaken-sandbox-control \
+  run_kani awaken-sandbox-control-transport \
     --harness publication_slot_directly_preserves_single_owner_stale_fence_and_absorbing_close
   run_kani awaken-sandbox-memoryd \
     --harness listener_cleanup_requests_stop_then_joins_the_owned_handle_exactly_once

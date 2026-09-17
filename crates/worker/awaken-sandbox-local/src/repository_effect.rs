@@ -35,7 +35,108 @@ pub(crate) enum Outcome {
     Realized,
     Published(pc::RepositoryPublicationReceipt),
     Rejected(pc::RepositoryPublicationRejection),
+    /// Wire v1: an untyped failure rendering. Still decoded so a helper binary
+    /// from before typed failures cannot turn a failure into a protocol error;
+    /// it carries no class, so the host can only treat it as a backend fault.
     Unavailable(String),
+    /// Wire v2: the helper's failure with its class intact.
+    Failed(Failure),
+}
+
+impl Outcome {
+    /// Host-side projection: a failed helper exchange becomes the port error,
+    /// every other outcome is returned for the caller's exact receipt match.
+    pub(crate) fn into_result(self) -> Result<Self, pc::SandboxError> {
+        match self {
+            Self::Unavailable(legacy) => {
+                Err(pc::SandboxError::backend("repository helper", legacy))
+            }
+            Self::Failed(failure) => Err(failure.into()),
+            outcome @ (Self::Realized | Self::Published(_) | Self::Rejected(_)) => Ok(outcome),
+        }
+    }
+}
+
+/// Closed class vocabulary of the helper failure wire. Kept private to this
+/// process pair so the neutral error type carries no serialization contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FailureClass {
+    NotFound,
+    Gone,
+    NotReady,
+    Transport,
+    Timeout,
+    Unauthorized,
+    FenceRejected,
+    Invalid,
+    Unsupported,
+    Conflict,
+    Backend,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Failure {
+    class: FailureClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operation: Option<String>,
+    detail: String,
+}
+
+impl From<pc::SandboxError> for Failure {
+    fn from(error: pc::SandboxError) -> Self {
+        use pc::SandboxError as E;
+        let (class, operation) = match &error {
+            E::NotFound(_) => (FailureClass::NotFound, None),
+            E::Gone(_) => (FailureClass::Gone, None),
+            E::NotReady(_) => (FailureClass::NotReady, None),
+            E::Transport(_) => (FailureClass::Transport, None),
+            E::Timeout(_) => (FailureClass::Timeout, None),
+            E::Unauthorized(_) => (FailureClass::Unauthorized, None),
+            E::FenceRejected(_) => (FailureClass::FenceRejected, None),
+            E::Invalid(_) => (FailureClass::Invalid, None),
+            E::Unsupported(_) => (FailureClass::Unsupported, None),
+            E::Conflict(_) => (FailureClass::Conflict, None),
+            E::Backend { operation, .. } => (FailureClass::Backend, Some((*operation).to_owned())),
+        };
+        Self {
+            class,
+            operation,
+            detail: error.detail().to_owned(),
+        }
+    }
+}
+
+impl From<Failure> for pc::SandboxError {
+    fn from(failure: Failure) -> Self {
+        let Failure {
+            class,
+            operation,
+            detail,
+        } = failure;
+        match class {
+            FailureClass::NotFound => Self::NotFound(detail),
+            FailureClass::Gone => Self::Gone(detail),
+            FailureClass::NotReady => Self::NotReady(detail),
+            FailureClass::Transport => Self::Transport(detail),
+            FailureClass::Timeout => Self::Timeout(detail),
+            FailureClass::Unauthorized => Self::Unauthorized(detail),
+            FailureClass::FenceRejected => Self::FenceRejected(detail),
+            FailureClass::Invalid => Self::Invalid(detail),
+            FailureClass::Unsupported => Self::Unsupported(detail),
+            FailureClass::Conflict => Self::Conflict(detail),
+            // The operation label is process-static on each side; the remote
+            // label stays visible in the detail instead of being forged.
+            FailureClass::Backend => Self::backend(
+                "repository helper",
+                match operation {
+                    Some(operation) => format!("{operation}: {detail}"),
+                    None => detail,
+                },
+            ),
+        }
+    }
 }
 
 pub(crate) fn temporary_root(root: &Path) -> PathBuf {
@@ -69,27 +170,32 @@ impl Request {
         if let Some(expectation) = &self.publication {
             expectation.validate()?;
         }
-        let bytes = serde_json::to_vec(self)
-            .map_err(|_| pc::SandboxError::new("repository request encoding failed"))?;
+        let bytes = serde_json::to_vec(self).map_err(|_| {
+            pc::SandboxError::backend("encode", "repository request encoding failed")
+        })?;
         if bytes.len() > MAX_FRAME {
-            return Err(pc::SandboxError::new("repository request too large"));
+            return Err(pc::SandboxError::invalid("repository request too large"));
         }
         Ok(bytes)
     }
 
     fn execute(&self) -> Result<Outcome, pc::SandboxError> {
         if !self.root.is_absolute() {
-            return Err(pc::SandboxError::new("repository root must be absolute"));
+            return Err(pc::SandboxError::invalid(
+                "repository root must be absolute",
+            ));
         }
         let identity = awaken_sandbox_fs::directory_identity_nofollow(&self.root)
-            .map_err(|_| pc::SandboxError::new("repository root is unavailable"))?;
+            .map_err(|_| pc::SandboxError::not_found("repository root is unavailable"))?;
         if (identity.device, identity.inode) != self.root_identity {
-            return Err(pc::SandboxError::new("repository root identity changed"));
+            return Err(pc::SandboxError::conflict(
+                "repository root identity changed",
+            ));
         }
         self.plan.validate_mount_path()?;
         let temporary = temporary_root(&self.root);
         if std::env::temp_dir() != temporary {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "repository temporary directory is not sandbox-owned",
             ));
         }
@@ -98,9 +204,11 @@ impl Request {
             identity,
             temporary
                 .strip_prefix(&self.root)
-                .map_err(|_| pc::SandboxError::new("repository temporary directory escaped"))?,
+                .map_err(|_| pc::SandboxError::invalid("repository temporary directory escaped"))?,
         )
-        .map_err(|_| pc::SandboxError::new("repository temporary directory unavailable"))?;
+        .map_err(|_| {
+            pc::SandboxError::backend("execute", "repository temporary directory unavailable")
+        })?;
         let credential = self.credential.read_environment()?;
         let root = IsolatedRoot::new(&self.root);
         match &self.publication {
@@ -112,8 +220,7 @@ impl Request {
                 self.plan.initial_commit.as_deref(),
                 credential.as_ref(),
             )
-            .map(|_| Outcome::Realized)
-            .map_err(|error| pc::SandboxError::new(error.to_string())),
+            .map(|_| Outcome::Realized),
             Some(expectation) => Ok(
                 match git_transport::push_repo_to_at(
                     &root,
@@ -127,7 +234,7 @@ impl Request {
                         Outcome::Rejected(rejection)
                     }
                     Err(pc::RepositoryPublicationError::Unavailable(error)) => {
-                        Outcome::Unavailable(error.to_string())
+                        Outcome::Failed(error.into())
                     }
                 },
             ),
@@ -143,8 +250,9 @@ impl CredentialKind {
             return Ok(None);
         }
         let read = |key| {
-            std::env::var(key)
-                .map_err(|_| pc::SandboxError::new("repository credential environment missing"))
+            std::env::var(key).map_err(|_| {
+                pc::SandboxError::not_found("repository credential environment missing")
+            })
         };
         let username = read(git_transport::GIT_CREDENTIAL_USERNAME_ENV)?;
         let password = read(git_transport::GIT_CREDENTIAL_PASSWORD_ENV)?;
@@ -157,7 +265,7 @@ impl CredentialKind {
             }
             Self::Upstream => material,
             _ => {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::conflict(
                     "repository gateway credential shape changed",
                 ));
             }
@@ -206,7 +314,7 @@ pub fn serve(input: impl Read, mut output: impl Write) -> std::io::Result<()> {
         serde_json::from_slice(&bytes).map_err(|_| std::io::ErrorKind::InvalidData)?;
     let outcome = request
         .execute()
-        .unwrap_or_else(|error| Outcome::Unavailable(error.to_string()));
+        .unwrap_or_else(|error| Outcome::Failed(error.into()));
     let bytes = serde_json::to_vec(&outcome).map_err(|_| std::io::ErrorKind::InvalidData)?;
     if bytes.len() > MAX_FRAME {
         return Err(std::io::ErrorKind::InvalidData.into());
@@ -311,11 +419,74 @@ mod tests {
         wrong.root_identity.1 ^= 1;
         let mut output = Vec::new();
         serve(wrong.encode().unwrap().as_slice(), &mut output).unwrap();
-        assert!(
-            matches!(serde_json::from_slice::<Outcome>(&output).unwrap(),
-            Outcome::Unavailable(error) if error.contains("repository root identity changed"))
-        );
+        assert!(matches!(
+            serde_json::from_slice::<Outcome>(&output)
+                .unwrap()
+                .into_result(),
+            Err(pc::SandboxError::Conflict(_))
+        ));
         assert!(!temporary_root(root.path()).exists());
+    }
+
+    #[test]
+    fn helper_failure_wire_keeps_class_and_decodes_the_untyped_version() {
+        // W1 every class round-trips through the helper wire with its detail;
+        // W2 Backend keeps the remote operation visible under the host label;
+        // W3 a v1 `Unavailable(String)` frame still decodes, as a backend fault;
+        // W4 a success outcome passes through untouched.
+        let classes = [
+            pc::SandboxError::not_found("n"),
+            pc::SandboxError::gone("g"),
+            pc::SandboxError::not_ready("r"),
+            pc::SandboxError::transport("t"),
+            pc::SandboxError::timeout("o"),
+            pc::SandboxError::unauthorized("u"),
+            pc::SandboxError::fence_rejected("f"),
+            pc::SandboxError::invalid("i"),
+            pc::SandboxError::unsupported("s"),
+            pc::SandboxError::conflict("cannot push a repository with detached HEAD"),
+        ];
+        for error in classes {
+            let bytes = serde_json::to_vec(&Outcome::Failed(error.clone().into())).unwrap();
+            let decoded = serde_json::from_slice::<Outcome>(&bytes)
+                .unwrap()
+                .into_result();
+            assert_eq!(decoded.err(), Some(error), "W1");
+        }
+        let bytes = serde_json::to_vec(&Outcome::Failed(
+            pc::SandboxError::backend("git clone", "exit 128").into(),
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Outcome>(&bytes)
+                .unwrap()
+                .into_result()
+                .err(),
+            Some(pc::SandboxError::backend(
+                "repository helper",
+                "git clone: exit 128"
+            )),
+            "W2"
+        );
+        let legacy = br#"{"Unavailable":"sandbox error: repository root is unavailable"}"#;
+        assert!(
+            matches!(
+                serde_json::from_slice::<Outcome>(legacy).unwrap().into_result(),
+                Err(pc::SandboxError::Backend { operation: "repository helper", ref detail })
+                    if detail == "sandbox error: repository root is unavailable"
+            ),
+            "W3"
+        );
+        let realized = serde_json::to_vec(&Outcome::Realized).unwrap();
+        assert!(
+            matches!(
+                serde_json::from_slice::<Outcome>(&realized)
+                    .unwrap()
+                    .into_result(),
+                Ok(Outcome::Realized)
+            ),
+            "W4"
+        );
     }
 
     #[test]

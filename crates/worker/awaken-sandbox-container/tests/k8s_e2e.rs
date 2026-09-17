@@ -58,12 +58,16 @@ impl pc::SecretBroker for CredentialBroker {
     }
 
     async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("process secrets are not configured"))
+        Err(pc::SandboxError::unsupported(
+            "process secrets are not configured",
+        ))
     }
 
     async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
         if self.reject_writeback.load(Ordering::SeqCst) {
-            return Err(pc::SandboxError::new("injected live broker rejection"));
+            return Err(pc::SandboxError::unauthorized(
+                "injected live broker rejection",
+            ));
         }
         *self.current.lock().unwrap() = bytes;
         Ok(())
@@ -234,12 +238,11 @@ async fn exchange(
         .await?;
     let mut channel = process.channel;
     channel.write_all(b"hello\n").await.map_err(|error| {
-        pc::SandboxError::new(format!("write to Kubernetes agent exec: {error}"))
+        pc::SandboxError::transport(format!("write to Kubernetes agent exec: {error}"))
     })?;
-    channel
-        .flush()
-        .await
-        .map_err(|error| pc::SandboxError::new(format!("flush Kubernetes agent exec: {error}")))?;
+    channel.flush().await.map_err(|error| {
+        pc::SandboxError::transport(format!("flush Kubernetes agent exec: {error}"))
+    })?;
 
     let mut got = String::new();
     let mut buf = [0_u8; 512];
@@ -253,7 +256,7 @@ async fn exchange(
                 }
             }
             Ok(Err(error)) => {
-                return Err(pc::SandboxError::new(format!(
+                return Err(pc::SandboxError::transport(format!(
                     "read from Kubernetes agent exec: {error}"
                 )));
             }
@@ -262,10 +265,10 @@ async fn exchange(
     }
     let status = process.process.wait().await?;
     if status.code != Some(0) {
-        return Err(pc::SandboxError::new(format!(
-            "Kubernetes agent exec exited with {:?}",
-            status.code
-        )));
+        return Err(pc::SandboxError::backend(
+            "exchange",
+            format!("Kubernetes agent exec exited with {:?}", status.code),
+        ));
     }
     Ok(got)
 }
@@ -482,7 +485,7 @@ async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
                 executable,
                 "git-credential".into(),
                 "--socket".into(),
-                awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
+                awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
                 "get".into(),
             ],
             cwd: String::new(),

@@ -65,7 +65,7 @@ impl SandboxRestorationEvidence {
         .into_iter()
         .any(str::is_empty)
         {
-            return Err(super::SandboxError::new(
+            return Err(super::SandboxError::invalid(
                 "sandbox restoration evidence fields must be non-empty",
             ));
         }
@@ -81,7 +81,7 @@ impl SandboxRestorationEvidence {
         if self == &request.evidence(spec) {
             Ok(())
         } else {
-            Err(super::SandboxError::new(
+            Err(super::SandboxError::conflict(
                 "sandbox restoration evidence does not match the exact restore request",
             ))
         }
@@ -124,7 +124,7 @@ impl SandboxRestorationEvidence {
         awaken_agent_contract::collision_resistant_fingerprint_digest(&self.effect_id)
             .map(str::to_owned)
             .ok_or_else(|| {
-                super::SandboxError::new(
+                super::SandboxError::invalid(
                     "sandbox restoration effect must be canonical blake3 lowercase hex",
                 )
             })
@@ -147,7 +147,7 @@ impl HostBindRestorationHandle {
         let staging_root = staging_root.into();
         let path = std::path::Path::new(&staging_root);
         if staging_root.is_empty() || !path.is_absolute() {
-            return Err(super::SandboxError::new(
+            return Err(super::SandboxError::invalid(
                 "host-bind restoration root must be an absolute path",
             ));
         }

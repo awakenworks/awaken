@@ -12,11 +12,11 @@ pub(super) fn validate_handle_marker(
     handle_fence: &pc::SandboxEffectFence,
     incarnation: &str,
 ) -> Result<(), pc::SandboxError> {
-    handle_fence
-        .validate_identity()
-        .map_err(|_| err("sandbox handle effect fence has incomplete identity"))?;
+    handle_fence.validate_identity().map_err(|_| {
+        pc::SandboxError::invalid("sandbox handle effect fence has incomplete identity")
+    })?;
     if marker.fingerprint != *fingerprint || marker.physical_incarnation != incarnation {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "sandbox handle does not identify the current physical realization",
         ));
     }
@@ -28,12 +28,16 @@ pub(super) fn validate_handle_marker(
             &marker
                 .terminal_source
                 .as_ref()
-                .ok_or_else(|| err("terminal sandbox marker has no immutable source evidence"))?
+                .ok_or_else(|| {
+                    pc::SandboxError::not_found(
+                        "terminal sandbox marker has no immutable source evidence",
+                    )
+                })?
                 .realization_effect_fence
         }
     };
     if !expected_handle_fence.same_effect_identity(handle_fence) {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "sandbox handle effect does not identify the current realization",
         ));
     }
@@ -202,19 +206,23 @@ pub(crate) fn verify_adoption(
         pc::SandboxObservation::Ready => match read_marker_locked(root, &lock)? {
             Some(marker) => {
                 let completion = marker.completion.clone().ok_or_else(|| {
-                    err("Ready filesystem realization has no exact completion receipt")
+                    pc::SandboxError::not_found(
+                        "Ready filesystem realization has no exact completion receipt",
+                    )
                 })?;
                 Ok(Some((evidence(&marker)?, completion)))
             }
             None => Ok(None),
         },
-        pc::SandboxObservation::Provisioning => Err(err("sandbox realization did not reach Ready")),
+        pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
+            "sandbox realization did not reach Ready",
+        )),
         pc::SandboxObservation::DefinitivelyUnavailable { .. }
         | pc::SandboxObservation::Terminal { .. }
-        | pc::SandboxObservation::Disposing { .. } => Err(err(
+        | pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::gone(
             "sandbox realization is terminal or physically unavailable",
         )),
-        pc::SandboxObservation::Incompatible { reason } => Err(err(reason)),
+        pc::SandboxObservation::Incompatible { reason } => Err(pc::SandboxError::conflict(reason)),
     }
 }
 
@@ -228,7 +236,7 @@ pub(super) fn validate_absent_terminal_source(
         Some(source) => {
             source.effect_fence.validate_identity()?;
             if source.fingerprint != fingerprint || source.physical_incarnation.trim().is_empty() {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "terminal handle does not bind the absent filesystem realization",
                 ));
             }
@@ -239,7 +247,9 @@ pub(super) fn validate_absent_terminal_source(
         }
         None => {
             let expected = expected_effect_fence.ok_or_else(|| {
-                err("handle-free terminal cleanup requires its exact restore effect fence")
+                pc::SandboxError::fence_rejected(
+                    "handle-free terminal cleanup requires its exact restore effect fence",
+                )
             })?;
             (expected, None)
         }
@@ -250,7 +260,7 @@ pub(super) fn validate_absent_terminal_source(
         || expected_effect_fence
             .is_some_and(|expected| !expected.authorizes_successor(terminal_effect_fence))
     {
-        return Err(err(
+        return Err(pc::SandboxError::fence_rejected(
             "terminal fence does not authorize the absent realization evidence",
         ));
     }
@@ -274,14 +284,16 @@ pub(super) fn validate_terminal_source(
     terminal_effect_fence: &pc::SandboxEffectFence,
 ) -> Result<TerminalSourceRecord, pc::SandboxError> {
     if marker.fingerprint != *fingerprint {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "terminal cleanup specification does not identify the realization marker",
         ));
     }
     let terminal_source = match marker.phase {
         RealizationPhase::Removing | RealizationPhase::Removed => {
             let recorded = marker.terminal_source.clone().ok_or_else(|| {
-                err("terminal realization marker has no immutable source evidence")
+                pc::SandboxError::not_found(
+                    "terminal realization marker has no immutable source evidence",
+                )
             })?;
             match handle {
                 Some(source) => {
@@ -295,20 +307,22 @@ pub(super) fn validate_terminal_source(
                         .realization_effect_fence
                         .same_effect_identity(source.effect_fence)
                     {
-                        return Err(err(
+                        return Err(pc::SandboxError::conflict(
                             "terminal handle conflicts with the recorded physical source",
                         ));
                     }
                 }
                 None => {
                     let expected = expected_effect_fence.ok_or_else(|| {
-                        err("handle-free terminal replay requires its exact restore effect")
+                        pc::SandboxError::invalid(
+                            "handle-free terminal replay requires its exact restore effect",
+                        )
                     })?;
                     if !recorded
                         .realization_effect_fence
                         .same_effect_identity(expected)
                     {
-                        return Err(err(
+                        return Err(pc::SandboxError::conflict(
                             "handle-free terminal replay does not identify the restore source",
                         ));
                     }
@@ -330,7 +344,7 @@ pub(super) fn validate_terminal_source(
                 _ => false,
             };
             if !expected_matches {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "terminal replay changed the expected in-flight operation fence",
                 ));
             }
@@ -339,7 +353,9 @@ pub(super) fn validate_terminal_source(
                     .effect_fence
                     .authorizes_successor(terminal_effect_fence)
             {
-                return Err(err("terminal cleanup fence is stale or foreign"));
+                return Err(pc::SandboxError::fence_rejected(
+                    "terminal cleanup fence is stale or foreign",
+                ));
             }
             recorded
         }
@@ -356,14 +372,16 @@ pub(super) fn validate_terminal_source(
                 }
                 None => {
                     let expected = expected_effect_fence.ok_or_else(|| {
-                        err("handle-free terminal cleanup requires its exact restore effect")
+                        pc::SandboxError::invalid(
+                            "handle-free terminal cleanup requires its exact restore effect",
+                        )
                     })?;
                     if !marker.effect_fence.same_effect_identity(expected)
                         || !marker
                             .effect_fence
                             .authorizes_successor(terminal_effect_fence)
                     {
-                        return Err(err(
+                        return Err(pc::SandboxError::fence_rejected(
                             "handle-free terminal cleanup does not identify an authorized in-flight restore",
                         ));
                     }
@@ -373,7 +391,7 @@ pub(super) fn validate_terminal_source(
             if let Some(expected) = expected_effect_fence
                 && !realization_effect_fence.same_effect_identity(expected)
             {
-                return Err(err(
+                return Err(pc::SandboxError::fence_rejected(
                     "expected operation fence does not exactly identify the physical source effect",
                 ));
             }
@@ -392,7 +410,7 @@ pub(super) fn validate_terminal_source(
             .as_ref()
             .is_some_and(|expected| !expected.authorizes_successor(terminal_effect_fence))
     {
-        return Err(err(
+        return Err(pc::SandboxError::fence_rejected(
             "terminal fence does not authorize the exact physical or in-flight source",
         ));
     }
@@ -446,7 +464,7 @@ pub(super) fn validate_terminal_preflight(
     if matches {
         Ok(())
     } else {
-        Err(err(
+        Err(pc::SandboxError::conflict(
             "terminal marker changed after its effect-free phase/receipt preflight",
         ))
     }
@@ -491,9 +509,13 @@ pub(crate) fn observe_terminal_receipt(
             OwnedRealizationPath::Exact { path, .. } if path == root => marker
                 .completion
                 .clone()
-                .ok_or_else(|| err("Ready filesystem realization has no exact completion receipt"))
+                .ok_or_else(|| {
+                    pc::SandboxError::not_found(
+                        "Ready filesystem realization has no exact completion receipt",
+                    )
+                })
                 .map(TerminalReceiptObservation::Receipt),
-            _ => Err(err(
+            _ => Err(pc::SandboxError::not_found(
                 "Ready terminal preflight has no exact published Sandbox root",
             )),
         },
@@ -505,7 +527,7 @@ pub(crate) fn observe_terminal_receipt(
             }),
         RealizationPhase::Removed => match owned {
             OwnedRealizationPath::Absent => Ok(TerminalReceiptObservation::Closed),
-            OwnedRealizationPath::Exact { .. } => Err(err(
+            OwnedRealizationPath::Exact { .. } => Err(pc::SandboxError::conflict(
                 "Removed terminal preflight still has a physical Sandbox participant",
             )),
         },

@@ -136,8 +136,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerP
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
-        Err(awaken_provisioning_contract::SandboxError(
-            "unused test provider".to_string(),
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "unused test provider",
         ))
     }
 
@@ -148,8 +148,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerP
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
-        Err(awaken_provisioning_contract::SandboxError(
-            "unused test provider".to_string(),
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "unused test provider",
         ))
     }
 }

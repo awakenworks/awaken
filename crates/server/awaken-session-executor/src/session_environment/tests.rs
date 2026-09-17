@@ -136,7 +136,10 @@ impl pc::ProcessHandle for UnreapableProcess {
     }
 
     async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new("scripted signal failure"))
+        Err(pc::SandboxError::backend(
+            "signal",
+            "scripted signal failure",
+        ))
     }
 }
 
@@ -192,7 +195,9 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
         {
             Ok(pc::SandboxObservation::Ready)
         } else {
-            Err(pc::SandboxError::new("fixture observation unavailable"))
+            Err(pc::SandboxError::transport(
+                "fixture observation unavailable",
+            ))
         }
     }
 
@@ -342,7 +347,10 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
                 .load(std::sync::atomic::Ordering::SeqCst)
                 == spawn
             {
-                return Err(pc::SandboxError::new("scripted Hand spawn failure"));
+                return Err(pc::SandboxError::backend(
+                    "spawn_agent_process",
+                    "scripted Hand spawn failure",
+                ));
             }
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
@@ -415,7 +423,10 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
             .unwrap()
             .contains_key("__fail_skill_read")
         {
-            return Err(pc::SandboxError::new("scripted Skill read outage"));
+            return Err(pc::SandboxError::backend(
+                "read_files",
+                "scripted Skill read outage",
+            ));
         }
         Ok(self
             .shared
@@ -486,7 +497,7 @@ impl pc::Sandbox for FakeContainer {
         &self,
         _requirement: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        Err(pc::SandboxError::new("unsupported"))
+        Err(pc::SandboxError::unsupported("unsupported"))
     }
 
     async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
@@ -494,7 +505,7 @@ impl pc::Sandbox for FakeContainer {
     }
 
     async fn read_artifact(&self, _id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("missing"))
+        Err(pc::SandboxError::not_found("missing"))
     }
 
     fn realized(&self) -> &[pc::RealizedMount] {
@@ -2831,12 +2842,15 @@ impl pc::MemoryMounter for RestartMemoryMounter {
                 .lock()
                 .expect("restart Memory outcomes lock poisoned")
                 .pop_front()
-                .ok_or_else(|| pc::SandboxError::new("unexpected Memory remount"))?;
+                .ok_or_else(|| pc::SandboxError::backend("mount", "unexpected Memory remount"))?;
             std::fs::create_dir_all(host_path).map_err(|error| {
-                pc::SandboxError::new(format!("create fake Memory projection: {error}"))
+                pc::SandboxError::backend(
+                    "mount",
+                    format!("create fake Memory projection: {error}"),
+                )
             })?;
             std::fs::write(host_path.join("value.txt"), b"durable-memory").map_err(|error| {
-                pc::SandboxError::new(format!("write fake Memory projection: {error}"))
+                pc::SandboxError::backend("mount", format!("write fake Memory projection: {error}"))
             })?;
             Ok(Box::new(RestartMemoryMount {
                 realization,
@@ -2884,7 +2898,10 @@ impl pc::MemoryMount for RestartMemoryMount {
             })
             .is_ok()
         {
-            return Err(pc::SandboxError::new("scripted Memory teardown failure"));
+            return Err(pc::SandboxError::backend(
+                "teardown",
+                "scripted Memory teardown failure",
+            ));
         }
         Ok(())
     }

@@ -53,7 +53,7 @@ pub(crate) fn replay_completion_receipt(
     let mounts = receipt.mounts();
     let materializations = receipt.memory_materializations().to_vec();
     if mounts.len() != spec.mounts.len() {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::invalid(
             "filesystem completion receipt does not cover the frozen mount set",
         ));
     }
@@ -64,7 +64,7 @@ pub(crate) fn replay_completion_receipt(
             || required.mount_path != realized.mount_path
             || required.access != realized.access
         {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::conflict(
                 "filesystem completion receipt mount identity or access drifted from the frozen spec",
             ));
         }
@@ -82,7 +82,7 @@ pub(crate) fn replay_completion_receipt(
                     || (*write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
                         && realized.realization != pc::Realization::Fuse)
                 {
-                    return Err(pc::SandboxError::new(
+                    return Err(pc::SandboxError::invalid(
                         "filesystem completion receipt has an invalid Memory realization",
                     ));
                 }
@@ -98,7 +98,7 @@ pub(crate) fn replay_completion_receipt(
                     }
                     pc::Realization::Fuse if evidence_count == 0 => {}
                     _ => {
-                        return Err(pc::SandboxError::new(
+                        return Err(pc::SandboxError::invalid(
                             "filesystem completion receipt does not bind exact Memory materialization evidence",
                         ));
                     }
@@ -109,20 +109,20 @@ pub(crate) fn replay_completion_receipt(
                     .iter()
                     .any(|evidence| evidence.mount_path == required.mount_path)
                 {
-                    return Err(pc::SandboxError::new(
+                    return Err(pc::SandboxError::invalid(
                         "filesystem completion receipt attached Memory evidence to a non-Memory mount",
                     ));
                 }
             }
             _ => {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::invalid(
                     "filesystem completion receipt has a provider-incompatible realization",
                 ));
             }
         }
     }
     if expected_materializations != materializations.len() {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::invalid(
             "filesystem completion receipt contains extra Memory materialization evidence",
         ));
     }
@@ -167,7 +167,7 @@ pub(crate) fn terminal_copy_materializations(
         .iter()
         .any(|(_, _, consistency)| *consistency == pc::MemoryWriteConsistency::WriteThroughRequired)
     {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::unsupported(
             "terminal reconstruction cannot recover a write-through Memory mount without its live FUSE guard",
         ));
     }
@@ -176,7 +176,7 @@ pub(crate) fn terminal_copy_materializations(
         Some(handle) => handle.memory_materializations()?.unwrap_or(&[]),
         None if memory_mounts.is_empty() => &[],
         None => {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "terminal reconstruction of a copy-backed Memory mount requires its exact current handle evidence",
             ));
         }
@@ -203,7 +203,7 @@ pub(crate) fn terminal_copy_materializations(
                 != 1
         })
     {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::invalid(
             "terminal Memory materialization evidence is missing, extra, or ambiguous for the frozen Sandbox spec",
         ));
     }
@@ -271,7 +271,7 @@ mod memory_mount_release_tests {
         async fn teardown(&self) -> Result<(), pc::SandboxError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_first && call == 0 {
-                Err(pc::SandboxError::new("retry teardown"))
+                Err(pc::SandboxError::backend("teardown", "retry teardown"))
             } else {
                 Ok(())
             }
@@ -289,7 +289,7 @@ mod memory_mount_release_tests {
             let result: Result<Box<dyn pc::MemoryMount>, pc::SandboxError> = (|| {
                 self.mount_calls.fetch_add(1, Ordering::SeqCst);
                 std::fs::create_dir_all(host_path)
-                    .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                    .map_err(|error| pc::SandboxError::backend("mount", error))?;
                 Ok(Box::new(CountedMount {
                     calls: self.teardown_calls.clone(),
                     drops: self.drops.clone(),
@@ -380,7 +380,9 @@ mod memory_mount_release_tests {
                     let current = checks;
                     checks += 1;
                     if denied == Some(current) {
-                        Err(pc::SandboxError::new("expired callback evidence"))
+                        Err(pc::SandboxError::fence_rejected(
+                            "expired callback evidence",
+                        ))
                     } else {
                         Ok(())
                     }
@@ -544,7 +546,7 @@ mod memory_mount_release_tests {
                 if validations.fetch_add(1, Ordering::SeqCst) < 2 {
                     Ok(())
                 } else {
-                    Err(pc::SandboxError::new("post-mount fence changed"))
+                    Err(pc::SandboxError::fence_rejected("post-mount fence changed"))
                 }
             },
         )
@@ -553,9 +555,14 @@ mod memory_mount_release_tests {
             Ok(_) => panic!("R2 post-mount drift must fail"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("post-mount fence changed"), "R2");
+        // R2 the fence drift keeps its class; R3 the failed compensation is
+        // appended evidence, not a reclassification.
         assert!(
-            error.to_string().contains("Memory replay teardown failed"),
+            matches!(error, pc::SandboxError::FenceRejected(_)),
+            "R2 {error}"
+        );
+        assert!(
+            error.detail().contains("Memory replay teardown failed"),
             "R3",
         );
         assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "R2");
@@ -886,8 +893,6 @@ pub(crate) async fn compensate_creation_failure(
     phase: &str,
     cause: awaken_provisioning_contract::SandboxError,
 ) -> awaken_provisioning_contract::SandboxError {
-    use awaken_provisioning_contract::SandboxError;
-
     let teardown = memory.release(|| guard.validate_before_mutation()).await;
     let shredding = if guard.is_incomplete() {
         let identity = match guard.root_identity() {
@@ -904,8 +909,7 @@ pub(crate) async fn compensate_creation_failure(
         // this path just chose to preserve instead of clearing it as an
         // abandonment. A fenced guard already says it with its marker phase.
         let retention = guard.retain_failed_compensation();
-        return SandboxError::new(format!(
-            "{phase} failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained{}",
+        return cause.map_detail(|detail| format!("{phase} failed: {detail}; memory teardown: {}; secret shredding: {}; exact root evidence was retained{}",
             teardown
                 .as_ref()
                 .err()
@@ -920,9 +924,9 @@ pub(crate) async fn compensate_creation_failure(
         ));
     }
     if let Err(cleanup) = guard.abort_creation() {
-        return SandboxError::new(format!(
-            "{phase} failed: {cause}; exact-owned cleanup failed: {cleanup}"
-        ));
+        return cause.map_detail(|detail| {
+            format!("{phase} failed: {detail}; exact-owned cleanup failed: {cleanup}")
+        });
     }
     cause
 }
@@ -981,18 +985,18 @@ pub(crate) fn shred_secret_paths_at(
     paths: &[PathBuf],
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
     let Some(root_identity) = root_identity else {
-        return match awaken_sandbox_fs::classify_nofollow(root.root())
-            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))?
-        {
+        return match awaken_sandbox_fs::classify_nofollow(root.root()).map_err(|error| {
+            awaken_provisioning_contract::SandboxError::backend("shred_secret_paths_at", error)
+        })? {
             awaken_sandbox_fs::PathEntry::Absent => Ok(()),
-            _ => Err(awaken_provisioning_contract::SandboxError::new(
+            _ => Err(awaken_provisioning_contract::SandboxError::conflict(
                 "marker-free secret shredding found an occupied sandbox root",
             )),
         };
     };
     for path in paths {
         let relative = path.strip_prefix(root.root()).map_err(|_| {
-            awaken_provisioning_contract::SandboxError::new(format!(
+            awaken_provisioning_contract::SandboxError::invalid(format!(
                 "secret path `{}` is outside sandbox root `{}`",
                 path.display(),
                 root.root().display()
@@ -1003,7 +1007,9 @@ pub(crate) fn shred_secret_paths_at(
             root_identity,
             relative,
         )
-        .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))?;
+        .map_err(|error| {
+            awaken_provisioning_contract::SandboxError::backend("shred_secret_paths_at", error)
+        })?;
     }
     Ok(())
 }
@@ -1299,7 +1305,9 @@ pub(crate) fn rooted_hand_tools(
 pub(crate) fn jailed_at(root: &IsolatedRoot, logical: &str) -> Result<PathBuf, SandboxError> {
     let logical = logical.trim_start_matches('/');
     if logical.is_empty() || logical.split('/').any(|seg| seg == ".." || seg == ".") {
-        return Err(SandboxError(format!("unsafe repo mount path `{logical}`")));
+        return Err(SandboxError::invalid(format!(
+            "unsafe repo mount path `{logical}`"
+        )));
     }
     Ok(root.root().join(logical))
 }
@@ -1317,13 +1325,12 @@ pub(crate) fn list_files_at(
         root_identity,
         std::path::Path::new(subdir),
     )
-    .map_err(|error| SandboxError::new(error.to_string()))?
+    .map_err(|error| SandboxError::backend("list_files_at", error))?
     .into_iter()
     .map(|file| {
-        let relative = file
-            .relative_path
-            .to_str()
-            .ok_or_else(|| SandboxError::new("sandbox tree contains a non-UTF-8 logical path"))?;
+        let relative = file.relative_path.to_str().ok_or_else(|| {
+            SandboxError::invalid("sandbox tree contains a non-UTF-8 logical path")
+        })?;
         Ok((relative.replace('\\', "/"), file.bytes))
     })
     .collect()
@@ -1346,7 +1353,7 @@ pub(crate) fn scan_skill_dir_at(
         root_identity,
         std::path::Path::new(tree_subdir),
     )
-    .map_err(|error| SandboxError::new(error.to_string()))?
+    .map_err(|error| SandboxError::backend("scan_skill_dir_at", error))?
     {
         let mut components = file.relative_path.components();
         let Some(std::path::Component::Normal(id)) = components.next() else {
@@ -1360,10 +1367,11 @@ pub(crate) fn scan_skill_dir_at(
         }
         let id = id
             .to_str()
-            .ok_or_else(|| SandboxError::new("Skill directory id is not UTF-8"))?
+            .ok_or_else(|| SandboxError::invalid("Skill directory id is not UTF-8"))?
             .to_owned();
-        let content = String::from_utf8(file.bytes)
-            .map_err(|error| SandboxError::new(format!("Skill `{id}` is not UTF-8: {error}")))?;
+        let content = String::from_utf8(file.bytes).map_err(|error| {
+            SandboxError::invalid(format!("Skill `{id}` is not UTF-8: {error}"))
+        })?;
         out.push(DiscoveredSkillFile {
             id: id.clone(),
             content,
@@ -1404,20 +1412,14 @@ pub struct DiscoveredSkillFile {
     pub dir: String,
 }
 
-/// Why provisioning failed.
-#[derive(Debug, thiserror::Error)]
-#[error("sandbox provisioning failed: {0}")]
-pub struct SandboxError(pub String);
+/// Local helpers report the one provisioning error class set; there is no
+/// second provider-private string error to lose a class through conversion.
+pub(crate) use awaken_provisioning_contract::SandboxError;
 
-impl SandboxError {
-    fn new(error: impl Into<String>) -> Self {
-        Self(error.into())
-    }
-}
-
-impl From<SandboxError> for awaken_provisioning_contract::SandboxError {
-    fn from(error: SandboxError) -> Self {
-        Self::new(error.0)
+impl From<EscapeError> for SandboxError {
+    /// A logical path that climbs out of its jail is a malformed request.
+    fn from(error: EscapeError) -> Self {
+        Self::invalid(error.to_string())
     }
 }
 

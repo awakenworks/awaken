@@ -214,6 +214,22 @@ pub enum EgressError {
     InvalidAllowlistCapability,
 }
 
+impl From<EgressError> for awaken_provisioning_contract::SandboxError {
+    /// An allowlist this tier cannot enforce is a missing capability; every
+    /// other egress refusal is a malformed policy or proxy configuration.
+    fn from(error: EgressError) -> Self {
+        let detail = error.to_string();
+        match error {
+            EgressError::AllowlistUnsupported => Self::Unsupported(detail),
+            EgressError::InvalidAllowlistProxy
+            | EgressError::InvalidAllowlistScope
+            | EgressError::EmptyAllowlist
+            | EgressError::InvalidAllowlistHost(_)
+            | EgressError::InvalidAllowlistCapability => Self::Invalid(detail),
+        }
+    }
+}
+
 /// Realize an egress policy for the container tier, fail-closed. A conventional
 /// forward proxy may assist unrestricted connectivity, while `None` is enforced by
 /// the container network mode. `Allowlist` is rejected until a provider supplies a

@@ -1121,19 +1121,20 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
             awaken_provisioning_contract::SandboxError,
         > = async {
             std::fs::create_dir_all(host_path).map_err(|error| {
-                awaken_provisioning_contract::SandboxError::new(error.to_string())
+                awaken_provisioning_contract::SandboxError::backend("mount", error)
             })?;
             let mut heads = Vec::new();
-            for entry in self.fs.list(store_id, "/").await.map_err(|error| {
-                awaken_provisioning_contract::SandboxError::new(error.to_string())
-            })? {
-                let Some(memory) =
-                    self.fs
-                        .get_by_path(store_id, &entry.path)
-                        .await
-                        .map_err(|error| {
-                            awaken_provisioning_contract::SandboxError::new(error.to_string())
-                        })?
+            for entry in self
+                .fs
+                .list(store_id, "/")
+                .await
+                .map_err(awaken_provisioning_contract::SandboxError::from)?
+            {
+                let Some(memory) = self
+                    .fs
+                    .get_by_path(store_id, &entry.path)
+                    .await
+                    .map_err(awaken_provisioning_contract::SandboxError::from)?
                 else {
                     continue;
                 };
@@ -1146,11 +1147,11 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
                 let path = host_path.join(memory.path.trim_start_matches('/'));
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| {
-                        awaken_provisioning_contract::SandboxError::new(error.to_string())
+                        awaken_provisioning_contract::SandboxError::backend("mount", error)
                     })?;
                 }
                 std::fs::write(path, memory.content.unwrap_or_default()).map_err(|error| {
-                    awaken_provisioning_contract::SandboxError::new(error.to_string())
+                    awaken_provisioning_contract::SandboxError::backend("mount", error)
                 })?;
             }
             heads.sort_by(|left, right| left.path.cmp(&right.path));
@@ -10882,7 +10883,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
-            Err(awaken_provisioning_contract::SandboxError::new(
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
                 "H20 exercises pre-environment MCP staging only",
             ))
         }
@@ -10894,7 +10895,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
-            Err(awaken_provisioning_contract::SandboxError::new(
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
                 "H20 exercises pre-environment MCP staging only",
             ))
         }
@@ -12147,7 +12148,10 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
 
         async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
             if self.unreapable {
-                Err(pc::SandboxError::new("scripted MCP signal failure"))
+                Err(pc::SandboxError::backend(
+                    "signal",
+                    "scripted MCP signal failure",
+                ))
             } else {
                 Ok(())
             }
@@ -17912,7 +17916,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         &self,
         _spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "absent-auxiliary fixture never creates a container",
         ))
     }
@@ -17958,7 +17962,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
                 self.events.lock().unwrap().push("observe-live-memory");
                 Ok(pc::SandboxObservation::Ready)
             }
-            TerminalRecoveryScenario::Restoring => Err(pc::SandboxError::new(
+            TerminalRecoveryScenario::Restoring => Err(pc::SandboxError::unsupported(
                 "Restoring terminal cleanup must not observe an ordinary Environment",
             )),
         }
@@ -17968,7 +17972,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         &self,
         _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "absent-auxiliary fixture never adopts a live container",
         ))
     }
@@ -17980,12 +17984,14 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
         if !matches!(self.scenario, TerminalRecoveryScenario::LiveMemory) {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "non-live terminal recovery fixture cannot be ordinarily adopted",
             ));
         }
         let effect_fence = effect_fence.ok_or_else(|| {
-            pc::SandboxError::new("live terminal Memory adoption requires an exact effect fence")
+            pc::SandboxError::fence_rejected(
+                "live terminal Memory adoption requires an exact effect fence",
+            )
         })?;
         effect_fence.validate_identity()?;
         pc::with_current_sandbox_effect(effect_fence, authority.unwrap(), || {
@@ -18012,7 +18018,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         pc::with_current_sandbox_effect::<
             Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
         >(terminal_effect_fence, authority, || match self.scenario {
-            TerminalRecoveryScenario::OrphanClaim => Err(pc::SandboxError::new(
+            TerminalRecoveryScenario::OrphanClaim => Err(pc::SandboxError::unsupported(
                 "orphan-claim observation must fail before terminal preparation",
             )),
             TerminalRecoveryScenario::TotalAbsence => {
@@ -18027,7 +18033,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
                 Ok(Some(Arc::new(TerminalRecoveryEnvironment {
                     handle: handle
                         .ok_or_else(|| {
-                            pc::SandboxError::new(
+                            pc::SandboxError::unsupported(
                                 "unavailable auxiliary Memory fixture requires its durable handle",
                             )
                         })?
@@ -18042,7 +18048,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
                 Ok(Some(Arc::new(TerminalRecoveryEnvironment {
                     handle: handle
                         .ok_or_else(|| {
-                            pc::SandboxError::new(
+                            pc::SandboxError::unsupported(
                                 "disposing fixture requires an exact durable handle",
                             )
                         })?
@@ -18057,7 +18063,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
                 Ok(Some(Arc::new(TerminalRecoveryEnvironment {
                     handle: handle
                         .ok_or_else(|| {
-                            pc::SandboxError::new(
+                            pc::SandboxError::unsupported(
                                 "live Memory fixture requires an exact durable handle",
                             )
                         })?
@@ -18067,7 +18073,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
                     fence_refresh_probe: self.fence_refresh_probe.clone(),
                 })))
             }
-            TerminalRecoveryScenario::Restoring => Err(pc::SandboxError::new(
+            TerminalRecoveryScenario::Restoring => Err(pc::SandboxError::unsupported(
                 "Restoring terminal cleanup must use exact target disposal",
             )),
         })
@@ -18081,7 +18087,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         if !matches!(self.scenario, TerminalRecoveryScenario::Restoring) {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "non-Restoring fixture cannot dispose a restore target",
             ));
         }
@@ -18148,7 +18154,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
             probe.checkpoint_release.notified().await;
             return pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()));
         }
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::not_found(
             "terminal recovery fixture has no pending checkpoint upload",
         ))
     }
@@ -18158,7 +18164,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         _command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
         self.events.lock().unwrap().push("spawn-live-io");
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "terminal recovery fixture must not spawn a process",
         ))
     }
@@ -18167,21 +18173,21 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         &self,
         _requirement: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "terminal recovery fixture must not attach a mount",
         ))
     }
 
     async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
         self.events.lock().unwrap().push("artifacts-live-io");
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container Artifact capture must use the batch file seam",
         ))
     }
 
     async fn read_artifact(&self, _id: &str) -> Result<Vec<u8>, pc::SandboxError> {
         self.events.lock().unwrap().push("artifact-read-live-io");
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container Artifact capture must not use per-file reads",
         ))
     }
@@ -18194,7 +18200,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         &self,
         _process_id: &str,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::not_found(
             "terminal recovery fixture has no reconnectable process",
         ))
     }
@@ -18208,7 +18214,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
             self.events.lock().unwrap().push("renew-live-memory");
             Ok(())
         } else {
-            Err(pc::SandboxError::new(
+            Err(pc::SandboxError::unsupported(
                 "cleanup-only terminal recovery fixture must not renew a lease",
             ))
         }
@@ -18281,7 +18287,7 @@ impl TerminalRecoveryEnvironment {
     // are no longer a trait obligation or a reachable escape hatch. They stay
     // as this type's own implementation detail, used by its fenced edges.
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::fence_rejected(
             "terminal recovery fixture requires the exact effect fence",
         ))
     }
@@ -18310,7 +18316,7 @@ impl awaken_sandbox_container::ContainerEnvironment for TerminalRecoveryEnvironm
         _command: pc::Command,
     ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
         self.events.lock().unwrap().push("agent-live-io");
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "terminal recovery fixture must not launch an Agent process",
         ))
     }
@@ -18322,13 +18328,13 @@ impl awaken_sandbox_container::ContainerEnvironment for TerminalRecoveryEnvironm
         match self.mode {
             TerminalRecoveryEnvironmentMode::Disposing => {
                 self.events.lock().unwrap().push("read-files-live-io");
-                Err(pc::SandboxError::new(
+                Err(pc::SandboxError::unsupported(
                     "Disposing cleanup must not read the container filesystem",
                 ))
             }
             TerminalRecoveryEnvironmentMode::UnavailableAuxiliaryMemory => {
                 self.events.lock().unwrap().push("read-files-live-io");
-                Err(pc::SandboxError::new(
+                Err(pc::SandboxError::unsupported(
                     "unprepared unavailable Memory must fail before live file reads",
                 ))
             }
@@ -18354,7 +18360,7 @@ impl awaken_sandbox_container::ContainerEnvironment for TerminalRecoveryEnvironm
                     bytes: b"changed-under-terminal-v2".to_vec(),
                 }])
             }
-            TerminalRecoveryEnvironmentMode::LiveMemory => Err(pc::SandboxError::new(
+            TerminalRecoveryEnvironmentMode::LiveMemory => Err(pc::SandboxError::invalid(
                 "live terminal fixture was asked to read an unfrozen path",
             )),
         }
@@ -18697,7 +18703,7 @@ impl pc::MemoryMounter for RecordingTerminalMemoryMounter {
         _host_path: &std::path::Path,
         _access: pc::MountAccess,
     ) -> pc::MemoryMountOutcome {
-        pc::MemoryMountOutcome::NoEffect(pc::SandboxError::new(
+        pc::MemoryMountOutcome::NoEffect(pc::SandboxError::unsupported(
             "terminal reconciliation fixture must not materialize a new Run mount",
         ))
     }
@@ -18724,13 +18730,15 @@ impl pc::MemoryMounter for RecordingTerminalMemoryMounter {
             || files != [("changed.txt".into(), b"changed-under-terminal-v2".to_vec())]
             || access != pc::MountAccess::ReadWrite
         {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::conflict(
                 "terminal Memory reconciliation changed its frozen inputs",
             ));
         }
         self.events.lock().unwrap().push("reconcile-terminal-v2");
         if self.reject.load(Ordering::SeqCst) {
-            return Err(pc::SandboxError::new("Memory reconciliation rejected"));
+            return Err(pc::SandboxError::unauthorized(
+                "Memory reconciliation rejected",
+            ));
         }
         Ok(())
     }
@@ -18939,20 +18947,20 @@ impl pc::SandboxCheckpointStore for RecordingTerminalCheckpointStore {
         _metadata: &pc::CheckpointObjectMetadata,
         _bytes: Vec<u8>,
     ) -> Result<pc::StoredCheckpointObject, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "terminal committed-checkpoint cleanup must not upload bytes",
         ))
     }
 
     async fn get(&self, _id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "terminal committed-checkpoint cleanup must not read bytes",
         ))
     }
 
     async fn delete(&self, id: &str) -> Result<(), pc::SandboxError> {
         if id != self.expected_id {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::conflict(
                 "terminal cleanup targeted another checkpoint object",
             ));
         }

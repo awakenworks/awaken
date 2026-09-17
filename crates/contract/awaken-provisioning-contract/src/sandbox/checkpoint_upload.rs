@@ -76,7 +76,7 @@ impl SandboxCheckpointUpload {
         if self.request_fingerprint != request_fingerprint
             || self.operation_id() != Some(operation_id)
         {
-            return Err(SandboxError::new(
+            return Err(SandboxError::conflict(
                 "checkpoint participant belongs to another request or operation",
             ));
         }
@@ -99,7 +99,7 @@ impl SandboxCheckpointUpload {
             || self.snapshot_size_bytes != reference.size_bytes
             || reference.suspend_effect_id != operation_id
         {
-            return Err(SandboxError::new(
+            return Err(SandboxError::conflict(
                 "checkpoint receipt does not match pending snapshot evidence",
             ));
         }
@@ -107,7 +107,7 @@ impl SandboxCheckpointUpload {
             return if recorded == reference {
                 Ok(false)
             } else {
-                Err(SandboxError::new(
+                Err(SandboxError::conflict(
                     "checkpoint completion conflicts with its durable receipt",
                 ))
             };
