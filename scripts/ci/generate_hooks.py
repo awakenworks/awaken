@@ -75,6 +75,28 @@ def _expand_braces(pattern: str) -> list[str]:
     return expanded
 
 
+# `glob_matches` models doublestar semantics: `**/` spans zero or more
+# directories and `*` stays inside one segment. lefthook's default gobwas
+# matcher disagrees on both counts -- `docs/**/*.md` never fired for
+# `docs/README.md` -- so a trigger proven to cover its inputs here still skipped
+# every file at the top of its tree. The matcher is therefore rendered, not
+# assumed: lefthook.yml must select exactly the semantics proven here.
+MATCHER_LINE = "glob_matcher: doublestar\n"
+MATCHER = re.compile(r"^glob_matcher:.*\n?", re.MULTILINE)
+
+
+def _with_matcher(hooks: str) -> str:
+    """``hooks`` declaring the one glob matcher this renderer's proof models."""
+
+    if MATCHER.search(hooks):
+        return MATCHER.sub(lambda _: MATCHER_LINE, hooks, count=1)
+    lines = hooks.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if TOP_LEVEL.match(line):
+            return "".join(lines[:index] + [MATCHER_LINE, "\n"] + lines[index:])
+    return hooks + ("" if hooks.endswith("\n") or not hooks else "\n") + MATCHER_LINE
+
+
 def glob_matches(pattern: str, path: str) -> bool:
     """Does one lefthook glob (brace alternation, `*`, `**`) match one path?"""
     for alternative in _expand_braces(pattern):
@@ -249,7 +271,7 @@ def render(hooks: str, declarations: dict[str, tuple[str, ...]]) -> str:
         output.extend(cleaned)
         cursor = body_end
     output.extend(lines[cursor:])
-    return "".join(output)
+    return _with_matcher("".join(output))
 
 
 def selftest() -> None:
@@ -269,6 +291,15 @@ def selftest() -> None:
     | G4   | F  | F  | T  | F  | F  | F  | untouched: no declaring checker is invoked |
     | G5   | T  | F  | F  | F  | T  | F  | a region with no glob line at all          |
     | G6   | T  | F  | F  | F  | F  | T  | one glob, the union of both declarations   |
+
+    Matcher (M): the proof above is only valid under doublestar semantics.
+
+    | Rule | lefthook.yml declares       | Effect                                   |
+    |------|-----------------------------|------------------------------------------|
+    | M1   | no glob_matcher             | doublestar is inserted before first key  |
+    | M2   | glob_matcher: <other value> | replaced by doublestar                   |
+    | M3   | glob_matcher: doublestar    | unchanged (fixpoint)                     |
+    | M4   | `dir/**/*.x` vs `dir/top.x` | glob_matches models the top-level match  |
     """
 
     declarations = {
@@ -324,6 +355,16 @@ def selftest() -> None:
             except SystemExit:
                 continue
             raise AssertionError(f"an unrenderable declaration was accepted: {broken!r}")
+    assert generated.count(MATCHER_LINE) == 1 and generated.startswith(MATCHER_LINE), "M1"
+    commented = "# header\n" + hand_written
+    inserted = render(commented, declarations)
+    assert inserted.startswith("# header\n" + MATCHER_LINE), "M1 after leading comments"
+    other = render("glob_matcher: gobwas\n" + hand_written, declarations)
+    assert other.count("glob_matcher:") == 1 and MATCHER_LINE in other, "M2"
+    assert render(other, declarations) == other, "M3"
+    assert glob_matches("types/**/*.rs", "types/top.rs"), "M4 zero directories"
+    assert glob_matches("types/**/*.rs", "types/a/b.rs"), "M4 nested"
+    assert not glob_matches("docs/*.md", "docs/wiki/a.md"), "M4 * stays in one segment"
     print("generate_hooks self-test: generated globs follow their declarations")
 
 

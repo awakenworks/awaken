@@ -22,6 +22,8 @@
 # this page -- command names, `run:` bodies, these comments, and the globs of
 # commands that run shell or Node tools -- stays human-authored.
 
+glob_matcher: doublestar
+
 pre-commit:
   parallel: true
   commands:
