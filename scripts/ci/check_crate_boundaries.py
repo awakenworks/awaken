@@ -47,7 +47,12 @@ CLOUD_PLACEMENT_TOKENS = (
 )
 CLOUD_HOSTING_ACL = Path("crates/bin/awaken-cli/src/config/workspace_data.rs")
 
-NEUTRAL_CRATES = {"awaken-agent-contract", "awaken-runtime-contract", "awaken-runtime"}
+NEUTRAL_CRATES = {
+    "awaken-agent-contract",
+    "awaken-runtime-contract",
+    "awaken-tool-contract",
+    "awaken-runtime",
+}
 EXTENSION_CRATES = {
     "awaken-ext-background-task",
     "awaken-ext-builtin-tools",
@@ -70,6 +75,7 @@ OPAQUE_BACKEND_CONFIG_VALUES = {
 OPAQUE_BACKEND_CONFIG_CRATES = {
     "awaken-agent-contract",
     "awaken-runtime-contract",
+    "awaken-tool-contract",
     "awaken-runtime",
     "awaken-ext-permission",
 }
@@ -454,7 +460,7 @@ use crate::{
         'const EXAMPLE: &str = "impl Tool for Fake {}";\n'
         'const RAW: &str = r#"impl RawTool for Fake {}"#;',
     ), "S3/C10 impl-like string literals are inert"
-    resource_modes = Path("crates/contract/awaken-runtime-contract/src/tool.rs")
+    resource_modes = Path("crates/contract/awaken-tool-contract/src/tool.rs")
     assert not _forbidden_neutral_symbol_errors(
         resource_modes,
         "enum ResourceAccessMode { Read, Write }",

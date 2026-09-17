@@ -31,9 +31,9 @@ pub mod runtime_context;
 pub mod snapshot;
 mod snapshot_builder;
 pub mod terminal;
-pub mod tool;
-pub mod tool_batch;
-pub mod tool_discovery;
+// The tool vocabulary lives in `awaken-tool-contract`; these module paths are
+// kept as a facade so existing `awaken_runtime_contract::tool*` imports resolve.
+pub use awaken_tool_contract::{tool, tool_batch, tool_discovery};
 pub mod tool_export;
 
 pub use activation::RunActivation;
