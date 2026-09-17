@@ -824,57 +824,56 @@ impl SessionInputResolver {
     /// Derive and resolve the current Memory/Repository configuration exactly
     /// once. The caller supplies a trusted Workspace after the edge PEP has made
     /// its authorization decision; this method contains no authorization policy.
-    pub fn resolve_inputs(
+    pub async fn resolve_inputs(
         workspace_id: &str,
         catalog: Option<&dyn ExecutionResourceResolver>,
         agent_defaults: &[InputBinding],
         session_attachments: &[SessionInputAttachment],
     ) -> Result<ResolvedSessionResources, SessionInputError> {
-        let inputs = Self::effective_bindings(agent_defaults, session_attachments)?
-            .into_iter()
-            .map(|binding| {
-                let source = match binding.target {
-                    InputResourceId::File(file_id) => ResolvedInputSource::File { file_id },
-                    InputResourceId::MemoryStore(memory_store_id) => {
-                        let config = catalog
-                            .ok_or_else(|| {
-                                ResourceRegistryError::NotFound(memory_store_id.to_string())
-                            })?
-                            .resolve_memory_store(workspace_id, memory_store_id.as_str())?;
-                        ResolvedInputSource::MemoryStore {
-                            memory_store_id,
-                            config,
-                        }
+        let bindings = Self::effective_bindings(agent_defaults, session_attachments)?;
+        let mut inputs = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let source = match binding.target {
+                InputResourceId::File(file_id) => ResolvedInputSource::File { file_id },
+                InputResourceId::MemoryStore(memory_store_id) => {
+                    let config = catalog
+                        .ok_or_else(|| {
+                            ResourceRegistryError::NotFound(memory_store_id.to_string())
+                        })?
+                        .resolve_memory_store(workspace_id, memory_store_id.as_str())
+                        .await?;
+                    ResolvedInputSource::MemoryStore {
+                        memory_store_id,
+                        config,
                     }
-                    InputResourceId::Repository(repository_id) => {
-                        let config = catalog
-                            .ok_or_else(|| {
-                                ResourceRegistryError::NotFound(repository_id.to_string())
-                            })?
-                            .resolve_repository(workspace_id, repository_id.as_str())?;
-                        ResolvedInputSource::Repository {
-                            repository_id,
-                            config,
-                            credential: None,
-                        }
+                }
+                InputResourceId::Repository(repository_id) => {
+                    let config = catalog
+                        .ok_or_else(|| ResourceRegistryError::NotFound(repository_id.to_string()))?
+                        .resolve_repository(workspace_id, repository_id.as_str())
+                        .await?;
+                    ResolvedInputSource::Repository {
+                        repository_id,
+                        config,
+                        credential: None,
                     }
-                };
-                let access = if matches!(&source, ResolvedInputSource::File { .. }) {
-                    awaken_resource_contract::ResourceAccess::ReadOnly
-                } else {
-                    binding.access
-                };
-                Ok(ResolvedInput {
-                    created_at_unix_ms: None,
-                    updated_at_unix_ms: None,
-                    binding_id: binding.binding_id,
-                    source,
-                    mount_path: binding.mount_path,
-                    access,
-                    instructions: binding.instructions,
-                })
-            })
-            .collect::<Result<Vec<_>, SessionInputError>>()?;
+                }
+            };
+            let access = if matches!(&source, ResolvedInputSource::File { .. }) {
+                awaken_resource_contract::ResourceAccess::ReadOnly
+            } else {
+                binding.access
+            };
+            inputs.push(ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                binding_id: binding.binding_id,
+                source,
+                mount_path: binding.mount_path,
+                access,
+                instructions: binding.instructions,
+            });
+        }
         ResolvedSessionResources::try_new(inputs, Vec::new())
     }
 }
@@ -895,8 +894,9 @@ mod tests {
         repository_resolves: AtomicUsize,
     }
 
+    #[async_trait::async_trait]
     impl ExecutionResourceResolver for Registry {
-        fn resolve_memory_store(
+        async fn resolve_memory_store(
             &self,
             workspace_id: &str,
             id: &str,
@@ -912,7 +912,7 @@ mod tests {
             })
         }
 
-        fn resolve_repository(
+        async fn resolve_repository(
             &self,
             workspace_id: &str,
             id: &str,
@@ -1126,8 +1126,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn typed_attachment_replacement_never_infers_cross_projection_collisions() {
+    #[tokio::test]
+    async fn typed_attachment_replacement_never_infers_cross_projection_collisions() {
         // Typed logical-path decision table: C1 Memory and File share one raw
         // spelling but project below different Runtime roots -> E1 coexist;
         // C2 the caller explicitly replaces the Memory binding with the File ->
@@ -1165,6 +1165,7 @@ mod tests {
                 replaces: Some(BindingId::from("memory")),
             }],
         )
+        .await
         .expect("C2/E2");
         assert_eq!(effective.inputs.len(), 1, "C2/E2");
         assert_eq!(effective.inputs[0].mount_path, "/mnt/context");
@@ -1174,8 +1175,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mutable_resources_resolve_once_without_content_pins_or_authorization() {
+    #[tokio::test]
+    async fn mutable_resources_resolve_once_without_content_pins_or_authorization() {
         let registry = Registry::default();
         let defaults = vec![
             binding(
@@ -1194,6 +1195,7 @@ mod tests {
 
         let effective =
             SessionInputResolver::resolve_inputs("workspace-a", Some(&registry), &defaults, &[])
+                .await
                 .unwrap();
 
         assert_eq!(registry.memory_resolves.load(Ordering::Relaxed), 1);
@@ -1226,8 +1228,8 @@ mod tests {
     /// | R2 | current/durable | alias or unsafe | - | E2 |
     /// | R3 | durable only | `/repo` | disjoint | E3 |
     /// | R4 | current | canonical | overlaps | E4 |
-    #[test]
-    fn new_repository_paths_fail_closed_without_rewriting_historical_values() {
+    #[tokio::test]
+    async fn new_repository_paths_fail_closed_without_rewriting_historical_values() {
         let registry = Registry::default();
         let repository = |mount_path: &str| {
             binding(
@@ -1244,6 +1246,7 @@ mod tests {
             &[repository("/workspace/repo")],
             &[],
         )
+        .await
         .expect("C1/E1");
         for mount_path in [
             "/repo",
@@ -1260,6 +1263,7 @@ mod tests {
                 &[repository(mount_path)],
                 &[],
             )
+            .await
             .expect_err("C2/E2");
             assert!(matches!(error, SessionInputError::UnsafeMountPath(_)));
         }
@@ -1280,7 +1284,8 @@ mod tests {
                 Some(&registry),
                 &[repository("/workspace/repo"), overlapping_repository],
                 &[],
-            ),
+            )
+            .await,
             Err(SessionInputError::UnsafeMountPath(_))
         ));
         assert_eq!(
@@ -1322,8 +1327,8 @@ mod tests {
         assert_eq!(reloaded.inputs()[0].mount_path, "/repo", "R3/E3");
     }
 
-    #[test]
-    fn unsafe_path_and_cross_workspace_fail_closed() {
+    #[tokio::test]
+    async fn unsafe_path_and_cross_workspace_fail_closed() {
         let unsafe_binding = binding(
             "file",
             InputResourceId::File(FileId::from("file-1")),
@@ -1347,15 +1352,16 @@ mod tests {
                 Some(&Registry::default()),
                 &[memory_binding],
                 &[]
-            ),
+            )
+            .await,
             Err(SessionInputError::Registry(
                 ResourceRegistryError::NotFound(_)
             ))
         ));
     }
 
-    #[test]
-    fn file_inputs_need_no_catalog_but_configured_resources_fail_closed_without_one() {
+    #[tokio::test]
+    async fn file_inputs_need_no_catalog_but_configured_resources_fail_closed_without_one() {
         let file_binding = binding(
             "file",
             InputResourceId::File(FileId::from("file-1")),
@@ -1364,6 +1370,7 @@ mod tests {
         );
         let resolved =
             SessionInputResolver::resolve_inputs("workspace-a", None, &[file_binding], &[])
+                .await
                 .unwrap();
         assert_eq!(resolved.inputs.len(), 1);
         assert_eq!(
@@ -1388,7 +1395,7 @@ mod tests {
                 awaken_resource_contract::ResourceAccess::ReadOnly,
             );
             assert!(matches!(
-                SessionInputResolver::resolve_inputs("workspace-a", None, &[configured], &[]),
+                SessionInputResolver::resolve_inputs("workspace-a", None, &[configured], &[]).await,
                 Err(SessionInputError::Registry(
                     ResourceRegistryError::NotFound(_)
                 ))
@@ -1458,8 +1465,8 @@ mod tests {
     /// | F2 | Skill | T | F | F | F |
     /// | F3 | read-only File | T | F | T | F |
     /// | F4 | credentialed Repository | T | T | F | T |
-    #[test]
-    fn resource_compatibility_facts_have_one_typed_projector() {
+    #[tokio::test]
+    async fn resource_compatibility_facts_have_one_typed_projector() {
         let empty = ResolvedSessionResources::default().compatibility_facts();
         assert_eq!(empty, SessionResourceCompatibilityFacts::default(), "F1");
 
@@ -1501,6 +1508,7 @@ mod tests {
             )],
             &[],
         )
+        .await
         .expect("F4 Repository manifest")
         .compatibility_facts();
         assert!(repository.has_resources(), "F4/resources");
@@ -1509,8 +1517,8 @@ mod tests {
         assert!(repository.has_credentialed_repository(), "F4/credential");
     }
 
-    #[test]
-    fn profiled_resource_policy_compares_complete_manifests_by_authoritative_kind() {
+    #[tokio::test]
+    async fn profiled_resource_policy_compares_complete_manifests_by_authoritative_kind() {
         // Cause/effect graph: C1 policy Managed/Frozen/FileResources; C2 the
         // candidate changes only File bindings; C3 it changes a non-File input;
         // C4 it changes an exact Skill pin. Effects: E1 Managed admits every
@@ -1531,6 +1539,7 @@ mod tests {
             &[protected],
             &[],
         )
+        .await
         .expect("resolved protected input")
         .with_skills(vec![ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,

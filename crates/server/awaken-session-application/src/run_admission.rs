@@ -826,11 +826,10 @@ impl SessionApplication {
             ));
             repository_configurations.push(configured);
         }
-        let mut resources = match self.resolve_session_inputs(
-            &owner_scope,
-            agent_resources,
-            &repository_attachments,
-        ) {
+        let mut resources = match self
+            .resolve_session_inputs(&owner_scope, agent_resources, &repository_attachments)
+            .await
+        {
             Ok(resources) => resources,
             Err(first) => {
                 if !self

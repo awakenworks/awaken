@@ -599,8 +599,9 @@ pub(crate) fn test_resource_validator()
     Arc::new(TestLiveResourceBindingVerifier)
 }
 
+#[async_trait::async_trait]
 impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceBindingVerifier {
-    fn verify_memory_binding(
+    async fn verify_memory_binding(
         &self,
         _workspace_id: &str,
         _id: &str,
@@ -609,7 +610,7 @@ impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceB
         Ok(())
     }
 
-    fn verify_repository_binding(
+    async fn verify_repository_binding(
         &self,
         _workspace_id: &str,
         _id: &str,
@@ -9306,6 +9307,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
                 retention_policy: Default::default(),
             },
         })
+        .await
         .expect("register test MemoryStore");
     let manifest = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -9322,6 +9324,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
             id: store_id.clone().into(),
             state: ResourceState::Suspended,
         })
+        .await
         .expect("suspend test MemoryStore");
     let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog.clone());
     let mut init = bare_session("a", host.local_workspace());
@@ -9364,6 +9367,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
                 retention_policy: Default::default(),
             },
         })
+        .await
         .expect("register workspace-fenced MemoryStore");
     let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog);
     let mut init = bare_session("agent", "workspace-b");
@@ -14375,6 +14379,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
                 retention_policy: Default::default(),
             },
         })
+        .await
         .expect("register frozen-config MemoryStore");
     catalog
         .publish_memory_store_config(PublishMemoryStoreConfig {
@@ -14386,6 +14391,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
                 retention_policy: Default::default(),
             },
         })
+        .await
         .expect("publish MemoryStore config V2");
 
     let manifest = effective_resources(vec![TestInput {
@@ -14429,6 +14435,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
             id: store_id.clone().into(),
             state: ResourceState::Archived,
         })
+        .await
         .expect("archive frozen-config MemoryStore");
     let error = match run_prepared_session(
         &managed,

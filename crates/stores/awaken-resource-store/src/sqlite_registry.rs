@@ -1,10 +1,11 @@
 //! SQLite adapter for the Resource Registry aggregate repository.
 
+use async_trait::async_trait;
 use awaken_resource_contract::{
     AggregateRevision, InsertOutcome, MemoryStoreAggregate, RegistryRepositoryError,
     ReplaceOutcome, RepositoryAggregate, ResourceRegistryRepository, Stored,
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::SqliteResourceStore;
@@ -22,23 +23,39 @@ fn corrupt(error: impl ToString) -> RegistryRepositoryError {
 }
 
 impl SqliteResourceStore {
-    fn registry_record<T: DeserializeOwned>(
+    /// Run one Registry statement on the shared connection's blocking lane, the
+    /// same scheduler every other SQLite Resource port uses.
+    async fn registry_task<T, F>(&self, operation: F) -> Result<T, RegistryRepositoryError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, RegistryRepositoryError> + Send + 'static,
+    {
+        awaken_sqlite_pool::with_connection(self.connection.clone(), operation)
+            .await
+            .map_err(unavailable)?
+    }
+
+    async fn registry_record<T: DeserializeOwned + Send + 'static>(
         &self,
-        kind: &str,
+        kind: &'static str,
         id: &str,
     ) -> Result<Option<Stored<T>>, RegistryRepositoryError> {
+        let id = id.to_owned();
         let row: Option<(i64, String)> = self
-            .connection()
-            .map_err(|_| unavailable("resource SQLite connection was poisoned"))?
-            .query_row(
-                &format!(
-                    "SELECT revision, data FROM {REGISTRY_NS}_entry WHERE kind = ?1 AND id = ?2"
-                ),
-                params![kind, id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(unavailable)?;
+            .registry_task(move |connection| {
+                connection
+                    .query_row(
+                        &format!(
+                            "SELECT revision, data FROM {REGISTRY_NS}_entry \
+                             WHERE kind = ?1 AND id = ?2"
+                        ),
+                        params![kind, id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(unavailable)
+            })
+            .await?;
         row.map(|(revision, data)| {
             let revision = u64::try_from(revision)
                 .map_err(corrupt)
@@ -52,35 +69,38 @@ impl SqliteResourceStore {
         .transpose()
     }
 
-    fn insert_registry_record<T: Serialize>(
+    async fn insert_registry_record<T: Serialize>(
         &self,
-        kind: &str,
+        kind: &'static str,
         id: &str,
         aggregate: &T,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
-        match self
-            .connection()
-            .map_err(|_| unavailable("resource SQLite connection was poisoned"))?
-            .execute(
-            &format!(
-                "INSERT INTO {REGISTRY_NS}_entry (kind, id, revision, data) VALUES (?1, ?2, 1, ?3)"
-            ),
-            params![kind, id, data],
-        ) {
-            Ok(_) => Ok(InsertOutcome::Inserted),
-            Err(error)
-                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) =>
-            {
-                Ok(InsertOutcome::AlreadyRegistered)
+        let id = id.to_owned();
+        self.registry_task(move |connection| {
+            match connection.execute(
+                &format!(
+                    "INSERT INTO {REGISTRY_NS}_entry (kind, id, revision, data) \
+                     VALUES (?1, ?2, 1, ?3)"
+                ),
+                params![kind, id, data],
+            ) {
+                Ok(_) => Ok(InsertOutcome::Inserted),
+                Err(error)
+                    if error.sqlite_error_code()
+                        == Some(rusqlite::ErrorCode::ConstraintViolation) =>
+                {
+                    Ok(InsertOutcome::AlreadyRegistered)
+                }
+                Err(error) => Err(unavailable(error)),
             }
-            Err(error) => Err(unavailable(error)),
-        }
+        })
+        .await
     }
 
-    fn replace_registry_record<T: Serialize>(
+    async fn replace_registry_record<T: Serialize>(
         &self,
-        kind: &str,
+        kind: &'static str,
         id: &str,
         expected_revision: AggregateRevision,
         aggregate: &T,
@@ -91,23 +111,26 @@ impl SqliteResourceStore {
             ))
         })?;
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
+        let id = id.to_owned();
         let changed = self
-            .connection()
-            .map_err(|_| unavailable("resource SQLite connection was poisoned"))?
-            .execute(
-                &format!(
-                    "UPDATE {REGISTRY_NS}_entry SET revision = ?4, data = ?5 \
-                     WHERE kind = ?1 AND id = ?2 AND revision = ?3"
-                ),
-                params![
-                    kind,
-                    id,
-                    expected_revision.get() as i64,
-                    next.get() as i64,
-                    data
-                ],
-            )
-            .map_err(unavailable)?;
+            .registry_task(move |connection| {
+                connection
+                    .execute(
+                        &format!(
+                            "UPDATE {REGISTRY_NS}_entry SET revision = ?4, data = ?5 \
+                             WHERE kind = ?1 AND id = ?2 AND revision = ?3"
+                        ),
+                        params![
+                            kind,
+                            id,
+                            expected_revision.get() as i64,
+                            next.get() as i64,
+                            data
+                        ],
+                    )
+                    .map_err(unavailable)
+            })
+            .await?;
         Ok(if changed == 1 {
             ReplaceOutcome::Replaced { revision: next }
         } else {
@@ -115,51 +138,57 @@ impl SqliteResourceStore {
         })
     }
 
-    fn list_registry_records<T: DeserializeOwned + Send + 'static>(
+    async fn list_registry_records<T: DeserializeOwned>(
         &self,
         kind: &'static str,
-        validate: impl Fn(&T, &str) -> Result<(), RegistryRepositoryError> + Send + 'static,
+        validate: impl Fn(&T, &str) -> Result<(), RegistryRepositoryError>,
     ) -> Result<Vec<Stored<T>>, RegistryRepositoryError> {
-        let connection = self
-            .connection()
-            .map_err(|_| unavailable("resource SQLite connection was poisoned"))?;
-        let mut statement = connection
-            .prepare(&format!(
-                "SELECT id, revision, data FROM {REGISTRY_NS}_entry \
-                 WHERE kind = ?1 ORDER BY id"
-            ))
-            .map_err(unavailable)?;
-        let rows = statement
-            .query_map(params![kind], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
+        let rows = self
+            .registry_task(move |connection| {
+                let mut statement = connection
+                    .prepare(&format!(
+                        "SELECT id, revision, data FROM {REGISTRY_NS}_entry \
+                         WHERE kind = ?1 ORDER BY id"
+                    ))
+                    .map_err(unavailable)?;
+                statement
+                    .query_map(params![kind], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })
+                    .map_err(unavailable)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(unavailable)
             })
-            .map_err(unavailable)?;
-        rows.map(|row| {
-            let (id, revision, data) = row.map_err(unavailable)?;
-            let revision = u64::try_from(revision)
-                .map_err(corrupt)
-                .and_then(AggregateRevision::new)?;
-            let aggregate: T = serde_json::from_str(&data).map_err(corrupt)?;
-            validate(&aggregate, &id)?;
-            Ok(Stored {
-                revision,
-                aggregate,
+            .await?;
+        rows.into_iter()
+            .map(|(id, revision, data)| {
+                let revision = u64::try_from(revision)
+                    .map_err(corrupt)
+                    .and_then(AggregateRevision::new)?;
+                let aggregate: T = serde_json::from_str(&data).map_err(corrupt)?;
+                validate(&aggregate, &id)?;
+                Ok(Stored {
+                    revision,
+                    aggregate,
+                })
             })
-        })
-        .collect()
+            .collect()
     }
 }
 
+#[async_trait]
 impl ResourceRegistryRepository for SqliteResourceStore {
-    fn load_memory_store(
+    async fn load_memory_store(
         &self,
         id: &str,
     ) -> Result<Option<Stored<MemoryStoreAggregate>>, RegistryRepositoryError> {
-        let stored = self.registry_record::<MemoryStoreAggregate>(MEMORY, id)?;
+        let stored = self
+            .registry_record::<MemoryStoreAggregate>(MEMORY, id)
+            .await?;
         if let Some(stored) = &stored {
             if stored.aggregate.definition().id.as_str() != id {
                 return Err(corrupt(format!(
@@ -172,14 +201,15 @@ impl ResourceRegistryRepository for SqliteResourceStore {
         Ok(stored)
     }
 
-    fn insert_memory_store(
+    async fn insert_memory_store(
         &self,
         aggregate: &MemoryStoreAggregate,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
         self.insert_registry_record(MEMORY, aggregate.definition().id.as_str(), aggregate)
+            .await
     }
 
-    fn replace_memory_store(
+    async fn replace_memory_store(
         &self,
         expected_revision: AggregateRevision,
         aggregate: &MemoryStoreAggregate,
@@ -190,9 +220,10 @@ impl ResourceRegistryRepository for SqliteResourceStore {
             expected_revision,
             aggregate,
         )
+        .await
     }
 
-    fn list_memory_stores(
+    async fn list_memory_stores(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<Stored<MemoryStoreAggregate>>, RegistryRepositoryError> {
@@ -204,13 +235,14 @@ impl ResourceRegistryRepository for SqliteResourceStore {
                     )));
                 }
                 aggregate.validate_integrity().map_err(corrupt)
-            })?
+            })
+            .await?
             .into_iter()
             .filter(|stored| stored.aggregate.definition().workspace_id == workspace_id)
             .collect())
     }
 
-    fn list_repositories(
+    async fn list_repositories(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<Stored<RepositoryAggregate>>, RegistryRepositoryError> {
@@ -222,17 +254,20 @@ impl ResourceRegistryRepository for SqliteResourceStore {
                     )));
                 }
                 aggregate.validate_integrity().map_err(corrupt)
-            })?
+            })
+            .await?
             .into_iter()
             .filter(|stored| stored.aggregate.definition().workspace_id == workspace_id)
             .collect())
     }
 
-    fn load_repository(
+    async fn load_repository(
         &self,
         id: &str,
     ) -> Result<Option<Stored<RepositoryAggregate>>, RegistryRepositoryError> {
-        let stored = self.registry_record::<RepositoryAggregate>(REPOSITORY, id)?;
+        let stored = self
+            .registry_record::<RepositoryAggregate>(REPOSITORY, id)
+            .await?;
         if let Some(stored) = &stored {
             if stored.aggregate.definition().id.as_str() != id {
                 return Err(corrupt(format!(
@@ -245,14 +280,15 @@ impl ResourceRegistryRepository for SqliteResourceStore {
         Ok(stored)
     }
 
-    fn insert_repository(
+    async fn insert_repository(
         &self,
         aggregate: &RepositoryAggregate,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
         self.insert_registry_record(REPOSITORY, aggregate.definition().id.as_str(), aggregate)
+            .await
     }
 
-    fn replace_repository(
+    async fn replace_repository(
         &self,
         expected_revision: AggregateRevision,
         aggregate: &RepositoryAggregate,
@@ -263,12 +299,15 @@ impl ResourceRegistryRepository for SqliteResourceStore {
             expected_revision,
             aggregate,
         )
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Barrier};
+    use std::sync::Arc;
+
+    use tokio::sync::Barrier;
 
     use awaken_resource_contract::{
         ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceState,
@@ -298,8 +337,8 @@ mod tests {
         .expect("valid CAS fixture")
     }
 
-    #[test]
-    fn published_v1_rows_upgrade_in_place_with_the_initial_revision() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn published_v1_rows_upgrade_in_place_with_the_initial_revision() {
         // Migration contract:
         // R1 the published bundle id and table prefix remain physical protocol;
         // R2 applying V2 changes that table in place, defaulting existing rows
@@ -343,6 +382,7 @@ mod tests {
         let upgraded = SqliteResourceStore::open(&path).expect("apply Registry V2");
         let stored = upgraded
             .load_memory_store("memory-cas")
+            .await
             .expect("read upgraded row")
             .expect("V1 row survives in-place upgrade");
         assert_eq!(stored.revision, AggregateRevision::INITIAL);
@@ -360,8 +400,8 @@ mod tests {
         assert_eq!(applied, 1);
     }
 
-    #[test]
-    fn row_identity_mismatch_fails_closed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn row_identity_mismatch_fails_closed() {
         // Corruption partition: valid aggregate JSON stored under a different
         // physical id must be rejected by both point lookup and inventory. The
         // domain validates aggregate invariants; the adapter owns row identity.
@@ -381,17 +421,17 @@ mod tests {
             )
             .expect("seed mismatched row");
         assert!(matches!(
-            store.load_memory_store("aliased-row"),
+            store.load_memory_store("aliased-row").await,
             Err(RegistryRepositoryError::CorruptData(_))
         ));
         assert!(matches!(
-            store.list_memory_stores("workspace"),
+            store.list_memory_stores("workspace").await,
             Err(RegistryRepositoryError::CorruptData(_))
         ));
     }
 
-    #[test]
-    fn concurrent_replacements_have_one_linearizable_winner() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn concurrent_replacements_have_one_linearizable_winner() {
         // State model: both writers observe revision 1; CAS(1,A) and CAS(1,B)
         // race. Exactly one advances to revision 2, the loser reports conflict,
         // and reopen exposes one complete aggregate rather than a torn merge.
@@ -399,7 +439,9 @@ mod tests {
         let path = directory.path().join("resources.db");
         let seed = SqliteResourceStore::open(&path).expect("open Registry seed");
         assert_eq!(
-            seed.insert_memory_store(&memory()).expect("insert seed"),
+            seed.insert_memory_store(&memory())
+                .await
+                .expect("insert seed"),
             InsertOutcome::Inserted
         );
         drop(seed);
@@ -408,10 +450,12 @@ mod tests {
         let right = SqliteResourceStore::open(&path).expect("open right writer");
         let mut left_state = left
             .load_memory_store("memory-cas")
+            .await
             .expect("left load")
             .expect("left aggregate");
         let mut right_state = right
             .load_memory_store("memory-cas")
+            .await
             .expect("right load")
             .expect("right aggregate");
         left_state
@@ -422,22 +466,24 @@ mod tests {
             .update_profile("Right".into(), String::new(), Default::default(), 2);
         let barrier = Arc::new(Barrier::new(3));
         let left_barrier = barrier.clone();
-        let left_thread = std::thread::spawn(move || {
-            left_barrier.wait();
+        let left_writer = tokio::spawn(async move {
+            left_barrier.wait().await;
             left.replace_memory_store(left_state.revision, &left_state.aggregate)
+                .await
                 .expect("left CAS")
         });
         let right_barrier = barrier.clone();
-        let right_thread = std::thread::spawn(move || {
-            right_barrier.wait();
+        let right_writer = tokio::spawn(async move {
+            right_barrier.wait().await;
             right
                 .replace_memory_store(right_state.revision, &right_state.aggregate)
+                .await
                 .expect("right CAS")
         });
-        barrier.wait();
+        barrier.wait().await;
         let outcomes = [
-            left_thread.join().expect("left writer joins"),
-            right_thread.join().expect("right writer joins"),
+            left_writer.await.expect("left writer joins"),
+            right_writer.await.expect("right writer joins"),
         ];
         assert_eq!(
             outcomes
@@ -456,6 +502,7 @@ mod tests {
         let reopened = SqliteResourceStore::open(path).expect("reopen Registry");
         let durable = reopened
             .load_memory_store("memory-cas")
+            .await
             .expect("durable load")
             .expect("durable aggregate");
         assert_eq!(durable.revision.get(), 2);

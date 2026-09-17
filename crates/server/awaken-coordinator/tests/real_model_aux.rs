@@ -53,8 +53,9 @@ fn user(text: &str) -> Vec<Message> {
 
 fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
     struct ActiveMemory;
+    #[async_trait::async_trait]
     impl LiveResourceBindingVerifier for ActiveMemory {
-        fn verify_memory_binding(
+        async fn verify_memory_binding(
             &self,
             _workspace_id: &str,
             _id: &str,
@@ -63,7 +64,7 @@ fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
             Ok(())
         }
 
-        fn verify_repository_binding(
+        async fn verify_repository_binding(
             &self,
             _workspace_id: &str,
             _id: &str,

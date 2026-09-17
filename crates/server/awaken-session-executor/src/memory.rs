@@ -406,25 +406,25 @@ impl BoundMemory {
             && intent.memory_config_version == self.memory_config_version
     }
 
-    fn validate_live_resource(&self) -> Result<(), String> {
-        self.resource_validator
-            .as_ref()
-            .map_or(Ok(()), |validator| {
-                validator
-                    .verify_memory_binding(
-                        &self.workspace_id,
-                        &self.memory_store_id,
-                        awaken_resource_contract::ConfigVersion(self.memory_config_version),
-                    )
-                    .map_err(|error| error.to_string())
-            })
+    async fn validate_live_resource(&self) -> Result<(), String> {
+        let Some(validator) = self.resource_validator.as_ref() else {
+            return Ok(());
+        };
+        validator
+            .verify_memory_binding(
+                &self.workspace_id,
+                &self.memory_store_id,
+                awaken_resource_contract::ConfigVersion(self.memory_config_version),
+            )
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) async fn list_bound_memories(
         &self,
         prefix: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, String> {
-        self.validate_live_resource()?;
+        self.validate_live_resource().await?;
         self.platform.list(prefix).await
     }
 
@@ -432,7 +432,7 @@ impl BoundMemory {
         &self,
         path: &str,
     ) -> Result<Option<awaken_resource_contract::Memory>, String> {
-        self.validate_live_resource()?;
+        self.validate_live_resource().await?;
         self.platform.read(path).await
     }
 
@@ -442,7 +442,7 @@ impl BoundMemory {
         content: &str,
         expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
     ) -> Result<awaken_resource_contract::Memory, String> {
-        self.validate_live_resource()?;
+        self.validate_live_resource().await?;
         self.platform
             .write_exact(path, content, expected_generation)
             .await
@@ -453,7 +453,7 @@ impl BoundMemory {
         path: &str,
         expected_generation: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, String> {
-        self.validate_live_resource()?;
+        self.validate_live_resource().await?;
         self.platform.delete_exact(path, expected_generation).await
     }
 
@@ -607,6 +607,7 @@ impl MemoryExtractionDriver for BoundMemory {
 
     async fn validate_binding(&self, _intent: &MemoryExtractionIntent) -> Result<(), String> {
         self.validate_live_resource()
+            .await
             .map_err(|_| "MemoryStore is missing, suspended, archived, or deleted".to_string())
     }
 
@@ -649,12 +650,12 @@ fn classify_extraction_run_error(
 #[async_trait]
 impl MemoryStoreHandle for BoundMemory {
     async fn write(&self, name: &str, content: &str) -> Result<String, String> {
-        self.validate_live_resource()?;
+        self.validate_live_resource().await?;
         self.store.write(name, content).await
     }
 
     async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
-        self.validate_live_resource()?;
+        self.validate_live_resource().await?;
         self.store.entries().await
     }
 }

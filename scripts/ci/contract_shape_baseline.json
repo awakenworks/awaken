@@ -48,9 +48,12 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 2981,
+      "production_lines": 2988,
       "catch_all_errors": 15,
-      "capability_defaults": 12
+      "capability_defaults": 12,
+      "growth_reasons": {
+        "production_lines": "async_trait attributes on the five Resource Registry ports (+7 lines, no new surface)"
+      }
     },
     "awaken-dispatch-contract": {
       "depth": 4,
@@ -73,7 +76,7 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 17372,
+      "production_lines": 17371,
       "catch_all_errors": 11,
       "capability_defaults": 54
     },
