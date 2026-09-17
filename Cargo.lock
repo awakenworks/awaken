@@ -444,7 +444,6 @@ dependencies = [
  "awaken-environment-execution-application",
  "awaken-environment-image-build",
  "awaken-environment-package-image-builder",
- "awaken-environment-realization-contract",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
@@ -994,7 +993,6 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-environment-application",
  "awaken-environment-contract",
- "awaken-environment-realization-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
  "awaken-provisioning-contract",
@@ -1015,7 +1013,6 @@ dependencies = [
  "awaken-environment-application",
  "awaken-environment-contract",
  "awaken-environment-execution-application",
- "awaken-environment-realization-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
  "awaken-runtime-contract",
@@ -1036,21 +1033,10 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-environment-contract",
- "awaken-environment-realization-contract",
+ "awaken-executable-environment-contract",
  "awaken-provisioning-contract",
  "awaken-sandbox-container",
  "tokio",
-]
-
-[[package]]
-name = "awaken-environment-realization-contract"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-environment-contract",
- "awaken-executable-environment-contract",
- "serde",
- "thiserror",
 ]
 
 [[package]]
@@ -2420,7 +2406,6 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-environment-contract",
- "awaken-environment-realization-contract",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-contract",
  "awaken-provisioning-contract",

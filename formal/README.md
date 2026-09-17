@@ -168,7 +168,7 @@ The named harnesses in the strict gate invoke production pure functions directly
   - a container read-only tree is publishable only after its safe staging tree
     is complete and restricted; the external filesystem rename and rollback
     behavior remains an adapter assumption.
-- `awaken-environment-realization-contract`
+- `awaken-executable-environment-contract` (image realization)
   - image-build claim/reclaim advances one exact non-wrapping attempt/lease
     epoch only when the current phase is eligible;
   - completion and failure require the exact current owner and epoch, and an

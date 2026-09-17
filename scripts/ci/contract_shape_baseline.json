@@ -28,17 +28,16 @@
       "depth": 0,
       "catch_all_errors": 1
     },
-    "awaken-environment-realization-contract": {
-      "depth": 3,
-      "catch_all_errors": 2
-    },
     "awaken-executable-agent-contract": {
       "depth": 3,
       "catch_all_errors": 3
     },
     "awaken-executable-environment-contract": {
       "depth": 2,
-      "catch_all_errors": 3
+      "catch_all_errors": 5,
+      "growth_reasons": {
+        "catch_all_errors": "merged awaken-environment-realization-contract; its 2 instances moved here, workspace total unchanged"
+      }
     },
     "awaken-provisioning-contract": {
       "depth": 1,

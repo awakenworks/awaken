@@ -256,11 +256,11 @@ mod startup_tests {
     use awaken_environment_contract::{
         EnvItem, EnvironmentConfig, EnvironmentPackages, EnvironmentRevision,
     };
-    use awaken_environment_realization_contract::{
+    use awaken_executable_environment_contract::ExecutableEnvironmentRegistration;
+    use awaken_executable_environment_contract::{
         EnvironmentImageBuildDemand, EnvironmentImageBuildError, EnvironmentImageBuildStore,
         EnvironmentImageBuilder,
     };
-    use awaken_executable_environment_contract::ExecutableEnvironmentRegistration;
 
     struct NeverRunBuilder;
 

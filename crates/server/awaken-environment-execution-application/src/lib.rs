@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_environment_contract::{EnvItem, EnvironmentConfig, EnvironmentNetworking};
-use awaken_environment_realization_contract::{
+use awaken_executable_environment_contract::{
     EnvironmentImageBuildError, EnvironmentImageReadiness,
 };
 use awaken_executable_environment_contract::{

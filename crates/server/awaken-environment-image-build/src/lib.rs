@@ -24,8 +24,7 @@ pub use sqlite::open_in_memory_environment_image_build_store;
 pub use sqlite::open_sqlite_environment_image_build_store;
 
 #[cfg(test)]
-pub(crate) fn test_demand() -> awaken_environment_realization_contract::EnvironmentImageBuildDemand
-{
+pub(crate) fn test_demand() -> awaken_executable_environment_contract::EnvironmentImageBuildDemand {
     use awaken_environment_contract::{
         EnvItem, EnvironmentConfig, EnvironmentPackages, EnvironmentRevision,
     };
@@ -51,7 +50,7 @@ pub(crate) fn test_demand() -> awaken_environment_realization_contract::Environm
         },
         None,
     );
-    awaken_environment_realization_contract::EnvironmentImageBuildDemand::from_registration(
+    awaken_executable_environment_contract::EnvironmentImageBuildDemand::from_registration(
         &registration,
         "registry/base:1",
     )
