@@ -849,8 +849,8 @@ mod tests {
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ToolDescriptor};
     use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
     use awaken_runtime_contract::tool::{
-        RawTool, ToolCall, ToolConcurrency, ToolError, ToolOutputSpiller, ToolRecoveryPolicy,
-        ToolResource, ToolResourceAccess,
+        DurableTaskTool, RawTool, ToolCall, ToolConcurrency, ToolError, ToolOutputSpiller,
+        ToolRecoveryPolicy, ToolResource, ToolResourceAccess,
     };
 
     #[derive(Clone, Debug, PartialEq)]
@@ -1541,6 +1541,13 @@ mod tests {
             panic!("durable detached target must use start_task")
         }
 
+        fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {
+            Some(self)
+        }
+    }
+
+    #[async_trait]
+    impl DurableTaskTool for RemoteTaskTool {
         async fn start_task(&self, _call: ToolCall) -> Result<ToolTaskStart, ToolError> {
             self.before_effect().await;
             self.starts.fetch_add(1, Ordering::SeqCst);

@@ -1,6 +1,9 @@
 //! Tool authorization, execution selection, and resumed-result folding.
 
 use super::*;
+use awaken_runtime_contract::tool::{
+    DurableTaskExecutor, ToolTaskContinuation, start_executor_task, start_tool_task,
+};
 use std::sync::Arc;
 
 /// Runtime-owned operations are classified once at the model boundary. The
@@ -532,18 +535,23 @@ async fn execute_tool_action(
             ToolExecutorAction::Invoke => {
                 executor.invoke(call).await.map(ToolExecutorOutcome::Output)
             }
-            ToolExecutorAction::Detached(DetachedToolAction::Start) => executor
-                .start_task(call)
-                .await
-                .map(ToolExecutorOutcome::Started),
-            ToolExecutorAction::Detached(DetachedToolAction::Poll(task)) => executor
-                .poll_task(call, task)
-                .await
-                .map(ToolExecutorOutcome::Polled),
-            ToolExecutorAction::Detached(DetachedToolAction::Cancel(task)) => executor
-                .cancel_task(call, task)
-                .await
-                .map(ToolExecutorOutcome::Polled),
+            ToolExecutorAction::Detached(DetachedToolAction::Start) => {
+                start_executor_task(executor, call)
+                    .await
+                    .map(ToolExecutorOutcome::Started)
+            }
+            ToolExecutorAction::Detached(DetachedToolAction::Poll(task)) => {
+                ToolTaskContinuation::Poll
+                    .continue_through(executor, call, task)
+                    .await
+                    .map(ToolExecutorOutcome::Polled)
+            }
+            ToolExecutorAction::Detached(DetachedToolAction::Cancel(task)) => {
+                ToolTaskContinuation::Cancel
+                    .continue_through(executor, call, task)
+                    .await
+                    .map(ToolExecutorOutcome::Polled)
+            }
         }
     };
     let invocation = with_tool_state_context(
@@ -865,10 +873,17 @@ impl ToolExecutor for LocalToolExecutor<'_> {
         }
     }
 
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskExecutor> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DurableTaskExecutor for LocalToolExecutor<'_> {
     async fn start_task(&self, call: &ToolCall) -> std::result::Result<ToolTaskStart, ToolError> {
         let tool = self.tool(&call.tool_id);
         match tool {
-            Some(tool) => tool.start_task(call.clone()).await,
+            Some(tool) => start_tool_task(tool.as_ref(), call.clone()).await,
             None => Err(ToolError::Unknown(call.tool_id.clone())),
         }
     }
@@ -880,7 +895,11 @@ impl ToolExecutor for LocalToolExecutor<'_> {
     ) -> std::result::Result<ToolTaskPoll, ToolError> {
         let tool = self.tool(&call.tool_id);
         match tool {
-            Some(tool) => tool.poll_task(call, task).await,
+            Some(tool) => {
+                ToolTaskContinuation::Poll
+                    .continue_on(tool.as_ref(), call, task)
+                    .await
+            }
             None => Err(ToolError::Unknown(call.tool_id.clone())),
         }
     }
@@ -892,7 +911,11 @@ impl ToolExecutor for LocalToolExecutor<'_> {
     ) -> std::result::Result<ToolTaskPoll, ToolError> {
         let tool = self.tool(&call.tool_id);
         match tool {
-            Some(tool) => tool.cancel_task(call, task).await,
+            Some(tool) => {
+                ToolTaskContinuation::Cancel
+                    .continue_on(tool.as_ref(), call, task)
+                    .await
+            }
             None => Err(ToolError::Unknown(call.tool_id.clone())),
         }
     }

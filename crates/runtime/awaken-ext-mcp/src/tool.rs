@@ -18,7 +18,8 @@ use awaken_mcp_wire::{
 use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::tool::{
-    RawTool, ToolCall, ToolError, ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
+    DurableTaskTool, RawTool, ToolCall, ToolError, ToolOutput, ToolTaskHandle, ToolTaskPoll,
+    ToolTaskStart,
 };
 use serde_json::Value;
 
@@ -163,6 +164,13 @@ impl RawTool for McpRawTool {
         self.invoke_foreground(call).await
     }
 
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl DurableTaskTool for McpRawTool {
     async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
         if !self.task_capable() {
             return self

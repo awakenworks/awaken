@@ -26,8 +26,8 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{
-    RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolOutputSpiller,
-    ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
+    DurableTaskTool, RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
+    ToolOutputSpiller, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
@@ -162,6 +162,17 @@ impl RawTool for InvalidatesContinuation {
 
     async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
         panic!("continuation fixture must not redispatch the original effect")
+    }
+
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DurableTaskTool for InvalidatesContinuation {
+    async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
+        self.invoke(call).await.map(ToolTaskStart::Completed)
     }
 
     async fn poll_task(
@@ -1023,6 +1034,13 @@ impl RawTool for ObservedTool {
         }
     }
 
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DurableTaskTool for ObservedTool {
     async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
         let ObservedToolReturn::CreatedTask(case) = self.mode else {
             return self.invoke(call).await.map(ToolTaskStart::Completed);

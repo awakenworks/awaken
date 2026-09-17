@@ -202,14 +202,18 @@ mod tests {
                 .all(|descriptor| !descriptor.id.contains("tasks/")),
             "E3"
         );
-        let started = connection.tools[0]
-            .start_task(ToolCall {
+        // The erased tool advertises its durable-task capability, so the
+        // generic detached start reaches the negotiated task protocol.
+        let started = awaken_runtime_contract::tool::start_tool_task(
+            connection.tools[0].as_ref(),
+            ToolCall {
                 call_id: "call-1".into(),
                 tool_id: "mcp__srv__slow".into(),
                 arguments: serde_json::json!({}),
-            })
-            .await
-            .expect("E2");
+            },
+        )
+        .await
+        .expect("E2");
         assert!(matches!(
             started,
             ToolTaskStart::Pending(handle)
