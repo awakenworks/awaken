@@ -1,9 +1,8 @@
 //! Deterministic authorization profiles owned by Awaken.
 
 use awaken_authorization_contract::{
-    AGENT_PUBLISHER_AUTHORITIES, CREDENTIAL_INGRESS_AUTHORITIES, HostedRuntimeRole,
-    WorkspaceProfileRole, WorkspaceRoleAuthority, hosted_runtime_role_authorities,
-    workspace_profile_role_authorities,
+    AGENT_PUBLISHER_AUTHORITIES, CREDENTIAL_INGRESS_AUTHORITIES, WorkspaceProfileRole,
+    WorkspaceRoleAuthority, workspace_profile_role_authorities,
 };
 use awaken_iam_contract::{
     ActionKey, ActionScopeRule, AuthorizationProfileDocument, CreateAuthorizationProfile,
@@ -283,6 +282,46 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
     }
 }
 
+/// Finite Hosted Runtime action-pattern vocabulary. Only the Hosted Runtime
+/// authorization profile below consumes it, so it lives beside that profile
+/// rather than in the shared authorization contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostedRuntimeAuthority {
+    RunAll,
+    RunRead,
+}
+
+impl HostedRuntimeAuthority {
+    const fn action_pattern(self) -> &'static str {
+        match self {
+            Self::RunAll => "run.*",
+            Self::RunRead => "run.read",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostedRuntimeRole {
+    WorkspaceAdmin,
+    WorkspaceMember,
+    AgentExecutor,
+}
+
+const RUNTIME_FULL_AUTHORITIES: &[HostedRuntimeAuthority] = &[HostedRuntimeAuthority::RunAll];
+const RUNTIME_MEMBER_AUTHORITIES: &[HostedRuntimeAuthority] = &[HostedRuntimeAuthority::RunRead];
+
+/// Complete, ordered Runtime authority projection consumed by production.
+const fn hosted_runtime_role_authorities(
+    role: HostedRuntimeRole,
+) -> &'static [HostedRuntimeAuthority] {
+    match role {
+        HostedRuntimeRole::WorkspaceAdmin | HostedRuntimeRole::AgentExecutor => {
+            RUNTIME_FULL_AUTHORITIES
+        }
+        HostedRuntimeRole::WorkspaceMember => RUNTIME_MEMBER_AUTHORITIES,
+    }
+}
+
 /// Immutable Hosted Run lifecycle authorization contract.
 ///
 /// Awaken owns the `run.*` vocabulary and the roles that may invoke it. A
@@ -341,5 +380,49 @@ pub fn hosted_runtime_authorization_profile() -> CreateAuthorizationProfile {
             ..AuthorizationProfileDocument::default()
         },
         created_at,
+    }
+}
+
+#[cfg(test)]
+mod hosted_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_runtime_member_projects_only_run_read() {
+        // Cause/effect: C1 member role -> E1 exactly `run.read`; C2 admin or
+        // agent executor -> E2 exactly `run.*`. The domain is finite, so the
+        // table below is exhaustive.
+        let patterns = |role| {
+            hosted_runtime_role_authorities(role)
+                .iter()
+                .map(|authority| authority.action_pattern())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            patterns(HostedRuntimeRole::WorkspaceMember),
+            ["run.read"],
+            "C1"
+        );
+        assert_eq!(patterns(HostedRuntimeRole::WorkspaceAdmin), ["run.*"], "C2");
+        assert_eq!(patterns(HostedRuntimeRole::AgentExecutor), ["run.*"], "C2");
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn runtime_member_role_contains_exactly_run_read() {
+        let authority = if kani::any() {
+            HostedRuntimeAuthority::RunAll
+        } else {
+            HostedRuntimeAuthority::RunRead
+        };
+        assert_eq!(
+            hosted_runtime_role_authorities(HostedRuntimeRole::WorkspaceMember)
+                .contains(&authority),
+            authority == HostedRuntimeAuthority::RunRead
+        );
     }
 }

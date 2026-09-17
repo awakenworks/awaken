@@ -155,7 +155,7 @@ The named harnesses in the strict gate invoke production pure functions directly
 - sandbox-tool recovery is a hard claim axis, manifest recovery matches the
     installed executor, readiness is probe-independent, and unpublished dynamic
     evidence can only restrict admission.
-- `awaken-authorization-contract`
+- `awaken-authorization-contract` / `awaken-control` (Hosted Runtime roles)
   - hosted admin, workspace member, and runtime member grants equal their exact
     closed sets; legacy workspace migration is idempotent and authority exact.
 - `awaken-protocol-managed` / `awaken-session-executor`
