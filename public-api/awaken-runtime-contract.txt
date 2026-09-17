@@ -109,6 +109,7 @@ pub use awaken_runtime_contract::TrustDomainRef
 pub use awaken_runtime_contract::WorkerLocalCredentialResolver
 pub use awaken_runtime_contract::WorkerLocalReferenceRevalidator
 pub use awaken_runtime_contract::commit_payload_hash
+pub use awaken_runtime_contract::content_fingerprint
 pub use awaken_runtime_contract::extract_text
 pub use awaken_runtime_contract::require_exact_available_worker_reference
 pub use awaken_runtime_contract::tool
@@ -1155,6 +1156,7 @@ impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::
 pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
 pub const fn awaken_runtime_contract::resilience::bounded_retry_decision(u8, bool, u32, u32) -> awaken_runtime_contract::resilience::RetryDecision
 pub mod awaken_runtime_contract::resolution
+pub use awaken_runtime_contract::resolution::content_fingerprint
 pub enum awaken_runtime_contract::resolution::ResolutionManifestError
 pub awaken_runtime_contract::resolution::ResolutionManifestError::Duplicate
 pub awaken_runtime_contract::resolution::ResolutionManifestError::Duplicate::id: alloc::string::String
@@ -1171,7 +1173,6 @@ pub struct awaken_runtime_contract::resolution::ResolvedInputRef
 pub awaken_runtime_contract::resolution::ResolvedInputRef::id: alloc::string::String
 pub awaken_runtime_contract::resolution::ResolvedInputRef::kind: alloc::string::String
 pub awaken_runtime_contract::resolution::ResolvedInputRef::version: awaken_runtime_contract::resolution::ResolvedInputVersion
-pub fn awaken_runtime_contract::resolution::content_fingerprint<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub mod awaken_runtime_contract::resolved
 pub use awaken_runtime_contract::resolved::AcpSessionConfiguration
 pub enum awaken_runtime_contract::resolved::AcpMcpTransport
@@ -2443,7 +2444,6 @@ impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_runtim
 pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::candidate_fingerprint(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<awaken_runtime_contract::credential::CandidateFingerprint, awaken_runtime_contract::credential::CredentialReceiptError>
 pub fn awaken_runtime_contract::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
-pub fn awaken_runtime_contract::content_fingerprint<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub fn awaken_runtime_contract::credential_realization_persistence_decision(core::option::Option<&awaken_runtime_contract::credential::CredentialRealizationReceipt>, &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision
 pub fn awaken_runtime_contract::deserialize_max_steps<'de, D>(D) -> core::result::Result<core::option::Option<usize>, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome

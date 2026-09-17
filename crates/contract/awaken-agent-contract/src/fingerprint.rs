@@ -98,6 +98,19 @@ pub fn stable_fingerprint(value: &impl serde::Serialize) -> String {
     prefixed_lower_hex("fnv1a64:", &hash.to_be_bytes())
 }
 
+/// Stable SHA-256 content identity: lowercase hex of the plain `serde_json`
+/// bytes of one value. Unlike [`canonical_json_sha256`] it does not
+/// canonicalize, so it is only stable for values whose serialization is
+/// already deterministic (structs, ordered maps). Persisted identities (the
+/// resolver-input pin, the tool-operation ledger id) depend on these exact
+/// bytes, so its encoding must never change.
+pub fn content_fingerprint<T: serde::Serialize + ?Sized>(
+    value: &T,
+) -> Result<String, serde_json::Error> {
+    use sha2::{Digest, Sha256};
+    serde_json::to_vec(value).map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+}
+
 /// Compute one deterministic, collision-resistant, secret-free identity.
 ///
 /// The caller owns the domain and the ordered components. Every component is
