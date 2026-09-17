@@ -9,6 +9,10 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 source scripts/ci/_deadline.sh
+# TLAPS bundles the pinned Z3 outside a non-login PATH. Without this the Z3
+# profiles below ran only when the caller's shell happened to carry it.
+source scripts/ci/_provider_environment.sh
+awaken_append_repo_tools
 
 
 require_tools=0
@@ -331,6 +335,15 @@ if command -v cargo-kani >/dev/null 2>&1; then
         return "$result"
       fi
     fi
+    # Kani does not report an absent solver as an absent tool: every check
+    # ends in ERROR and the batch reads "0 of N failed ... VERIFICATION FAILED",
+    # indistinguishable from a proof regression. Decide the solver before
+    # running, for explicit selections and profile-expanded ones alike.
+    if [[ " $* " == *" --solver z3 "* ]] && ! z3_is_pinned; then
+      echo "skipped Z3 harnesses of $package: install the pinned solver ($z3_version) on PATH (TLAPS bundles it)"
+      missing=1
+      return 0
+    fi
     # The driver's build-directory requirement is owned by
     # `awaken_configure_kani_driver_target`; scripts/ci/kani.sh applies the same
     # one for a person invoking a harness directly.
@@ -351,6 +364,19 @@ if command -v cargo-kani >/dev/null 2>&1; then
       echo "cargo-kani batch timed out: $package (${kani_batch_timeout_seconds}s)" >&2
     fi
     return "$result"
+  }
+  # Present and exactly the pinned version; a different Z3 is a hard error,
+  # because its answers are not the ones the profiles were qualified against.
+  z3_is_pinned() {
+    local actual
+    command -v z3 >/dev/null 2>&1 || return 1
+    # Assigned apart from `local` and exited explicitly: this runs inside a
+    # negated condition, where errexit would not stop an unreadable version.
+    actual="$(z3 --version)" || exit $?
+    if [ "$actual" != "$z3_version" ]; then
+      echo "unexpected Z3 version: $actual" >&2
+      exit 1
+    fi
   }
   run_kani awaken-agent-contract \
     --harness ended_is_absorbing_for_every_next_state \
@@ -759,18 +785,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness acp_permission_tool_identity_normalization_is_exact
   # Z3 keeps the full-width division shared in this caller-refinement proof.
   # This selection remains inside the one strict runner and toolchain receipt.
-  if command -v z3 >/dev/null 2>&1; then
-    actual_z3_version="$(z3 --version)"
-    if [ "$actual_z3_version" != "$z3_version" ]; then
-      echo "unexpected Z3 version: $actual_z3_version" >&2
-      exit 1
-    fi
-    run_kani awaken-protocol-managed --solver z3 \
-      --harness memory_time_filter_compares_visible_milliseconds_without_merging_them
-  else
-    echo "skipped Z3: install the pinned solver on PATH (TLAPS bundles it)"
-    missing=1
-  fi
+  run_kani awaken-protocol-managed --solver z3 \
+    --harness memory_time_filter_compares_visible_milliseconds_without_merging_them
   # The production reply selector folds every lifecycle fact through a
   # heap-free one-step induction kernel; prefix collection stays at the edge.
   run_kani awaken-protocol-managed --solver cadical \
