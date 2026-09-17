@@ -196,7 +196,7 @@ impl RawTool for ForkAgentTool {
         )
         .await
         .map(|(text, _usage)| ToolOutput::ok(call.call_id, text))
-        .map_err(|error| ToolError::Execution(error.to_string()))
+        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))
     }
 }
 

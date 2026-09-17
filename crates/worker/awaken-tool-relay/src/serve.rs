@@ -185,7 +185,9 @@ impl HandSession {
     async fn dispatch(&self, request: &HandRequest) -> HandResult {
         match self.registry.invoke(&request.call).await {
             Ok(output) => HandResult::ok(output),
-            Err(ToolError::Unknown(tool_id)) => HandResult::err(HandError::unknown_tool(&tool_id)),
+            Err(ToolError::UnknownTool(tool_id)) => {
+                HandResult::err(HandError::unknown_tool(&tool_id))
+            }
             Err(ToolError::Indeterminate(_)) => HandResult::Indeterminate,
             Err(error) => {
                 HandResult::err(HandError::new(HandErrorKind::Execution, error.to_string()))

@@ -26,8 +26,8 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{
-    RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolOutputSpiller,
-    ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
+    DurableTaskTool, RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
+    ToolOutputSpiller, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
@@ -106,7 +106,7 @@ impl ToolOutputSpiller for SpillProbe {
             .unwrap()
             .push((run_id.0.clone(), call_id.to_string(), content.clone()));
         if self.fail {
-            Err(ToolError::Execution("spill unavailable".into()))
+            Err(ToolError::DefinitiveFailure("spill unavailable".into()))
         } else {
             Ok(format!("preview: {content}"))
         }
@@ -162,6 +162,17 @@ impl RawTool for InvalidatesContinuation {
 
     async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
         panic!("continuation fixture must not redispatch the original effect")
+    }
+
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DurableTaskTool for InvalidatesContinuation {
+    async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
+        self.invoke(call).await.map(ToolTaskStart::Completed)
     }
 
     async fn poll_task(
@@ -949,7 +960,7 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
 }
 
 /// A tool whose invocation fails at runtime — not unknown, not bad-args, but a genuine
-/// `ToolError::Execution` (the class a real tool raises when its work fails). It must
+/// `ToolError::DefinitiveFailure` (the class a real tool raises when its work fails). It must
 /// reach the model as an error result and let the run continue, exactly like the
 /// unknown/invalid-args paths (the engine's `Err → ToolOutput::error` seam, A2).
 struct FailingExecTool;
@@ -960,7 +971,7 @@ impl RawTool for FailingExecTool {
         "echo"
     }
     async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
-        Err(ToolError::Execution("exec boom".to_string()))
+        Err(ToolError::DefinitiveFailure("exec boom".to_string()))
     }
 }
 
@@ -1016,13 +1027,22 @@ impl RawTool for ObservedTool {
         self.entered.fetch_add(1, Ordering::SeqCst);
         match self.mode {
             ObservedToolReturn::Success => Ok(ToolOutput::ok(call.call_id, "returned")),
-            ObservedToolReturn::Failure => Err(ToolError::Execution("returned failure".into())),
+            ObservedToolReturn::Failure => {
+                Err(ToolError::DefinitiveFailure("returned failure".into()))
+            }
             ObservedToolReturn::Unknown => Err(ToolError::Indeterminate("lost outcome".into())),
             ObservedToolReturn::Pending => std::future::pending().await,
             ObservedToolReturn::CreatedTask(_) => panic!("created-task fixture requires start"),
         }
     }
 
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DurableTaskTool for ObservedTool {
     async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
         let ObservedToolReturn::CreatedTask(case) = self.mode else {
             return self.invoke(call).await.map(ToolTaskStart::Completed);
@@ -1446,7 +1466,9 @@ async fn returned_tool_cannot_hide_an_inline_participants_quiescence_veto() {
                 self.evidence.mark_uncertain();
             }
             if self.ordinary_error {
-                Err(ToolError::Execution("outer tool returned an error".into()))
+                Err(ToolError::DefinitiveFailure(
+                    "outer tool returned an error".into(),
+                ))
             } else {
                 Ok(ToolOutput::ok(call.call_id, "outer tool returned"))
             }

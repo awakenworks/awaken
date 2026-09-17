@@ -9,10 +9,11 @@ pub mod tool_batch;
 pub mod tool_discovery;
 
 pub use tool::{
-    RawTool, RawToolRegistry, Tool, ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit,
-    ToolExecutionTarget, ToolExecutionWave, ToolExecutor, ToolOperationToken, ToolOutput,
-    ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy, ToolResource, ToolResourceAccess,
-    ToolTaskHandle, ToolTaskPoll, ToolTaskStart, tool_execution_waves,
+    DurableTaskExecutor, DurableTaskTool, RawTool, RawToolRegistry, Tool, ToolConcurrency,
+    ToolExecutionAdmission, ToolExecutionPermit, ToolExecutionTarget, ToolExecutionWave,
+    ToolExecutor, ToolOperationToken, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode,
+    ToolRecoveryPolicy, ToolResource, ToolResourceAccess, ToolTaskContinuation, ToolTaskHandle,
+    ToolTaskPoll, ToolTaskStart, start_executor_task, start_tool_task, tool_execution_waves,
 };
 pub use tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWait, ToolWaitKind,

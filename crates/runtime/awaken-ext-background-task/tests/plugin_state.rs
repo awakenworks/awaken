@@ -29,7 +29,7 @@ impl ToolExecutionFactsResolver for FixtureExecutionFacts {
                 recovery: ToolRecoveryPolicy::default(),
                 concurrency: ToolConcurrency::Parallel,
             })
-            .ok_or_else(|| ToolError::Unknown(call.tool_id.clone()))
+            .ok_or_else(|| ToolError::UnknownTool(call.tool_id.clone()))
     }
 }
 

@@ -112,22 +112,26 @@ impl AttachedTools {
             ));
         }
         let (reader, writer) = tokio::io::split(channel);
-        let result = tools
-            .exporter
-            .export_channel_set(
-                awaken_runtime_contract::resolved::AcpMcpServer {
-                    name: attached.server.name.clone(),
-                    transport: awaken_runtime_contract::resolved::AcpMcpTransport::Stdio {
-                        command: helper,
-                        args: attached.server.args.clone(),
-                    },
-                },
-                tools.descriptors.clone(),
-                tools.executors.clone(),
-                Box::new(reader),
-                Box::new(writer),
-            )
-            .await;
+        let result = match tools.exporter.attached_channels() {
+            Some(exporter) => {
+                exporter
+                    .export_channel_set(
+                        awaken_runtime_contract::resolved::AcpMcpServer {
+                            name: attached.server.name.clone(),
+                            transport: awaken_runtime_contract::resolved::AcpMcpTransport::Stdio {
+                                command: helper,
+                                args: attached.server.args.clone(),
+                            },
+                        },
+                        tools.descriptors.clone(),
+                        tools.executors.clone(),
+                        Box::new(reader),
+                        Box::new(writer),
+                    )
+                    .await
+            }
+            None => Err("ACP tool exporter does not support attached channels".to_string()),
+        };
         match result {
             Ok(export) => attached.state.lock().await.export = Some(export),
             Err(error) => {

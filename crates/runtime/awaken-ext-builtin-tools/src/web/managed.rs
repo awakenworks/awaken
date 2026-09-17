@@ -150,9 +150,11 @@ pub fn managed_web_route_ref<'a>(tool_id: &str, options: &'a Value) -> Option<&'
 
 fn managed_endpoint_url(endpoint: &ManagedWebGatewayEndpoint) -> Result<url::Url, ToolError> {
     let mut url = url::Url::parse(&endpoint.gateway_base_url)
-        .map_err(|_| ToolError::Execution("managed Web Gateway URL is invalid".into()))?;
+        .map_err(|_| ToolError::DefinitiveFailure("managed Web Gateway URL is invalid".into()))?;
     url.path_segments_mut()
-        .map_err(|_| ToolError::Execution("managed Web Gateway URL is not hierarchical".into()))?
+        .map_err(|_| {
+            ToolError::DefinitiveFailure("managed Web Gateway URL is not hierarchical".into())
+        })?
         .extend(["http", endpoint.route_ref.as_str()]);
     Ok(url)
 }
@@ -163,9 +165,11 @@ async fn resolve_managed_route(
     options: &Value,
 ) -> Result<ManagedWebGatewayEndpoint, ToolError> {
     let route_ref = managed_web_route_ref(tool_id, options)
-        .ok_or_else(|| ToolError::Execution("managed Web route is not published".into()))?;
-    let context = awaken_runtime_contract::tool::current_tool_operation_context()
-        .ok_or_else(|| ToolError::Execution("managed Web route requires an active Run".into()))?;
+        .ok_or_else(|| ToolError::DefinitiveFailure("managed Web route is not published".into()))?;
+    let context =
+        awaken_runtime_contract::tool::current_tool_operation_context().ok_or_else(|| {
+            ToolError::DefinitiveFailure("managed Web route requires an active Run".into())
+        })?;
     resolver
         .resolve(&context, tool_id, route_ref)
         .await
@@ -174,7 +178,7 @@ async fn resolve_managed_route(
                 ToolError::UnavailableBeforeDispatch(error.to_string())
             }
             ManagedWebRouteError::Forbidden | ManagedWebRouteError::Invalid => {
-                ToolError::Execution(error.to_string())
+                ToolError::DefinitiveFailure(error.to_string())
             }
         })
 }
@@ -229,7 +233,7 @@ impl WebSearchProvider for ManagedGatewayWebProvider {
         credential: Option<&Credential>,
     ) -> Result<Vec<WebSearchResult>, ToolError> {
         if credential.is_some() {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "managed WebSearch must not receive plaintext credentials".into(),
             ));
         }
@@ -255,10 +259,14 @@ impl WebSearchProvider for ManagedGatewayWebProvider {
             let response: ManagedSearchResponse = ureq::get(url.as_str())
                 .set("Authorization", &format!("Bearer {token}"))
                 .call()
-                .map_err(|error| ToolError::Execution(format!("managed WebSearch: {error}")))?
+                .map_err(|error| {
+                    ToolError::DefinitiveFailure(format!("managed WebSearch: {error}"))
+                })?
                 .into_json()
                 .map_err(|_| {
-                    ToolError::Execution("managed WebSearch returned an invalid response".into())
+                    ToolError::DefinitiveFailure(
+                        "managed WebSearch returned an invalid response".into(),
+                    )
                 })?;
             Ok(response
                 .web
@@ -306,12 +314,12 @@ impl WebFetchProvider for ManagedGatewayWebProvider {
         domain_filter: Option<&WebDomainFilter>,
     ) -> Result<String, ToolError> {
         if domain_filter.is_some() {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "managed WebFetch cannot enforce target redirect domain policy".into(),
             ));
         }
         if credential.is_some() {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "managed WebFetch must not receive plaintext credentials".into(),
             ));
         }
@@ -338,13 +346,17 @@ impl WebFetchProvider for ManagedGatewayWebProvider {
             let response = ureq::get(url.as_str())
                 .set("Authorization", &format!("Bearer {token}"))
                 .call()
-                .map_err(|error| ToolError::Execution(format!("managed WebFetch: {error}")))?;
+                .map_err(|error| {
+                    ToolError::DefinitiveFailure(format!("managed WebFetch: {error}"))
+                })?;
             let mut bytes = Vec::new();
             response
                 .into_reader()
                 .take(MAX_BODY)
                 .read_to_end(&mut bytes)
-                .map_err(|error| ToolError::Execution(format!("read managed WebFetch: {error}")))?;
+                .map_err(|error| {
+                    ToolError::DefinitiveFailure(format!("read managed WebFetch: {error}"))
+                })?;
             Ok(String::from_utf8_lossy(&bytes).into_owned())
         })
         .await

@@ -23,7 +23,7 @@ impl DeferredSandboxExecutor {
     fn host(&self) -> Result<Arc<crate::SharedHost>, ToolError> {
         self.host
             .upgrade()
-            .ok_or_else(|| ToolError::Execution("Session host is unavailable".into()))
+            .ok_or_else(|| ToolError::DefinitiveFailure("Session host is unavailable".into()))
     }
 }
 
@@ -47,7 +47,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
         let environment = host
             .ensure_session_environment_for_tool(&self.thread)
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
         environment.tool_executor().invoke(call).await
     }
 }

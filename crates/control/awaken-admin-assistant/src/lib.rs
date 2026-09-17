@@ -793,7 +793,7 @@ async fn audit(
                 .get_audit(tool, operation_id)
                 .await
                 .map_err(|read_error| {
-                    ToolError::Execution(format!(
+                    ToolError::DefinitiveFailure(format!(
                         "durable audit failed: {error}; compatibility read failed: {read_error}"
                     ))
                 })?;
@@ -803,12 +803,12 @@ async fn audit(
                 if existing.business_committed {
                     return Ok((event, true));
                 }
-                return Err(ToolError::Execution(
+                return Err(ToolError::DefinitiveFailure(
                     "legacy durable audit is pending without a request fingerprint; retry cannot safely infer its complete arguments"
                         .into(),
                 ));
             }
-            return Err(ToolError::Execution(format!(
+            return Err(ToolError::DefinitiveFailure(format!(
                 "durable audit failed: {error}"
             )));
         }
@@ -824,24 +824,26 @@ async fn audit(
                 .get_audit(tool, operation_id)
                 .await
                 .map_err(|error| {
-                    ToolError::Execution(format!("durable audit read failed: {error}"))
+                    ToolError::DefinitiveFailure(format!("durable audit read failed: {error}"))
                 })?
                 .ok_or_else(|| {
-                    ToolError::Execution(
+                    ToolError::DefinitiveFailure(
                         "durable audit replay was reported without an audit entry".into(),
                     )
                 })?;
             if existing.record != event {
-                return Err(ToolError::Execution(
+                return Err(ToolError::DefinitiveFailure(
                     "stable audit call id was reused with different content".into(),
                 ));
             }
             Ok((event, existing.business_committed))
         }
-        AuditedConfigWrite::Conflict { current_revision } => Err(ToolError::Execution(format!(
-            "durable audit begin conflicted unexpectedly (current revision: {current_revision:?})"
-        ))),
-        AuditedConfigWrite::Applied => Err(ToolError::Execution(
+        AuditedConfigWrite::Conflict { current_revision } => {
+            Err(ToolError::DefinitiveFailure(format!(
+                "durable audit begin conflicted unexpectedly (current revision: {current_revision:?})"
+            )))
+        }
+        AuditedConfigWrite::Applied => Err(ToolError::DefinitiveFailure(
             "durable audit begin returned an inconsistent business admission".into(),
         )),
     }
@@ -874,7 +876,7 @@ fn mutating_audit_summary(
     let request_sha256 =
         awaken_session_contract::canonical_json_sha256(MUTATING_TOOL_ARGUMENTS_DOMAIN, arguments)
             .map_err(|error| {
-            ToolError::Execution(format!(
+            ToolError::DefinitiveFailure(format!(
                 "canonicalize `{tool}` arguments for durable audit: {error}"
             ))
         })?;
@@ -892,7 +894,7 @@ async fn already_applied_output(
     audit: &AdminAuditEvent,
 ) -> Result<ToolOutput, ToolError> {
     store.reconcile_pending_effects().await.map_err(|error| {
-        ToolError::Execution(format!(
+        ToolError::DefinitiveFailure(format!(
             "committed operation effect recovery failed: {error}"
         ))
     })?;
@@ -918,10 +920,9 @@ async fn error_or_committed(
     message: impl Into<String>,
 ) -> Result<ToolOutput, ToolError> {
     let (tool, operation_id) = audit.identity();
-    let existing = store
-        .get_audit(tool, operation_id)
-        .await
-        .map_err(|error| ToolError::Execution(format!("durable audit read failed: {error}")))?;
+    let existing = store.get_audit(tool, operation_id).await.map_err(|error| {
+        ToolError::DefinitiveFailure(format!("durable audit read failed: {error}"))
+    })?;
     if existing.is_some_and(|entry| entry.business_committed) {
         already_applied_output(call_id, store, audit).await
     } else {
@@ -1023,7 +1024,7 @@ impl RawTool for GetPlatformCapabilities {
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         let caps = self.reader.capabilities().await;
         let content = serde_json::to_string(&caps)
-            .map_err(|e| ToolError::Execution(format!("serialize capabilities: {e}")))?;
+            .map_err(|e| ToolError::DefinitiveFailure(format!("serialize capabilities: {e}")))?;
         Ok(ToolOutput::ok(call.call_id, content))
     }
 }

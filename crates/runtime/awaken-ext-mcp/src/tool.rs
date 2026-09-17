@@ -18,7 +18,8 @@ use awaken_mcp_wire::{
 use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::tool::{
-    RawTool, ToolCall, ToolError, ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
+    DurableTaskTool, RawTool, ToolCall, ToolError, ToolOutput, ToolTaskHandle, ToolTaskPoll,
+    ToolTaskStart,
 };
 use serde_json::Value;
 
@@ -95,7 +96,7 @@ impl McpRawTool {
     fn validate_handle(&self, task: &ToolTaskHandle) -> Result<(), ToolError> {
         task.validate()?;
         if task.owner != MCP_TASK_OWNER || task.binding != self.id {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "MCP task handle does not belong to this resolved tool".into(),
             ));
         }
@@ -156,13 +157,20 @@ impl RawTool for McpRawTool {
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         if self.task_capable() {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "MCP task-capable tools require detached execution".into(),
             ));
         }
         self.invoke_foreground(call).await
     }
 
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl DurableTaskTool for McpRawTool {
     async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
         if !self.task_capable() {
             return self
@@ -200,7 +208,7 @@ impl RawTool for McpRawTool {
     ) -> Result<ToolTaskPoll, ToolError> {
         self.validate_handle(task)?;
         if !self.transport.supports_task_cancel() {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "MCP server did not negotiate tasks/cancel".into(),
             ));
         }
@@ -226,7 +234,7 @@ fn effect_error(error: McpTransportError) -> ToolError {
 // be retried by the existing Host observer, never by recreating the remote task.
 // Exhaustion remains the BackgroundTask aggregate's Indeterminate outcome.
 fn observation_error(error: McpTransportError) -> ToolError {
-    ToolError::Execution(error.to_string())
+    ToolError::DefinitiveFailure(error.to_string())
 }
 
 fn normalized_arguments(arguments: Value) -> Value {
@@ -686,7 +694,10 @@ mod tests {
                 _ => tool.poll_task(&call(), &handle).await.unwrap_err(),
             };
             if matches!(fault, "poll" | "result") {
-                assert!(matches!(error, ToolError::Execution(_)), "T2 {fault}");
+                assert!(
+                    matches!(error, ToolError::DefinitiveFailure(_)),
+                    "T2 {fault}"
+                );
             } else {
                 assert!(matches!(error, ToolError::Indeterminate(_)), "T1 {fault}");
             }
@@ -782,7 +793,7 @@ mod tests {
         assert!(
             matches!(
                 tool.invoke(call()).await,
-                Err(ToolError::Execution(message)) if message.contains("detached execution")
+                Err(ToolError::DefinitiveFailure(message)) if message.contains("detached execution")
             ),
             "L1/E1"
         );
@@ -819,7 +830,7 @@ mod tests {
         assert!(
             matches!(
                 tool.poll_task(&call(), &foreign).await,
-                Err(ToolError::Execution(message)) if message.contains("does not belong")
+                Err(ToolError::DefinitiveFailure(message)) if message.contains("does not belong")
             ),
             "L4/E5"
         );
@@ -884,7 +895,7 @@ mod tests {
         assert!(
             matches!(
                 tool.cancel_task(&call(), &handle).await,
-                Err(ToolError::Execution(message)) if message.contains("did not negotiate")
+                Err(ToolError::DefinitiveFailure(message)) if message.contains("did not negotiate")
             ),
             "S3/E3"
         );

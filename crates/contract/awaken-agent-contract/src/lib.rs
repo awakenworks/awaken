@@ -13,6 +13,7 @@ pub mod model_spec;
 pub mod model_target;
 pub mod observation;
 pub mod page;
+pub mod resilience;
 pub mod secret;
 pub mod skill;
 pub mod stream;

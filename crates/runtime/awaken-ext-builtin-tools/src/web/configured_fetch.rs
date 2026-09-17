@@ -13,7 +13,7 @@ pub(super) fn configured_web_fetch_url(
     if let Some(filter) = &configuration.domains
         && !url_matches_filter(&url, filter)
     {
-        return Err(ToolError::Execution(
+        return Err(ToolError::DefinitiveFailure(
             "web_fetch URL is outside the configured domain policy".into(),
         ));
     }
