@@ -18,7 +18,9 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
+use awaken_runtime_contract::permission::{
+    DenyAllTools, GateDecision, GateOutcome, PermissionBasis, PermissionPolicy, ToolGateHook,
+};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, HookReaction, IdBound, PhaseContext, PhaseHook,
     PhaseHookPoint, Plugin, PluginManifest,
@@ -279,7 +281,7 @@ struct ConfirmTool;
 #[async_trait::async_trait]
 impl ToolGateHook for ConfirmTool {
     async fn gate(&self, call: &ToolCall, _: &Store) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::RequireConfirmation {
+        GateDecision::plugin_gate(GateOutcome::RequireConfirmation {
             correlation_id: format!("confirm-{}", call.call_id),
         })
     }
@@ -491,7 +493,7 @@ impl ToolGateHook for NarrowGate {
         "narrow"
     }
     async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Block {
+        GateDecision::plugin_gate(GateOutcome::Block {
             reason: "plugin policy forbids echo".to_string(),
         })
     }
@@ -519,14 +521,31 @@ impl Plugin for NarrowGatePlugin {
 }
 
 /// An absolute host gate that always denies — the host verdict is final (G21).
+/// It stands in for the authored host policy, so it names the `rule` basis.
 struct DenyHostGate;
 
 #[async_trait::async_trait]
 impl ToolGateHook for DenyHostGate {
     async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Block {
-            reason: "host denied".to_string(),
-        })
+        GateDecision::policy(
+            GateOutcome::Block {
+                reason: "host denied".to_string(),
+            },
+            PermissionBasis::fixed(PermissionPolicy::Rule),
+        )
+    }
+}
+
+/// A host gate standing in for an authored `always_allow` policy.
+struct AllowHostGate;
+
+#[async_trait::async_trait]
+impl ToolGateHook for AllowHostGate {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
+        GateDecision::policy(
+            GateOutcome::Allow,
+            PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
+        )
     }
 }
 
@@ -543,7 +562,7 @@ impl ToolGateHook for RecordingGate {
     }
     async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
         self.consulted.fetch_add(1, Ordering::SeqCst);
-        GateDecision::without_basis(GateOutcome::Allow)
+        GateDecision::plugin_gate(GateOutcome::Allow)
     }
 }
 
@@ -719,6 +738,174 @@ async fn a_plugin_tool_gate_narrows_an_absent_host_allow() {
             .any(|m| m.role == Role::Tool && m.text_content().contains("blocked")),
         "the model is fed a blocked tool result"
     );
+}
+
+#[tokio::test]
+async fn the_audit_names_who_decided_across_the_gate_chain() {
+    // Cause/effect graph: C1 the host gate is an authored policy that allows
+    // or denies; C2 a plugin gate blocks or allows; C3 a per-Run narrowing
+    // (a per-Run DenyAll policy, or a tool-free activation) refuses; C4 no host
+    // gate and no per-Run policy is installed. Effects: E1 exactly one
+    // `PermissionDecided` row whose `decided_by` names the deciding source;
+    // E2 `policy` is written iff a policy decided; E3 an allow a plugin gate
+    // merely passes through is still the policy's; E4 with no gate installed
+    // nothing is audited (no decider is invented).
+    //
+    // | Rule | host | plugin | per-Run | decision | decided_by | policy |
+    // |---|---|---|---|---|---|---|
+    // | W1 | allow (always_allow) | block | - | deny | plugin_gate | - |
+    // | W2 | deny (rule) | allow | - | deny | policy | rule |
+    // | W3 | allow (always_allow) | allow | - | allow | policy | always_allow |
+    // | W4 | allow (always_allow) | allow | DenyAllTools | deny | run_narrowing | - |
+    // | W5 | allow (always_allow) | allow | tool-free activation | deny | run_narrowing | - |
+    // | W6 | none | block | - | (none audited) | - | - |
+    type Row = (String, Option<String>, Option<String>);
+    let row = |decision: &str, decided_by: &str, policy: Option<&str>| -> Row {
+        (
+            decision.to_string(),
+            Some(decided_by.to_string()),
+            policy.map(str::to_string),
+        )
+    };
+    struct Case {
+        rule: &'static str,
+        host_allows: bool,
+        plugin: &'static str,
+        per_run_deny: bool,
+        tool_free: bool,
+        expected: Row,
+    }
+    let cases = [
+        Case {
+            rule: "W1",
+            host_allows: true,
+            plugin: "narrower",
+            per_run_deny: false,
+            tool_free: false,
+            expected: row("deny", "plugin_gate", None),
+        },
+        Case {
+            rule: "W2",
+            host_allows: false,
+            plugin: "recorder",
+            per_run_deny: false,
+            tool_free: false,
+            expected: row("deny", "policy", Some("rule")),
+        },
+        Case {
+            rule: "W3",
+            host_allows: true,
+            plugin: "recorder",
+            per_run_deny: false,
+            tool_free: false,
+            expected: row("allow", "policy", Some("always_allow")),
+        },
+        Case {
+            rule: "W4",
+            host_allows: true,
+            plugin: "recorder",
+            per_run_deny: true,
+            tool_free: false,
+            expected: row("deny", "run_narrowing", None),
+        },
+        Case {
+            rule: "W5",
+            host_allows: true,
+            plugin: "recorder",
+            per_run_deny: false,
+            tool_free: true,
+            expected: row("deny", "run_narrowing", None),
+        },
+    ];
+    for Case {
+        rule,
+        host_allows,
+        plugin,
+        per_run_deny,
+        tool_free,
+        expected,
+    } in cases
+    {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let mut runtime = Runtime::new()
+            .with_llm(Arc::new(ToolThenTextLlm {
+                calls: AtomicUsize::new(0),
+            }))
+            .with_tool(Arc::new(CountingEcho { ran: ran.clone() }))
+            .with_plugin(Arc::new(NarrowGatePlugin))
+            .with_plugin(Arc::new(RecordingGatePlugin {
+                consulted: Arc::new(AtomicUsize::new(0)),
+            }));
+        runtime = if host_allows {
+            runtime.with_gate(Arc::new(AllowHostGate))
+        } else {
+            runtime.with_gate(Arc::new(DenyHostGate))
+        };
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let mut context = RuntimeRunContext::new().with_commit(commit.clone());
+        if per_run_deny {
+            context =
+                context.with_tool_permission_policy(Arc::new(DenyAllTools::new("restricted")));
+        }
+        let mut activation = activation(vec![plugin.to_string()]);
+        if tool_free {
+            activation = activation.without_tools();
+        }
+        runtime.execute(activation, context).await.expect("runs");
+        assert_eq!(
+            audited_rows(&commit),
+            vec![expected.clone()],
+            "{rule}/E1/E2/E3"
+        );
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            usize::from(expected.0 == "allow"),
+            "{rule}: only an allow runs the tool"
+        );
+    }
+
+    // W6: no host gate and no per-Run policy — the plugin still blocks, and no
+    // decision is audited rather than one attributed to an invented decider.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenTextLlm {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(CountingEcho { ran: ran.clone() }))
+        .with_plugin(Arc::new(NarrowGatePlugin));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    runtime
+        .execute(
+            activation(vec!["narrower".to_string()]),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("runs");
+    assert!(audited_rows(&commit).is_empty(), "W6/E4");
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "W6");
+}
+
+/// `(decision, decided_by, policy)` for every committed `PermissionDecided` row.
+fn audited_rows(commit: &MemoryCommitCoordinator) -> Vec<(String, Option<String>, Option<String>)> {
+    let text = |payload: &serde_json::Value, key: &str| {
+        payload
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    commit
+        .committed()
+        .events
+        .iter()
+        .filter(|e| e.kind == awaken_agent_contract::audit::kind::Kind::PermissionDecided)
+        .map(|e| {
+            (
+                text(&e.payload, "decision").unwrap_or_default(),
+                text(&e.payload, "decided_by"),
+                text(&e.payload, "policy"),
+            )
+        })
+        .collect()
 }
 
 #[tokio::test]

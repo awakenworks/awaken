@@ -27,7 +27,12 @@ struct AllowAll;
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for AllowAll {
     async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
-        ToolPermissionRuling::without_basis(ToolPermissionVerdict::Allow)
+        ToolPermissionRuling::policy(
+            ToolPermissionVerdict::Allow,
+            awaken_runtime_contract::permission::PermissionBasis::fixed(
+                awaken_runtime_contract::permission::PermissionPolicy::Rule,
+            ),
+        )
     }
 }
 

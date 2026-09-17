@@ -171,21 +171,26 @@ enum CommittedEvidence {
     PermissionDecisions(&'static [AuditedPermissionRow]),
 }
 
-/// One raw `PermissionDecided` audit payload: `(call_id, decision, policy, reason_code)`.
+/// One raw `PermissionDecided` audit payload:
+/// `(call_id, decision, decided_by, policy, reason_code)`.
 type AuditedPermissionRow = (
     &'static str,
     &'static str,
     Option<&'static str>,
     Option<&'static str>,
+    Option<&'static str>,
 );
 
 fn permission_decided_payload(row: AuditedPermissionRow) -> serde_json::Value {
-    let (call_id, decision, policy, reason_code) = row;
+    let (call_id, decision, decided_by, policy, reason_code) = row;
     let mut payload = serde_json::json!({
         "tool_id": "bash",
         "call_id": call_id,
         "decision": decision,
     });
+    if let Some(decided_by) = decided_by {
+        payload["decided_by"] = serde_json::Value::String(decided_by.into());
+    }
     if let Some(policy) = policy {
         payload["policy"] = serde_json::Value::String(policy.into());
     }
@@ -225,6 +230,8 @@ impl CommittedEvidence {
                     tool_id: "bash".into(),
                     call_id: call_id.into(),
                     decision: decision.into(),
+                    decided_by:
+                        awaken_agent_contract::audit::permission::PermissionDecider::PluginGate,
                     policy: None,
                     reason_code: None,
                 },
@@ -1763,6 +1770,17 @@ async fn a_recorded_ask_is_reported_even_though_the_transcript_shows_a_result() 
 /// | P8 | bypass (outside the closed vocabulary) | deny | - | absent, decision still deny (E2) |
 /// | P9 | auto | ask | none (inconsistent row) | absent (E2) |
 /// | P10 | auto | ask | a registry code this version does not name | {"type":"auto","evaluated_permission":{"type":"ask","reason_code":"rate_limited"}} (E1) |
+/// | P11 | none, `decided_by: run_narrowing` | deny | - | absent (E2) |
+/// | P12 | none, `decided_by: plugin_gate` | ask | - | absent (E2) |
+/// | P13 | always_allow beside `decided_by: run_narrowing` (inconsistent row) | allow | - | absent (E2) |
+/// | P14 | always_allow beside an unknown `decided_by` label | allow | - | absent (E2) |
+/// | P15 | always_allow, historical row without `decided_by` | allow | - | {"type":"always_allow"} (E1) |
+///
+/// Rows P1-P6 and P8-P10 carry `decided_by: policy`, as every current row a
+/// policy decided does; P7 is a historical row without `decided_by`. The SDK
+/// `evaluation` object only has policy vocabulary, so a decision a per-Run
+/// narrowing or a plugin gate made projects the flat decision alone and no
+/// wire field is invented for its decider.
 ///
 /// P10 is the open-registry case the SDK names explicitly: `reason_code` is a
 /// `string` whose documented set is not exhaustive and which clients must
@@ -1777,8 +1795,20 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P1",
             &[
-                ("builtin-1", "ask", Some("auto"), Some("indeterminate")),
-                ("mc1", "ask", Some("auto"), Some("indeterminate")),
+                (
+                    "builtin-1",
+                    "ask",
+                    Some("policy"),
+                    Some("auto"),
+                    Some("indeterminate"),
+                ),
+                (
+                    "mc1",
+                    "ask",
+                    Some("policy"),
+                    Some("auto"),
+                    Some("indeterminate"),
+                ),
             ],
             "ask",
             Some(
@@ -1788,8 +1818,20 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P2",
             &[
-                ("builtin-1", "deny", Some("auto"), Some("high_risk")),
-                ("mc1", "deny", Some("auto"), Some("high_risk")),
+                (
+                    "builtin-1",
+                    "deny",
+                    Some("policy"),
+                    Some("auto"),
+                    Some("high_risk"),
+                ),
+                (
+                    "mc1",
+                    "deny",
+                    Some("policy"),
+                    Some("auto"),
+                    Some("high_risk"),
+                ),
             ],
             "deny",
             Some(
@@ -1799,8 +1841,8 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P3",
             &[
-                ("builtin-1", "allow", Some("auto"), None),
-                ("mc1", "allow", Some("auto"), None),
+                ("builtin-1", "allow", Some("policy"), Some("auto"), None),
+                ("mc1", "allow", Some("policy"), Some("auto"), None),
             ],
             "allow",
             Some(r#"{"type":"auto","evaluated_permission":{"type":"allow"}}"#),
@@ -1808,8 +1850,14 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P4",
             &[
-                ("builtin-1", "allow", Some("always_allow"), None),
-                ("mc1", "allow", Some("always_allow"), None),
+                (
+                    "builtin-1",
+                    "allow",
+                    Some("policy"),
+                    Some("always_allow"),
+                    None,
+                ),
+                ("mc1", "allow", Some("policy"), Some("always_allow"), None),
             ],
             "allow",
             Some(r#"{"type":"always_allow"}"#),
@@ -1817,8 +1865,8 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P5",
             &[
-                ("builtin-1", "ask", Some("always_ask"), None),
-                ("mc1", "ask", Some("always_ask"), None),
+                ("builtin-1", "ask", Some("policy"), Some("always_ask"), None),
+                ("mc1", "ask", Some("policy"), Some("always_ask"), None),
             ],
             "ask",
             Some(r#"{"type":"always_ask"}"#),
@@ -1826,8 +1874,8 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P6",
             &[
-                ("builtin-1", "allow", Some("rule"), None),
-                ("mc1", "allow", Some("rule"), None),
+                ("builtin-1", "allow", Some("policy"), Some("rule"), None),
+                ("mc1", "allow", Some("policy"), Some("rule"), None),
             ],
             "allow",
             None,
@@ -1835,8 +1883,8 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P7",
             &[
-                ("builtin-1", "allow", None, None),
-                ("mc1", "allow", None, None),
+                ("builtin-1", "allow", None, None, None),
+                ("mc1", "allow", None, None, None),
             ],
             "allow",
             None,
@@ -1844,8 +1892,8 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P8",
             &[
-                ("builtin-1", "deny", Some("bypass"), None),
-                ("mc1", "deny", Some("bypass"), None),
+                ("builtin-1", "deny", Some("policy"), Some("bypass"), None),
+                ("mc1", "deny", Some("policy"), Some("bypass"), None),
             ],
             "deny",
             None,
@@ -1853,17 +1901,92 @@ async fn a_recorded_policy_projects_the_sdk_evaluation_on_both_tool_use_events()
         (
             "P9",
             &[
-                ("builtin-1", "ask", Some("auto"), None),
-                ("mc1", "ask", Some("auto"), None),
+                ("builtin-1", "ask", Some("policy"), Some("auto"), None),
+                ("mc1", "ask", Some("policy"), Some("auto"), None),
             ],
             "ask",
             None,
         ),
         (
+            "P11",
+            &[
+                ("builtin-1", "deny", Some("run_narrowing"), None, None),
+                ("mc1", "deny", Some("run_narrowing"), None, None),
+            ],
+            "deny",
+            None,
+        ),
+        (
+            "P12",
+            &[
+                ("builtin-1", "ask", Some("plugin_gate"), None, None),
+                ("mc1", "ask", Some("plugin_gate"), None, None),
+            ],
+            "ask",
+            None,
+        ),
+        (
+            "P13",
+            &[
+                (
+                    "builtin-1",
+                    "allow",
+                    Some("run_narrowing"),
+                    Some("always_allow"),
+                    None,
+                ),
+                (
+                    "mc1",
+                    "allow",
+                    Some("run_narrowing"),
+                    Some("always_allow"),
+                    None,
+                ),
+            ],
+            "allow",
+            None,
+        ),
+        (
+            "P14",
+            &[
+                (
+                    "builtin-1",
+                    "allow",
+                    Some("operator"),
+                    Some("always_allow"),
+                    None,
+                ),
+                ("mc1", "allow", Some("operator"), Some("always_allow"), None),
+            ],
+            "allow",
+            None,
+        ),
+        (
+            "P15",
+            &[
+                ("builtin-1", "allow", None, Some("always_allow"), None),
+                ("mc1", "allow", None, Some("always_allow"), None),
+            ],
+            "allow",
+            Some(r#"{"type":"always_allow"}"#),
+        ),
+        (
             "P10",
             &[
-                ("builtin-1", "ask", Some("auto"), Some("rate_limited")),
-                ("mc1", "ask", Some("auto"), Some("rate_limited")),
+                (
+                    "builtin-1",
+                    "ask",
+                    Some("policy"),
+                    Some("auto"),
+                    Some("rate_limited"),
+                ),
+                (
+                    "mc1",
+                    "ask",
+                    Some("policy"),
+                    Some("auto"),
+                    Some("rate_limited"),
+                ),
             ],
             "ask",
             Some(

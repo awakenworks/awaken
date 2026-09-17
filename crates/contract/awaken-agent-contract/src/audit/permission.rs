@@ -1,8 +1,9 @@
 //! The vocabularies a permission audit fact carries beside its decision.
 //!
 //! A `PermissionDecided` fact records *what* the gate decided (`allow`, `ask`,
-//! `deny`, …). These types record *which authored policy* decided it and, for
-//! the `auto` policy, the grounds of the judgement. They are the producer side
+//! `deny`, …). These types record *who* decided it, *which authored policy*
+//! decided it when one did and, for the `auto` policy, the grounds of the
+//! judgement. They are the producer side
 //! of the Managed Agents `evaluation` object on tool-use events, and the
 //! projection reads them back from the committed payload. The policy is a
 //! closed vocabulary; the reason code is an open registry, because the SDK
@@ -21,8 +22,9 @@ use crate::toolset::ToolPermissionRequirement;
 /// outside that vocabulary — a pattern rule in a ruleset, the ruleset's own
 /// authored default, or a tool the toolset disabled outright. A decision made
 /// by something that is not an authored permission policy at all (a per-Run
-/// capability narrowing, a plugin gate, a person answering a ticket) carries no
-/// policy.
+/// capability narrowing, a plugin gate) carries no policy and names its
+/// [`PermissionDecider`] instead; a person answering a ticket is a separate
+/// `PermissionConfirmed` fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionPolicy {
@@ -53,6 +55,39 @@ impl From<ToolPermissionRequirement> for PermissionPolicy {
             ToolPermissionRequirement::AlwaysAllow => Self::AlwaysAllow,
             ToolPermissionRequirement::AlwaysAsk => Self::AlwaysAsk,
             ToolPermissionRequirement::Auto => Self::Auto,
+        }
+    }
+}
+
+/// Who decided a permission gate outcome (ADR-0030 D4).
+///
+/// `policy` alone cannot say this: a decision no authored policy made carries
+/// no policy, and a per-Run narrowing and a plugin gate are different actors
+/// the audit must still tell apart. The vocabulary is closed and every audit
+/// fact the gate writes names exactly one member; an unknown label is refused
+/// rather than read as another decider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionDecider {
+    /// An authored permission policy decided; the fact also names that
+    /// `policy` (and, for `auto`, its `reason_code`).
+    Policy,
+    /// A per-Run narrowing of the configured tool authority decided.
+    RunNarrowing,
+    /// A tool gate that is not an authored permission policy decided — a
+    /// plugin contribution such as a state-machine precondition or the skill
+    /// `allowed_tools` intersection.
+    PluginGate,
+}
+
+impl PermissionDecider {
+    /// The stable audit label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Policy => "policy",
+            Self::RunNarrowing => "run_narrowing",
+            Self::PluginGate => "plugin_gate",
         }
     }
 }
@@ -167,6 +202,34 @@ mod tests {
             );
         }
         assert!(serde_json::from_value::<PermissionPolicy>(serde_json::json!("bypass")).is_err());
+    }
+
+    #[test]
+    fn every_decider_serializes_as_its_stable_label_and_unknown_labels_are_refused() {
+        // | Rule | value | wire |
+        // |---|---|---|
+        // | D1 | Policy | "policy" |
+        // | D2 | RunNarrowing | "run_narrowing" |
+        // | D3 | PluginGate | "plugin_gate" |
+        // | D4 | "operator" (not a member) | decode error |
+        for (rule, decider, label) in [
+            ("D1", PermissionDecider::Policy, "policy"),
+            ("D2", PermissionDecider::RunNarrowing, "run_narrowing"),
+            ("D3", PermissionDecider::PluginGate, "plugin_gate"),
+        ] {
+            assert_eq!(decider.as_str(), label, "{rule}");
+            let wire = serde_json::to_value(decider).unwrap();
+            assert_eq!(wire, serde_json::json!(label), "{rule}");
+            assert_eq!(
+                serde_json::from_value::<PermissionDecider>(wire).unwrap(),
+                decider,
+                "{rule}"
+            );
+        }
+        assert!(
+            serde_json::from_value::<PermissionDecider>(serde_json::json!("operator")).is_err(),
+            "D4"
+        );
     }
 
     #[test]

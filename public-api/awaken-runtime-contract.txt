@@ -807,6 +807,7 @@ pub fn awaken_runtime_contract::pause::PauseSignal::new() -> Self
 pub fn awaken_runtime_contract::pause::PauseSignal::request(&self)
 pub fn awaken_runtime_contract::pause::PauseSignal::requested(&self) -> bool
 pub mod awaken_runtime_contract::permission
+pub use awaken_runtime_contract::permission::PermissionDecider
 pub use awaken_runtime_contract::permission::PermissionPolicy
 pub use awaken_runtime_contract::permission::PermissionReasonCode
 pub enum awaken_runtime_contract::permission::GateAuditDecision
@@ -817,6 +818,16 @@ pub awaken_runtime_contract::permission::GateAuditDecision::Schedule
 pub awaken_runtime_contract::permission::GateAuditDecision::SetResult
 impl awaken_runtime_contract::permission::GateAuditDecision
 pub const fn awaken_runtime_contract::permission::GateAuditDecision::as_str(self) -> &'static str
+pub enum awaken_runtime_contract::permission::GateAuthority
+pub awaken_runtime_contract::permission::GateAuthority::PluginGate
+pub awaken_runtime_contract::permission::GateAuthority::Policy(awaken_runtime_contract::permission::PermissionBasis)
+pub awaken_runtime_contract::permission::GateAuthority::RunNarrowing
+impl awaken_runtime_contract::permission::GateAuthority
+pub const fn awaken_runtime_contract::permission::GateAuthority::basis(&self) -> core::option::Option<&awaken_runtime_contract::permission::PermissionBasis>
+pub const fn awaken_runtime_contract::permission::GateAuthority::decider(&self) -> awaken_agent_contract::audit::permission::PermissionDecider
+pub fn awaken_runtime_contract::permission::GateAuthority::permission_decided(&self, &awaken_runtime_contract::llm::ToolCall, awaken_runtime_contract::permission::GateAuditDecision) -> awaken_agent_contract::audit::run_event::RunEvent
+impl core::convert::From<awaken_runtime_contract::permission::RulingAuthority> for awaken_runtime_contract::permission::GateAuthority
+pub fn awaken_runtime_contract::permission::GateAuthority::from(awaken_runtime_contract::permission::RulingAuthority) -> Self
 pub enum awaken_runtime_contract::permission::GateOutcome
 pub awaken_runtime_contract::permission::GateOutcome::Allow
 pub awaken_runtime_contract::permission::GateOutcome::Block
@@ -838,6 +849,11 @@ pub awaken_runtime_contract::permission::GateOutcomeKind::Schedule
 pub awaken_runtime_contract::permission::GateOutcomeKind::SetResult
 impl awaken_runtime_contract::permission::GateOutcomeKind
 pub const fn awaken_runtime_contract::permission::GateOutcomeKind::audit_decision(self) -> awaken_runtime_contract::permission::GateAuditDecision
+pub enum awaken_runtime_contract::permission::RulingAuthority
+pub awaken_runtime_contract::permission::RulingAuthority::Policy(awaken_runtime_contract::permission::PermissionBasis)
+pub awaken_runtime_contract::permission::RulingAuthority::RunNarrowing
+impl core::convert::From<awaken_runtime_contract::permission::RulingAuthority> for awaken_runtime_contract::permission::GateAuthority
+pub fn awaken_runtime_contract::permission::GateAuthority::from(awaken_runtime_contract::permission::RulingAuthority) -> Self
 pub enum awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured
 pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
@@ -865,10 +881,13 @@ pub fn awaken_runtime_contract::permission::DenyAllTools::new(impl core::convert
 impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_runtime_contract::permission::DenyAllTools
 pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_contract::permission::GateDecision
-pub awaken_runtime_contract::permission::GateDecision::basis: core::option::Option<awaken_runtime_contract::permission::PermissionBasis>
+pub awaken_runtime_contract::permission::GateDecision::authority: awaken_runtime_contract::permission::GateAuthority
 pub awaken_runtime_contract::permission::GateDecision::outcome: awaken_runtime_contract::permission::GateOutcome
 impl awaken_runtime_contract::permission::GateDecision
-pub const fn awaken_runtime_contract::permission::GateDecision::without_basis(awaken_runtime_contract::permission::GateOutcome) -> Self
+pub fn awaken_runtime_contract::permission::GateDecision::audit_fact(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_agent_contract::audit::run_event::RunEvent
+pub const fn awaken_runtime_contract::permission::GateDecision::plugin_gate(awaken_runtime_contract::permission::GateOutcome) -> Self
+pub const fn awaken_runtime_contract::permission::GateDecision::policy(awaken_runtime_contract::permission::GateOutcome, awaken_runtime_contract::permission::PermissionBasis) -> Self
+pub const fn awaken_runtime_contract::permission::GateDecision::run_narrowing(awaken_runtime_contract::permission::GateOutcome) -> Self
 pub struct awaken_runtime_contract::permission::PermissionBasis
 pub awaken_runtime_contract::permission::PermissionBasis::policy: awaken_agent_contract::audit::permission::PermissionPolicy
 pub awaken_runtime_contract::permission::PermissionBasis::reason_code: core::option::Option<awaken_agent_contract::audit::permission::PermissionReasonCode>
@@ -880,11 +899,12 @@ pub awaken_runtime_contract::permission::ToolCall::arguments: serde_json::value:
 pub awaken_runtime_contract::permission::ToolCall::call_id: alloc::string::String
 pub awaken_runtime_contract::permission::ToolCall::tool_id: alloc::string::String
 pub struct awaken_runtime_contract::permission::ToolPermissionRuling
-pub awaken_runtime_contract::permission::ToolPermissionRuling::basis: core::option::Option<awaken_runtime_contract::permission::PermissionBasis>
+pub awaken_runtime_contract::permission::ToolPermissionRuling::authority: awaken_runtime_contract::permission::RulingAuthority
 pub awaken_runtime_contract::permission::ToolPermissionRuling::verdict: awaken_runtime_contract::permission::ToolPermissionVerdict
 impl awaken_runtime_contract::permission::ToolPermissionRuling
 pub fn awaken_runtime_contract::permission::ToolPermissionRuling::into_gate_decision(self) -> awaken_runtime_contract::permission::GateDecision
-pub const fn awaken_runtime_contract::permission::ToolPermissionRuling::without_basis(awaken_runtime_contract::permission::ToolPermissionVerdict) -> Self
+pub const fn awaken_runtime_contract::permission::ToolPermissionRuling::policy(awaken_runtime_contract::permission::ToolPermissionVerdict, awaken_runtime_contract::permission::PermissionBasis) -> Self
+pub const fn awaken_runtime_contract::permission::ToolPermissionRuling::run_narrowing(awaken_runtime_contract::permission::ToolPermissionVerdict) -> Self
 pub trait awaken_runtime_contract::permission::ToolGateHook: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::permission::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::permission::ToolGateHook::id(&self) -> &str

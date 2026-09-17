@@ -194,7 +194,7 @@ impl ToolGateHook for SuspendGate {
         _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::RequireConfirmation {
+        GateDecision::plugin_gate(GateOutcome::RequireConfirmation {
             correlation_id: TICKET.to_string(),
         })
     }
@@ -209,7 +209,7 @@ impl ToolGateHook for ScheduleGate {
         _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Schedule {
+        GateDecision::plugin_gate(GateOutcome::Schedule {
             correlation_id: TICKET.to_string(),
             action_kind: None,
         })
