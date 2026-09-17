@@ -822,7 +822,7 @@ awaken-cli composition root
 ResourceCatalog / stores -X-> IAM, principal, API key, role, policy
 ```
 
-The composition root also places the durable `ManagedSessionRepository` beside
+The composition root also places the durable `SessionRepository` beside
 runtime truth. It persists the Session's intrinsic Workspace owner and frozen
 resource manifest; it is not an authorization decision cache. The PEP obtains a
 trusted Workspace stamp from the authentication/tenant edge, while the Session

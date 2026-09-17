@@ -643,7 +643,7 @@ impl SessionApplication {
         request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
     ) -> Result<(), SessionRealizationError> {
         let control = RefreshedSessionRealizationControl(self);
-        awaken_session_contract::drive_session_realization(
+        crate::drive_session_realization(
             permit,
             None,
             &control,

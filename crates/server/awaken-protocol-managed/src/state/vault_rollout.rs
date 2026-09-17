@@ -36,8 +36,14 @@ impl ManagedState {
         let sessions = self
             .application
             .session_repository_handle()
-            .sessions_referencing_credential_source(&event.workspace_id, &event.source_id)
+            .scan(
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                    workspace_id: &event.workspace_id,
+                    source_id: &event.source_id,
+                },
+            )
             .await
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .map_err(|error| ManagedCredentialAdoptionError::Unavailable(error.to_string()))?;
         let mut pending = false;
         for session in sessions {

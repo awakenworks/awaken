@@ -1,3 +1,4 @@
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_contract::SessionId;
 mod cancelled_model;
 mod pagination;
@@ -12524,7 +12525,9 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 runtime
                     .include_runs_in_snapshot
                     .store(true, Ordering::SeqCst);
-                let state = ManagedState::new(runtime.clone());
+                let repository = Arc::new(ephemeral_session_repo());
+                let state =
+                    ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
                 let session = state
                     .create_session(
                         serde_json::from_value(serde_json::json!({
@@ -12760,8 +12763,8 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                             event.id,
                         );
                     }
-                    let cold = ManagedState::new(runtime.clone())
-                        .with_session_repo(state.application.session_repository_handle());
+                    let cold =
+                        ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
                     cold.refresh_committed_events(&session.id).await.unwrap();
                     assert_eq!(
                         cold.list_events(&session.id, None, Some(1000), false)

@@ -29,7 +29,8 @@ AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
         "crates/stores/awaken-store-postgres/src/",
         "crates/server/awaken-session-executor/src/store.rs",
     ),
-    "ManagedSessionRepository": ("crates/stores/awaken-session-store/src/",),
+    "SessionRepository": ("crates/stores/awaken-session-store/src/",),
+    "LifecycleOutbox": ("crates/stores/awaken-session-store/src/",),
 }
 
 TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
@@ -173,7 +174,7 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
     errors: list[str] = []
     implementation = re.compile(
         r"\bimpl(?:\s*<[^>{}]*>)?\s+(DispatchQueue|OperationCoordinator|"
-        r"ManagedSessionRepository)\s+for\b"
+        r"SessionRepository|LifecycleOutbox)\s+for\b"
     )
     for path in sorted(crates_root.glob("**/*")):
         if not path.is_file() or path.suffix not in {".rs", ".sql"}:
@@ -200,7 +201,7 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
     ):
         source = facade.read_text(encoding="utf-8")
         if re.search(
-            r"pub\s+use[^;]*(?:ManagedSessionRepository|"
+            r"pub\s+use[^;]*(?:\bSessionRepository\b|\bLifecycleOutbox\b|\bSessionStore\b|"
             r"(?:Sqlite|Postgres)ManagedSessionRepository)",
             source,
             re.DOTALL,

@@ -3,6 +3,7 @@
 //! frozen generation-1 state and realization claims are durable before Runtime
 //! I/O; a failed realization fails the create with the mapped error envelope.
 
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_contract::SessionId;
 mod support;
 
@@ -16,9 +17,8 @@ use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
 use awaken_session_contract::{
-    LifecycleFactNotifier, ManagedSessionRepository, OutcomeDrive, PersistedSession, RunError,
-    RunErrorKind, SessionExecutionState, SessionInit, SessionRuntime, StepOutcome,
-    ToolPermissionDecision,
+    LifecycleFactNotifier, OutcomeDrive, PersistedSession, RunError, RunErrorKind,
+    SessionExecutionState, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
@@ -36,7 +36,7 @@ struct PreparingFake {
     captured: Arc<Mutex<Vec<SessionInit>>>,
     staged: Arc<Mutex<Vec<awaken_session_contract::StageMcpAttachment>>>,
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
-    repo: Option<Arc<dyn ManagedSessionRepository>>,
+    repo: Option<Arc<dyn awaken_session_contract::SessionStore>>,
     fail_with: Option<RunErrorKind>,
 }
 
@@ -238,7 +238,7 @@ struct Harness {
     captured: Arc<Mutex<Vec<SessionInit>>>,
     staged: Arc<Mutex<Vec<awaken_session_contract::StageMcpAttachment>>>,
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -264,7 +264,7 @@ struct HotRuntimeState {
 
 struct HotRuntime {
     state: Arc<Mutex<HotRuntimeState>>,
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
 }
 
 #[async_trait::async_trait]
@@ -413,17 +413,17 @@ struct HotHarness {
     app: Router,
     managed: Arc<ManagedState>,
     state: Arc<Mutex<HotRuntimeState>>,
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
 }
 
 fn hot_harness() -> HotHarness {
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open hot Session repository"),
     );
     hot_harness_with_repo(repo)
 }
 
-fn hot_harness_with_repo(repo: Arc<dyn ManagedSessionRepository>) -> HotHarness {
+fn hot_harness_with_repo(repo: Arc<dyn awaken_session_contract::SessionStore>) -> HotHarness {
     let runtime_state = Arc::new(Mutex::new(HotRuntimeState::default()));
     let managed = Arc::new(
         ManagedState::new_with_mcp(HotRuntime {
@@ -449,7 +449,7 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let staged = Arc::new(Mutex::new(Vec::new()));
     let observed_durable = Arc::new(Mutex::new(Vec::new()));
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open Session repository"),
     );
     let state = ManagedState::new_with_mcp(PreparingFake {

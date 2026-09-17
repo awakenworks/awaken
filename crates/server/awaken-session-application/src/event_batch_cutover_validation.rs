@@ -1,8 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use awaken_session_contract::{
-    SessionEnvironmentPhase, SessionRecoveryScan, SessionRepositoryError,
-};
+use awaken_session_contract::{SessionEnvironmentPhase, SessionRepositoryError, SessionScan};
 
 use super::SessionApplication;
 
@@ -49,7 +47,7 @@ impl SessionEventBatchCutoverValidationSource {
     #[cfg(any(test, feature = "test-support"))]
     pub fn complete_scan_for_test(
         &self,
-        scan: &SessionRecoveryScan,
+        scan: &SessionScan,
         event_batch_failures: usize,
         restoring_sessions: u64,
     ) -> SessionEventBatchCutoverValidationSnapshot {
@@ -58,7 +56,7 @@ impl SessionEventBatchCutoverValidationSource {
 
     fn complete_scan(
         &self,
-        scan: &SessionRecoveryScan,
+        scan: &SessionScan,
         event_batch_failures: usize,
         restoring_sessions: u64,
     ) -> SessionEventBatchCutoverValidationSnapshot {
@@ -122,7 +120,7 @@ impl SessionApplication {
 
 #[cfg(test)]
 mod tests {
-    use awaken_session_contract::{SessionRecoveryQuarantine, SessionRecoveryScan};
+    use awaken_session_contract::{SessionRecoveryQuarantine, SessionScan};
 
     use super::*;
 
@@ -143,7 +141,7 @@ mod tests {
         let projection = SessionEventBatchCutoverValidationSource::new();
         assert_eq!(projection.snapshot(), None, "E1");
         let first = projection.complete_scan(
-            &SessionRecoveryScan {
+            &SessionScan {
                 sessions: Vec::new(),
                 quarantined: vec![SessionRecoveryQuarantine {
                     session_id: "not-projected".into(),
@@ -158,7 +156,7 @@ mod tests {
         assert_eq!(first.quarantined, 1, "Q1/E2");
         assert_eq!(first.restoring_sessions, 2, "Q1/E2");
 
-        let second = projection.complete_scan(&SessionRecoveryScan::default(), 0, 0);
+        let second = projection.complete_scan(&SessionScan::default(), 0, 0);
         assert_eq!(
             second,
             SessionEventBatchCutoverValidationSnapshot {

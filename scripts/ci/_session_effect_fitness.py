@@ -37,6 +37,9 @@ SESSION_DELETE_DISPOSITION = (
 )
 SESSION_ROW_CODEC = "crates/stores/awaken-session-store/src/row_codec.rs"
 SESSION_REALIZATION = "crates/contract/awaken-session-contract/src/session_realization.rs"
+SESSION_REALIZATION_DRIVER = (
+    "crates/server/awaken-session-application/src/session_realization_driver.rs"
+)
 SESSION_TERMINAL_AUTHORIZATION = (
     "crates/contract/awaken-session-contract/src/"
     "session_realization/terminal_cleanup_authorization.rs"
@@ -181,11 +184,13 @@ REQUIRED = {
         "SessionDeleteLifecycleFactPlan",
     ),
     SESSION_ROW_CODEC: ("verify_aggregate(session)?;", "verify_aggregate(&aggregate)?;"),
-    SESSION_REALIZATION: (
+    SESSION_REALIZATION_DRIVER: (
         "publish_mcp_generation_receipt",
         "drain_mcp_generation_receipt",
         "McpProjectionEffectKind::Publish",
         "McpProjectionEffectKind::Drain",
+    ),
+    SESSION_REALIZATION: (
         "SessionTerminalCleanupPreparationAuthorization",
         "authorize_terminal_cleanup_effect",
         "authorize_terminal_cleanup_disposal",

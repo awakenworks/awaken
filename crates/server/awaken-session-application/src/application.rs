@@ -165,7 +165,11 @@ pub struct SessionApplication {
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     managed_list_prices: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
-    sessions_repo: Arc<dyn ManagedSessionRepository>,
+    sessions_repo: Arc<dyn SessionRepository>,
+    /// Drain side of the same store's transactional lifecycle outbox. The
+    /// application never reads it; it only hands it to the one delivery
+    /// consumer bound through [`Self::set_lifecycle_notifier`].
+    lifecycle_outbox: Arc<dyn awaken_session_contract::LifecycleOutbox>,
     /// One process-owned high-water reconciler for the rebuildable Agent and
     /// Environment projections. It is late-bound by split-process composition;
     /// AllInOne has no cross-replica projection and leaves it absent.
@@ -215,7 +219,7 @@ impl SessionApplication {
     pub fn new(
         runtime: Arc<dyn SessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn ManagedSessionRepository>,
+        sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
     ) -> Self {
         Self::new_with_configuration(
@@ -231,10 +235,13 @@ impl SessionApplication {
     pub fn new_with_configuration(
         runtime: Arc<dyn SessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn ManagedSessionRepository>,
+        sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
         configuration: SessionApplicationConfiguration,
     ) -> Self {
+        let lifecycle_outbox: Arc<dyn awaken_session_contract::LifecycleOutbox> =
+            sessions_repo.clone();
+        let sessions_repo: Arc<dyn SessionRepository> = sessions_repo;
         runtime.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
             sessions_repo.clone(),
         )));
@@ -263,6 +270,7 @@ impl SessionApplication {
             resource_files: None,
             managed_list_prices: None,
             sessions_repo,
+            lifecycle_outbox,
             executable_projection_refresh: None,
             lifecycle_notifier: OnceLock::new(),
             worker_observations: OnceLock::new(),
@@ -394,7 +402,7 @@ impl SessionApplication {
     }
 
     #[must_use]
-    pub(crate) fn session_repository(&self) -> &dyn ManagedSessionRepository {
+    pub(crate) fn session_repository(&self) -> &dyn SessionRepository {
         self.sessions_repo.as_ref()
     }
 
@@ -418,8 +426,15 @@ impl SessionApplication {
     /// Clone the durable aggregate port for Coordinator-side claim-fenced
     /// transports that must authorize a projection frozen after dispatch.
     #[must_use]
-    pub fn session_repository_handle(&self) -> Arc<dyn ManagedSessionRepository> {
+    pub fn session_repository_handle(&self) -> Arc<dyn SessionRepository> {
         self.sessions_repo.clone()
+    }
+
+    /// Clone the drain port of the same store for the one lifecycle delivery
+    /// consumer installed by Coordinator composition.
+    #[must_use]
+    pub fn lifecycle_outbox_handle(&self) -> Arc<dyn awaken_session_contract::LifecycleOutbox> {
+        self.lifecycle_outbox.clone()
     }
 
     #[must_use]
@@ -545,7 +560,8 @@ impl SessionApplication {
         )
     }
 
-    pub fn replace_repository(&mut self, repo: Arc<dyn ManagedSessionRepository>) {
+    pub fn replace_repository(&mut self, repo: Arc<dyn awaken_session_contract::SessionStore>) {
+        self.lifecycle_outbox = repo.clone();
         self.sessions_repo = repo;
         self.runtime
             .install_environment_binding_sink(self.environment_binding_sink());
@@ -906,7 +922,7 @@ async fn dispatch_session_work(
 }
 
 async fn reconcile_work_dispatches(
-    sessions: &dyn ManagedSessionRepository,
+    sessions: &dyn SessionRepository,
     environments: &dyn SessionEnvironmentSource,
 ) -> WorkDispatchReconciliation {
     let mut report = WorkDispatchReconciliation::default();
@@ -1045,13 +1061,13 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
 
 /// Repository-backed implementation installed at the runtime materialization boundary.
 pub struct RepositoryEnvironmentBindingSink {
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn SessionRepository>,
     clock: Arc<dyn awaken_agent_contract::clock::Clock>,
 }
 
 impl RepositoryEnvironmentBindingSink {
     #[must_use]
-    pub fn new(repo: Arc<dyn ManagedSessionRepository>) -> Self {
+    pub fn new(repo: Arc<dyn SessionRepository>) -> Self {
         Self {
             repo,
             clock: Arc::new(awaken_agent_contract::clock::SystemClock),
@@ -1116,11 +1132,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
     ) -> Result<awaken_session_contract::SessionEnvironmentEffectAuthorization, RunError> {
         intent.verify().map_err(Self::receipt_error)?;
         let session_id = intent.session_id();
-        let owner = match self
-            .repo
-            .owner(&awaken_session_contract::SessionId::from(session_id))
-            .await
-        {
+        let owner = match self.repo.owner(session_id).await {
             Ok(owner) => owner,
             Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned);
@@ -1129,7 +1141,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
         };
         let session = self
             .repo
-            .get(&awaken_session_contract::SessionId::from(session_id))
+            .get(session_id)
             .await
             .map_err(session_repository_error)?;
         session
@@ -1141,17 +1153,17 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
     ) -> Result<awaken_session_contract::SessionEnvironmentState, RunError> {
-        let session_id = receipt.session_id.as_str();
+        let session_id = &receipt.session_id;
         const CAS_ATTEMPTS: usize = 3;
         for attempt in 0..CAS_ATTEMPTS {
             let owner = self
                 .repo
-                .owner(&awaken_session_contract::SessionId::from(session_id))
+                .owner(session_id)
                 .await
                 .map_err(session_repository_error)?;
             let mut session = self
                 .repo
-                .get(&awaken_session_contract::SessionId::from(session_id))
+                .get(session_id)
                 .await
                 .map_err(session_repository_error)?;
             let now_unix_ms = self.clock.now_ms();
@@ -1192,7 +1204,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                     });
                 session.environment.assign_generation(
                     awaken_session_contract::SandboxGeneration::new(
-                        session_id,
+                        session_id.as_str(),
                         now_unix_ms,
                         expires_at_unix_ms,
                         environment_fingerprint,
@@ -1227,7 +1239,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 | awaken_session_contract::SessionMutationResult::Replayed { .. } => {
                     let committed = self
                         .repo
-                        .get(&awaken_session_contract::SessionId::from(session_id))
+                        .get(session_id)
                         .await
                         .map_err(session_repository_error)?;
                     return Self::committed_authority(&committed, &receipt);

@@ -124,7 +124,7 @@ mod tests {
         // | D2 | present | exact | exact | E2+E4 |
         // | D3 | present | exact | different | E3 |
         // | D4 | present | different | exact | E3 |
-        let repo: Arc<dyn awaken_session_contract::ManagedSessionRepository> =
+        let repo: Arc<dyn awaken_session_contract::SessionStore> =
             Arc::new(ephemeral_session_repo());
         let state =
             Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));

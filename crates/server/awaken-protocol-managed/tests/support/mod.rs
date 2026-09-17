@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
-    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionIdempotencyReceipt,
+    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRepository,
     SessionRepositoryError,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -298,7 +298,7 @@ impl ScheduledConflictRepository {
 
 #[allow(dead_code)]
 pub async fn replace_session_fixture(
-    repo: &dyn ManagedSessionRepository,
+    repo: &dyn awaken_session_contract::SessionStore,
     owner: &str,
     mut session: PersistedSession,
     key: &str,
@@ -307,7 +307,7 @@ pub async fn replace_session_fixture(
     let payload = SessionMutationPayload::Replace(session.clone());
     let payload_hash = payload.stable_hash();
     let result = repo
-        .commit_mutation(
+        .commit(
             owner,
             SessionMutation {
                 expected_revision: session.revision,
@@ -330,7 +330,7 @@ pub async fn replace_session_fixture(
 }
 
 #[async_trait::async_trait]
-impl ManagedSessionRepository for ScheduledConflictRepository {
+impl SessionRepository for ScheduledConflictRepository {
     async fn create(
         &self,
         owner_scope: &str,
@@ -354,7 +354,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
             .await
     }
 
-    async fn commit_mutation(
+    async fn commit(
         &self,
         owner_scope: &str,
         mutation: SessionMutation,
@@ -370,7 +370,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
             if let Some((key, value)) = metadata_change {
                 let mut concurrent = self
                     .inner
-                    .get(&SessionId::from(mutation.payload.session_id()))
+                    .get(mutation.payload.session_id())
                     .await
                     .expect("concurrent metadata Session exists");
                 concurrent.metadata.insert(key, value);
@@ -386,16 +386,14 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
                     lifecycle_facts: Vec::new(),
                 };
                 assert!(matches!(
-                    self.inner
-                        .commit_mutation(owner_scope, concurrent_mutation)
-                        .await?,
+                    self.inner.commit(owner_scope, concurrent_mutation).await?,
                     SessionMutationResult::Applied { .. }
                 ));
             }
             if self.resource_changes.lock().unwrap().contains(&call) {
                 let mut concurrent = self
                     .inner
-                    .get(&SessionId::from(mutation.payload.session_id()))
+                    .get(mutation.payload.session_id())
                     .await
                     .expect("concurrent Resource Session exists");
                 let session_id = concurrent.session_id.clone();
@@ -419,15 +417,13 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
                     lifecycle_facts: Vec::new(),
                 };
                 assert!(matches!(
-                    self.inner
-                        .commit_mutation(owner_scope, concurrent_mutation)
-                        .await?,
+                    self.inner.commit(owner_scope, concurrent_mutation).await?,
                     SessionMutationResult::Applied { .. }
                 ));
             }
             let current_revision = self
                 .inner
-                .get(&SessionId::from(mutation.payload.session_id()))
+                .get(mutation.payload.session_id())
                 .await
                 .map(|session| session.revision)
                 .or_else(|error| match error {
@@ -436,9 +432,59 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
                 })?;
             return Ok(SessionMutationResult::Conflict { current_revision });
         }
-        self.inner.commit_mutation(owner_scope, mutation).await
+        self.inner.commit(owner_scope, mutation).await
     }
 
+    async fn get(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<PersistedSession, SessionRepositoryError> {
+        self.inner.get(session_id).await
+    }
+
+    async fn idempotency_receipt(
+        &self,
+        session_id: &SessionId,
+        key: &str,
+    ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError> {
+        self.inner.idempotency_receipt(session_id, key).await
+    }
+
+    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError> {
+        self.inner.owner(session_id).await
+    }
+
+    async fn scan(
+        &self,
+        query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
+    {
+        self.inner.scan(query).await
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .deleted_event_admissions(owner_scope, session_id)
+            .await
+    }
+
+    async fn count_environment_phase(
+        &self,
+        phase: awaken_session_contract::SessionEnvironmentPhase,
+    ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
+        self.inner.count_environment_phase(phase).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::LifecycleOutbox for ScheduledConflictRepository {
     async fn append_lifecycle(
         &self,
         fact: ManagedLifecycleFact,
@@ -452,42 +498,6 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
 
     async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
         self.inner.complete_lifecycle(fact_id).await
-    }
-
-    async fn get(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<PersistedSession, SessionRepositoryError> {
-        self.inner.get(session_id).await
-    }
-
-    async fn reconcilable_sessions_page(
-        &self,
-        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
-    ) -> Result<awaken_session_contract::SessionRecoveryScan, SessionRepositoryError> {
-        self.inner.reconcilable_sessions_page(after).await
-    }
-
-    async fn sessions_referencing_credential_source(
-        &self,
-        workspace_id: &str,
-        source_id: &awaken_credential_contract::CredentialSourceId,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        self.inner
-            .sessions_referencing_credential_source(workspace_id, source_id)
-            .await
-    }
-
-    async fn idempotency_receipt(
-        &self,
-        session_id: &SessionId,
-        key: &str,
-    ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError> {
-        self.inner.idempotency_receipt(session_id, key).await
-    }
-
-    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError> {
-        self.inner.owner(session_id).await
     }
 }
 

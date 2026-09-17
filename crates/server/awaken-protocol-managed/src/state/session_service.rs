@@ -10,7 +10,6 @@ use awaken_session_application::{CredentialMaterialIngress, SessionCredentialSou
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_contract::LifecycleFactNotifier;
 #[cfg(any(test, feature = "test-support"))]
-use awaken_session_contract::ManagedSessionRepository;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -123,7 +122,7 @@ impl ManagedState {
     fn from_runtime_fixture(
         runtime: Arc<dyn SessionRuntime>,
         mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn ManagedSessionRepository>,
+        sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
         environments: Arc<
             awaken_environment_execution_application::EnvironmentExecutionApplication,
         >,
@@ -171,7 +170,10 @@ impl ManagedState {
     /// for fixture overrides applied before sharing; there is no implicit default.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_session_repo(mut self, repo: Arc<dyn ManagedSessionRepository>) -> Self {
+    pub fn with_session_repo(
+        mut self,
+        repo: Arc<dyn awaken_session_contract::SessionStore>,
+    ) -> Self {
         self.application_mut().replace_repository(repo);
         self
     }
@@ -294,7 +296,7 @@ impl ManagedState {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn ephemeral_session_repository() -> Arc<dyn ManagedSessionRepository> {
+fn ephemeral_session_repository() -> Arc<dyn awaken_session_contract::SessionStore> {
     Arc::new(
         SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository"),

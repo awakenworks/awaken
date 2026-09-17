@@ -66,7 +66,7 @@ fn install_managed_lifecycle_delivery_inner(
     let application = state.session_application();
     let notifier = Arc::new(awaken_webhook_managed::WebhookOutboxNotifier::deferred(
         delivery,
-        application.session_repository_handle(),
+        application.lifecycle_outbox_handle(),
     ));
     let notifier_port: Arc<dyn LifecycleFactNotifier> = notifier.clone();
     application
@@ -313,7 +313,7 @@ mod tests {
             "L4/E5 application rejects a second outbox owner before it starts"
         );
 
-        let repository = state.session_application().session_repository_handle();
+        let repository = state.session_application().lifecycle_outbox_handle();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if repository.pending_lifecycle().await.unwrap().is_empty() {

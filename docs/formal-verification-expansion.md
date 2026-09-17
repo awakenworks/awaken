@@ -40,7 +40,7 @@ storage topology.
   operation ledger owns claim/result recovery.
 - Managed session ownership (2): session data and owner are one atomic repository
   write; a visible session row always has an owner. The former `save` then
-  `set_owner` sequence was replaced by aggregate `create` / `commit_mutation` in
+  `set_owner` sequence was replaced by aggregate `create` / `commit` in
   memory, SQLite, and PostgreSQL.
 - Circuit breaker (3): half-open capacity, generation fencing, and abandoned
   probe reopening. `check() -> ()` was replaced by a generation-bound RAII permit,

@@ -22,7 +22,7 @@ use awaken_dispatch::{
     DispatchQueue as _, MemoryDispatchStore, ResourceOperationFence, RunClaim, RunDispatch,
     WorkerIdentity,
 };
-use awaken_session_contract::ManagedSessionRepository as _;
+use awaken_session_contract::SessionRepository as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources {
