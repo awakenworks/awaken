@@ -21,7 +21,7 @@ fn pool_options() -> sqlx::postgres::PgPoolOptions {
         })
 }
 
-/// A Postgres-backed [`ManagedSessionRepository`] — the network-DB sibling over
+/// A Postgres-backed [`SessionRepository`] — the network-DB sibling over
 /// the same `managed` migration scope. The Session port is async; the retained
 /// synchronous Dream port uses the canonical store-runtime bridge on `handle`.
 pub struct PostgresManagedSessionRepository {
@@ -482,7 +482,7 @@ impl PostgresManagedSessionRepository {
 }
 
 #[async_trait]
-impl ManagedSessionRepository for PostgresManagedSessionRepository {
+impl SessionRepository for PostgresManagedSessionRepository {
     async fn create(
         &self,
         owner_scope: &str,
@@ -599,7 +599,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         Ok(replay)
     }
 
-    async fn commit_mutation(
+    async fn commit(
         &self,
         owner_scope: &str,
         mutation: SessionMutation,
@@ -752,46 +752,6 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         Ok(SessionMutationResult::Applied { new_revision: next })
     }
 
-    async fn append_lifecycle(
-        &self,
-        fact: ManagedLifecycleFact,
-    ) -> Result<(), SessionRepositoryError> {
-        sqlx::query(
-            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
-             ON CONFLICT (fact_id) DO NOTHING",
-        )
-        .bind(&fact.id)
-        .bind(lifecycle_str(&fact))
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-        Ok(())
-    }
-
-    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
-        let rows =
-            sqlx::query("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage)?;
-        rows.into_iter()
-            .map(|row| {
-                row.try_get::<String, _>("data")
-                    .map_err(storage)
-                    .and_then(|data| decode_lifecycle(&data).map_err(corrupt))
-            })
-            .collect()
-    }
-
-    async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
-        sqlx::query("DELETE FROM managed_lifecycle_outbox WHERE fact_id = $1")
-            .bind(fact_id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        Ok(())
-    }
-
     async fn get(
         &self,
         session_id: &awaken_session_contract::SessionId,
@@ -814,37 +774,143 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .map_err(corrupt)
     }
 
-    async fn list_by_owner(
+    async fn scan(
         &self,
-        owner_scope: &str,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        sqlx::query(
-            "SELECT aggregate_json, revision FROM managed_session \
-             WHERE scope_id = $1 ORDER BY session_id",
+        query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        use awaken_session_contract::SessionScanQuery;
+        match query {
+            SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after).await,
+            SessionScanQuery::Workspace { workspace_id } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_workspace(workspace_id).await?,
+            )),
+            SessionScanQuery::VaultReferences {
+                workspace_id,
+                vault_id,
+            } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_vault_references(workspace_id, vault_id).await?,
+            )),
+            SessionScanQuery::CredentialSourceReferences {
+                workspace_id,
+                source_id,
+            } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_credential_source_references(workspace_id, source_id)
+                    .await?,
+            )),
+        }
+    }
+
+    async fn count_environment_phase(
+        &self,
+        phase: SessionEnvironmentPhase,
+    ) -> Result<u64, SessionRepositoryError> {
+        let rows = sqlx::query(
+            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
         )
-        .bind(owner_scope)
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?
         .into_iter()
         .map(|row| {
-            decode(EncodedSessionRow {
-                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-                revision: row.try_get("revision").map_err(storage)?,
-            })
-            .map_err(corrupt)
+            Ok((
+                row.try_get("session_id").map_err(storage)?,
+                EncodedSessionRow {
+                    aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                    revision: row.try_get("revision").map_err(storage)?,
+                },
+            ))
         })
-        .collect()
+        .collect::<Result<Vec<_>, SessionRepositoryError>>()?;
+        count_environment_phase(rows, phase)
     }
 
-    async fn reconcilable_sessions_page(
+    async fn idempotency_receipt(
         &self,
-        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
-    ) -> Result<SessionRecoveryScan, SessionRepositoryError> {
+        session_id: &awaken_session_contract::SessionId,
+        key: &str,
+    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
+    {
+        let row = sqlx::query(
+            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+             WHERE session_id = $1 AND idempotency_key = $2",
+        )
+        .bind(session_id.as_str())
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.map(|row| {
+            let revision: i64 = row.try_get("committed_revision").map_err(storage)?;
+            Ok(awaken_session_contract::SessionIdempotencyReceipt {
+                payload_hash: row.try_get("payload_hash").map_err(storage)?,
+                committed_revision: SessionRevision(
+                    u64::try_from(revision)
+                        .map_err(|_| corrupt("negative Session idempotency revision"))?,
+                ),
+            })
+        })
+        .transpose()
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        SessionRepositoryError,
+    > {
+        let row = sqlx::query("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=$1 AND scope_id=$2")
+            .bind(session_id.as_str()).bind(owner_scope).fetch_optional(&self.pool).await.map_err(storage)?;
+        row.map(|row| {
+            super::event_admissions::decode(
+                row.try_get("deleted_revision").map_err(storage)?,
+                row.try_get("event_admissions_json").map_err(storage)?,
+            )
+        })
+        .transpose()
+    }
+
+    async fn owner(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<String, SessionRepositoryError> {
+        let row = sqlx::query("SELECT scope_id FROM managed_session WHERE session_id = $1")
+            .bind(session_id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage)?
+            .ok_or(SessionRepositoryError::NotFound)?;
+        row.try_get("scope_id").map_err(storage)
+    }
+}
+
+impl PostgresManagedSessionRepository {
+    /// Unpaged, fail-closed wrapper for the Workspace-bound index queries.
+    fn scoped_scan(workspace_id: &str, sessions: Vec<PersistedSession>) -> SessionScan {
+        SessionScan {
+            sessions: sessions
+                .into_iter()
+                .map(|session| ScopedPersistedSession {
+                    workspace_id: workspace_id.to_string(),
+                    session,
+                })
+                .collect(),
+            ..SessionScan::default()
+        }
+    }
+
+    async fn scan_reconcilable(
+        &self,
+        after: Option<&awaken_session_contract::SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let page_size = usize::try_from(RECOVERY_BATCH_SIZE)
             .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
-        let mut scan = SessionRecoveryScan::default();
+        let mut scan = SessionScan::default();
         let mut rows = sqlx::query(
             "SELECT session.scope_id, session.session_id, session.aggregate_json, \
                     session.revision, work.observed_revision \
@@ -853,7 +919,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
              WHERE ($1::text IS NULL OR session.session_id > $1) \
              ORDER BY session.session_id LIMIT $2",
         )
-        .bind(after.map(awaken_session_contract::SessionRecoveryCursor::session_id))
+        .bind(after.map(awaken_session_contract::SessionScanCursor::session_id))
         .bind(RECOVERY_BATCH_SIZE + 1)
         .fetch_all(&mut *tx)
         .await
@@ -867,7 +933,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 .try_get::<String, _>("session_id")
                 .map_err(storage)?;
             scan.next_cursor =
-                Some(awaken_session_contract::SessionRecoveryCursor::after_session_id(session_id));
+                Some(awaken_session_contract::SessionScanCursor::after_session_id(session_id));
         }
         for row in rows {
             let session_id: String = row.try_get("session_id").map_err(storage)?;
@@ -936,31 +1002,30 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         Ok(scan)
     }
 
-    async fn count_environment_phase(
+    async fn scan_workspace(
         &self,
-        phase: SessionEnvironmentPhase,
-    ) -> Result<u64, SessionRepositoryError> {
-        let rows = sqlx::query(
-            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
+        owner_scope: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        sqlx::query(
+            "SELECT aggregate_json, revision FROM managed_session \
+             WHERE scope_id = $1 ORDER BY session_id",
         )
+        .bind(owner_scope)
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?
         .into_iter()
         .map(|row| {
-            Ok((
-                row.try_get("session_id").map_err(storage)?,
-                EncodedSessionRow {
-                    aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-                    revision: row.try_get("revision").map_err(storage)?,
-                },
-            ))
+            decode(EncodedSessionRow {
+                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                revision: row.try_get("revision").map_err(storage)?,
+            })
+            .map_err(corrupt)
         })
-        .collect::<Result<Vec<_>, SessionRepositoryError>>()?;
-        count_environment_phase(rows, phase)
+        .collect()
     }
 
-    async fn sessions_referencing_vault(
+    async fn scan_vault_references(
         &self,
         workspace_id: &str,
         vault_id: &str,
@@ -991,7 +1056,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         Ok(sessions)
     }
 
-    async fn sessions_referencing_credential_source(
+    async fn scan_credential_source_references(
         &self,
         workspace_id: &str,
         source_id: &awaken_credential_contract::CredentialSourceId,
@@ -1023,65 +1088,48 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         }
         Ok(sessions)
     }
+}
 
-    async fn idempotency_receipt(
+#[async_trait]
+impl LifecycleOutbox for PostgresManagedSessionRepository {
+    async fn append_lifecycle(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-        key: &str,
-    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
-    {
-        let row = sqlx::query(
-            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
-             WHERE session_id = $1 AND idempotency_key = $2",
+        fact: ManagedLifecycleFact,
+    ) -> Result<(), SessionRepositoryError> {
+        sqlx::query(
+            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
+             ON CONFLICT (fact_id) DO NOTHING",
         )
-        .bind(session_id.as_str())
-        .bind(key)
-        .fetch_optional(&self.pool)
+        .bind(&fact.id)
+        .bind(lifecycle_str(&fact))
+        .execute(&self.pool)
         .await
         .map_err(storage)?;
-        row.map(|row| {
-            let revision: i64 = row.try_get("committed_revision").map_err(storage)?;
-            Ok(awaken_session_contract::SessionIdempotencyReceipt {
-                payload_hash: row.try_get("payload_hash").map_err(storage)?,
-                committed_revision: SessionRevision(
-                    u64::try_from(revision)
-                        .map_err(|_| corrupt("negative Session idempotency revision"))?,
-                ),
+        Ok(())
+    }
+
+    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
+        let rows =
+            sqlx::query("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(storage)?;
+        rows.into_iter()
+            .map(|row| {
+                row.try_get::<String, _>("data")
+                    .map_err(storage)
+                    .and_then(|data| decode_lifecycle(&data).map_err(corrupt))
             })
-        })
-        .transpose()
+            .collect()
     }
 
-    async fn deleted_event_admissions(
-        &self,
-        owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
-    ) -> Result<
-        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
-        SessionRepositoryError,
-    > {
-        let row = sqlx::query("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=$1 AND scope_id=$2")
-            .bind(session_id.as_str()).bind(owner_scope).fetch_optional(&self.pool).await.map_err(storage)?;
-        row.map(|row| {
-            super::event_admissions::decode(
-                row.try_get("deleted_revision").map_err(storage)?,
-                row.try_get("event_admissions_json").map_err(storage)?,
-            )
-        })
-        .transpose()
-    }
-
-    async fn owner(
-        &self,
-        session_id: &awaken_session_contract::SessionId,
-    ) -> Result<String, SessionRepositoryError> {
-        let row = sqlx::query("SELECT scope_id FROM managed_session WHERE session_id = $1")
-            .bind(session_id.as_str())
-            .fetch_optional(&self.pool)
+    async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
+        sqlx::query("DELETE FROM managed_lifecycle_outbox WHERE fact_id = $1")
+            .bind(fact_id)
+            .execute(&self.pool)
             .await
-            .map_err(storage)?
-            .ok_or(SessionRepositoryError::NotFound)?;
-        row.try_get("scope_id").map_err(storage)
+            .map_err(storage)?;
+        Ok(())
     }
 }
 

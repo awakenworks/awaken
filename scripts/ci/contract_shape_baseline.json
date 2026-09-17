@@ -84,9 +84,9 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 17236,
+      "production_lines": 16990,
       "catch_all_errors": 11,
-      "capability_defaults": 54
+      "capability_defaults": 49
     },
     "awaken-tenancy": {
       "depth": 0

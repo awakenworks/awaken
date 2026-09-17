@@ -54,7 +54,7 @@ pub struct WorkerFileContentService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
-    session_repository: Option<Arc<dyn awaken_session_contract::ManagedSessionRepository>>,
+    session_repository: Option<Arc<dyn awaken_session_contract::SessionRepository>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
     session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
 }
@@ -89,7 +89,7 @@ impl WorkerFileContentService {
     #[must_use]
     pub fn with_session_repository(
         mut self,
-        sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+        sessions: Arc<dyn awaken_session_contract::SessionRepository>,
     ) -> Self {
         self.session_repository = Some(sessions);
         self

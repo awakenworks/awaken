@@ -174,7 +174,7 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
     // | R1   | present        | existing    | cold             | E1-E4  |
     // | R2   | absent         | fresh       | cold             | existing fresh-admission tests |
     // | R3   | present        | existing    | warm             | idempotent E1-E3 |
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -255,7 +255,7 @@ async fn background_attention_uses_canonical_session_admission_without_observing
     // than Session state or a special notification payload. Failure rule B2:
     // C3 or C4 false => no executable delivery. Constraint K1: neither Host
     // enqueue nor a second background lifecycle is available to this port.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -343,7 +343,7 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
     // | H1 | Hibernated | Dispatch only | succeeds | E1-E5 |
     // | H2 | Unmaterialized/Resident | canonical realization | n/a | adjacent realization tests |
     // | H3 | terminal/invalid | none | none | reject through existing gates |
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -582,7 +582,7 @@ async fn background_activation_uses_the_session_runtime_without_a_second_queue_p
     // Constraint: SessionApplication exposes no dispatch repository or raw row.
     // Decision table: R1=C1.delivery+C2=>E1; R2=C1.recovery=>E2.RecoveryClaimed;
     // R3=C1.completed=>E2.Completed.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -832,7 +832,7 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     // sole activity owner. Decision table: P1=C1+C2=>E1; P2=C1+C3=>E2;
     // P3=C4=>E3. The
     // adjacent decorator test covers admission and Runtime failures.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );

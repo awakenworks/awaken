@@ -3,7 +3,10 @@ use awaken_agent_contract::clock::ManualClock;
 use awaken_session_contract::{IdempotencyRecord, SessionMutationPayload, SessionRepositoryError};
 use awaken_session_store::SqliteManagedSessionRepository;
 
-fn timed_application(repo: Arc<dyn ManagedSessionRepository>, now: u64) -> SessionApplication {
+fn timed_application(
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
+    now: u64,
+) -> SessionApplication {
     application_with_configuration(
         repo,
         Arc::new(RecordingEnvironmentSource::default()),
@@ -135,7 +138,7 @@ async fn postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack()
     mutation_time_receipt_table(Arc::new(repo)).await;
 }
 
-async fn mutation_time_receipt_table(repo: Arc<dyn ManagedSessionRepository>) {
+async fn mutation_time_receipt_table(repo: Arc<dyn awaken_session_contract::SessionStore>) {
     let mut create = command();
     // Keep the real Postgres case repeatable without deleting shared database
     // state: every test process owns a distinct Session identity.

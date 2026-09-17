@@ -51,8 +51,8 @@ pub awaken_coordinator::application_access::IssuedApplicationToken::operations: 
 pub awaken_coordinator::application_access::IssuedApplicationToken::protocols: alloc::vec::Vec<alloc::string::String>
 pub awaken_coordinator::application_access::IssuedApplicationToken::token_type: alloc::string::String
 pub const awaken_coordinator::application_access::APPLICATION_ACCESS_MAX_TTL_SECONDS: u64
-pub async fn awaken_coordinator::application_access::issue_application_access(&awaken_coordinator::application_access_store::ApplicationAccessStore, &dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository, &str, awaken_coordinator::application_access::CreateApplicationToken) -> core::result::Result<awaken_coordinator::application_access::IssuedApplicationToken, awaken_coordinator::application_access::ApplicationAccessIssuanceError>
-pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>) -> axum::routing::Router
+pub async fn awaken_coordinator::application_access::issue_application_access(&awaken_coordinator::application_access_store::ApplicationAccessStore, &dyn awaken_session_contract::session_repo::repository_port::SessionRepository, &str, awaken_coordinator::application_access::CreateApplicationToken) -> core::result::Result<awaken_coordinator::application_access::IssuedApplicationToken, awaken_coordinator::application_access::ApplicationAccessIssuanceError>
+pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::SessionRepository>) -> axum::routing::Router
 pub mod awaken_coordinator::application_access_store
 pub enum awaken_coordinator::application_access_store::ApplicationAccessRepositoryError
 pub awaken_coordinator::application_access_store::ApplicationAccessRepositoryError::Corrupt(alloc::string::String)
@@ -113,7 +113,7 @@ pub fn awaken_coordinator::data_subject_boundary::coordinator_content_eraser(all
 pub fn awaken_coordinator::data_subject_boundary::router(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub fn awaken_coordinator::data_subject_boundary::router_with_authenticator(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>) -> axum::routing::Router
 pub mod awaken_coordinator::mcp_export
-pub fn awaken_coordinator::mcp_export::router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>, core::option::Option<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
+pub fn awaken_coordinator::mcp_export::router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>, core::option::Option<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub mod awaken_coordinator::webhooks
 pub use awaken_coordinator::webhooks::<<awaken_webhook_managed::*>>
 pub mod awaken_coordinator::worker_observation_boundary
@@ -194,7 +194,7 @@ pub awaken_coordinator::CoordinatorDependencies::resource_registry: alloc::sync:
 pub awaken_coordinator::CoordinatorDependencies::service_authenticator: core::option::Option<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>
 pub awaken_coordinator::CoordinatorDependencies::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
 pub awaken_coordinator::CoordinatorDependencies::session_application: alloc::sync::Arc<awaken_session_application::SessionApplication>
-pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>
+pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::SessionRepository>
 pub awaken_coordinator::CoordinatorDependencies::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::CoordinatorDependencies::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>
 pub awaken_coordinator::CoordinatorDependencies::worker_execution_bindings: core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::application::WorkerExecutionBindingSource>>

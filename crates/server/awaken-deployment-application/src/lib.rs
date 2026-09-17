@@ -1485,11 +1485,10 @@ mod tests {
             1,
             "D1/D3"
         );
-        let facts = awaken_session_contract::ManagedSessionRepository::pending_lifecycle(
-            repository.as_ref(),
-        )
-        .await
-        .expect("Session lifecycle outbox");
+        let facts =
+            awaken_session_contract::LifecycleOutbox::pending_lifecycle(repository.as_ref())
+                .await
+                .expect("Session lifecycle outbox");
         assert!(
             facts
                 .iter()

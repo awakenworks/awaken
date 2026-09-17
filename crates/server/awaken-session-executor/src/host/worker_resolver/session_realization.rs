@@ -83,7 +83,7 @@ impl HostWorkerResolver {
         realization: &crate::session_slot::SessionRealizationPermit,
     ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
         let host = synchronizer.host;
-        awaken_session_contract::drive_session_realization(
+        awaken_session_application::drive_session_realization(
             realization,
             synchronizer.claim.map(|claim| claim.run_id.clone()),
             control,

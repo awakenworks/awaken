@@ -19,7 +19,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
     for status in ["idle", "running"] {
         for replace in [false, true] {
             for successor in [false, true] {
-                let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+                let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
                     awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
                 );
                 let app = application_with_configuration(
@@ -254,7 +254,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
 async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
     use awaken_session_contract::SessionResourceMaterializationIntent;
     for lifecycle in ["pending", "rollback", "committed"] {
-        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
         );
         let app = application(
@@ -349,7 +349,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
 #[tokio::test]
 async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources() {
     for revision in [1, 2, 99] {
-        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
         );
         let app = application(
@@ -427,7 +427,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
     let pending_revision;
 
     {
-        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path)
                 .expect("open Session authority"),
         );
@@ -452,7 +452,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
         assert_eq!(before_restart.resources.activations[0].attempts, 1, "R1/E1");
     }
 
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&path)
             .expect("reopen Session authority"),
     );
@@ -517,7 +517,7 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
     // The lifecycle classifier and terminal-release record transitions are
     // covered independently by their contract decision tables; this test owns
     // the application-to-Runtime negative effect boundary.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session authority"),
     );

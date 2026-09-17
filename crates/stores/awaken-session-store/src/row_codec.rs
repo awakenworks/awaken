@@ -357,7 +357,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
 #[cfg(test)]
 mod tests {
 
-    use awaken_session_contract::ManagedSessionRepository as _;
+    use awaken_session_contract::SessionRepository as _;
     use awaken_session_contract::resource_plane::{
         BindingId, FileId, InputResourceId, ResourceAccess,
     };

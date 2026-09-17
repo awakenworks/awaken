@@ -12,23 +12,25 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationErr
 #[cfg(test)]
 use awaken_session_contract::SessionExecutionState;
 use awaken_session_contract::{
-    LifecycleFactNotifier, ManagedSessionRepository, McpAttachmentRealizer, McpTarget,
-    PersistedSession, RunError, SandboxProvisioning, SessionEnvironmentBindingSink,
-    SessionRecoveryQuarantine, SessionRecoveryScan, SessionRuntime, SessionRuntimePlacement,
+    LifecycleFactNotifier, McpAttachmentRealizer, McpTarget, PersistedSession, RunError,
+    SandboxProvisioning, SessionEnvironmentBindingSink, SessionRecoveryQuarantine,
+    SessionRepository, SessionRuntime, SessionRuntimePlacement, SessionScan,
 };
 
 /// Drain the repository's one typed keyset index before any reconciler starts
 /// effects. The cursor is process-local loop state only: the repository remains
 /// the sole durable scheduling and row authority.
 async fn scan_all_reconcilable_sessions(
-    repository: &dyn ManagedSessionRepository,
-) -> Result<SessionRecoveryScan, awaken_session_contract::SessionRepositoryError> {
-    let mut complete = SessionRecoveryScan::default();
+    repository: &dyn SessionRepository,
+) -> Result<SessionScan, awaken_session_contract::SessionRepositoryError> {
+    let mut complete = SessionScan::default();
     let mut quarantined = std::collections::BTreeMap::new();
     let mut cursor = None;
     loop {
         let page = repository
-            .reconcilable_sessions_page(cursor.as_ref())
+            .scan(awaken_session_contract::SessionScanQuery::Reconcilable {
+                after: cursor.as_ref(),
+            })
             .await?;
         let next_cursor = page.next_cursor;
         if let (Some(current), Some(next)) = (cursor.as_ref(), next_cursor.as_ref())
@@ -142,14 +144,14 @@ struct SessionRecoveryCandidates {
     quarantined: Vec<SessionRecoveryQuarantine>,
 }
 
-impl From<SessionRecoveryScan> for SessionRecoveryCandidates {
-    fn from(scan: SessionRecoveryScan) -> Self {
+impl From<SessionScan> for SessionRecoveryCandidates {
+    fn from(scan: SessionScan) -> Self {
         Self::from_scan(scan, true)
     }
 }
 
 impl SessionRecoveryCandidates {
-    fn from_scan(scan: SessionRecoveryScan, audit_resource_references: bool) -> Self {
+    fn from_scan(scan: SessionScan, audit_resource_references: bool) -> Self {
         Self {
             sessions: scan
                 .sessions
@@ -208,6 +210,7 @@ mod realization;
 mod resource_reconciliation;
 mod run_admission;
 mod runtime_commands;
+mod session_realization_driver;
 mod terminal_cleanup_driver;
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
@@ -226,6 +229,7 @@ pub use runtime_commands::{
     SessionRepositoryOwner, SessionRepositoryResourceInput, SessionRunExecutionObservation,
     SessionToolUseObservation,
 };
+pub use session_realization_driver::drive_session_realization;
 pub use terminal_cleanup_driver::{
     SessionTerminalCleanupDriveOutcome, drive_session_terminal_cleanup,
 };

@@ -1310,7 +1310,9 @@ impl SessionApplication {
             loop {
                 let scan = self
                     .session_repository()
-                    .reconcilable_sessions_page(cursor.as_ref())
+                    .scan(awaken_session_contract::SessionScanQuery::Reconcilable {
+                        after: cursor.as_ref(),
+                    })
                     .await
                     .map_err(repository_control)?;
                 let next_cursor = scan.next_cursor;

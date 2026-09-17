@@ -45,7 +45,7 @@ DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {}
 # *new* instances today rather than only after the migration finishes — the
 # failure mode of a file allow-list, which freezes the debt and guards nothing.
 # Lower this number as instances are converted or registered; never raise it.
-UNTRIAGED_BASELINE = 31
+UNTRIAGED_BASELINE = 30
 
 TRAIT = re.compile(r"pub trait (\w+)[^{;]*\{")
 METHOD = re.compile(r"(?:async )?fn ([a-z_]\w*)\((?:[^()]|\([^()]*\))*\)\s*->\s*[^;{]*\{")

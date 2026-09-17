@@ -24,7 +24,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
     // V5/V6: final scan succeeds but global phase count is unavailable/corrupt
     // -> error and previous snapshot unchanged. Global count scope/nonzero
     // truth is covered by repository conformance; Q1 owns value projection.
-    let inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let inner: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("validation repository"),
     );

@@ -11,9 +11,7 @@ pub use control_plane::*;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use awaken_session_contract::{
-    LifecycleFactDelivery, LifecycleFactNotifier, ManagedSessionRepository,
-};
+use awaken_session_contract::{LifecycleFactDelivery, LifecycleFactNotifier, LifecycleOutbox};
 use awaken_tenancy::WorkspaceScope;
 
 /// Map guard-resolved tenancy onto the protocol-neutral Workspace scope used by
@@ -37,7 +35,7 @@ pub async fn stamp_workspace_scope(
 /// Notification adapter over Coordinator's transactional Session outbox.
 pub struct WebhookOutboxNotifier {
     delivery: Arc<dyn LifecycleFactDelivery>,
-    session_outbox: Arc<dyn ManagedSessionRepository>,
+    session_outbox: Arc<dyn LifecycleOutbox>,
     draining: Arc<tokio::sync::Mutex<()>>,
     wake: Arc<tokio::sync::Notify>,
     /// One notifier owns one replay loop. Coordinator composition can reserve
@@ -73,7 +71,7 @@ impl WebhookOutboxNotifier {
     #[must_use]
     pub fn with_delivery(
         delivery: Arc<dyn LifecycleFactDelivery>,
-        outbox: Arc<dyn ManagedSessionRepository>,
+        outbox: Arc<dyn LifecycleOutbox>,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
         Self::with_delivery_interval(delivery, outbox, RECONCILIATION_INTERVAL, service_lifecycle)
@@ -85,7 +83,7 @@ impl WebhookOutboxNotifier {
     #[must_use]
     pub fn with_delivery_interval(
         delivery: Arc<dyn LifecycleFactDelivery>,
-        outbox: Arc<dyn ManagedSessionRepository>,
+        outbox: Arc<dyn LifecycleOutbox>,
         interval: Duration,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
@@ -102,7 +100,7 @@ impl WebhookOutboxNotifier {
     #[must_use]
     pub fn deferred(
         delivery: Arc<dyn LifecycleFactDelivery>,
-        outbox: Arc<dyn ManagedSessionRepository>,
+        outbox: Arc<dyn LifecycleOutbox>,
     ) -> Self {
         Self {
             delivery,
@@ -154,7 +152,7 @@ impl WebhookOutboxNotifier {
 
     async fn drain_once(
         delivery: &Arc<dyn LifecycleFactDelivery>,
-        session_outbox: &Arc<dyn ManagedSessionRepository>,
+        session_outbox: &Arc<dyn LifecycleOutbox>,
         draining: &Arc<tokio::sync::Mutex<()>>,
     ) {
         let _guard = draining.lock().await;

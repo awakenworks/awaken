@@ -19,7 +19,7 @@ protocol.
 ```text
 Control
 ├── SessionApplication
-│   ├── ManagedSessionRepository
+│   ├── SessionRepository (+ LifecycleOutbox drain port)
 │   ├── EnvironmentExecutionApplication
 │   └── SessionRealizationControl
 ├── Environment WorkQueue

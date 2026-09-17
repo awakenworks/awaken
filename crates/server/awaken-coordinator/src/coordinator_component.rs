@@ -16,7 +16,7 @@ use awaken_protocol_managed::ManagedState;
 use awaken_resource_contract::ResourceRegistry;
 use awaken_session_application::SessionApplication;
 use awaken_session_contract::DreamProcessStore;
-use awaken_session_contract::ManagedSessionRepository;
+use awaken_session_contract::SessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 
@@ -85,7 +85,7 @@ pub struct CoordinatorDependencies {
     pub executable_projection_refresh:
         Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>,
     pub environments: Arc<EnvironmentExecutionApplication>,
-    pub sessions: Arc<dyn ManagedSessionRepository>,
+    pub sessions: Arc<dyn SessionRepository>,
     pub default_workspace: String,
     /// Authenticated executable Agent and Environment registration routes.
     /// Application consumers refresh through the injected neutral port; these

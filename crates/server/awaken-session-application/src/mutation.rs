@@ -65,7 +65,7 @@ fn applied_root_revision(
 /// receipts. Idempotency is compiled before observation; the repository remains
 /// the sole CAS owner. Callers retain their domain-specific retry/error policy.
 pub(crate) async fn commit_observed_snapshot(
-    repository: &dyn ManagedSessionRepository,
+    repository: &dyn SessionRepository,
     owner_scope: &str,
     session: &mut PersistedSession,
     idempotency: IdempotencyRecord,
@@ -74,7 +74,7 @@ pub(crate) async fn commit_observed_snapshot(
 ) -> Result<SessionMutationResult, SessionRepositoryError> {
     observe_root_update(&mut session.updated_at_unix_ms, now);
     repository
-        .commit_mutation(
+        .commit(
             owner_scope,
             SessionMutation {
                 expected_revision: session.revision,
@@ -311,7 +311,7 @@ impl SessionApplication {
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionMutationError> {
         self.sessions_repo
-            .commit_mutation(owner_scope, mutation)
+            .commit(owner_scope, mutation)
             .await
             .map_err(repository_failure)
     }

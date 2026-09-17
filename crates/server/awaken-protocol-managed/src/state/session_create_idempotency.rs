@@ -138,7 +138,6 @@ impl ManagedState {
 mod tests {
     use super::*;
     use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
-    use awaken_session_contract::ManagedSessionRepository;
     use std::sync::Arc;
 
     fn request(title: &str) -> SessionCreateParams {
@@ -164,7 +163,8 @@ mod tests {
         // Constraints/invariants: the owner-scoped key plus canonical request
         // fingerprint selects exactly one durable Session; cache rehydration may
         // project that truth but cannot create or replace another aggregate.
-        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+            Arc::new(ephemeral_session_repo());
         let original =
             Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
         let created = original

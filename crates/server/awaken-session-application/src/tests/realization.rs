@@ -1,4 +1,5 @@
 use super::*;
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_contract::SessionId;
 use awaken_session_contract::SessionRealizationControl;
 
@@ -14,7 +15,7 @@ fn lifecycle_cancellation_interrupts_a_held_recovery_scan() {
         // No held read may prevent process shutdown; cancellation does not release any
         // physical predecessor or commit a synthetic successful recovery.
         for held_call in [1, 2, 3] {
-            let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+            let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
                 awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
             );
             let observed = Arc::new(FaultingSessionRepository::new(durable));
@@ -303,7 +304,7 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
 #[test]
 fn one_recovery_cycle_scans_candidates_once_before_the_final_audit() {
     run_composed_async_test(|| async {
-        let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+        let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("session repository"),
         );
@@ -327,7 +328,7 @@ fn one_recovery_cycle_scans_candidates_once_before_the_final_audit() {
 #[derive(Default)]
 pub(super) struct RecordingResourceRuntime {
     applied: Mutex<Vec<(u64, awaken_session_contract::ResolvedSessionResources)>>,
-    repository: Option<Arc<dyn ManagedSessionRepository>>,
+    repository: Option<Arc<dyn awaken_session_contract::SessionStore>>,
     roots_observed_before_apply: Mutex<Vec<PersistedSession>>,
     pub(super) replaced_tools:
         Mutex<Vec<(String, awaken_session_contract::SessionToolConfiguration)>>,
@@ -439,7 +440,7 @@ impl SessionRuntime for RecordingResourceRuntime {
 async fn skills_only_active_generation_is_preserved_in_the_frozen_projection() {
     // Decision rule: execute S1 and require the exact skills-only revision and
     // manifest pair in the frozen projection.
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -476,7 +477,7 @@ async fn rolled_back_resource_generation_recovers_only_the_installed_pair() {
     // the active installed revision/manifest pair. Decision rule: execute G1 and
     // require both frozen and Runtime projections to recover pair (1, manifest 1).
     let runtime = Arc::new(RecordingResourceRuntime::default());
-    let repo: Arc<dyn ManagedSessionRepository> =
+    let repo: Arc<dyn awaken_session_contract::SessionStore> =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     let app = application_with_runtime(
         runtime.clone(),
@@ -536,7 +537,7 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     // |---|---|---|---|---|---|
     // | M1 | Running | absent | none | none | E1 |
     // | M2 | Idle | present | committed | once | E2 + E3 + E4 |
-    let repo: Arc<dyn ManagedSessionRepository> =
+    let repo: Arc<dyn awaken_session_contract::SessionStore> =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     create(
         repo.as_ref(),
@@ -691,7 +692,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         vec![skill.clone()],
     )
     .expect("pending Memory, File, and Skill targets");
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("resource Memory authority repository"),
     );
@@ -919,7 +920,9 @@ fn profiled_policy_manifest(
     awaken_session_contract::ResolvedSessionResources::try_new(inputs, vec![skill]).unwrap()
 }
 
-async fn seed_profiled_resource_policy_sessions(repo: Arc<dyn ManagedSessionRepository>) {
+async fn seed_profiled_resource_policy_sessions(
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
+) {
     for (id, policy) in [
         (
             "resource-managed",
@@ -949,7 +952,7 @@ async fn seed_profiled_resource_policy_sessions(repo: Arc<dyn ManagedSessionRepo
 
 async fn assert_managed_and_frozen_resource_policy_rules(
     app: Arc<SessionApplication>,
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
 ) {
     let command = |resources| ReplaceSessionResourceManifest {
         request_fingerprint: awaken_session_contract::stable_fingerprint(&resources),
@@ -986,7 +989,7 @@ async fn assert_managed_and_frozen_resource_policy_rules(
 
 async fn assert_file_resource_and_credential_policy_rules(
     app: Arc<SessionApplication>,
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
 ) {
     let command = |resources| ReplaceSessionResourceManifest {
         request_fingerprint: awaken_session_contract::stable_fingerprint(&resources),
@@ -1054,7 +1057,7 @@ async fn profiled_resource_mutation_policy_fences_the_root_before_external_effec
     // R5=profiled+C4=>E5. Each independent cause partition owns a boxed
     // test-only future so the decision oracles do not share one oversized async
     // frame; production stack limits and state transitions remain unchanged.
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("profiled policy repository"),
     );
@@ -1086,7 +1089,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
     // FMECA: an unbounded retry can strand create
     // forever (S8/O5/D6), while immediate terminal failure loses recoverability
     // (S8/O4/D4); persisted attempts plus lease expiry bound both modes.
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -1210,7 +1213,7 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
     // generation; old failure replay cannot mutate that successor. The existing
     // running-realization test owns interval/terminal settlement. The HTTP MCP
     // hot-swap test additionally proves the previous Active server still runs.
-    let repo: Arc<dyn ManagedSessionRepository> =
+    let repo: Arc<dyn awaken_session_contract::SessionStore> =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     let app = application_with_configuration(
         repo.clone(),
@@ -1320,7 +1323,7 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
     // | R2 | exact/live | equal/current | unavailable | E2 + E5 |
     // | R3 | exact/live | older than assertion | any | E3 |
     // | R4 | stale epoch | newer | any | E4 + E5 |
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("renewal Session repository"),
     );
@@ -1415,7 +1418,7 @@ async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
     // against epoch 8 would deadlock cleanup forever. Nonterminal propagation
     // remains covered by `lease_renewal_is_a_projection_free_root_cas` and the
     // MCP aggregate decision table.
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("terminal renewal Session repository"),
     );
@@ -2827,7 +2830,7 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
     .await;
 
     let target = registry_race_target();
-    let repository: Arc<dyn ManagedSessionRepository> = repo.clone();
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = repo.clone();
     let faulting = Arc::new(FaultingSessionRepository::new(repository));
     faulting.commit_then_conflict_once("claim-terminal-cleanup-recovery");
     let application = application_with_configuration(
@@ -3093,7 +3096,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         "claim-next never doubles as live reassignment"
     );
 
-    let inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let inner: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("ambiguous cleanup Session repository"),
     );
@@ -3619,7 +3622,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         epoch: 7,
         expires_at_unix_ms: 1,
     };
-    let r3_inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let r3_inner: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("R3 Session repository"),
     );
@@ -3665,7 +3668,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     );
     assert_eq!(r3_workers.list_calls.load(Ordering::SeqCst), 3, "R3a/E3");
 
-    let r3b_inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let r3b_inner: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("R3b Session repository"),
     );
@@ -3720,7 +3723,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         "R3b/E4 compensation cannot overwrite the concurrent root"
     );
 
-    let r3c_inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let r3c_inner: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("R3c Session repository"),
     );
@@ -4224,7 +4227,7 @@ async fn local_terminal_cleanup_claim_reads_the_exact_root_beyond_the_recovery_b
 
 #[tokio::test]
 async fn recovery_treats_a_concurrently_deleted_terminal_session_as_converged() {
-    let inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let inner: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -4356,7 +4359,7 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
 /// conflict would leave a hidden Session and its Environment indefinitely live.
 #[tokio::test]
 async fn terminal_cleanup_rebases_after_competing_root_writer() {
-    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -4387,7 +4390,7 @@ async fn terminal_cleanup_rebases_after_competing_root_writer() {
     ));
     assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1);
     assert!(
-        repo.reconcilable_sessions()
+        repo.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .unwrap()
             .sessions
@@ -4409,7 +4412,7 @@ async fn terminal_cleanup_rebases_after_competing_root_writer() {
 /// | A1 | T | T | T | T | E1 + E2 + E3 + E4 |
 #[tokio::test]
 async fn terminal_cleanup_acknowledges_a_committed_completion_after_response_loss() {
-    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -4470,7 +4473,7 @@ async fn terminal_cleanup_acknowledges_a_committed_completion_after_response_los
 async fn terminal_cleanup_stale_loser_accepts_the_winners_tombstone() {
     // Constraint/Invariant: the winner's repository tombstone is final; a stale
     // loser may acknowledge it but cannot replay Runtime cleanup.
-    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -4528,7 +4531,7 @@ async fn terminal_cleanup_stale_loser_accepts_the_winners_tombstone() {
 /// | F6 | disposal CAS accepted | Completed | E5 no preparation replay + E6 |
 #[tokio::test]
 async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
-    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -4858,7 +4861,10 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
             .await
             .unwrap();
         assert!(replay_runtime.intents.lock().unwrap().is_empty(), "E3");
-        let scan = reopened.reconcilable_sessions().await.unwrap();
+        let scan = reopened
+            .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+            .await
+            .unwrap();
         assert!(scan.quarantined.is_empty(), "E4");
         assert!(
             scan.sessions

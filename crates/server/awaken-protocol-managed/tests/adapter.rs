@@ -19,9 +19,8 @@ use awaken_agent_contract::{
 use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency};
 use awaken_session_contract::{
     AdmitSessionRun, AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool,
-    ManagedSessionRepository, OutcomeDrive, OutcomeIteration, OutcomeReport, Pending, RunError,
-    SessionExecutionState, SessionRunReservation, SessionRuntime, StepOutcome,
-    ToolPermissionDecision,
+    OutcomeDrive, OutcomeIteration, OutcomeReport, Pending, RunError, SessionExecutionState,
+    SessionRepository, SessionRunReservation, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
@@ -165,7 +164,8 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     // N5 foreign Workspace=>404 before any close. The native route is explicitly
     // mounted: no fields or paths are added to the standard Anthropic surface.
     let runtime = EchoFake::default();
-    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let repo = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
     // The native admission route is merged before the edge stamp so BOTH
     // surfaces sit behind the one composition-root tenancy layer.
     let app = support::edge_stamped(
@@ -285,7 +285,6 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         .release_terminal_resources("default", id)
         .await
         .unwrap();
-    let repo = state.session_application().session_repository_handle();
     assert!(matches!(
         repo.get(&SessionId::from(id)).await,
         Err(awaken_session_contract::SessionRepositoryError::NotFound)

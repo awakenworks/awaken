@@ -126,7 +126,6 @@ mod tests {
         RehydrateFake, create_session_fixture, ephemeral_session_repo,
     };
     use crate::state::tests::{sample_inputs, sample_persisted};
-    use awaken_session_contract::ManagedSessionRepository;
 
     #[tokio::test]
     async fn orphan_transcript_cannot_manufacture_a_session_root() {
@@ -169,7 +168,8 @@ mod tests {
         // root without rehydration. No metadata key participates in any rule.
         // Decision rules R1=!C1+!C2=>E1, R2=C1+(!C2|!C3|!C4)=>E2,
         // R3=C1+C2+C3+C4+live=>E3, R4=same+failed=>E3.
-        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+            Arc::new(ephemeral_session_repo());
         let id = "profiled-receipt-live";
         let receipt = awaken_session_contract::IdempotencyRecord {
             key: format!("profiled:create:{id}"),
@@ -296,7 +296,8 @@ mod tests {
         // Constraints/invariants: frozen Runtime placement, not cache warmth or
         // lease liveness, owns physical custody; rehydration may rebuild only the
         // read/projection state and cannot adopt or stage Worker-owned effects.
-        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+            Arc::new(ephemeral_session_repo());
         let mut cases = Vec::new();
         for (owner_name, placement) in [(
             "topology",

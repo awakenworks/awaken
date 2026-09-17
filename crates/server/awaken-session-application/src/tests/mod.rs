@@ -10,8 +10,8 @@ use std::sync::{
 use awaken_executable_environment_contract::EnvironmentImageBuildError;
 use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::{
-    ManagedSessionRepository, McpAttachmentRealizer, PersistedSession, RunError,
-    SandboxProvisioning, SessionRuntime, SessionRuntimePlacement,
+    McpAttachmentRealizer, PersistedSession, RunError, SandboxProvisioning, SessionRepository,
+    SessionRuntime, SessionRuntimePlacement,
 };
 
 use super::*;
@@ -1634,7 +1634,7 @@ struct PausedSessionMutation {
 struct FaultingSessionRepository {
     pause_mutation_once: Mutex<Option<(String, Arc<PausedSessionMutation>)>>,
     create_crash_boundary: Mutex<Option<(bool, std::path::PathBuf)>>,
-    inner: Arc<dyn ManagedSessionRepository>,
+    inner: Arc<dyn awaken_session_contract::SessionStore>,
     applied_create_roots: Mutex<Vec<PersistedSession>>,
     get_override_once: Mutex<Option<PersistedSession>>,
     paused_gets: Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
@@ -1687,7 +1687,7 @@ impl FaultingSessionRepository {
         }
     }
 
-    fn new(inner: Arc<dyn ManagedSessionRepository>) -> Self {
+    fn new(inner: Arc<dyn awaken_session_contract::SessionStore>) -> Self {
         Self {
             inner,
             pause_mutation_once: Mutex::new(None),
@@ -1799,7 +1799,7 @@ impl FaultingSessionRepository {
         let payload_hash = payload.stable_hash();
         let result = self
             .inner
-            .commit_mutation(
+            .commit(
                 owner_scope,
                 awaken_session_contract::SessionMutation {
                     expected_revision,
@@ -1817,7 +1817,7 @@ impl FaultingSessionRepository {
 }
 
 #[async_trait::async_trait]
-impl ManagedSessionRepository for FaultingSessionRepository {
+impl SessionRepository for FaultingSessionRepository {
     async fn create(
         &self,
         owner_scope: &str,
@@ -1854,7 +1854,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
             .await
     }
 
-    async fn commit_mutation(
+    async fn commit(
         &self,
         owner_scope: &str,
         mutation: awaken_session_contract::SessionMutation,
@@ -1903,7 +1903,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
             .is_some_and(|operation| mutation.idempotency.key.contains(operation));
         if should_report_conflict {
             self.conflict_operation_once.lock().unwrap().take();
-            let result = self.inner.commit_mutation(owner_scope, mutation).await?;
+            let result = self.inner.commit(owner_scope, mutation).await?;
             return Ok(report_committed_mutation_as_conflict(result));
         }
         let should_commit_running = {
@@ -1981,8 +1981,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         };
         if should_tombstone {
             let session_id = mutation.payload.session_id().to_string();
-            let committed_revision = match self.inner.commit_mutation(owner_scope, mutation).await?
-            {
+            let committed_revision = match self.inner.commit(owner_scope, mutation).await? {
                 awaken_session_contract::SessionMutationResult::Applied { new_revision }
                 | awaken_session_contract::SessionMutationResult::Replayed { new_revision } => {
                     new_revision
@@ -2005,7 +2004,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
             let payload_hash = payload.stable_hash();
             let result = self
                 .inner
-                .commit_mutation(
+                .commit(
                     owner_scope,
                     awaken_session_contract::SessionMutation {
                         expected_revision: committed_revision,
@@ -2025,34 +2024,11 @@ impl ManagedSessionRepository for FaultingSessionRepository {
             ));
             return Err(awaken_session_contract::SessionRepositoryError::NotFound);
         }
-        let result = self.inner.commit_mutation(owner_scope, mutation).await;
+        let result = self.inner.commit(owner_scope, mutation).await;
         if let (Some(pause), Ok(result)) = (pause, &result) {
             *pause.result.lock().unwrap() = Some(result.clone());
         }
         result
-    }
-
-    async fn append_lifecycle(
-        &self,
-        fact: awaken_session_contract::ManagedLifecycleFact,
-    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
-        self.inner.append_lifecycle(fact).await
-    }
-
-    async fn pending_lifecycle(
-        &self,
-    ) -> Result<
-        Vec<awaken_session_contract::ManagedLifecycleFact>,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        self.inner.pending_lifecycle().await
-    }
-
-    async fn complete_lifecycle(
-        &self,
-        fact_id: &str,
-    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
-        self.inner.complete_lifecycle(fact_id).await
     }
 
     async fn get(
@@ -2103,13 +2079,14 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         result
     }
 
-    async fn reconcilable_sessions_page(
+    async fn scan(
         &self,
-        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
-    ) -> Result<
-        awaken_session_contract::SessionRecoveryScan,
-        awaken_session_contract::SessionRepositoryError,
-    > {
+        query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
+    {
+        let awaken_session_contract::SessionScanQuery::Reconcilable { after } = query else {
+            return self.inner.scan(query).await;
+        };
         let call = self.recovery_scan_count.fetch_add(1, Ordering::SeqCst) + 1;
         if self.hold_recovery_scan_on_call.load(Ordering::SeqCst) == call {
             self.recovery_scan_entered.notify_one();
@@ -2124,7 +2101,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
                 ),
             );
         }
-        let mut scan = self.inner.reconcilable_sessions_page(after).await?;
+        let mut scan = self.inner.scan(query).await?;
         if self.quarantine_recovery_scan_on_call.load(Ordering::SeqCst) == call {
             scan.quarantined
                 .push(awaken_session_contract::SessionRecoveryQuarantine {
@@ -2163,13 +2140,16 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         self.inner.count_environment_phase(phase).await
     }
 
-    async fn sessions_referencing_credential_source(
+    async fn deleted_event_admissions(
         &self,
-        workspace_id: &str,
-        source_id: &awaken_credential_contract::CredentialSourceId,
-    ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
+        owner_scope: &str,
+        session_id: &SessionId,
+    ) -> Result<
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
         self.inner
-            .sessions_referencing_credential_source(workspace_id, source_id)
+            .deleted_event_admissions(owner_scope, session_id)
             .await
     }
 
@@ -2189,6 +2169,32 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         session_id: &SessionId,
     ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
         self.inner.owner(session_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::LifecycleOutbox for FaultingSessionRepository {
+    async fn append_lifecycle(
+        &self,
+        fact: awaken_session_contract::ManagedLifecycleFact,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+        self.inner.append_lifecycle(fact).await
+    }
+
+    async fn pending_lifecycle(
+        &self,
+    ) -> Result<
+        Vec<awaken_session_contract::ManagedLifecycleFact>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner.pending_lifecycle().await
+    }
+
+    async fn complete_lifecycle(
+        &self,
+        fact_id: &str,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+        self.inner.complete_lifecycle(fact_id).await
     }
 }
 
@@ -2508,7 +2514,7 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
     }
 }
 
-async fn create(repo: &dyn ManagedSessionRepository, session: PersistedSession) {
+async fn create(repo: &dyn awaken_session_contract::SessionStore, session: PersistedSession) {
     let id = session.session_id.clone();
     repo.create(
         "workspace",
@@ -2524,7 +2530,7 @@ async fn create(repo: &dyn ManagedSessionRepository, session: PersistedSession) 
 }
 
 fn application(
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
     environments: Arc<dyn SessionEnvironmentSource>,
 ) -> SessionApplication {
     application_with_configuration(
@@ -2536,14 +2542,14 @@ fn application(
 
 fn application_with_runtime(
     runtime: Arc<dyn SessionRuntime>,
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
     environments: Arc<dyn SessionEnvironmentSource>,
 ) -> SessionApplication {
     SessionApplication::new(runtime, Arc::new(NoopMcpRealizer), repo, environments)
 }
 
 fn application_with_configuration(
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
     environments: Arc<dyn SessionEnvironmentSource>,
     configuration: SessionApplicationConfiguration,
 ) -> SessionApplication {

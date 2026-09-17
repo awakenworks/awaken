@@ -1,4 +1,4 @@
-//! Durable [`ManagedSessionRepository`] backends: the home for the Managed
+//! Durable [`SessionRepository`] and [`LifecycleOutbox`] backends: the home for the Managed
 //! session aggregate (agent / model / title / metadata / accepted MCP servers),
 //! over the store's own `managed` migration scope ([`session_bundle`]). Two
 //! backends — [`SqliteManagedSessionRepository`] (embedded, `sessions.db`) and
@@ -20,11 +20,11 @@ use async_trait::async_trait;
 #[cfg(test)]
 use awaken_session_contract::SessionExecutionState;
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
+    IdempotencyRecord, LifecycleOutbox, ManagedLifecycleFact, PersistedSession,
     ScopedPersistedSession, SessionCreateResult, SessionEnvironmentPhase, SessionEnvironmentState,
     SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRecoveryQuarantine, SessionRecoveryScan, SessionRepositoryConflict,
-    SessionRepositoryError, SessionRevision,
+    SessionRecoveryQuarantine, SessionRepository, SessionRepositoryConflict,
+    SessionRepositoryError, SessionRevision, SessionScan,
 };
 
 mod deployments;
