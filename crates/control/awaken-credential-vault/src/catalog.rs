@@ -87,6 +87,14 @@ pub struct ManagedVault {
     pub workspace_id: String,
     pub display_name: String,
     pub metadata: BTreeMap<String, String>,
+    /// RFC 3339 instant the Vault was created. Stamped once from the owner's
+    /// clock and immutable across every replacement. Rows persisted before this
+    /// field existed are backfilled by the store migration from the row's own
+    /// durable insert time.
+    pub created_at: String,
+    /// RFC 3339 instant of the Vault's last committed mutation (equal to
+    /// `created_at` until the first one).
+    pub updated_at: String,
     pub archived_at: Option<String>,
     /// Durable delete intent and tombstone. Legacy rows have no deletion.
     /// Physical purge is a separate maintenance concern.
@@ -252,6 +260,12 @@ pub struct ManagedVaultCredential {
     pub auth: ManagedCredentialAuth,
     pub metadata: BTreeMap<String, String>,
     pub display_name: Option<String>,
+    /// RFC 3339 instant the credential was created; immutable after creation.
+    /// Legacy rows are backfilled by the store migration from the row's own
+    /// durable insert time.
+    pub created_at: String,
+    /// RFC 3339 instant of the credential's last committed mutation.
+    pub updated_at: String,
     /// Monotonic entity revision used together with the Source version as one
     /// publication fence. Newly-authored rows start at one; legacy JSON rows
     /// decode as zero and enter CAS on their first mutation.
@@ -270,6 +284,8 @@ struct ManagedVaultCredentialWire {
     metadata: BTreeMap<String, String>,
     #[serde(default)]
     display_name: Option<String>,
+    created_at: String,
+    updated_at: String,
     #[serde(default)]
     revision: u64,
     #[serde(default)]
@@ -304,9 +320,36 @@ impl<'de> serde::Deserialize<'de> for ManagedVaultCredential {
             auth: wire.auth,
             metadata: wire.metadata,
             display_name: wire.display_name,
+            created_at: wire.created_at,
+            updated_at: wire.updated_at,
             revision: wire.revision,
             lifecycle,
         })
+    }
+}
+
+impl ManagedVaultCredential {
+    /// Whether `other` is the same logical child regardless of *when* it was
+    /// authored. A retried command samples a fresh clock, so idempotent replay
+    /// and pending-fact matching must compare content, never timestamps:
+    /// `created_at`, `updated_at` and the lifecycle transition instant.
+    #[must_use]
+    pub fn same_logical_content(&self, other: &Self) -> bool {
+        let untimed = |credential: &Self| Self {
+            created_at: String::new(),
+            updated_at: String::new(),
+            lifecycle: match credential.lifecycle {
+                ManagedCredentialLifecycle::Active => ManagedCredentialLifecycle::Active,
+                ManagedCredentialLifecycle::Archived { .. } => {
+                    ManagedCredentialLifecycle::Archived { at: String::new() }
+                }
+                ManagedCredentialLifecycle::Deleted { .. } => {
+                    ManagedCredentialLifecycle::Deleted { at: String::new() }
+                }
+            },
+            ..credential.clone()
+        };
+        untimed(self) == untimed(other)
     }
 }
 
@@ -420,7 +463,11 @@ pub fn admit_managed_credential_replacement(
     let next = expected_revision
         .checked_add(1)
         .ok_or(ManagedCredentialMutationError::RevisionExhausted)?;
-    if !managed_credential_lifecycle_transition_allowed(&current.lifecycle, &proposed.lifecycle) {
+    // The creation instant is part of the child's birth fact: no replacement
+    // may re-date it.
+    if !managed_credential_lifecycle_transition_allowed(&current.lifecycle, &proposed.lifecycle)
+        || current.created_at != proposed.created_at
+    {
         return Err(ManagedCredentialMutationError::InvalidLifecycle);
     }
     if current.revision != expected_revision || proposed.revision != next {
@@ -485,6 +532,7 @@ pub fn request_managed_vault_deletion(
     proposed
         .archived_at
         .get_or_insert_with(|| requested_at.clone());
+    proposed.updated_at.clone_from(&requested_at);
     proposed.deletion = Some(ManagedVaultDeletion {
         operation_id,
         requested_at,
@@ -539,11 +587,13 @@ pub fn admit_managed_vault_replacement(
         current.deletion.as_ref(),
         proposed.deletion.as_ref(),
     );
+    // `created_at` is the Vault's birth fact and never changes after insert.
     if !managed_vault_deletion_transition_admitted(
         current.deletion.as_ref().map(|deletion| deletion.phase),
         proposed.deletion.as_ref().map(|deletion| deletion.phase),
         exact_deletion_identity,
-    ) {
+    ) || current.created_at != proposed.created_at
+    {
         return Err(ManagedVaultMutationError::InvalidLifecycle);
     }
     if current.revision != expected_revision || proposed.revision != next {
@@ -908,6 +958,8 @@ mod workspace_proofs {
             workspace_id: "a".into(),
             display_name: String::new(),
             metadata: BTreeMap::new(),
+            created_at: "t".into(),
+            updated_at: "t".into(),
             archived_at: None,
             deletion: None,
             revision: 1,
@@ -924,6 +976,8 @@ mod workspace_proofs {
             },
             metadata: BTreeMap::new(),
             display_name: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
             revision: 1,
             lifecycle: ManagedCredentialLifecycle::Active,
         };
@@ -936,6 +990,63 @@ mod workspace_proofs {
         // live Vault and empty catalog must reach the production success arm.
         let (vault, child) = fixture();
         admit_managed_credential_insert("a", Some(&vault), &[], &child).unwrap();
+    }
+
+    /// Timestamp decision table. R1 a replacement that advances `updated_at`
+    /// and keeps `created_at` is admitted for both aggregates; R2 re-dating
+    /// `created_at` is rejected for both; R3 a deletion request stamps both
+    /// `requested_at` and `updated_at` with the request instant and never
+    /// touches `created_at`; R4 logical content ignores created/updated and
+    /// lifecycle instants but still distinguishes content and lifecycle state.
+    #[test]
+    fn creation_instant_is_immutable_and_mutations_restamp_updated_at() {
+        let (vault, child) = fixture();
+        let mut updated_vault = vault.clone();
+        updated_vault.revision = 2;
+        updated_vault.updated_at = "u".into();
+        admit_managed_vault_replacement("a", Some(&vault), 1, &updated_vault).expect("R1 vault");
+        let mut updated_child = child.clone();
+        updated_child.revision = 2;
+        updated_child.updated_at = "u".into();
+        admit_managed_credential_replacement("a", Some(&child), 1, &updated_child)
+            .expect("R1 credential");
+
+        updated_vault.created_at = "rewritten".into();
+        assert!(matches!(
+            admit_managed_vault_replacement("a", Some(&vault), 1, &updated_vault),
+            Err(ManagedVaultMutationError::InvalidLifecycle)
+        ));
+        updated_child.created_at = "rewritten".into();
+        assert!(matches!(
+            admit_managed_credential_replacement("a", Some(&child), 1, &updated_child),
+            Err(ManagedCredentialMutationError::InvalidLifecycle)
+        ));
+
+        let (requested, changed) = request_managed_vault_deletion(&vault, "d".into()).unwrap();
+        assert!(changed);
+        assert_eq!(requested.deletion.as_ref().unwrap().requested_at, "d");
+        assert_eq!(requested.updated_at, "d", "R3");
+        assert_eq!(requested.created_at, vault.created_at, "R3");
+        admit_managed_vault_replacement("a", Some(&vault), 1, &requested).expect("R3 admitted");
+
+        let mut retimed = child.clone();
+        retimed.created_at = "other".into();
+        retimed.updated_at = "other".into();
+        assert!(child.same_logical_content(&retimed), "R4 times ignored");
+        let archived_at = |at: &str| ManagedVaultCredential {
+            lifecycle: ManagedCredentialLifecycle::Archived { at: at.into() },
+            ..child.clone()
+        };
+        assert!(
+            archived_at("x").same_logical_content(&archived_at("y")),
+            "R4"
+        );
+        assert!(!child.same_logical_content(&archived_at("x")), "R4 state");
+        let renamed = ManagedVaultCredential {
+            display_name: Some("renamed".into()),
+            ..retimed
+        };
+        assert!(!child.same_logical_content(&renamed), "R4 content");
     }
 
     #[cfg(kani)]

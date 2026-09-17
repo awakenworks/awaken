@@ -151,6 +151,8 @@ fn managed_vault() -> ManagedVault {
         workspace_id: "ws".into(),
         display_name: "Vault".into(),
         metadata: BTreeMap::new(),
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         archived_at: None,
         deletion: None,
         revision: 1,
@@ -179,6 +181,7 @@ fn managed_command(url: &str) -> ManagedCredentialCreateCommand {
         },
         metadata: BTreeMap::new(),
         display_name: None,
+        created_at: "2026-09-17T00:00:00Z".into(),
     }
 }
 
@@ -268,6 +271,8 @@ async fn managed_logical_pending_follower_performs_zero_material_writes() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -463,6 +468,7 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
             descriptor: None,
         },
         false,
+        "2026-09-17T00:00:01Z".into(),
         &secrets,
         &repo,
     )
@@ -583,6 +589,7 @@ async fn managed_update_rejects_a_conflicting_rollout_id_before_publishing_the_p
         before.clone(),
         CredentialMaterialPatch::default(),
         true,
+        "2026-09-17T00:00:01Z".into(),
         &secrets,
         &repo,
     )
@@ -635,6 +642,8 @@ async fn legacy_durable_rows_may_recover_but_cannot_enter_as_new_commands() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -661,6 +670,8 @@ async fn managed_begin_rejects_every_forged_fresh_material_owner_shape() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -705,6 +716,8 @@ async fn malformed_ready_managed_recovery_performs_zero_secret_store_io() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -753,6 +766,8 @@ async fn managed_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -803,6 +818,8 @@ async fn legacy_writing_json_without_attempt_or_writer_fields_is_claimed_and_abo
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -888,6 +905,8 @@ async fn expired_writing_owner_is_aborted_and_cannot_publish() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -1005,6 +1024,8 @@ async fn managed_creation_recovery_publishes_ready_and_aborts_expired_writing() 
         },
         metadata: BTreeMap::new(),
         display_name: None,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -1127,6 +1148,8 @@ async fn managed_mutation_batch_continues_after_its_first_item_fails() {
             },
             metadata: BTreeMap::new(),
             display_name: None,
+            created_at: "2026-09-17T00:00:00Z".into(),
+            updated_at: "2026-09-17T00:00:00Z".into(),
             revision: 1,
             lifecycle: ManagedCredentialLifecycle::Active,
         };
@@ -1168,6 +1191,8 @@ fn legacy_writing_json_defaults_to_an_expired_unowned_lease() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -1207,6 +1232,8 @@ async fn aborted_managed_cleanup_survives_the_crash_prefix_before_delete() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -1269,6 +1296,8 @@ async fn ambiguous_aborted_delete_keeps_exact_cleanup_fact_for_retry() {
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -1327,6 +1356,8 @@ async fn failed_material_write_and_failed_compensation_preserve_both_failures() 
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -1384,6 +1415,7 @@ async fn committed_managed_pair_returns_success_and_retries_failed_cleanup() {
             descriptor: None,
         },
         false,
+        "2026-09-17T00:00:01Z".into(),
         &store,
         &repo,
     )

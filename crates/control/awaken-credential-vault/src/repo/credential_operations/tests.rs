@@ -1204,6 +1204,8 @@ fn managed_vault() -> ManagedVault {
         workspace_id: "ws".into(),
         display_name: "Vault".into(),
         metadata: BTreeMap::new(),
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         archived_at: None,
         deletion: None,
         revision: 1,
@@ -1236,6 +1238,8 @@ async fn inventory_protects_material_referenced_by_a_managed_pending_fact() {
         },
         metadata: BTreeMap::new(),
         display_name: None,
+        created_at: "2026-09-17T00:00:00Z".into(),
+        updated_at: "2026-09-17T00:00:00Z".into(),
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };

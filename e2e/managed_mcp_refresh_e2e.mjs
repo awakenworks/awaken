@@ -70,6 +70,19 @@ async function sendMessage(client, sessionId, text, predicate, description) {
   );
 }
 
+// The retired placeholder every Vault object used to report. Timestamps must be
+// real clock instants: RFC 3339, recent, and never this constant.
+const RETIRED_PLACEHOLDER_AT = '2026-01-01T00:00:00Z';
+
+function assertRealInstant(value, label, notBefore) {
+  assert.equal(typeof value, 'string', `${label} is an RFC 3339 string`);
+  assert.notEqual(value, RETIRED_PLACEHOLDER_AT, `${label} is not the fixed placeholder`);
+  const millis = Date.parse(value);
+  assert.ok(Number.isFinite(millis), `${label} parses as RFC 3339 (got ${value})`);
+  assert.ok(millis >= notBefore - 5_000, `${label} is not before the test started (got ${value})`);
+  assert.ok(millis <= Date.now() + 5_000, `${label} is not in the future (got ${value})`);
+}
+
 const agentMessages = (events) =>
   events.filter((e) => e.type === 'agent.message').map((e) => e.content[0].text);
 
@@ -126,10 +139,13 @@ async function main() {
   try {
     await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+      const startedAt = Date.now();
 
       // --- vault + refreshable mcp_oauth credential (all secrets write-only) ---
       const vault = await client.beta.vaults.create({ display_name: 'MCP refresh vault', betas: BETAS });
       assert.equal(vault.type, 'vault');
+      assertRealInstant(vault.created_at, 'vault.created_at', startedAt);
+      assert.equal(vault.updated_at, vault.created_at, 'a new vault was last updated at creation');
       const cred = await client.beta.vaults.credentials.create(vault.id, {
         type: 'mcp_oauth',
         mcp_server_url: fixtureA.url,
@@ -144,6 +160,9 @@ async function main() {
         betas: BETAS,
       });
       assert.equal(cred.type, 'vault_credential');
+      assertRealInstant(cred.created_at, 'credential.created_at', startedAt);
+      assert.equal(cred.updated_at, cred.created_at, 'a new credential was last updated at creation');
+      assert.ok(Date.parse(cred.created_at) >= Date.parse(vault.created_at), 'credential created after its vault');
       assert.equal(cred.auth.type, 'mcp_oauth');
       assert.equal(cred.auth.mcp_server_url, fixtureA.url);
       assert.deepEqual(
@@ -256,7 +275,27 @@ async function main() {
       const validationJson = JSON.stringify(validation);
       assert.ok(!validationJson.includes(NEW_TOKEN), 'the probe detail never carries the token');
       assert.ok(!validationJson.includes(REFRESH_TOKEN), 'nor the refresh token');
+      assertRealInstant(validation.validated_at, 'validation.validated_at', startedAt);
+      assert.ok(
+        Date.parse(validation.validated_at) >= Date.parse(cred.created_at),
+        'the validation ran after the credential was created',
+      );
       pass('mcpOAuthValidate -> valid, has_refresh_token=true, mcp_probe null, refresh null');
+
+      // Reads after sessions, refresh and validation keep the durable creation
+      // instants: created_at is stored once, never re-sampled per read.
+      const vaultAgain = await client.beta.vaults.retrieve(vault.id, { betas: BETAS });
+      assert.equal(vaultAgain.created_at, vault.created_at, 'vault.created_at is stable across reads');
+      assert.equal(vaultAgain.updated_at, vault.updated_at, 'an unmutated vault keeps updated_at');
+      const credAgain = await client.beta.vaults.credentials.retrieve(cred.id, {
+        vault_id: vault.id,
+        betas: BETAS,
+      });
+      assert.equal(credAgain.created_at, cred.created_at, 'credential.created_at is stable across reads');
+      const listed = await client.beta.vaults.credentials.list(vault.id, { betas: BETAS });
+      const listedCred = listed.data.find((c) => c.id === cred.id);
+      assert.equal(listedCred?.created_at, cred.created_at, 'list reports the same creation instant');
+      pass('vault/credential created_at are real instants, stable across retrieve and list');
 
       // --- (d) invalid arm: wrong token, NO refresh, second fixture instance ---
       const vault2 = await client.beta.vaults.create({ display_name: 'MCP invalid vault', betas: BETAS });

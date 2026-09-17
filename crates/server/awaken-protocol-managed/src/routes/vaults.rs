@@ -37,6 +37,7 @@ use crate::control::vault_acl::{
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::clock::{Clock, SystemClock};
 use awaken_credential_contract::{
     CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
     CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
@@ -80,25 +81,6 @@ use crate::types::vault::{
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
 mod credential_material_ingress;
-
-/// Deterministic timestamp stamped on every vault/credential object, matching the
-/// session surface's `LEGACY_UNRECORDED_AT` convention (no wall-clock/uuid dependency, so
-/// the wire is reproducible under test).
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-
-fn credential_clock_unix_ms() -> Result<u64, awaken_credential_vault::CredentialError> {
-    let now_unix_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| {
-            awaken_credential_vault::CredentialError::InvalidSource(error.to_string())
-        })?
-        .as_millis();
-    u64::try_from(now_unix_ms).map_err(|_| {
-        awaken_credential_vault::CredentialError::InvalidSource(
-            "credential clock exceeds supported range".into(),
-        )
-    })
-}
 
 fn application_mcp_target_fingerprint(
     url: &str,
@@ -229,6 +211,10 @@ pub struct VaultState {
     material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
     rollout_target:
         RwLock<Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>>,
+    /// The one wall clock this owner samples: object creation/update/archive
+    /// and deletion-request instants, validation instants, and the `now` of
+    /// exact credential access. Tests install a fixed clock.
+    clock: Arc<dyn Clock>,
 }
 
 impl VaultState {
@@ -244,7 +230,33 @@ impl VaultState {
             refresh_exchange: None,
             material_delivery: None,
             rollout_target: RwLock::new(None),
+            clock: Arc::new(SystemClock),
         }
+    }
+
+    /// Replace the system wall clock, e.g. with a fixed clock under test.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Sample the owner clock once. The epoch itself is the system clock's
+    /// failure value, so it fails closed instead of backdating expiry checks
+    /// or stamping a fabricated instant on a durable object.
+    fn now_unix_ms(&self) -> Result<u64, awaken_credential_vault::CredentialError> {
+        match self.clock.now_ms() {
+            0 => Err(awaken_credential_vault::CredentialError::Storage(
+                "credential clock is unavailable".into(),
+            )),
+            now_unix_ms => Ok(now_unix_ms),
+        }
+    }
+
+    /// The owner clock as the RFC 3339 wire/persistence instant.
+    fn now_rfc3339(&self) -> Result<String, awaken_credential_vault::CredentialError> {
+        self.now_unix_ms()
+            .map(awaken_session_contract::epoch_millis_to_rfc3339)
     }
 
     /// Install the service-owned rolling replacement edge after process
@@ -361,6 +373,7 @@ impl VaultState {
             credential_generation,
         )?;
         let (descriptor, target_audience) = mcp_credential_descriptor(mcp_server_url)?;
+        let now = self.now_rfc3339()?;
         self.repository
             .ensure_vault(
                 workspace_id,
@@ -369,6 +382,8 @@ impl VaultState {
                     workspace_id: workspace_id.to_owned(),
                     display_name: application_authority_id.to_owned(),
                     metadata: BTreeMap::new(),
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
                     archived_at: None,
                     deletion: None,
                     revision: 1,
@@ -403,6 +418,7 @@ impl VaultState {
                         },
                         metadata: BTreeMap::new(),
                         display_name: None,
+                        created_at: now.clone(),
                     },
                     self.secrets.as_ref(),
                     self.repository.as_ref(),
@@ -484,6 +500,7 @@ impl VaultState {
                         before_credential,
                         before_source,
                         rotation,
+                        now.clone(),
                         self.secrets.as_ref(),
                         self.repository.as_ref(),
                     )
@@ -680,7 +697,7 @@ impl VaultState {
             selected_holder,
             binding,
         } = request;
-        let now_unix_ms = credential_clock_unix_ms()?;
+        let now_unix_ms = self.now_unix_ms()?;
         self.exact_access_for_source(
             source_id,
             awaken_credential_vault::ExactCredentialAccessRequest {
@@ -793,7 +810,7 @@ impl VaultState {
                     policy: CredentialExecutionPolicy::self_hosted_mcp(),
                     selected_holder,
                     binding,
-                    now_unix_ms: credential_clock_unix_ms()?,
+                    now_unix_ms: self.now_unix_ms()?,
                 },
             )
             .await?;
@@ -816,11 +833,11 @@ impl VaultState {
         Vault {
             id: record.id.clone(),
             archived_at: record.archived_at.clone(),
-            created_at: OBJECT_AT.to_string(),
+            created_at: record.created_at.clone(),
             display_name: record.display_name.clone(),
             metadata: record.metadata.clone(),
             object_type: "vault",
-            updated_at: OBJECT_AT.to_string(),
+            updated_at: record.updated_at.clone(),
         }
     }
 
@@ -878,10 +895,10 @@ impl VaultState {
             id: record.id.clone(),
             archived_at: record.lifecycle.archived_at().map(str::to_owned),
             auth,
-            created_at: OBJECT_AT.to_string(),
+            created_at: record.created_at.clone(),
             metadata: record.metadata.clone(),
             object_type: "vault_credential",
-            updated_at: OBJECT_AT.to_string(),
+            updated_at: record.updated_at.clone(),
             vault_id: record.vault_id.clone(),
             display_name: record.display_name.clone(),
         }
@@ -1070,11 +1087,14 @@ async fn create_vault(
         return Err(bad_request("display_name must be 1-255 characters"));
     }
     let id = format!("vlt_{}", uuid::Uuid::now_v7().simple());
+    let now = state.now_rfc3339().map_err(storage_error)?;
     let record = VaultRecord {
         id,
         workspace_id: workspace_id.clone(),
         display_name: params.display_name,
         metadata: params.metadata,
+        created_at: now.clone(),
+        updated_at: now,
         archived_at: None,
         deletion: None,
         revision: 1,
@@ -1137,8 +1157,9 @@ async fn delete_vault(
         .await
         .map_err(storage_error)?
         .ok_or_else(|| not_found("vault"))?;
-    let (requested, changed) = request_managed_vault_deletion(&current, OBJECT_AT.to_string())
-        .map_err(vault_mutation_error)?;
+    let requested_at = state.now_rfc3339().map_err(storage_error)?;
+    let (requested, changed) =
+        request_managed_vault_deletion(&current, requested_at).map_err(vault_mutation_error)?;
     let requested = persist_vault_deletion_request(
         state.repository.as_ref(),
         &workspace_id,
@@ -1219,7 +1240,9 @@ async fn archive_vault(
         return Ok(Json(VaultState::project_vault(&record)));
     }
     let expected_revision = record.revision;
-    record.archived_at = Some(OBJECT_AT.to_string());
+    let archived_at = state.now_rfc3339().map_err(storage_error)?;
+    record.updated_at.clone_from(&archived_at);
+    record.archived_at = Some(archived_at);
     record.revision = expected_revision
         .checked_add(1)
         .ok_or_else(|| vault_mutation_error(ManagedVaultMutationError::RevisionExhausted))?;
@@ -1264,6 +1287,7 @@ async fn update_vault(
     if record == before {
         return Ok(Json(VaultState::project_vault(&record)));
     }
+    record.updated_at = state.now_rfc3339().map_err(storage_error)?;
     record.revision = expected_revision
         .checked_add(1)
         .ok_or_else(|| vault_mutation_error(ManagedVaultMutationError::RevisionExhausted))?;
@@ -1459,6 +1483,7 @@ async fn create_credential(
         auth,
         metadata,
         display_name,
+        created_at: state.now_rfc3339().map_err(storage_error)?,
     };
     let (_, record) =
         create_managed_credential(command, state.secrets.as_ref(), state.repository.as_ref())
@@ -1542,7 +1567,7 @@ async fn delete_credential(
         &vault_id,
         &id,
         ManagedCredentialOperation::Delete,
-        OBJECT_AT.to_string(),
+        state.now_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
     )
@@ -1567,7 +1592,7 @@ async fn archive_credential(
         &vault_id,
         &id,
         ManagedCredentialOperation::Archive,
-        OBJECT_AT.to_string(),
+        state.now_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
     )
@@ -1807,6 +1832,7 @@ async fn update_credential(
         record,
         material_patch,
         advance_source_without_material,
+        state.now_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
     )
@@ -1816,49 +1842,4 @@ async fn update_credential(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_credential_vault::catalog::ManagedVaultRepo;
-    use awaken_credential_vault::repo::InMemoryCredentialRepo;
-
-    #[tokio::test]
-    async fn stale_delete_writer_resumes_the_durable_winner() {
-        let repository = InMemoryCredentialRepo::new();
-        let current = VaultRecord {
-            id: "vault-delete-race".into(),
-            workspace_id: "workspace".into(),
-            display_name: "Vault".into(),
-            metadata: BTreeMap::new(),
-            archived_at: None,
-            deletion: None,
-            revision: 1,
-        };
-        repository
-            .insert_vault("workspace", current.clone())
-            .await
-            .unwrap();
-        let (requested, changed) =
-            request_managed_vault_deletion(&current, OBJECT_AT.to_owned()).unwrap();
-        assert!(changed);
-
-        // Deterministically reproduce the interleaving of two DELETE handlers:
-        // both read `current`, then the first publishes `requested` before the
-        // second attempts the same stale CAS.
-        repository
-            .replace_vault("workspace", current.revision, requested.clone())
-            .await
-            .unwrap();
-        let resumed = persist_vault_deletion_request(
-            &repository,
-            "workspace",
-            &current,
-            requested.clone(),
-            changed,
-        )
-        .await
-        .expect("the stale loser must resume the durable delete request");
-
-        assert_eq!(resumed, requested);
-        assert!(resumed.deletion_requested());
-    }
-}
+mod tests;

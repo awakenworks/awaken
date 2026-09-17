@@ -696,6 +696,8 @@ pub(super) mod tests {
             },
             metadata: Default::default(),
             display_name: None,
+            created_at: "2026-09-17T00:00:00Z".into(),
+            updated_at: "2026-09-17T00:00:00Z".into(),
             revision: 1,
             lifecycle: ManagedCredentialLifecycle::Active,
         };

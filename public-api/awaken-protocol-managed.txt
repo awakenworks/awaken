@@ -2085,6 +2085,7 @@ pub async fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url(
 pub fn awaken_protocol_managed::VaultState::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>) -> Self
 pub async fn awaken_protocol_managed::VaultState::reconcile_rollouts(&self) -> core::result::Result<usize, awaken_credential_vault::CredentialError>
 pub fn awaken_protocol_managed::VaultState::set_rollout_target(&self, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>)
+pub fn awaken_protocol_managed::VaultState::with_clock(self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> Self
 pub fn awaken_protocol_managed::VaultState::with_material_delivery(self, awaken_credential_contract::custody::CredentialMaterialDelivery) -> Self
 pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>) -> Self
 pub fn awaken_protocol_managed::VaultState::with_refresh_exchange(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::CredentialRefreshExchange>) -> Self

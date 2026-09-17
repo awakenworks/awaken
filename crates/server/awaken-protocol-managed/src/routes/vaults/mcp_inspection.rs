@@ -116,18 +116,14 @@ impl VaultState {
             McpProbeStatus::Invalid { http_status } => ("invalid", Some(http_status)),
             McpProbeStatus::Unknown => ("unknown", None),
         };
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| CredentialError::Storage(e.to_string()))?
-            .as_millis();
-        let millis = u64::try_from(millis).map_err(|e| CredentialError::Storage(e.to_string()))?;
+        let checked_at = self.now_rfc3339()?;
         Ok(McpInspectionView {
             status,
             http_status,
             tools: inspection.tools,
             credential: choice,
             location: "control",
-            checked_at: awaken_session_contract::epoch_millis_to_rfc3339(millis),
+            checked_at,
         })
     }
 
@@ -380,6 +376,8 @@ pub(super) async fn validate_credential(
         }
         mcp_probe = evidence.failure.map(CredentialMcpProbe::from);
     }
+    // The validation is performed now: stamp the instant its verdict settled.
+    let validated_at = state.now_rfc3339().map_err(storage_error)?;
     Ok(Json(CredentialValidation {
         credential_id: id,
         has_refresh_token,
@@ -387,7 +385,7 @@ pub(super) async fn validate_credential(
         refresh,
         status,
         object_type: "vault_credential_validation",
-        validated_at: OBJECT_AT.to_string(),
+        validated_at,
         vault_id,
     }))
 }
