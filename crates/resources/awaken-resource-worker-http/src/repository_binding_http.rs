@@ -546,7 +546,7 @@ async fn verify_session_repository_binding(
     let transport = match authorizer
         .authorize(RepositoryTransportAuthorization {
             worker: identity.clone(),
-            session_id: intent.session_id().to_owned(),
+            session_id: intent.session_id().to_string(),
             workspace_id: workspace_id.clone(),
             input: input.as_ref().clone(),
             authority: RepositoryTransportAuthority::SessionMaterialization {

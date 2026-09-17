@@ -101,7 +101,7 @@ pub struct awaken_session_contract::work_queue::SessionWorkAuthorityReceipt
 impl awaken_session_contract::work_queue::SessionWorkAuthorityReceipt
 pub fn awaken_session_contract::work_queue::SessionWorkAuthorityReceipt::binds_realization(&self, &str, &awaken_session_contract::SessionRealizationDirective) -> bool
 pub fn awaken_session_contract::work_queue::SessionWorkAuthorityReceipt::matches_observation(&self, &awaken_session_contract::work_queue::SessionWorkOwnership) -> bool
-pub fn awaken_session_contract::work_queue::SessionWorkAuthorityReceipt::session_id(&self) -> &str
+pub fn awaken_session_contract::work_queue::SessionWorkAuthorityReceipt::session_id(&self) -> &awaken_session_contract::SessionId
 pub fn awaken_session_contract::work_queue::SessionWorkAuthorityReceipt::worker_owner(&self) -> &str
 pub struct awaken_session_contract::work_queue::SessionWorkLease
 pub awaken_session_contract::work_queue::SessionWorkLease::environment_id: alloc::string::String
@@ -182,7 +182,7 @@ pub awaken_session_contract::AdmittedSessionRun::Reserved(awaken_session_contrac
 impl awaken_session_contract::AdmittedSessionRun
 pub fn awaken_session_contract::AdmittedSessionRun::delivery(&self) -> core::option::Option<&awaken_session_contract::SessionRunDelivery>
 pub fn awaken_session_contract::AdmittedSessionRun::run_id(&self) -> &awaken_agent_contract::agent::run::Id
-pub fn awaken_session_contract::AdmittedSessionRun::session_id(&self) -> &str
+pub fn awaken_session_contract::AdmittedSessionRun::session_id(&self) -> &awaken_session_contract::SessionId
 pub enum awaken_session_contract::AgentPermissionPreset
 pub awaken_session_contract::AgentPermissionPreset::ControlledModifications
 pub enum awaken_session_contract::AgentTool
@@ -696,7 +696,7 @@ pub enum awaken_session_contract::SessionMutationPayload
 pub awaken_session_contract::SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone)
 pub awaken_session_contract::SessionMutationPayload::Replace(awaken_session_contract::PersistedSession)
 impl awaken_session_contract::SessionMutationPayload
-pub fn awaken_session_contract::SessionMutationPayload::session_id(&self) -> &str
+pub fn awaken_session_contract::SessionMutationPayload::session_id(&self) -> &awaken_session_contract::SessionId
 pub fn awaken_session_contract::SessionMutationPayload::stable_hash(&self) -> alloc::string::String
 pub enum awaken_session_contract::SessionMutationPolicy
 pub awaken_session_contract::SessionMutationPolicy::FileResources
@@ -1662,7 +1662,7 @@ pub fn awaken_session_contract::SessionEnvironmentEffectIntent::from_binding(sel
 pub fn awaken_session_contract::SessionEnvironmentEffectIntent::kind(&self) -> &awaken_session_contract::SessionEnvironmentEffectKind
 pub fn awaken_session_contract::SessionEnvironmentEffectIntent::new(impl core::convert::Into<awaken_session_contract::SessionId>, awaken_session_contract::SessionEnvironmentEffectKind, core::option::Option<awaken_session_contract::SessionRealizationLease>) -> Self
 pub fn awaken_session_contract::SessionEnvironmentEffectIntent::realization(&self) -> core::option::Option<&awaken_session_contract::SessionRealizationLease>
-pub fn awaken_session_contract::SessionEnvironmentEffectIntent::session_id(&self) -> &str
+pub fn awaken_session_contract::SessionEnvironmentEffectIntent::session_id(&self) -> &awaken_session_contract::SessionId
 pub fn awaken_session_contract::SessionEnvironmentEffectIntent::source_binding(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::SessionEnvironmentEffectIntent::verify(&self) -> core::result::Result<(), awaken_session_contract::SessionEnvironmentReceiptError>
 pub struct awaken_session_contract::SessionEnvironmentOperation
@@ -1973,7 +1973,7 @@ pub struct awaken_session_contract::SessionResourceMaterializationIntent
 impl awaken_session_contract::SessionResourceMaterializationIntent
 pub const fn awaken_session_contract::SessionResourceMaterializationIntent::lease(&self) -> &awaken_session_contract::SessionRealizationLease
 pub const fn awaken_session_contract::SessionResourceMaterializationIntent::resource_revision(&self) -> u64
-pub fn awaken_session_contract::SessionResourceMaterializationIntent::session_id(&self) -> &str
+pub fn awaken_session_contract::SessionResourceMaterializationIntent::session_id(&self) -> &awaken_session_contract::SessionId
 pub const fn awaken_session_contract::SessionResourceMaterializationIntent::target(&self) -> &awaken_session_contract::SessionResourceMaterializationTarget
 pub fn awaken_session_contract::SessionResourceMaterializationIntent::try_new(impl core::convert::Into<awaken_session_contract::SessionId>, u64, awaken_session_contract::ResolvedInput, awaken_session_contract::SessionRealizationLease) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_session_contract::SessionResourceMaterializationIntent::try_new_skill(impl core::convert::Into<awaken_session_contract::SessionId>, u64, awaken_session_contract::ResolvedSkillBinding, awaken_session_contract::SessionRealizationLease) -> core::result::Result<Self, alloc::string::String>

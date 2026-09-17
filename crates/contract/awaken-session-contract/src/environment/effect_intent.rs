@@ -86,8 +86,8 @@ impl SessionEnvironmentEffectIntent {
     }
 
     #[must_use]
-    pub fn session_id(&self) -> &str {
-        self.session_id.as_str()
+    pub fn session_id(&self) -> &crate::SessionId {
+        &self.session_id
     }
 
     #[must_use]

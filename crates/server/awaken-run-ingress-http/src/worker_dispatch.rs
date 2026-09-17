@@ -896,7 +896,7 @@ async fn recovery_snapshot(
                 ));
             }
             (true, Some(receipt)) => {
-                if receipt.session_id() != session.0 || receipt.worker_owner() != authority.owner {
+                if receipt.session_id().as_str() != session.0 || receipt.worker_owner() != authority.owner {
                     return Err(HostError::bad_request(
                         "Session recovery Work authority identity does not match the claim",
                     ));

@@ -292,7 +292,7 @@ pub(super) async fn session_resume(
                 "Session resume requires exact Work authority",
             ))
         })?;
-        if receipt.session_id() != request.session_id
+        if receipt.session_id().as_str() != request.session_id
             || receipt.worker_owner() != request.identity.lease_owner()
         {
             return Err(RealizationHttpError::from(HostError::bad_request(
@@ -450,7 +450,7 @@ pub(super) async fn authorize_session_environment_effect(
             &service,
             &worker,
             &request.identity,
-            request.intent.session_id(),
+            request.intent.session_id().as_str(),
             lease,
         )
         .await?;

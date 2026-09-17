@@ -122,10 +122,10 @@ pub enum SessionMutationPayload {
 
 impl SessionMutationPayload {
     #[must_use]
-    pub fn session_id(&self) -> &str {
+    pub fn session_id(&self) -> &SessionId {
         match self {
-            Self::Replace(session) => session.session_id.as_str(),
-            Self::Delete(tombstone) => tombstone.session_id.as_str(),
+            Self::Replace(session) => &session.session_id,
+            Self::Delete(tombstone) => &tombstone.session_id,
         }
     }
 
@@ -215,7 +215,7 @@ impl SessionMutation {
             return Err(SessionMutationValidationError::EmptyPayloadHash);
         }
         let session_id = self.payload.session_id();
-        if session_id.trim().is_empty() {
+        if session_id.as_str().trim().is_empty() {
             return Err(SessionMutationValidationError::EmptySessionId);
         }
         let next = SessionRevision(

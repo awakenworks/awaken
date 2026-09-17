@@ -370,7 +370,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
             if let Some((key, value)) = metadata_change {
                 let mut concurrent = self
                     .inner
-                    .get(&SessionId::from(mutation.payload.session_id()))
+                    .get(mutation.payload.session_id())
                     .await
                     .expect("concurrent metadata Session exists");
                 concurrent.metadata.insert(key, value);
@@ -395,7 +395,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
             if self.resource_changes.lock().unwrap().contains(&call) {
                 let mut concurrent = self
                     .inner
-                    .get(&SessionId::from(mutation.payload.session_id()))
+                    .get(mutation.payload.session_id())
                     .await
                     .expect("concurrent Resource Session exists");
                 let session_id = concurrent.session_id.clone();
@@ -427,7 +427,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
             }
             let current_revision = self
                 .inner
-                .get(&SessionId::from(mutation.payload.session_id()))
+                .get(mutation.payload.session_id())
                 .await
                 .map(|session| session.revision)
                 .or_else(|error| match error {

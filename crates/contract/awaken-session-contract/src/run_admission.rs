@@ -327,13 +327,13 @@ pub enum AdmittedSessionRun {
 
 impl AdmittedSessionRun {
     #[must_use]
-    pub fn session_id(&self) -> &str {
+    pub fn session_id(&self) -> &crate::SessionId {
         match self {
             Self::Reserved(delivery)
             | Self::AlreadyReserved(delivery)
-            | Self::AlreadyActivated(delivery) => delivery.session_id.as_str(),
+            | Self::AlreadyActivated(delivery) => &delivery.session_id,
             Self::RecoveryClaimed { session_id, .. } | Self::Completed { session_id, .. } => {
-                session_id.as_str()
+                session_id
             }
         }
     }

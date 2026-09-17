@@ -1116,11 +1116,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
     ) -> Result<awaken_session_contract::SessionEnvironmentEffectAuthorization, RunError> {
         intent.verify().map_err(Self::receipt_error)?;
         let session_id = intent.session_id();
-        let owner = match self
-            .repo
-            .owner(&awaken_session_contract::SessionId::from(session_id))
-            .await
-        {
+        let owner = match self.repo.owner(session_id).await {
             Ok(owner) => owner,
             Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned);
@@ -1129,7 +1125,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
         };
         let session = self
             .repo
-            .get(&awaken_session_contract::SessionId::from(session_id))
+            .get(session_id)
             .await
             .map_err(session_repository_error)?;
         session
@@ -1141,17 +1137,17 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
     ) -> Result<awaken_session_contract::SessionEnvironmentState, RunError> {
-        let session_id = receipt.session_id.as_str();
+        let session_id = &receipt.session_id;
         const CAS_ATTEMPTS: usize = 3;
         for attempt in 0..CAS_ATTEMPTS {
             let owner = self
                 .repo
-                .owner(&awaken_session_contract::SessionId::from(session_id))
+                .owner(session_id)
                 .await
                 .map_err(session_repository_error)?;
             let mut session = self
                 .repo
-                .get(&awaken_session_contract::SessionId::from(session_id))
+                .get(session_id)
                 .await
                 .map_err(session_repository_error)?;
             let now_unix_ms = self.clock.now_ms();
@@ -1192,7 +1188,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                     });
                 session.environment.assign_generation(
                     awaken_session_contract::SandboxGeneration::new(
-                        session_id,
+                        session_id.as_str(),
                         now_unix_ms,
                         expires_at_unix_ms,
                         environment_fingerprint,
@@ -1227,7 +1223,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 | awaken_session_contract::SessionMutationResult::Replayed { .. } => {
                     let committed = self
                         .repo
-                        .get(&awaken_session_contract::SessionId::from(session_id))
+                        .get(session_id)
                         .await
                         .map_err(session_repository_error)?;
                     return Self::committed_authority(&committed, &receipt);
