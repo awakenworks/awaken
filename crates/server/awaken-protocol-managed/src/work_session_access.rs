@@ -127,7 +127,7 @@ pub async fn work_session_guard(
     let Some(presented) = bearer(&req) else {
         return next.run(req).await;
     };
-    if !presented.starts_with("sk-ant-req-") {
+    if !presented.starts_with(awaken_environment_execution_application::SESSION_TOKEN_PREFIX) {
         return next.run(req).await;
     }
     let token = RedactedString::from(presented.to_owned());

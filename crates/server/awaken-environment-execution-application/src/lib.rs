@@ -7,6 +7,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod session_access;
+pub use session_access::SESSION_TOKEN_PREFIX;
+
 use awaken_environment_contract::{EnvItem, EnvironmentConfig, EnvironmentNetworking};
 use awaken_executable_environment_contract::{
     EnvironmentImageBuildError, EnvironmentImageReadiness,
@@ -254,7 +257,9 @@ impl EnvironmentExecutionApplication {
 
     /// Claim through the same WorkQueue transaction while returning the
     /// one-time per-Session capability needed by the official Environment
-    /// Worker. The original secret-free claim method remains source-compatible.
+    /// Worker. The bearer is minted here; the queue binds only its digest to
+    /// the new lease epoch, and the cleartext is returned only when that bind
+    /// happened (the claimed item is Session work).
     pub async fn claim_work_with_session_access(
         &self,
         environment_id: &str,
@@ -264,7 +269,8 @@ impl EnvironmentExecutionApplication {
         reclaim_older_than_ms: Option<u64>,
     ) -> Result<Option<ClaimedWork>, EnvironmentExecutionError> {
         self.require_environment(environment_id).await?;
-        Ok(self
+        let minted = session_access::mint_session_access();
+        let claim = self
             .work
             .claim_with_session_access(
                 environment_id,
@@ -272,13 +278,33 @@ impl EnvironmentExecutionApplication {
                 poller_id,
                 now_ms,
                 reclaim_older_than_ms,
+                &minted.digest,
             )
-            .await?)
+            .await?;
+        claim
+            .map(|claim| {
+                let sessions_token = match claim.session_access {
+                    None => None,
+                    Some(bound) if bound == minted.digest => Some(minted.cleartext),
+                    Some(_) => {
+                        return Err(EnvironmentExecutionError::WorkQueue(
+                            WorkQueueError::Storage(
+                                "WorkQueue bound a Session access digest it was not given".into(),
+                            ),
+                        ));
+                    }
+                };
+                Ok(ClaimedWork {
+                    item: claim.item,
+                    sessions_token,
+                })
+            })
+            .transpose()
     }
 
-    /// Resolve one per-Session bearer through the same durable WorkQueue that
-    /// minted it. The application owns no credential cache or fallback token
-    /// directory.
+    /// Resolve one per-Session bearer through the durable WorkQueue lease its
+    /// digest was bound to. The application owns no credential cache or
+    /// fallback token directory.
     pub async fn authenticate_session_access(
         &self,
         presented: &awaken_agent_contract::RedactedString,
@@ -286,7 +312,7 @@ impl EnvironmentExecutionApplication {
     ) -> Result<Option<WorkSessionAccess>, EnvironmentExecutionError> {
         Ok(self
             .work
-            .authenticate_session_access(presented, now_ms)
+            .authenticate_session_access(&session_access::session_access_digest(presented), now_ms)
             .await?)
     }
 
@@ -1619,6 +1645,100 @@ mod tests {
                 ))
             ),
             "D2"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_access_is_minted_by_the_application_and_bound_by_the_queue() {
+        // Cause/effect graph: C1 the claimed item is healthcheck or Session work;
+        // C2 the presented bearer is the one returned by poll, another bearer, or
+        // the first bearer after the lease was reclaimed. Effects: E1 healthcheck
+        // claims return no bearer and bind no digest; E2 a Session claim returns a
+        // bearer whose application-derived digest resolves to that exact lease;
+        // E3 any other bearer resolves to nothing; E4 a reclaim binds a fresh
+        // digest and fences the previous bearer.
+        //
+        // | Rule | C1 | C2 | Effect |
+        // | A1 | healthcheck | - | E1 |
+        // | A2 | Session | returned | E2 |
+        // | A3 | Session | other | E3 |
+        // | A4 | Session | reclaimed first | E4 |
+        let (_, work, registrar, application) = fixture();
+        registrar
+            .register(registration("worker", 1, EnvironmentConfig::SelfHosted))
+            .await
+            .unwrap();
+        let mut now = 0;
+        let session_work = work
+            .enqueue_session(
+                "worker",
+                &awaken_session_contract::SessionId::from("sesn_a"),
+            )
+            .await
+            .unwrap();
+        let claimed = loop {
+            let claimed = application
+                .claim_work_with_session_access("worker", "owner-a", "poller", now, None)
+                .await
+                .unwrap()
+                .expect("queued work");
+            if claimed.item.id == session_work {
+                break claimed;
+            }
+            assert!(claimed.sessions_token.is_none(), "A1");
+            assert!(
+                work.stop("worker", &claimed.item.id, "owner-a")
+                    .await
+                    .unwrap()
+                    .is_accepted()
+            );
+            now += 1;
+        };
+        let token = claimed.sessions_token.expect("A2 bearer");
+        let access = application
+            .authenticate_session_access(&token, now)
+            .await
+            .unwrap()
+            .expect("A2 bound digest");
+        assert_eq!(
+            (access.work_id.as_str(), access.lease_owner.as_str()),
+            (session_work.as_str(), "owner-a"),
+            "A2"
+        );
+        assert!(
+            application
+                .authenticate_session_access(
+                    &awaken_agent_contract::RedactedString::new("sk-ant-req-other"),
+                    now,
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "A3"
+        );
+        let reclaimed_at = now + awaken_work_store::LEASE_TTL_MS;
+        let replacement = application
+            .claim_work_with_session_access("worker", "owner-b", "poller", reclaimed_at, None)
+            .await
+            .unwrap()
+            .expect("A4 reclaim");
+        let replacement_token = replacement.sessions_token.expect("A4 fresh bearer");
+        assert!(
+            application
+                .authenticate_session_access(&token, reclaimed_at)
+                .await
+                .unwrap()
+                .is_none(),
+            "A4 previous bearer fenced"
+        );
+        assert_eq!(
+            application
+                .authenticate_session_access(&replacement_token, reclaimed_at)
+                .await
+                .unwrap()
+                .expect("A4 replacement")
+                .lease_owner,
+            "owner-b"
         );
     }
 }

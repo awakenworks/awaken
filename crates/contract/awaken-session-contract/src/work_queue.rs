@@ -311,9 +311,51 @@ pub struct WorkItem {
     pub stopped_at: Option<String>,
 }
 
-/// A freshly claimed Work item plus the one-time per-Session bearer minted by
-/// the authoritative WorkQueue transaction. The cleartext is returned only by
-/// `poll`; list/retrieve projections continue to expose `secret: null`.
+/// Digest of one per-Session Work bearer: 64 lowercase hexadecimal characters.
+///
+/// The WorkQueue persists and compares only this value. Generating the bearer
+/// and deriving its digest belong to the issuing application, so the queue port
+/// never handles cleartext credential material.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SessionAccessDigest(String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("Session access digest must be 64 lowercase hexadecimal characters")]
+pub struct InvalidSessionAccessDigest;
+
+impl SessionAccessDigest {
+    pub fn from_hex(hex: impl Into<String>) -> Result<Self, InvalidSessionAccessDigest> {
+        let hex = hex.into();
+        if hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            Ok(Self(hex))
+        } else {
+            Err(InvalidSessionAccessDigest)
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Queue-side result of a Session-access claim: the leased item and, only when
+/// that item is Session work, the pre-minted digest the same transaction bound
+/// to the new lease epoch.
+#[derive(Clone, Debug)]
+pub struct WorkClaim {
+    pub item: WorkItem,
+    pub session_access: Option<SessionAccessDigest>,
+}
+
+/// A freshly claimed Work item plus the one-time per-Session bearer whose
+/// digest the authoritative WorkQueue transaction bound to the lease. The
+/// cleartext is returned only by `poll`; list/retrieve projections continue to
+/// expose `secret: null`.
 #[derive(Clone, Debug)]
 pub struct ClaimedWork {
     pub item: WorkItem,
@@ -856,10 +898,11 @@ pub trait WorkQueue: Send + Sync {
         let _ = poller_id;
         self.claim(env_id, lease_owner, now_ms).await
     }
-    /// Claim through the public self-hosted Worker protocol and atomically mint
-    /// a per-Session bearer when the selected item is Session work. Durable
-    /// implementations persist only its digest beside the lease and return the
-    /// cleartext once in [`ClaimedWork`].
+    /// Claim through the public self-hosted Worker protocol. When the selected
+    /// item is Session work, the caller's pre-minted `session_access` digest is
+    /// persisted in the same transaction that writes the new lease epoch and is
+    /// echoed in [`WorkClaim::session_access`]; otherwise it is discarded. The
+    /// queue never generates or sees the bearer itself.
     async fn claim_with_session_access(
         &self,
         env_id: &str,
@@ -867,7 +910,9 @@ pub trait WorkQueue: Send + Sync {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        session_access: &SessionAccessDigest,
+    ) -> Result<Option<WorkClaim>, WorkQueueError> {
+        let _ = session_access;
         Ok(self
             .claim_with_reclaim(
                 env_id,
@@ -877,17 +922,16 @@ pub trait WorkQueue: Send + Sync {
                 reclaim_older_than_ms,
             )
             .await?
-            .map(|item| ClaimedWork {
+            .map(|item| WorkClaim {
                 item,
-                sessions_token: None,
+                session_access: None,
             }))
     }
-    /// Authenticate one presented per-Session bearer against the current live
-    /// Work lease. Expired, reclaimed, stopped, retired, or replaced leases
-    /// return `None`; implementations never retain the cleartext.
+    /// Resolve one bearer digest against the current live Work lease. Expired,
+    /// reclaimed, stopped, retired, or replaced leases return `None`.
     async fn authenticate_session_access(
         &self,
-        _presented: &RedactedString,
+        _presented: &SessionAccessDigest,
         _now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         Ok(None)
