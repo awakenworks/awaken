@@ -4,7 +4,6 @@
 //! crates and are selected by [`SandboxCapabilities`].
 
 mod checkpoint_upload;
-mod control_incarnation;
 mod error;
 mod foundation;
 mod handle;
@@ -14,7 +13,6 @@ mod restore_wire;
 mod runtime;
 
 pub use checkpoint_upload::SandboxCheckpointUpload;
-pub use control_incarnation::{KubernetesPodUid, SandboxControlIncarnation};
 pub use foundation::*;
 pub use handle::*;
 pub use repository_publication::{
@@ -26,7 +24,7 @@ pub use restore_contract::{
     SandboxRestoreTargetDisposition, checkpoint_exclusions_fingerprint,
     sandbox_spec_security_fingerprint, validate_checkpoint_exclusions_for_spec,
 };
-pub use restore_wire::{HostBindRestorationHandle, SandboxRestorationEvidence};
+pub use restore_wire::SandboxRestorationEvidence;
 pub use runtime::*;
 
 #[cfg(test)]
@@ -1243,34 +1241,13 @@ mod tests {
         let fence =
             SandboxEffectFence::new("handle-round-trip", "test-owner", "runtime-1", 1, u64::MAX)
                 .unwrap();
-        let container_v1 = ContainerSandboxHandleV1 {
-            container_id: "container-1".into(),
-            outputs_path: "/outputs".into(),
-            base_env: Vec::new(),
-            live_input_projection: false,
-            continuation_excluded_paths: Vec::new(),
-            runtime_handle: None,
-            sandbox_control_incarnation: None,
-            control_services: Default::default(),
-        };
-        let cases = [
-            crate::test_support::fixture_current_handle(
-                "fixture",
-                &locator,
-                &realization_fingerprint,
-                &fence,
-                &["/workspace/fixture-repo".to_owned()],
-            ),
-            SandboxHandle::container_v2(
-                "container",
-                ContainerSandboxHandleV2 {
-                    previous: container_v1,
-                    adoption_fingerprint: realization_fingerprint.clone(),
-                    realization_fingerprint,
-                    owned_paths: vec!["/workspace/container-repo".into()],
-                },
-            ),
-        ];
+        let cases = [crate::test_support::fixture_current_handle(
+            "fixture",
+            &locator,
+            &realization_fingerprint,
+            &fence,
+            &["/workspace/fixture-repo".to_owned()],
+        )];
         let mut missing_fingerprint = serde_json::to_value(&cases[0]).unwrap();
         missing_fingerprint["payload"]
             .as_object_mut()
@@ -1279,18 +1256,6 @@ mod tests {
         assert!(
             serde_json::from_value::<SandboxHandle>(missing_fingerprint).is_err(),
             "H3 current evidence never accepts missing immutable realization evidence"
-        );
-        let mut missing_adoption = serde_json::to_value(&cases[1]).unwrap();
-        missing_adoption["payload"]
-            .as_object_mut()
-            .unwrap()
-            .remove("adoption_fingerprint");
-        let missing_adoption = serde_json::from_value::<SandboxHandle>(missing_adoption)
-            .expect("the neutral envelope does not interpret the container locator");
-        assert!(
-            missing_adoption.container_adoption_fingerprint().is_err()
-                && missing_adoption.container_payload().is_err(),
-            "H1 current container V2 never accepts missing adoption evidence"
         );
         for handle in cases {
             let expected = handle.owned_paths().expect("H1 V2 evidence").to_vec();

@@ -157,7 +157,7 @@ pub(super) fn pod_incarnation(
     expected_name: &str,
     expected_owner: Option<&str>,
     forwarder: &K8sSandboxControlForwarder,
-) -> Result<pc::SandboxControlIncarnation, RuntimeError> {
+) -> Result<crate::SandboxControlIncarnation, RuntimeError> {
     if pod.metadata.name.as_deref() != Some(expected_name) {
         return Err(backend(
             "Kubernetes Sandbox control Pod name does not match its durable locator",
@@ -246,7 +246,8 @@ pub(super) fn pod_incarnation(
         .uid
         .clone()
         .ok_or_else(|| backend("Kubernetes Sandbox control Pod has no UID"))?;
-    pc::SandboxControlIncarnation::kubernetes_pod(uid).map_err(|error| backend(error.to_string()))
+    crate::SandboxControlIncarnation::kubernetes_pod(uid)
+        .map_err(|error| backend(error.to_string()))
 }
 
 fn ready_pod_incarnation(
@@ -254,7 +255,7 @@ fn ready_pod_incarnation(
     expected_name: &str,
     expected_owner: Option<&str>,
     forwarder: &K8sSandboxControlForwarder,
-) -> Result<pc::SandboxControlIncarnation, RuntimeError> {
+) -> Result<crate::SandboxControlIncarnation, RuntimeError> {
     match realization::pod_readiness(pod) {
         realization::PodReadiness::Ready => {
             pod_incarnation(pod, expected_name, expected_owner, forwarder)
@@ -270,7 +271,7 @@ impl K8sRuntime {
         &self,
         container_id: &str,
         forwarder: &K8sSandboxControlForwarder,
-    ) -> Result<pc::SandboxControlIncarnation, RuntimeError> {
+    ) -> Result<crate::SandboxControlIncarnation, RuntimeError> {
         let pod = self.pods().get(container_id).await.map_err(backend)?;
         ready_pod_incarnation(&pod, container_id, Some(&self.owner_id), forwarder)
     }
@@ -278,9 +279,9 @@ impl K8sRuntime {
     pub(super) async fn adopt_sandbox_control_incarnation(
         &self,
         container_id: &str,
-        expected: &pc::SandboxControlIncarnation,
+        expected: &crate::SandboxControlIncarnation,
         forwarder: &K8sSandboxControlForwarder,
-    ) -> Result<pc::SandboxControlIncarnation, RuntimeError> {
+    ) -> Result<crate::SandboxControlIncarnation, RuntimeError> {
         let pods = self.pods();
         let pod = pods.get(container_id).await.map_err(backend)?;
         let observed = ready_pod_incarnation(&pod, container_id, None, forwarder)?;
@@ -320,7 +321,7 @@ pub(super) async fn bind(
     runtime: &K8sRuntime,
     container_id: &str,
     request: SandboxControlBindingRequest<'_>,
-) -> Result<Option<pc::SandboxControlIncarnation>, RuntimeError> {
+) -> Result<Option<crate::SandboxControlIncarnation>, RuntimeError> {
     if request.required().is_empty() {
         return Ok(None);
     }
@@ -356,7 +357,7 @@ pub(super) async fn bind(
 pub(super) async fn open_channel(
     runtime: &K8sRuntime,
     container_id: &str,
-    binding: &pc::SandboxControlIncarnation,
+    binding: &crate::SandboxControlIncarnation,
     kind: SandboxControlServiceKind,
 ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
     let forwarder = runtime

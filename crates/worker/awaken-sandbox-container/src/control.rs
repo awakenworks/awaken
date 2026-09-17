@@ -35,7 +35,7 @@ async fn wait_before_reopen(cancel: &CancellationToken, delay: &mut std::time::D
 async fn open_channel<R: ContainerRuntime + 'static>(
     runtime: &R,
     container_id: &str,
-    binding: &awaken_provisioning_contract::SandboxControlIncarnation,
+    binding: &crate::SandboxControlIncarnation,
     kind: SandboxControlServiceKind,
     cancel: &CancellationToken,
 ) -> Result<Box<dyn AgentChannel>, SandboxControlPublishError> {

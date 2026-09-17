@@ -7,6 +7,7 @@ use awaken_provisioning_contract::{
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
     SandboxControlServiceKind, SandboxControlServicePublisher,
@@ -578,8 +579,8 @@ fn current_fake_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle {
         .collect::<Vec<_>>();
     pc::SandboxHandle::container_v2(
         "session-container",
-        pc::ContainerSandboxHandleV2 {
-            previous: pc::ContainerSandboxHandleV1 {
+        awaken_sandbox_container::ContainerSandboxHandleV2 {
+            previous: awaken_sandbox_container::ContainerSandboxHandleV1 {
                 container_id: "container-session-container".into(),
                 outputs_path: spec.outputs_path.clone(),
                 base_env: spec.env.clone(),

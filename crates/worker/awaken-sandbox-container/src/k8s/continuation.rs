@@ -1,6 +1,7 @@
 //! Kubernetes realization of one retained active-filesystem volume.
 
-use awaken_provisioning_contract::{self as pc, ContainerContinuationHandle};
+use crate::ContainerContinuationHandle;
+use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
     Container, PersistentVolumeClaim, PersistentVolumeClaimSpec, Pod, VolumeMount,
     VolumeResourceRequirements,

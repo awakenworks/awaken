@@ -20,7 +20,7 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
      * This is provider-kind admission only; the Session aggregate remains the
      * lifecycle authority and the existing K8s removal path remains the sole
      * physical effect owner. */
-    let current = pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+    let current = crate::ContainerContinuationHandle::KubernetesContinuationV2 {
         pod_uid: "pod-a".into(),
         claim_uid: Some("claim-a".into()),
     };
@@ -29,7 +29,7 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
         (Some("pod-a"), Some("claim-a")),
         "KH1a/E1",
     );
-    let legacy = pc::ContainerContinuationHandle::KubernetesContinuation {
+    let legacy = crate::ContainerContinuationHandle::KubernetesContinuation {
         claim_uid: "claim-a".into(),
     };
     assert!(
@@ -37,8 +37,8 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
         "KH1b/E2",
     );
 
-    let host_bind = pc::ContainerContinuationHandle::HostBindRestoration(
-        pc::HostBindRestorationHandle::for_restore("/tmp/awaken-acp-stage-k8s-reject").unwrap(),
+    let host_bind = crate::ContainerContinuationHandle::HostBindRestoration(
+        crate::HostBindRestorationHandle::for_restore("/tmp/awaken-acp-stage-k8s-reject").unwrap(),
     );
     assert!(
         runtime_contract::deletion_incarnation(Some(&host_bind))
@@ -377,7 +377,7 @@ async fn historical_terminal_configuration_requires_explicit_no_claim_evidence()
             size: "1Gi".into(),
         },
     );
-    let handle = pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+    let handle = crate::ContainerContinuationHandle::KubernetesContinuationV2 {
         pod_uid: "exact-pod".into(),
         claim_uid: None,
     };
@@ -391,15 +391,19 @@ async fn historical_terminal_configuration_requires_explicit_no_claim_evidence()
     );
     for invalid in [
         None,
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-            pod_uid: "".into(),
-            claim_uid: None,
-        }),
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-            pod_uid: "exact-pod".into(),
-            claim_uid: Some("claim".into()),
-        }),
-        Some(pc::ContainerContinuationHandle::KubernetesContinuation {
+        Some(
+            crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                pod_uid: "".into(),
+                claim_uid: None,
+            },
+        ),
+        Some(
+            crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                pod_uid: "exact-pod".into(),
+                claim_uid: Some("claim".into()),
+            },
+        ),
+        Some(crate::ContainerContinuationHandle::KubernetesContinuation {
             claim_uid: "claim".into(),
         }),
     ] {

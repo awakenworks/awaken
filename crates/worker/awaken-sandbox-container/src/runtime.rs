@@ -386,7 +386,7 @@ pub enum SandboxControlBindingRequest<'a> {
     },
     Adopt {
         required: &'a std::collections::BTreeSet<SandboxControlServiceKind>,
-        expected: Option<&'a pc::SandboxControlIncarnation>,
+        expected: Option<&'a crate::SandboxControlIncarnation>,
     },
 }
 
@@ -902,7 +902,7 @@ mod realization_tests {
         let intent = crate::ContainerRealizationIntent::Rebuild {
             source_incarnation: "incarnation-1".into(),
             source_runtime_handle: Some(
-                pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+                crate::ContainerContinuationHandle::KubernetesContinuationV2 {
                     pod_uid: "incarnation-1".into(),
                     claim_uid: Some("claim-1".into()),
                 },
@@ -1416,7 +1416,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// never a stop receipt or deletion grant. Unsupported histories stay closed.
     fn historical_terminal_configuration(
         &self,
-        _handle: Option<&pc::ContainerContinuationHandle>,
+        _handle: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
         Ok(None)
     }
@@ -1483,7 +1483,7 @@ pub trait ContainerRuntime: Send + Sync {
         &self,
         _container_id: &str,
         request: SandboxControlBindingRequest<'_>,
-    ) -> Result<Option<pc::SandboxControlIncarnation>, RuntimeError> {
+    ) -> Result<Option<crate::SandboxControlIncarnation>, RuntimeError> {
         if request.required().is_empty() {
             Ok(None)
         } else {
@@ -1496,7 +1496,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn open_sandbox_control_channel(
         &self,
         _container_id: &str,
-        _binding: &pc::SandboxControlIncarnation,
+        _binding: &crate::SandboxControlIncarnation,
         _kind: SandboxControlServiceKind,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
         Err(RuntimeError::Backend(
@@ -1727,7 +1727,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn handle_extra(
         &self,
         _container_id: &str,
-    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
+    ) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
         Ok(None)
     }
 
@@ -1831,7 +1831,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn remove_with_handle(
         &self,
         container_id: &str,
-        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        runtime_handle: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<(), RuntimeError> {
         if runtime_handle.is_some() {
             return Err(RuntimeError::Backend(
@@ -1903,7 +1903,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn remove_exact_incarnation(
         &self,
         _container_id: &str,
-        _runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        _runtime_handle: Option<&crate::ContainerContinuationHandle>,
         _authorization: &pc::SandboxDisposalAuthorization,
         _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {

@@ -54,16 +54,17 @@ impl K8sRuntime {
 }
 
 pub(super) fn deletion_incarnation(
-    runtime_handle: Option<&pc::ContainerContinuationHandle>,
+    runtime_handle: Option<&crate::ContainerContinuationHandle>,
 ) -> Result<(Option<&str>, Option<&str>), RuntimeError> {
     match runtime_handle {
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 { pod_uid, claim_uid }) => {
-            Ok((Some(pod_uid.as_str()), claim_uid.as_deref()))
-        }
-        Some(pc::ContainerContinuationHandle::KubernetesContinuation { .. }) => Err(backend(
+        Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid,
+            claim_uid,
+        }) => Ok((Some(pod_uid.as_str()), claim_uid.as_deref())),
+        Some(crate::ContainerContinuationHandle::KubernetesContinuation { .. }) => Err(backend(
             "legacy Kubernetes handle has no Pod UID deletion fence",
         )),
-        Some(pc::ContainerContinuationHandle::HostBindRestoration(_)) => Err(backend(
+        Some(crate::ContainerContinuationHandle::HostBindRestoration(_)) => Err(backend(
             "Kubernetes removal received a host-bind continuation handle",
         )),
         None => Ok((None, None)),
@@ -84,11 +85,11 @@ impl ContainerRuntime for K8sRuntime {
 
     fn historical_terminal_configuration(
         &self,
-        handle: Option<&pc::ContainerContinuationHandle>,
+        handle: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
         // A typed V2 absence is not legacy missing evidence. Do not infer an
         // old PVC's storage class/size from its UID or today's deployment.
-        if !matches!(handle, Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        if !matches!(handle, Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid, claim_uid: None,
         }) if !pod_uid.trim().is_empty())
         {
@@ -173,14 +174,14 @@ impl ContainerRuntime for K8sRuntime {
         &self,
         container_id: &str,
         request: SandboxControlBindingRequest<'_>,
-    ) -> Result<Option<pc::SandboxControlIncarnation>, RuntimeError> {
+    ) -> Result<Option<crate::SandboxControlIncarnation>, RuntimeError> {
         sandbox_control::bind(self, container_id, request).await
     }
 
     async fn open_sandbox_control_channel(
         &self,
         container_id: &str,
-        binding: &pc::SandboxControlIncarnation,
+        binding: &crate::SandboxControlIncarnation,
         kind: SandboxControlServiceKind,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
         sandbox_control::open_channel(self, container_id, binding, kind).await
@@ -488,7 +489,7 @@ impl ContainerRuntime for K8sRuntime {
     async fn handle_extra(
         &self,
         container_id: &str,
-    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
+    ) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
         let pod = self.pods().get(container_id).await.map_err(backend)?;
         continuation::handle_extra(&pod)
     }
@@ -498,10 +499,10 @@ impl ContainerRuntime for K8sRuntime {
         expectation: ContainerObservationExpectation<'_>,
     ) -> Result<pc::SandboxObservation, RuntimeError> {
         let expected_pod_uid = match expectation.runtime_handle {
-            Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 { pod_uid, .. }) => {
-                Some(pod_uid.as_str())
-            }
-            Some(pc::ContainerContinuationHandle::HostBindRestoration(_)) => {
+            Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                pod_uid, ..
+            }) => Some(pod_uid.as_str()),
+            Some(crate::ContainerContinuationHandle::HostBindRestoration(_)) => {
                 return Err(backend(
                     "Kubernetes observation received a host-bind continuation handle",
                 ));
@@ -512,10 +513,12 @@ impl ContainerRuntime for K8sRuntime {
         let effect_fenced_total_absence = expectation.effect_fence.is_some()
             && matches!(
                 expectation.runtime_handle,
-                Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-                    claim_uid: Some(_),
-                    ..
-                })
+                Some(
+                    crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                        claim_uid: Some(_),
+                        ..
+                    }
+                )
             );
         let pod = match self.pods().get(expectation.container_id).await {
             Ok(pod) => Some(pod),
@@ -883,7 +886,7 @@ impl ContainerRuntime for K8sRuntime {
     async fn remove_with_handle(
         &self,
         container_id: &str,
-        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        runtime_handle: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<(), RuntimeError> {
         let (pod_uid, claim_uid) = deletion_incarnation(runtime_handle)?;
         self.remove_bound(container_id, pod_uid, claim_uid, None)
@@ -893,7 +896,7 @@ impl ContainerRuntime for K8sRuntime {
     async fn remove_exact_incarnation(
         &self,
         container_id: &str,
-        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        runtime_handle: Option<&crate::ContainerContinuationHandle>,
         authorization: &pc::SandboxDisposalAuthorization,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {

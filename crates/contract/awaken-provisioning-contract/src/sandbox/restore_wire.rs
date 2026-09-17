@@ -130,32 +130,3 @@ impl SandboxRestorationEvidence {
             })
     }
 }
-
-/// Provider-owned host locator accepted by Phase-A readers but not constructible
-/// through the typed API until the restoring composition enables its sole writer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[non_exhaustive]
-pub struct HostBindRestorationHandle {
-    staging_root: String,
-}
-
-impl HostBindRestorationHandle {
-    /// Construct the exact host-owned staging locator for a Phase-B physical
-    /// restore target. The provider must still bind restore evidence separately.
-    pub fn for_restore(staging_root: impl Into<String>) -> Result<Self, super::SandboxError> {
-        let staging_root = staging_root.into();
-        let path = std::path::Path::new(&staging_root);
-        if staging_root.is_empty() || !path.is_absolute() {
-            return Err(super::SandboxError::invalid(
-                "host-bind restoration root must be an absolute path",
-            ));
-        }
-        Ok(Self { staging_root })
-    }
-
-    #[must_use]
-    pub fn staging_root(&self) -> &str {
-        &self.staging_root
-    }
-}

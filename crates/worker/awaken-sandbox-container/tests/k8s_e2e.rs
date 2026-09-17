@@ -27,6 +27,7 @@ use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{
     ToolError, ToolExecutor, ToolOperationContext, with_tool_operation_context,
 };
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::k8s::{
     DEFAULT_REPOSITORY_GIT_CONTROL_PORT, K8sRuntime, K8sSandboxControlForwarder,
 };

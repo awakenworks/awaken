@@ -1561,7 +1561,7 @@ impl ContainerRuntime for DockerRuntime {
     async fn handle_extra(
         &self,
         container_id: &str,
-    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
+    ) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
         if self.restoration_evidence(container_id).await?.is_none() {
             return Ok(None);
         }
@@ -1569,10 +1569,14 @@ impl ContainerRuntime for DockerRuntime {
         let staging_root = live_inputs
             .parent()
             .ok_or_else(|| backend("Docker live-input root has no staging parent"))?;
-        Ok(Some(pc::ContainerContinuationHandle::HostBindRestoration(
-            pc::HostBindRestorationHandle::for_restore(staging_root.to_string_lossy().into_owned())
+        Ok(Some(
+            crate::ContainerContinuationHandle::HostBindRestoration(
+                crate::HostBindRestorationHandle::for_restore(
+                    staging_root.to_string_lossy().into_owned(),
+                )
                 .map_err(|error| backend(error.to_string()))?,
-        )))
+            ),
+        ))
     }
 
     async fn observe(
@@ -1899,7 +1903,7 @@ impl ContainerRuntime for DockerRuntime {
     async fn remove_exact_incarnation(
         &self,
         container_id: &str,
-        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        runtime_handle: Option<&crate::ContainerContinuationHandle>,
         authorization: &pc::SandboxDisposalAuthorization,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {

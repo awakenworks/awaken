@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{
     ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRuntime,
@@ -129,9 +130,9 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
         .container_payload()
         .expect("D1/E1 typed container handle");
     let staging_root = match payload.runtime_handle.as_ref() {
-        Some(pc::ContainerContinuationHandle::HostBindRestoration(locator)) => {
-            std::path::PathBuf::from(locator.staging_root())
-        }
+        Some(awaken_sandbox_container::ContainerContinuationHandle::HostBindRestoration(
+            locator,
+        )) => std::path::PathBuf::from(locator.staging_root()),
         other => panic!("D1/E1 missing host staging evidence: {other:?}"),
     };
     drop(first);

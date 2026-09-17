@@ -6,6 +6,7 @@ use awaken_sandbox_local::FilesystemHandleCodec as _;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 
 /// Creates/adopts the one Session environment while auxiliary housekeeping Runs

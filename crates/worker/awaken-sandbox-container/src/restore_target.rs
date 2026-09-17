@@ -102,9 +102,9 @@ pub(crate) fn restoration_evidence_from_metadata(
 }
 
 pub(super) fn retained_host_staging(
-    handle: Option<&pc::ContainerContinuationHandle>,
+    handle: Option<&crate::ContainerContinuationHandle>,
 ) -> Result<Option<StagingGuard>, RuntimeError> {
-    let Some(pc::ContainerContinuationHandle::HostBindRestoration(locator)) = handle else {
+    let Some(crate::ContainerContinuationHandle::HostBindRestoration(locator)) = handle else {
         return Ok(None);
     };
     retained_host_staging_path(std::path::PathBuf::from(locator.staging_root())).map(Some)

@@ -1,4 +1,5 @@
 use super::*;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_contract::SessionId;
 mod mcp_relay_lease;
 mod projection_convergence;
@@ -18374,14 +18375,14 @@ pub(super) fn terminal_fixture_container_handle(
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
     pc::SandboxHandle::container_v2(
         thread,
-        pc::ContainerSandboxHandleV2 {
-            previous: pc::ContainerSandboxHandleV1 {
+        awaken_sandbox_container::ContainerSandboxHandleV2 {
+            previous: awaken_sandbox_container::ContainerSandboxHandleV1 {
                 container_id: "awaken-terminal-fixture".into(),
                 outputs_path: spec.outputs_path.clone(),
                 base_env: spec.env.clone(),
                 live_input_projection: false,
                 continuation_excluded_paths: Vec::new(),
-                runtime_handle: Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+                runtime_handle: Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
                     pod_uid: "pod-a".into(),
                     claim_uid: Some("claim-p".into()),
                 }),

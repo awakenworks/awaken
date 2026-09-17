@@ -22,7 +22,7 @@ fn admit_pod(
     access: ContainerCheckpointAccess<'_>,
 ) -> Result<(), RuntimeError> {
     access.admit().map_err(backend)?;
-    let Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+    let Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
         pod_uid,
         claim_uid: Some(claim_uid),
     }) = expectation.runtime_handle

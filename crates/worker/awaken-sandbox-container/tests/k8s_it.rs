@@ -14,6 +14,7 @@ mod finalizer_tests;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::k8s::K8sRuntime;
 use awaken_sandbox_container::{
     ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRealizationIntent,
@@ -313,7 +314,7 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     let payload = handle.container_payload().expect("KR1 container payload");
     let pod_name = payload.container_id.clone();
     let (pod_uid, claim_uid) = match payload.runtime_handle.as_ref() {
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid: Some(claim_uid),
         }) => (pod_uid.clone(), claim_uid.clone()),
@@ -594,10 +595,12 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     assert!(
         matches!(
             source_runtime_handle.as_ref(),
-            Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-                claim_uid: Some(_),
-                ..
-            })
+            Some(
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+                    claim_uid: Some(_),
+                    ..
+                }
+            )
         ),
         "KTR1 V2 handle carries retained claim UID"
     );
@@ -860,7 +863,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         .runtime_handle
         .as_ref()
     {
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid: Some(claim_uid),
         }) => (pod_uid.clone(), claim_uid.clone()),
@@ -940,10 +943,12 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     let recovered_handle = recovered.handle();
     let (recovered_pod_uid, recovered_claim_uid) =
         match recovered_handle.container_payload().unwrap().runtime_handle {
-            Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-                pod_uid,
-                claim_uid: Some(claim_uid),
-            }) => (pod_uid, claim_uid),
+            Some(
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+                    pod_uid,
+                    claim_uid: Some(claim_uid),
+                },
+            ) => (pod_uid, claim_uid),
             other => panic!("KPV3b expected Pod+claim V2 handle, got {other:?}"),
         };
     assert_ne!(recovered_pod_uid, first_pod_uid, "KPV3b new Pod UID");
@@ -1022,7 +1027,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         .runtime_handle
         .as_ref()
     {
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid: Some(claim_uid),
         }) => (
@@ -1196,10 +1201,10 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
             .runtime_handle
             .as_ref()
             .and_then(|handle| match handle {
-                pc::ContainerContinuationHandle::KubernetesContinuationV2 { claim_uid, .. } =>
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 { claim_uid, .. } =>
                     claim_uid.as_deref(),
-                pc::ContainerContinuationHandle::KubernetesContinuation { .. } => None,
-                pc::ContainerContinuationHandle::HostBindRestoration(_) => {
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuation { .. } => None,
+                awaken_sandbox_container::ContainerContinuationHandle::HostBindRestoration(_) => {
                     panic!("KPV5b Kubernetes replacement returned a host-bind handle")
                 }
             }),
@@ -1297,7 +1302,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         .runtime_handle
         .as_ref()
     {
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid: Some(claim_uid),
         }) => (
@@ -1559,7 +1564,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         .runtime_handle
         .as_ref()
     {
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid: Some(claim_uid),
         }) => (
@@ -1772,10 +1777,12 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
                 .unwrap()
                 .runtime_handle
                 .as_ref(),
-            Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-                claim_uid: None,
-                ..
-            })
+            Some(
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+                    claim_uid: None,
+                    ..
+                }
+            )
         ),
         "KPV2 C1 Pod-only V2 handle"
     );

@@ -1003,19 +1003,20 @@ impl K8sRuntime {
         &self,
         pod_name: &str,
         pod: Option<&Pod>,
-        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        runtime_handle: Option<&crate::ContainerContinuationHandle>,
         purpose: ContainerObservationPurpose,
         effect_fenced: bool,
         effect_fenced_total_absence: bool,
     ) -> Result<ContinuationObservationDisposition, RuntimeError> {
         let expected_claim_uid = match runtime_handle {
-            Some(pc::ContainerContinuationHandle::KubernetesContinuation { claim_uid }) => {
+            Some(crate::ContainerContinuationHandle::KubernetesContinuation { claim_uid }) => {
                 Some(claim_uid.as_str())
             }
-            Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-                claim_uid, ..
+            Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                claim_uid,
+                ..
             }) => claim_uid.as_deref(),
-            Some(pc::ContainerContinuationHandle::HostBindRestoration(_)) => {
+            Some(crate::ContainerContinuationHandle::HostBindRestoration(_)) => {
                 return Err(backend(
                     "Kubernetes observation received a host-bind continuation handle",
                 ));

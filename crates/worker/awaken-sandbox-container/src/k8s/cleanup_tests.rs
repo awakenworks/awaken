@@ -232,7 +232,7 @@ async fn fixture(
 struct CheckpointEvidence {
     source: pc::SandboxEffectFence,
     fingerprint: pc::SandboxRealizationFingerprint,
-    handle: pc::ContainerContinuationHandle,
+    handle: crate::ContainerContinuationHandle,
 }
 
 impl CheckpointEvidence {
@@ -533,7 +533,7 @@ async fn checkpoint_identity_and_source_state_denials_have_zero_writes() {
             let deleting = || serde_json::from_value(json!("2026-09-08T00:00:00Z")).unwrap();
             match row {
                 "legacy" => {
-                    evidence.handle = pc::ContainerContinuationHandle::KubernetesContinuation {
+                    evidence.handle = crate::ContainerContinuationHandle::KubernetesContinuation {
                         claim_uid: "claim-uid".into(),
                     }
                 }
@@ -648,22 +648,24 @@ async fn cleanup_requires_both_current_authority_and_exact_incarnation() {
         let handle = if row == "missing" {
             None
         } else {
-            Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-                pod_uid: if row == "foreign-pod" {
-                    "foreign"
-                } else {
-                    "pod-uid"
-                }
-                .into(),
-                claim_uid: Some(
-                    if row == "foreign-claim" {
+            Some(
+                crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                    pod_uid: if row == "foreign-pod" {
                         "foreign"
                     } else {
-                        "claim-uid"
+                        "pod-uid"
                     }
                     .into(),
-                ),
-            })
+                    claim_uid: Some(
+                        if row == "foreign-claim" {
+                            "foreign"
+                        } else {
+                            "claim-uid"
+                        }
+                        .into(),
+                    ),
+                },
+            )
         };
         assert!(
             runtime

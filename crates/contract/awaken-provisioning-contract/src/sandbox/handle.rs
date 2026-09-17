@@ -16,12 +16,7 @@
 //! decode and re-encode, because durable Session bindings compare the encoded
 //! handle byte-for-byte.
 
-mod builtin;
 mod payload;
-
-pub use builtin::{
-    ContainerContinuationHandle, ContainerSandboxHandleV1, ContainerSandboxHandleV2,
-};
 
 use serde::de::DeserializeOwned;
 use serde::ser::SerializeStruct;
