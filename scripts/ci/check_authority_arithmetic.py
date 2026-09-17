@@ -19,7 +19,7 @@ RULES = {
     "crates/server/awaken-worker-registry/src/sqlite.rs": (" as i64", " as u64"),
     "crates/server/awaken-worker-registry/src/transition.rs": ("saturating_add(1)",),
     "crates/server/awaken-sandbox-policy-store/src/lib.rs": ("saturating_add(1)",),
-    "crates/contract/awaken-environment-realization-contract/src/lib.rs": (
+    "crates/contract/awaken-executable-environment-contract/src/image_realization.rs": (
         "saturating_add(1)",
     ),
     "crates/stores/awaken-session-store/src/row_codec.rs": (

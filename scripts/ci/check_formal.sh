@@ -457,7 +457,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-authz-enforce \
     --harness session_decision_collapse_allows_only_explicit_allow \
     --harness session_method_mapping_is_total_and_read_only_for_exact_safe_methods
-  run_kani awaken-environment-realization-contract \
+  run_kani awaken-executable-environment-contract \
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-environment-contract \

@@ -52,7 +52,6 @@ awaken-session-application = { path = "crates/server/awaken-session-application"
 awaken-deployment-contract = { path = "crates/contract/awaken-deployment-contract" }
 awaken-deployment-application = { path = "crates/server/awaken-deployment-application" }
 awaken-environment-contract = { path = "crates/contract/awaken-environment-contract" }
-awaken-environment-realization-contract = { path = "crates/contract/awaken-environment-realization-contract" }
 awaken-executable-agent-contract = { path = "crates/contract/awaken-executable-agent-contract" }
 awaken-executable-environment-contract = { path = "crates/contract/awaken-executable-environment-contract" }
 awaken-service-auth-contract = { path = "crates/contract/awaken-service-auth-contract" }

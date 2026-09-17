@@ -1,12 +1,11 @@
-//! Coordinator-owned Environment image-realization contract.
+//! Coordinator-owned image realization of a registered executable Environment.
 //!
-//! Control registers exact definitions. This contract starts at the Coordinator
-//! boundary: it describes durable build demand, lease transitions, and the
-//! builder/readiness ports without naming SQL, Kubernetes, or a container engine.
+//! It describes durable build demand, lease transitions, and the builder and
+//! readiness ports without naming SQL, Kubernetes, or a container engine.
 
+use crate::ExecutableEnvironmentRegistration;
 use async_trait::async_trait;
 use awaken_environment_contract::{EnvironmentConfig, EnvironmentRevision};
-use awaken_executable_environment_contract::ExecutableEnvironmentRegistration;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -6,7 +6,7 @@ use awaken_credential_contract::{
     CredentialSourceId, CredentialTarget, CredentialUsage, PlaintextHolder,
 };
 use awaken_environment_contract::EnvItem;
-use awaken_environment_realization_contract::EnvironmentImageBuildError;
+use awaken_executable_environment_contract::EnvironmentImageBuildError;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_contract::McpTarget;
 

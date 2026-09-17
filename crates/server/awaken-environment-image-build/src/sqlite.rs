@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_environment_realization_contract::{
+use awaken_executable_environment_contract::{
     EnvironmentImageBuildError, EnvironmentImageBuildRecord, EnvironmentImageBuildStore,
 };
 use awaken_sqlite_pool::{SharedSqliteConnection, SqliteConnectionFactory};
@@ -189,7 +189,7 @@ fn decode_checked(
 
 #[cfg(test)]
 mod tests {
-    use awaken_environment_realization_contract::EnvironmentImageBuildState;
+    use awaken_executable_environment_contract::EnvironmentImageBuildState;
 
     use super::*;
 

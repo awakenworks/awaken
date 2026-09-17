@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use awaken_environment_realization_contract::{
+use awaken_executable_environment_contract::{
     EnvironmentImageBuildClaim, EnvironmentImageBuildDemand, EnvironmentImageBuildError,
     EnvironmentImageBuildRecord, EnvironmentImageBuildState, EnvironmentImageBuildStore,
 };

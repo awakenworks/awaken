@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_environment_realization_contract::{
+use awaken_executable_environment_contract::{
     EnvironmentImageBuildDemand, EnvironmentImageBuildError, EnvironmentImageBuilder,
 };
 use awaken_provisioning_contract::{NetworkPolicy, PackageRequirements};
