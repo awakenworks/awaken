@@ -12,7 +12,7 @@ libfuzzer-sys = "0.4"
 serde_json = "1"
 awaken-agent-contract = { path = "../crates/contract/awaken-agent-contract" }
 awaken-mcp-wire = { path = "../crates/runtime/awaken-mcp-wire" }
-awaken-runtime-contract = { path = "../crates/runtime/awaken-runtime-contract" }
+awaken-runtime-contract = { path = "../crates/contract/awaken-runtime-contract" }
 
 [[bin]]
 name = "sse_chunks"

@@ -128,7 +128,7 @@ cargo mutants --package awaken-mcp-wire \
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/sse/mutants.out"
 cargo mutants --package awaken-tool-contract \
   --output "$mutation_evidence/tool-batch" \
-  --file crates/runtime/awaken-tool-contract/src/tool_batch.rs \
+  --file crates/contract/awaken-tool-contract/src/tool_batch.rs \
   --re 'permits_call_transition|next_execution_attempt' \
   --timeout 30 --no-times -- tool_batch::tests
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch/mutants.out"

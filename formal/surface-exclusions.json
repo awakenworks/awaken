@@ -117,10 +117,10 @@
       "evidence": ["crates/runtime/awaken-observability/src/otel.rs"]
     },
     {
-      "path": "crates/runtime/awaken-runtime-contract/src/metrics.rs",
+      "path": "crates/contract/awaken-runtime-contract/src/metrics.rs",
       "boundary": "observability_port",
       "reason": "Structure-only metrics DTO, sink trait, and null implementation; it has no product admission, transition, or persistence authority.",
-      "evidence": ["crates/runtime/awaken-runtime-contract/src/metrics.rs"]
+      "evidence": ["crates/contract/awaken-runtime-contract/src/metrics.rs"]
     },
     {
       "path": "crates/server/awaken-mcp-server-testkit/src/lib.rs",
@@ -177,19 +177,19 @@
       "evidence": ["crates/server/awaken-protocol-mcp/src/bin/awaken-mcp-stdio-demo.rs"]
     },
     {
-      "path": "crates/server/awaken-run-ingress-contract/src/lib.rs",
+      "path": "crates/contract/awaken-run-ingress-contract/src/lib.rs",
       "boundary": "module_facade",
       "reason": "Run-ingress contract declarations and public re-exports only; dispatch, claim, placement, and settlement decisions remain inventoried in their defining modules.",
-      "evidence": ["crates/server/awaken-run-ingress-contract/src/lib.rs"]
+      "evidence": ["crates/contract/awaken-run-ingress-contract/src/lib.rs"]
     },
     {
-      "path": "crates/server/awaken-run-ingress-contract/src/operational.rs",
+      "path": "crates/contract/awaken-run-ingress-contract/src/operational.rs",
       "boundary": "read_model_contract",
       "reason": "Serializable operational-feed events, cursor DTOs, and a read-only feed port; it does not issue or mutate dispatch authority.",
-      "evidence": ["crates/server/awaken-run-ingress-contract/src/operational.rs"]
+      "evidence": ["crates/contract/awaken-run-ingress-contract/src/operational.rs"]
     },
     {
-      "path": "crates/server/awaken-run-ingress-contract/src/worker_transport.rs",
+      "path": "crates/contract/awaken-run-ingress-contract/src/worker_transport.rs",
       "boundary": "wire_dto",
       "reason": "Serializable Worker HTTP request envelopes and a field-preserving constructor; authentication and claim authorization stay server-side.",
       "evidence": ["crates/server/awaken-run-ingress-http/tests/dispatch_transport_http.rs"]

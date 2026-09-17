@@ -400,7 +400,7 @@ def selftest_builtin_tool_ownership() -> None:
         "use compat::Bash::Shell;",
     ):
         assert _forbidden_builtin_source_errors(rel, forbidden), f"S2/E2: {forbidden}"
-    neutral_rel = Path("crates/runtime/awaken-runtime-contract/src/example.rs")
+    neutral_rel = Path("crates/contract/awaken-runtime-contract/src/example.rs")
     assert not _forbidden_neutral_symbol_errors(
         neutral_rel,
         "use std::{io::Read, fmt::Write}; use {std::io::Write};",
@@ -460,7 +460,7 @@ use crate::{
         'const EXAMPLE: &str = "impl Tool for Fake {}";\n'
         'const RAW: &str = r#"impl RawTool for Fake {}"#;',
     ), "S3/C10 impl-like string literals are inert"
-    resource_modes = Path("crates/runtime/awaken-tool-contract/src/tool.rs")
+    resource_modes = Path("crates/contract/awaken-tool-contract/src/tool.rs")
     assert not _forbidden_neutral_symbol_errors(
         resource_modes,
         "enum ResourceAccessMode { Read, Write }",
@@ -1583,11 +1583,11 @@ UNVALIDATED_MODEL_BINDING_BASELINE = 430
 # `<path>::<fn>`, so the exemption covers one function, not a file: a second
 # producer added elsewhere in the same file is still counted.
 UNVALIDATED_MODEL_BINDING_EXEMPTIONS: dict[str, str] = {
-    "crates/runtime/awaken-runtime-contract/src/resolved/model_binding.rs::constructible": (
+    "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs::constructible": (
         "the round-trip property observes whether `new` admits what `parse` admits; "
         "it must call the constructor under test"
     ),
-    "crates/runtime/awaken-runtime-contract/src/resolved/model_binding.rs"
+    "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs"
     "::the_documented_shapes_are_admitted_or_refused_exactly": (
         "the named rows of the admission table are built through `new` to prove "
         "each admitted shape round-trips through the wire"

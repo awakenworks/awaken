@@ -9,7 +9,7 @@ test('the external Worker fixture explicitly supports the current Rust execution
   // R2 a protocol bump outside C2 -> fail here, before every dependent E2E
   // aborts at registration. Never auto-upgrade a simulated peer to claim an
   // unreviewed protocol. Actual Worker transport tests still own wire admission.
-  const source = fs.readFileSync(new URL('../crates/worker/awaken-worker-contract/src/manifest.rs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../crates/contract/awaken-worker-contract/src/manifest.rs', import.meta.url), 'utf8');
   const version = source.match(/^pub const CURRENT_RUNTIME_PROTOCOL_VERSION: u32 = ([0-9]+);$/m);
   assert.ok(version, 'the Rust execution protocol constant remains authoritative');
   const current = Number(version[1]);

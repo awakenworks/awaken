@@ -138,7 +138,7 @@
         {
           "kind": "state",
           "name": "credential_observations",
-          "path": "crates/worker/awaken-worker-contract/src/lib.rs"
+          "path": "crates/contract/awaken-worker-contract/src/lib.rs"
         }
       ],
       "status": "evidenced",

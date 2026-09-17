@@ -83,7 +83,7 @@ WEBHOOK_CONTROL_PLANE_SOURCE = (
     "crates/server/awaken-webhook-managed/src/control_plane.rs"
 )
 EXECUTABLE_AGENT_CONTRACT_SOURCE = (
-    "crates/server/awaken-executable-agent-contract/src/lib.rs"
+    "crates/contract/awaken-executable-agent-contract/src/lib.rs"
 )
 PROTOCOL_MODEL_SOURCE = "crates/server/awaken-protocol-managed/src/control/models.rs"
 RUNTIME_PROCESS_ROUTER = "crates/bin/awaken-cli/src/runtime_process_router.rs"

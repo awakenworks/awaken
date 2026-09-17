@@ -161,7 +161,7 @@ pre-commit:
     # drift test even when no E2E file changed. Its decision table owns the
     # version-match/mismatch oracle; the full runner remains in check-all static.
     worker-fixture-contract:
-      glob: "{lefthook.yml,crates/worker/awaken-worker-contract/src/manifest.rs,crates/contract/awaken-credential-contract/src/realization_capabilities.rs,e2e/fixtures/worker_manifest_fixture.mjs,e2e/worker_manifest_fixture.test.mjs}"
+      glob: "{lefthook.yml,crates/contract/awaken-worker-contract/src/manifest.rs,crates/contract/awaken-credential-contract/src/realization_capabilities.rs,e2e/fixtures/worker_manifest_fixture.mjs,e2e/worker_manifest_fixture.test.mjs}"
       run: node --test e2e/worker_manifest_fixture.test.mjs
 
     # 5. Frontend checks are active as soon as package.json exists. The frontend
