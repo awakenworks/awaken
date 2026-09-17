@@ -51,5 +51,5 @@ pub fn awaken_admin_assistant::ResourceInventory::skills<'life0, 'life1, 'async_
 pub fn awaken_admin_assistant::admin_assistant_config() -> awaken_agent_config::config::AgentConfig
 pub fn awaken_admin_assistant::admin_tool_descriptors() -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_admin_assistant::admin_tool_ids() -> alloc::vec::Vec<alloc::string::String>
-pub fn awaken_admin_assistant::admin_tools(alloc::sync::Arc<dyn awaken_admin_assistant::CapabilityReader>, alloc::sync::Arc<dyn awaken_admin_assistant::DraftValidator>, alloc::sync::Arc<dyn awaken_admin_assistant::DraftStore>, alloc::sync::Arc<dyn awaken_environment_contract::EnvironmentAuthor>, alloc::sync::Arc<dyn awaken_admin_assistant::AuditSink>) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
+pub fn awaken_admin_assistant::admin_tools(alloc::sync::Arc<dyn awaken_admin_assistant::CapabilityReader>, alloc::sync::Arc<dyn awaken_admin_assistant::DraftValidator>, alloc::sync::Arc<dyn awaken_admin_assistant::DraftStore>, alloc::sync::Arc<dyn awaken_environment_contract::EnvironmentAuthor>, alloc::sync::Arc<dyn awaken_admin_assistant::AuditSink>) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>
 pub type awaken_admin_assistant::AdminAuditEvent = awaken_agent_config::store::ManagementAuditRecord

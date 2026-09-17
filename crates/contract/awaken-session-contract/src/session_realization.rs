@@ -240,10 +240,11 @@ pub fn realization_lease_generation_authorizes(
     current: &SessionRealizationLease,
     asserted: &SessionRealizationLease,
 ) -> bool {
-    current.owner == asserted.owner
-        && current.runtime_incarnation == asserted.runtime_incarnation
-        && current.epoch == asserted.epoch
-        && current.expires_at_unix_ms >= asserted.expires_at_unix_ms
+    use awaken_provisioning_contract::{FenceSuccession, FenceToken};
+    // The current generation must be a renewal of the asserted one: the exact
+    // lease, expiry never shortened. A reassignment (higher epoch) is a
+    // different owner generation and does not authorize the assertion.
+    asserted.succession(current) == Some(FenceSuccession::Renewal)
 }
 
 #[cfg(kani)]
@@ -1561,6 +1562,44 @@ mod tests {
                 expected,
                 "{rule}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod generation_authority_law_tests {
+    use super::*;
+
+    /// The delegated law equals the former field rule over every combination of
+    /// lease-coordinate equality and expiry order, including the epoch-advance
+    /// case the renewal branch must still reject.
+    #[test]
+    fn generation_authorization_is_exactly_the_former_field_rule() {
+        let lease =
+            |owner: &str, incarnation: &str, epoch: u64, expiry: u64| SessionRealizationLease {
+                owner: owner.into(),
+                runtime_incarnation: incarnation.into(),
+                epoch,
+                expires_at_unix_ms: expiry,
+            };
+        let asserted = lease("o", "i", 5, 100);
+        for owner in ["o", "p"] {
+            for incarnation in ["i", "j"] {
+                for epoch in [4, 5, 6] {
+                    for expiry in [99, 100, 101] {
+                        let current = lease(owner, incarnation, epoch, expiry);
+                        let former = current.owner == asserted.owner
+                            && current.runtime_incarnation == asserted.runtime_incarnation
+                            && current.epoch == asserted.epoch
+                            && current.expires_at_unix_ms >= asserted.expires_at_unix_ms;
+                        assert_eq!(
+                            realization_lease_generation_authorizes(&current, &asserted),
+                            former,
+                            "owner={owner} incarnation={incarnation} epoch={epoch} expiry={expiry}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

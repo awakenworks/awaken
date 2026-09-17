@@ -276,7 +276,7 @@ pub fn awaken_config_resolver::WebhookStore::update_authored(&self, awaken_confi
 pub fn awaken_config_resolver::agent_input_storage_key(&str, &str) -> core::result::Result<alloc::string::String, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::agent_input_workspace_prefix(&str) -> core::result::Result<alloc::string::String, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::can_consume(&str, core::option::Option<&str>, &awaken_credential_vault::CredentialSource) -> bool
-pub fn awaken_config_resolver::cooldown_deadline(awaken_runtime_contract::resilience::Disposition, u64) -> core::option::Option<u64>
+pub fn awaken_config_resolver::cooldown_deadline(awaken_agent_contract::resilience::Disposition, u64) -> core::option::Option<u64>
 pub fn awaken_config_resolver::credential_can_supply(&str, core::option::Option<&str>, &str, &awaken_credential_vault::CredentialSource) -> bool
 pub fn awaken_config_resolver::credential_candidates<'a>(&awaken_credential_vault::CredentialBinding, &'a dyn awaken_config_resolver::SourceLookup, awaken_config_resolver::CredentialSelectionContext<'_>) -> core::result::Result<awaken_config_resolver::CredentialCandidateSet<'a>, awaken_config_resolver::ResolveError>
 pub fn awaken_config_resolver::credential_is_executable_supply(&str, core::option::Option<&str>, &str, &awaken_credential_vault::CredentialSource) -> bool

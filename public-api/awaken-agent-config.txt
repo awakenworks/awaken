@@ -209,7 +209,7 @@ pub awaken_agent_config::AgentConfig::multiagent: core::option::Option<awaken_ag
 pub awaken_agent_config::AgentConfig::name: core::option::Option<alloc::string::String>
 pub awaken_agent_config::AgentConfig::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
 pub awaken_agent_config::AgentConfig::plugin_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_agent_config::AgentConfig::recovery_policies: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_runtime_contract::tool::ToolRecoveryPolicy>
+pub awaken_agent_config::AgentConfig::recovery_policies: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_tool_contract::tool::ToolRecoveryPolicy>
 pub awaken_agent_config::AgentConfig::skills: alloc::vec::Vec<awaken_agent_contract::skill::AgentSkillBinding>
 pub awaken_agent_config::AgentConfig::tool_discovery: awaken_runtime_contract::resolved::ToolDiscoverySettings
 pub awaken_agent_config::AgentConfig::tool_exposure: awaken_runtime_contract::resolved::ToolExposurePolicy

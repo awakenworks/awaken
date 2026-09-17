@@ -31,7 +31,7 @@ pub fn awaken_provider_genai::classify_error(&str) -> awaken_runtime_contract::l
 pub const fn awaken_provider_genai::credential_probe_outcome(bool, bool) -> awaken_provider_genai::CredentialProbe
 pub async fn awaken_provider_genai::discover_model_ids(genai::adapter::adapter_kind::AdapterKind, &str, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_provider_genai::ModelDiscoveryError>
 pub fn awaken_provider_genai::from_genai_response(genai::chat::chat_response::ChatResponse) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>
-pub fn awaken_provider_genai::from_genai_tool_call(&genai::chat::tool::tool_call::ToolCall) -> awaken_runtime_contract::llm::ToolCall
+pub fn awaken_provider_genai::from_genai_tool_call(&genai::chat::tool::tool_call::ToolCall) -> awaken_tool_contract::tool::ToolCall
 pub fn awaken_provider_genai::map_assistant_output(&genai::chat::message_content::MessageContent) -> awaken_runtime_contract::llm::AssistantOutput
 pub fn awaken_provider_genai::map_stop_reason(&genai::chat::chat_response::StopReason) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::StopReason>
 pub fn awaken_provider_genai::map_usage(&genai::chat::usage::Usage) -> awaken_agent_contract::audit::model_request::TokenUsage

@@ -230,12 +230,12 @@ pub struct awaken_ext_memory::tool::WriteMemoryTool
 impl awaken_ext_memory::tool::WriteMemoryTool
 pub fn awaken_ext_memory::tool::WriteMemoryTool::from_handle(alloc::sync::Arc<dyn awaken_ext_memory::localfs::MemoryStoreHandle>) -> Self
 pub fn awaken_ext_memory::tool::WriteMemoryTool::new(awaken_ext_memory::localfs::MemoryDir) -> Self
-impl awaken_runtime_contract::tool::Tool for awaken_ext_memory::tool::WriteMemoryTool
+impl awaken_tool_contract::tool::Tool for awaken_ext_memory::tool::WriteMemoryTool
 pub type awaken_ext_memory::tool::WriteMemoryTool::Args = awaken_ext_memory::tool::WriteMemoryArgs
 pub type awaken_ext_memory::tool::WriteMemoryTool::Output = alloc::string::String
 pub const awaken_ext_memory::tool::WriteMemoryTool::DESCRIPTION: &'static str
 pub const awaken_ext_memory::tool::WriteMemoryTool::ID: &'static str
-pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_memory::tool::WriteMemoryArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_memory::tool::WriteMemoryArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_memory::tool::accepts_memory_content(&str) -> bool
 pub fn awaken_ext_memory::tool::write_memory_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
 pub enum awaken_ext_memory::MemoryExtractionError
@@ -421,12 +421,12 @@ pub struct awaken_ext_memory::WriteMemoryTool
 impl awaken_ext_memory::tool::WriteMemoryTool
 pub fn awaken_ext_memory::tool::WriteMemoryTool::from_handle(alloc::sync::Arc<dyn awaken_ext_memory::localfs::MemoryStoreHandle>) -> Self
 pub fn awaken_ext_memory::tool::WriteMemoryTool::new(awaken_ext_memory::localfs::MemoryDir) -> Self
-impl awaken_runtime_contract::tool::Tool for awaken_ext_memory::tool::WriteMemoryTool
+impl awaken_tool_contract::tool::Tool for awaken_ext_memory::tool::WriteMemoryTool
 pub type awaken_ext_memory::tool::WriteMemoryTool::Args = awaken_ext_memory::tool::WriteMemoryArgs
 pub type awaken_ext_memory::tool::WriteMemoryTool::Output = alloc::string::String
 pub const awaken_ext_memory::tool::WriteMemoryTool::DESCRIPTION: &'static str
 pub const awaken_ext_memory::tool::WriteMemoryTool::ID: &'static str
-pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_memory::tool::WriteMemoryArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_memory::tool::WriteMemoryArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub const awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS: &str
 pub const awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS: &str
 pub const awaken_ext_memory::EXTRACT_PROMPT: &str

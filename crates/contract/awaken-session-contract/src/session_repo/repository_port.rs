@@ -29,6 +29,27 @@ pub struct SessionRealizationLease {
     pub expires_at_unix_ms: u64,
 }
 
+/// The aggregate's realization lease carries exactly the coordinates of the
+/// neutral fence algebra, so it states its succession through the one law
+/// instead of restating the field comparisons.
+impl awaken_provisioning_contract::FenceToken for SessionRealizationLease {
+    fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    fn runtime_incarnation(&self) -> &str {
+        &self.runtime_incarnation
+    }
+
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn expires_at_unix_ms(&self) -> u64 {
+        self.expires_at_unix_ms
+    }
+}
+
 impl SessionRealizationLease {
     /// Project the aggregate-owned realization generation into the one neutral
     /// provider fence. Domain callers still decide whether this lease is the

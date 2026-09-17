@@ -1906,6 +1906,11 @@ pub awaken_session_contract::SessionRealizationLease::owner: alloc::string::Stri
 pub awaken_session_contract::SessionRealizationLease::runtime_incarnation: alloc::string::String
 impl awaken_session_contract::SessionRealizationLease
 pub fn awaken_session_contract::SessionRealizationLease::sandbox_effect_fence(&self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<awaken_provisioning_contract::sandbox::fence::SandboxEffectFence, awaken_provisioning_contract::sandbox::error::SandboxError>
+impl awaken_provisioning_contract::sandbox::fence::FenceToken for awaken_session_contract::SessionRealizationLease
+pub fn awaken_session_contract::SessionRealizationLease::epoch(&self) -> u64
+pub fn awaken_session_contract::SessionRealizationLease::expires_at_unix_ms(&self) -> u64
+pub fn awaken_session_contract::SessionRealizationLease::owner(&self) -> &str
+pub fn awaken_session_contract::SessionRealizationLease::runtime_incarnation(&self) -> &str
 pub struct awaken_session_contract::SessionRealizationLeaseReceipt
 pub awaken_session_contract::SessionRealizationLeaseReceipt::lease: awaken_session_contract::SessionRealizationLease
 pub awaken_session_contract::SessionRealizationLeaseReceipt::remaining_ms: core::num::nonzero::NonZeroU64
