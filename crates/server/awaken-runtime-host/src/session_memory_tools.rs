@@ -74,9 +74,9 @@ struct MemoryToolContext {
 impl MemoryToolContext {
     fn binding(&self, id: &str) -> Result<&Arc<dyn SessionMemoryBinding>, ToolError> {
         let id = required("binding", id)?;
-        self.bindings
-            .get(id)
-            .ok_or_else(|| ToolError::Execution(format!("unknown Session memory binding: {id}")))
+        self.bindings.get(id).ok_or_else(|| {
+            ToolError::DefinitiveFailure(format!("unknown Session memory binding: {id}"))
+        })
     }
 }
 
@@ -123,7 +123,10 @@ impl Tool for ListMemoriesTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError> {
         let binding = self.0.binding(&args.binding)?;
         let prefix = required("prefix", &args.prefix)?;
-        let memories = binding.list(prefix).await.map_err(ToolError::Execution)?;
+        let memories = binding
+            .list(prefix)
+            .await
+            .map_err(ToolError::DefinitiveFailure)?;
         Ok(ListMemoriesOutput { memories })
     }
 }
@@ -153,8 +156,8 @@ impl Tool for ReadMemoryTool {
         binding
             .read(path)
             .await
-            .map_err(ToolError::Execution)?
-            .ok_or_else(|| ToolError::Execution(format!("memory not found: {path}")))
+            .map_err(ToolError::DefinitiveFailure)?
+            .ok_or_else(|| ToolError::DefinitiveFailure(format!("memory not found: {path}")))
     }
 }
 
@@ -206,7 +209,7 @@ impl Tool for WriteMemoryTool {
         binding
             .write(path, &args.content, expected_generation.as_ref())
             .await
-            .map_err(ToolError::Execution)
+            .map_err(ToolError::DefinitiveFailure)
     }
 }
 
@@ -243,7 +246,7 @@ impl Tool for DeleteMemoryTool {
         let deleted = binding
             .delete(path, &expected_generation)
             .await
-            .map_err(ToolError::Execution)?;
+            .map_err(ToolError::DefinitiveFailure)?;
         Ok(DeleteMemoryOutput { deleted })
     }
 }
@@ -384,7 +387,7 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    ToolError::InvalidArguments(_) | ToolError::Execution(_)
+                    ToolError::InvalidArguments(_) | ToolError::DefinitiveFailure(_)
                 ),
                 "R1/R2: {error}"
             );

@@ -8,12 +8,13 @@ impl awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::tool::ToolConcurrency::compatible_with(&self, &Self) -> bool
 pub fn awaken_tool_contract::tool::ToolConcurrency::narrowed_with(self, Self) -> Self
 pub enum awaken_tool_contract::tool::ToolError
-pub awaken_tool_contract::tool::ToolError::Execution(alloc::string::String)
+pub awaken_tool_contract::tool::ToolError::AmbiguousTool(alloc::string::String)
+pub awaken_tool_contract::tool::ToolError::DefinitiveFailure(alloc::string::String)
 pub awaken_tool_contract::tool::ToolError::Indeterminate(alloc::string::String)
 pub awaken_tool_contract::tool::ToolError::InvalidArguments(alloc::string::String)
 pub awaken_tool_contract::tool::ToolError::StateInvalidatedAfterDispatch(alloc::string::String)
 pub awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(alloc::string::String)
-pub awaken_tool_contract::tool::ToolError::Unknown(alloc::string::String)
+pub awaken_tool_contract::tool::ToolError::UnknownTool(alloc::string::String)
 pub enum awaken_tool_contract::tool::ToolExecutionTarget
 pub awaken_tool_contract::tool::ToolExecutionTarget::Brain
 pub awaken_tool_contract::tool::ToolExecutionTarget::Sandbox

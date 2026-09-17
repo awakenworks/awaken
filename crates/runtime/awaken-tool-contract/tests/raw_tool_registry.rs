@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_tool_contract::tool::{
-    DurableTaskExecutor, DurableTaskTool, RawTool, RawToolRegistry, ToolCall, ToolError,
-    ToolExecutor, ToolOutput, ToolRecoveryCapability, ToolTaskContinuation, ToolTaskHandle,
-    ToolTaskPoll, ToolTaskStart, start_executor_task, start_tool_task,
+    DurableTaskTool, RawTool, RawToolRegistry, ToolCall, ToolError, ToolExecutor, ToolOutput,
+    ToolRecoveryCapability, ToolTaskContinuation, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
+    start_executor_task, start_tool_task,
 };
 
 struct RegistryTool {
@@ -55,7 +55,7 @@ async fn registry_resolution_decision_table_is_fail_closed() {
 
     assert!(matches!(
         unique.invoke(&call("missing")).await,
-        Err(ToolError::Unknown(id)) if id == "missing"
+        Err(ToolError::UnknownTool(id)) if id == "missing"
     ));
     assert_eq!(
         unique.recovery_capability("missing"),
@@ -76,7 +76,12 @@ async fn registry_resolution_decision_table_is_fail_closed() {
         .invoke(&call("same"))
         .await
         .expect_err("duplicate ids are ambiguous");
-    assert!(matches!(error, ToolError::Execution(message) if message.contains("ambiguous")));
+    // The display is the model-visible text and the text a remote Hand relays.
+    assert_eq!(
+        error.to_string(),
+        "tool execution failed: tool id `same` is ambiguous"
+    );
+    assert!(matches!(error, ToolError::AmbiguousTool(id) if id == "same"));
     assert_eq!(
         duplicate.recovery_capability("same"),
         ToolRecoveryCapability::NonRecoverable
@@ -149,7 +154,7 @@ impl ToolExecutor for ForegroundExecutor {
 
 fn refusal(result: Result<ToolTaskPoll, ToolError>) -> String {
     match result {
-        Err(ToolError::Execution(message)) => message,
+        Err(ToolError::DefinitiveFailure(message)) => message,
         other => panic!("expected a definitive refusal, got {other:?}"),
     }
 }
@@ -228,7 +233,7 @@ async fn durable_task_capability_ladder_decision_table() {
     assert!(
         matches!(
             durable.poll_task(&call("missing"), &handle()).await,
-            Err(ToolError::Unknown(id)) if id == "missing"
+            Err(ToolError::UnknownTool(id)) if id == "missing"
         ),
         "R4 resolution precedes capability"
     );

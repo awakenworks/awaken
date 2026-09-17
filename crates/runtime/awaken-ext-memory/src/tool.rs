@@ -58,7 +58,7 @@ impl Tool for WriteMemoryTool {
             .store
             .write(&name, &content)
             .await
-            .map_err(|e| ToolError::Execution(format!("write memory: {e}")))?;
+            .map_err(|e| ToolError::DefinitiveFailure(format!("write memory: {e}")))?;
         Ok(format!("saved memory {path}"))
     }
 }

@@ -79,7 +79,7 @@ impl awaken_runtime_contract::ToolExecutionAdmission for SharedToolExecutionAdmi
                     .all(|active| active.compatible_with(&claim))
                 {
                     state.0 = state.0.checked_add(1).ok_or_else(|| {
-                        awaken_runtime_contract::tool::ToolError::Execution(
+                        awaken_runtime_contract::tool::ToolError::DefinitiveFailure(
                             "shared tool admission sequence exhausted".into(),
                         )
                     })?;

@@ -204,7 +204,7 @@ async fn coordination_effects_require_runtime_context() {
             .invoke(call(id, arguments))
             .await
             .expect_err("missing runtime identity");
-        assert!(matches!(error, ToolError::Execution(_)), "R1/{id}");
+        assert!(matches!(error, ToolError::DefinitiveFailure(_)), "R1/{id}");
     }
     assert!(service.listed.lock().unwrap().is_empty());
     assert!(service.sent.lock().unwrap().is_empty());

@@ -298,9 +298,11 @@ mod tests {
         ) -> Result<Vec<awaken_ext_builtin_tools::WebSearchResult>, ToolError> {
             let header = credential
                 .and_then(awaken_credential::Credential::header)
-                .ok_or_else(|| ToolError::Execution("missing paid wire credential".into()))?;
+                .ok_or_else(|| {
+                    ToolError::DefinitiveFailure("missing paid wire credential".into())
+                })?;
             if header != ("X-Subscription-Token".into(), "paid-search-key".into()) {
-                return Err(ToolError::Execution("wrong paid material".into()));
+                return Err(ToolError::DefinitiveFailure("wrong paid material".into()));
             }
             Ok(vec![awaken_ext_builtin_tools::WebSearchResult {
                 title: request.query,

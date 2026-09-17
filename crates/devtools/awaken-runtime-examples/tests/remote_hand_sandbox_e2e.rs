@@ -124,7 +124,7 @@ impl RawTool for SandboxEcho {
             command: Vec::new(),
             deny_tool_egress: false,
         };
-        let run = |e: String| ToolError::Execution(e);
+        let run = |e: String| ToolError::DefinitiveFailure(e);
         // One fence/authority pair drives both halves of this sandbox's life.
         // Creating through the fenced edge gives the sandbox a live realization,
         // so its reclaim must go back through the same effect — see the disposal

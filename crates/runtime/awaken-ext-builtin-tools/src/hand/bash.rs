@@ -84,7 +84,7 @@ impl Tool for BashTool {
         if exit_code == 0 {
             Ok(output)
         } else {
-            Err(ToolError::Execution(if output.is_empty() {
+            Err(ToolError::DefinitiveFailure(if output.is_empty() {
                 format!("exit {exit_code}")
             } else {
                 format!("exit {exit_code}\n{output}")
@@ -131,16 +131,16 @@ impl BashSession {
         configure_process_group(&mut command);
         let mut child = command
             .spawn()
-            .map_err(|error| ToolError::Execution(format!("spawn /bin/bash: {error}")))?;
+            .map_err(|error| ToolError::DefinitiveFailure(format!("spawn /bin/bash: {error}")))?;
         let process_group = ProcessGroupGuard::new(child.id());
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| ToolError::Execution("capture /bin/bash stdin".into()))?;
+            .ok_or_else(|| ToolError::DefinitiveFailure("capture /bin/bash stdin".into()))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| ToolError::Execution("capture /bin/bash stdout".into()))?;
+            .ok_or_else(|| ToolError::DefinitiveFailure("capture /bin/bash stdout".into()))?;
         let stderr = child.stderr.take();
         Ok(Self {
             child,
@@ -165,11 +165,11 @@ impl BashSession {
             self.stdin
                 .write_all(wrapped.as_bytes())
                 .await
-                .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
+                .map_err(|error| ToolError::DefinitiveFailure(format!("bash: {error}")))?;
             self.stdin
                 .flush()
                 .await
-                .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
+                .map_err(|error| ToolError::DefinitiveFailure(format!("bash: {error}")))?;
             let mut collected = Vec::new();
             let mut truncated = false;
             let mut stdout_chunk = [0_u8; 8192];
@@ -182,12 +182,12 @@ impl BashSession {
                     // and use the actual child status; never replay the command.
                     invalidated.store(true, Ordering::SeqCst);
                     let status = self.child.wait().await.map_err(|error| {
-                        ToolError::Execution(format!("bash: wait for shell: {error}"))
+                        ToolError::DefinitiveFailure(format!("bash: wait for shell: {error}"))
                     })?;
                     let output = render_bash_output(&collected, truncated);
                     return match status.code() {
                         Some(code) => Ok((output, code)),
-                        None => Err(ToolError::Execution(format!(
+                        None => Err(ToolError::DefinitiveFailure(format!(
                             "bash: bash session terminated by signal\n{output}"
                         ))),
                     };
@@ -207,7 +207,7 @@ impl BashSession {
                         .await
                         .map(|read| (read, &stdout_chunk[..read], true))
                 }
-                .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
+                .map_err(|error| ToolError::DefinitiveFailure(format!("bash: {error}")))?;
                 if read == 0 {
                     if from_stdout {
                         stdout_open = false;
@@ -238,7 +238,7 @@ impl BashSession {
             }
             Err(_) => {
                 invalidated.store(true, Ordering::SeqCst);
-                Err(ToolError::Execution(format!(
+                Err(ToolError::DefinitiveFailure(format!(
                     "bash: bash command timed out after {timeout_ms}ms"
                 )))
             }

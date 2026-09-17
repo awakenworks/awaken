@@ -42,7 +42,7 @@ impl ToolOutputSpiller for SandboxToolOutputSpiller {
             .write_workspace_file(&logical_path, content.as_bytes())
             .await
             .map_err(|error| {
-                ToolError::Execution(format!(
+                ToolError::DefinitiveFailure(format!(
                     "write oversized tool output `{logical_path}`: {error}"
                 ))
             })?;

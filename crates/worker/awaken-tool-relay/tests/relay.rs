@@ -260,7 +260,7 @@ async fn unknown_tool_reads_identically_to_the_local_path() {
         .await
         .expect_err("unknown tool is an error");
 
-    // Same display as the in-process `ToolError::Unknown`.
+    // Same display as the in-process `ToolError::UnknownTool`.
     assert_eq!(err.to_string(), "unknown tool: nope");
     drop(executor);
     let _ = hand.await;
@@ -782,7 +782,7 @@ impl RawTool for FailingTool {
         "fail"
     }
     async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
-        Err(ToolError::Execution("boom".to_string()))
+        Err(ToolError::DefinitiveFailure("boom".to_string()))
     }
 }
 
@@ -1085,7 +1085,7 @@ async fn durable_hand_dispatch_without_a_runtime_operation_token_is_non_retryabl
         .expect_err("durable effects require Runtime-owned identity");
     assert!(matches!(
         error,
-        ToolError::Execution(ref message)
+        ToolError::DefinitiveFailure(ref message)
             if message.contains("configuration rejected dispatch")
                 && message.contains("Runtime-owned tool operation token")
     ));
@@ -1129,7 +1129,7 @@ async fn a_re_drive_of_a_failed_execution_returns_the_cached_error_without_re_ru
         }
         async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
             self.runs.fetch_add(1, Ordering::SeqCst);
-            Err(ToolError::Execution("boom".to_string()))
+            Err(ToolError::DefinitiveFailure("boom".to_string()))
         }
     }
     let runs = Arc::new(AtomicU32::new(0));

@@ -80,9 +80,11 @@ impl WebSearchProvider for DuckDuckGoProvider {
                 .query("no_html", "1")
                 .query("no_redirect", "1")
                 .call()
-                .map_err(|err| ToolError::Execution(format!("DuckDuckGo search: {err}")))?
+                .map_err(|err| ToolError::DefinitiveFailure(format!("DuckDuckGo search: {err}")))?
                 .into_json()
-                .map_err(|err| ToolError::Execution(format!("parse DuckDuckGo search: {err}")))?;
+                .map_err(|err| {
+                    ToolError::DefinitiveFailure(format!("parse DuckDuckGo search: {err}"))
+                })?;
             Ok(normalize_results(response, request.count))
         })
         .await

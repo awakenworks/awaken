@@ -81,7 +81,7 @@ fn map_hand_result(tool_id: &str, result: HandResult) -> Result<ToolOutput, Tool
         {
             // This is a local composition error, not evidence that replacing
             // the Hand or its channel can make the invocation succeed.
-            Err(ToolError::Execution(format!(
+            Err(ToolError::DefinitiveFailure(format!(
                 "tool executor configuration rejected dispatch: {}",
                 error.message
             )))
@@ -89,8 +89,8 @@ fn map_hand_result(tool_id: &str, result: HandResult) -> Result<ToolOutput, Tool
         (HandResultDisposition::Failure, HandResult::Err { error }) => match error.kind {
             // Preserve the in-process display so a remote unknown-tool reads
             // identically to a local one.
-            HandErrorKind::UnknownTool => Err(ToolError::Unknown(tool_id.to_string())),
-            _ => Err(ToolError::Execution(error.message)),
+            HandErrorKind::UnknownTool => Err(ToolError::UnknownTool(tool_id.to_string())),
+            _ => Err(ToolError::DefinitiveFailure(error.message)),
         },
         (HandResultDisposition::Indeterminate, HandResult::Indeterminate) => {
             // The same wire outcome covers lost replies and unresolved ledger

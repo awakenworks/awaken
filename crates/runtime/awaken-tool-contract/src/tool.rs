@@ -189,7 +189,7 @@ pub fn current_tool_execution_facts(call: &ToolCall) -> Result<ToolExecutionFact
     TOOL_EXECUTION_FACTS
         .try_with(|resolver| resolver.resolve(call))
         .unwrap_or_else(|_| {
-            Err(ToolError::Execution(
+            Err(ToolError::DefinitiveFailure(
                 "tool execution catalog is unavailable outside Runtime".into(),
             ))
         })
@@ -434,7 +434,7 @@ impl ToolTaskHandle {
     /// wait boundary.
     pub fn validate(&self) -> Result<(), ToolError> {
         self.validate_coordinates()
-            .map_err(|message| ToolError::Execution(message.into()))
+            .map_err(|message| ToolError::DefinitiveFailure(message.into()))
     }
 
     // One shape authority; each caller allocates only its final error instead
@@ -552,16 +552,30 @@ impl ToolOutput {
     }
 }
 
+/// Why a tool call produced no [`ToolOutput`].
+///
+/// The variants carry exactly the distinctions an owner acts on: resolution
+/// (`UnknownTool`, `AmbiguousTool`), model input (`InvalidArguments`), whether
+/// the effect may be retried, must terminate the attempt or is indeterminate,
+/// and otherwise a definitive failure. The Runtime renders every variant it
+/// does not own as a model-visible error result through `Display`, and a
+/// remote Hand carries that same text, so each display string is part of the
+/// observable result.
 #[derive(Debug, Error)]
 pub enum ToolError {
+    /// No executable tool is registered under this tool id.
     #[error("unknown tool: {0}")]
-    Unknown(String),
+    UnknownTool(String),
+    /// More than one implementation claims this tool id, so resolution fails
+    /// closed instead of depending on registration order.
+    #[error("tool execution failed: tool id `{0}` is ambiguous")]
+    AmbiguousTool(String),
     #[error("invalid tool arguments: {0}")]
     InvalidArguments(String),
     /// The executor proved that the request never crossed its dispatch boundary.
     /// An owner may reacquire that executor and retry the same call without
     /// replaying an external effect. Definitive failures after dispatch remain
-    /// `Execution`; an unknown effect outcome must be `Indeterminate`.
+    /// `DefinitiveFailure`; an unknown effect outcome must be `Indeterminate`.
     #[error("tool executor unavailable before dispatch: {0}")]
     UnavailableBeforeDispatch(String),
     /// The external effect crossed its dispatch boundary, but a required
@@ -576,11 +590,13 @@ pub enum ToolError {
     #[error("tool execution indeterminate: {0}")]
     Indeterminate(String),
     /// A definitive returned failure, including non-retryable local executor
-    /// configuration rejection. An owner must not replace an executor merely
-    /// because this variant was returned. An adapter that cannot establish the
-    /// outcome or termination after dispatch must return `Indeterminate` instead.
+    /// configuration rejection. The message is the tool's own account of the
+    /// failure and is what the model reads; nothing classifies it further. An
+    /// owner must not replace an executor merely because this variant was
+    /// returned. An adapter that cannot establish the outcome or termination
+    /// after dispatch must return `Indeterminate` instead.
     #[error("tool execution failed: {0}")]
-    Execution(String),
+    DefinitiveFailure(String),
 }
 
 /// Materializes a model-visible tool result when the host needs to move a large
@@ -931,7 +947,7 @@ impl ToolTaskContinuation {
             Self::Poll => "polling",
             Self::Cancel => "cancellation",
         };
-        ToolError::Execution(format!(
+        ToolError::DefinitiveFailure(format!(
             "{subject} does not support durable task {operation}"
         ))
     }
@@ -966,7 +982,7 @@ pub async fn invoke_raw_tool(
         Some(token) => {
             tokio::select! {
                 result = tool.invoke(call) => result,
-                _ = token.cancelled() => Err(ToolError::Execution("tool invocation cancelled".into())),
+                _ = token.cancelled() => Err(ToolError::DefinitiveFailure("tool invocation cancelled".into())),
             }
         }
         None => tool.invoke(call).await,
@@ -1037,11 +1053,12 @@ pub fn parse_tool_args_or_error_output<A: serde::de::DeserializeOwned>(
 
 /// Render typed tool output using the one model-visible representation rule.
 pub fn render_tool_output<O: Serialize>(output: &O) -> Result<String, ToolError> {
-    match serde_json::to_value(output).map_err(|error| ToolError::Execution(error.to_string()))? {
+    match serde_json::to_value(output)
+        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
+    {
         serde_json::Value::String(text) => Ok(text),
-        other => {
-            serde_json::to_string(&other).map_err(|error| ToolError::Execution(error.to_string()))
-        }
+        other => serde_json::to_string(&other)
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string())),
     }
 }
 
@@ -1181,11 +1198,9 @@ impl RawToolRegistry {
 
     fn resolution_error(&self, tool_id: &str) -> ToolError {
         match self.tools.get(tool_id) {
-            Some(RawToolSlot::Ambiguous) => {
-                ToolError::Execution(format!("tool id `{tool_id}` is ambiguous"))
-            }
+            Some(RawToolSlot::Ambiguous) => ToolError::AmbiguousTool(tool_id.to_string()),
             Some(RawToolSlot::Unique(_)) => unreachable!("unique tools resolve before errors"),
-            None => ToolError::Unknown(tool_id.to_string()),
+            None => ToolError::UnknownTool(tool_id.to_string()),
         }
     }
 }

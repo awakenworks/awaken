@@ -90,13 +90,19 @@ impl Tool for ListAgentsTool {
 
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, ToolError> {
         let context = current_tool_operation_context().ok_or_else(|| {
-            ToolError::Execution("list_agents requires runtime-owned operation context".to_string())
+            ToolError::DefinitiveFailure(
+                "list_agents requires runtime-owned operation context".to_string(),
+            )
         })?;
         let source_run_id = context.run_id.ok_or_else(|| {
-            ToolError::Execution("list_agents requires a runtime-owned source run".to_string())
+            ToolError::DefinitiveFailure(
+                "list_agents requires a runtime-owned source run".to_string(),
+            )
         })?;
         let source_thread_id = context.thread_id.ok_or_else(|| {
-            ToolError::Execution("list_agents requires a runtime-owned source thread".to_string())
+            ToolError::DefinitiveFailure(
+                "list_agents requires a runtime-owned source thread".to_string(),
+            )
         })?;
         self.0
             .list_agents(AgentListRequest {
@@ -176,18 +182,22 @@ impl Tool for SendMessageTool {
             ));
         }
         let context = current_tool_operation_context().ok_or_else(|| {
-            ToolError::Execution(
+            ToolError::DefinitiveFailure(
                 "send_message requires runtime-owned operation context".to_string(),
             )
         })?;
         let source_run_id = context.run_id.ok_or_else(|| {
-            ToolError::Execution("send_message requires a runtime-owned source run".to_string())
+            ToolError::DefinitiveFailure(
+                "send_message requires a runtime-owned source run".to_string(),
+            )
         })?;
         let source_thread_id = context.thread_id.ok_or_else(|| {
-            ToolError::Execution("send_message requires a runtime-owned source thread".to_string())
+            ToolError::DefinitiveFailure(
+                "send_message requires a runtime-owned source thread".to_string(),
+            )
         })?;
         let source_call_id = context.call_id.ok_or_else(|| {
-            ToolError::Execution(
+            ToolError::DefinitiveFailure(
                 "send_message requires a runtime-owned tool call identity".to_string(),
             )
         })?;

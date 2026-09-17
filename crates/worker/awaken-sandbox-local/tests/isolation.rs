@@ -187,7 +187,7 @@ async fn deny_egress_blocks_bash_network_but_unrestricted_allows_it() {
 }
 
 /// Cause/effect design: after one successful state mutation, a non-zero command
-/// must produce the authoritative typed-tool `Execution` error while preserving
+/// must produce the authoritative typed-tool `DefinitiveFailure` error while preserving
 /// the same shell process; the following successful command must observe both
 /// the working directory and exported variable.
 #[tokio::test]
@@ -216,7 +216,7 @@ async fn deny_egress_bash_preserves_state_across_success_and_failure() {
 
     let failed = invoke(&tools, "bash", serde_json::json!({ "command": "false" })).await;
     assert!(
-        matches!(failed, Err(ToolError::Execution(ref detail)) if detail == "exit 1"),
+        matches!(failed, Err(ToolError::DefinitiveFailure(ref detail)) if detail == "exit 1"),
         "a non-zero command must use the typed-tool execution error: {failed:?}"
     );
 

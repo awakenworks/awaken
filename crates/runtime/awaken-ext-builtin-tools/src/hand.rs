@@ -141,7 +141,7 @@ impl FileContext {
 
     fn ensure_workdir(&self) -> Result<(), ToolError> {
         std::fs::create_dir_all(&self.0.workdir)
-            .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
+            .map_err(|error| ToolError::DefinitiveFailure(format!("workdir: {error}")))
     }
 
     fn projection_for(&self, input: &Path) -> Option<&(PathBuf, PathBuf)> {
@@ -181,7 +181,9 @@ impl FileContext {
             .into_iter()
             .filter(|root| path_is_within(root, &resolved))
             .max_by_key(|root| root.components().count())
-            .ok_or_else(|| ToolError::Execution(format!("path {input:?} escapes workdir")))?;
+            .ok_or_else(|| {
+                ToolError::DefinitiveFailure(format!("path {input:?} escapes workdir"))
+            })?;
         let relative = resolved
             .strip_prefix(&root)
             .expect("selected root contains the resolved path")
@@ -251,7 +253,7 @@ impl FileContext {
             .into_iter()
             .filter(|root| path_is_within(root, &pattern))
             .max_by_key(|root| root.components().count())
-            .ok_or_else(|| ToolError::Execution("glob: pattern escapes workdir".into()))?;
+            .ok_or_else(|| ToolError::DefinitiveFailure("glob: pattern escapes workdir".into()))?;
         let relative = pattern
             .strip_prefix(&logical_root)
             .expect("selected glob root contains its pattern")
@@ -331,7 +333,7 @@ impl Deref for ConfinedPath {
 fn canonicalize_or_absolute(path: &Path) -> Result<PathBuf, ToolError> {
     let absolute = lexical_absolute(path)?;
     canonicalize_with_missing(&absolute)
-        .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
+        .map_err(|error| ToolError::DefinitiveFailure(format!("workdir: {error}")))
 }
 
 fn lexical_absolute(path: &Path) -> Result<PathBuf, ToolError> {
@@ -340,7 +342,7 @@ fn lexical_absolute(path: &Path) -> Result<PathBuf, ToolError> {
     } else {
         std::env::current_dir()
             .map(|cwd| lexical_normalize(&cwd.join(path)))
-            .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
+            .map_err(|error| ToolError::DefinitiveFailure(format!("workdir: {error}")))
     }
 }
 
@@ -427,7 +429,7 @@ fn file_error(operation: &str, input: &str, error: &std::io::Error) -> ToolError
         _ if error.raw_os_error() == Some(40) => "too many levels of symbolic links",
         _ => "i/o error",
     };
-    ToolError::Execution(format!("{operation}: {input}: {message}"))
+    ToolError::DefinitiveFailure(format!("{operation}: {input}: {message}"))
 }
 
 fn regular_file(
@@ -440,7 +442,7 @@ fn regular_file(
         .metadata()
         .map_err(|error| file_error(operation, input, &error))?;
     if !metadata.is_file() {
-        return Err(ToolError::Execution(format!(
+        return Err(ToolError::DefinitiveFailure(format!(
             "{operation}: {input} is not a regular file"
         )));
     }
@@ -452,7 +454,7 @@ fn regular_file(
         } else {
             "Use bash (sed/awk) to edit a large file."
         };
-        return Err(ToolError::Execution(format!(
+        return Err(ToolError::DefinitiveFailure(format!(
             "{operation}: {input} is {} bytes, exceeds {limit}-byte limit. {advice}",
             metadata.len()
         )));
@@ -577,7 +579,7 @@ impl Tool for GlobTool {
             .split(['/', '\\'])
             .any(|component| component == "..")
         {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "glob: \"..\" is not permitted in the pattern".into(),
             ));
         }
@@ -1159,7 +1161,7 @@ impl Tool for EditTool {
             .map_err(|error| file_error("edit", &args.path, &error))?;
         let matches = content.matches(&args.old).count();
         match matches {
-            0 => Err(ToolError::Execution(format!(
+            0 => Err(ToolError::DefinitiveFailure(format!(
                 "edit: old_string not found in {}",
                 args.path
             ))),
@@ -1181,7 +1183,7 @@ impl Tool for EditTool {
                     path.logical_absolute.display()
                 ))
             }
-            n => Err(ToolError::Execution(format!(
+            n => Err(ToolError::DefinitiveFailure(format!(
                 "edit: old_string appears {n} times in {} (must be unique)",
                 args.path,
             ))),

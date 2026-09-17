@@ -39,9 +39,9 @@ fn apply_http_credential(
     request: ureq::Request,
     credential: &Credential,
 ) -> Result<ureq::Request, ToolError> {
-    let (name, value) = credential
-        .header()
-        .ok_or_else(|| ToolError::Execution("outbound HTTP credential is missing".into()))?;
+    let (name, value) = credential.header().ok_or_else(|| {
+        ToolError::DefinitiveFailure("outbound HTTP credential is missing".into())
+    })?;
     Ok(request.set(&name, &value))
 }
 
@@ -77,9 +77,9 @@ async fn execute_brave_search(
         }
         let response: BraveResponse = call
             .call()
-            .map_err(|err| ToolError::Execution(format!("Brave search: {err}")))?
+            .map_err(|err| ToolError::DefinitiveFailure(format!("Brave search: {err}")))?
             .into_json()
-            .map_err(|err| ToolError::Execution(format!("parse Brave search: {err}")))?;
+            .map_err(|err| ToolError::DefinitiveFailure(format!("parse Brave search: {err}")))?;
         Ok(response
             .web
             .unwrap_or_default()
@@ -123,7 +123,7 @@ impl WebSearchProvider for BraveSearchProvider {
         credential: Option<&Credential>,
     ) -> Result<Vec<WebSearchResult>, ToolError> {
         let credential = credential
-            .ok_or_else(|| ToolError::Execution("Brave Search API key is missing".into()))?
+            .ok_or_else(|| ToolError::DefinitiveFailure("Brave Search API key is missing".into()))?
             .clone();
         execute_brave_search(
             "https://api.search.brave.com/res/v1/web/search".into(),

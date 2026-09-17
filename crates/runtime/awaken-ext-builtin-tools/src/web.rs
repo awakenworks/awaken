@@ -748,8 +748,9 @@ impl Tool for WebSearchTool {
                 Err(error) => return Err(error),
             }
         }
-        Err(last_unavailable
-            .unwrap_or_else(|| ToolError::Execution("web-search route plan has no targets".into())))
+        Err(last_unavailable.unwrap_or_else(|| {
+            ToolError::DefinitiveFailure("web-search route plan has no targets".into())
+        }))
     }
 }
 
@@ -764,16 +765,20 @@ async fn resolve_credential(
         WebSearchCredentialRequirement::None => Ok(None),
         WebSearchCredentialRequirement::Exact(_) => {
             let access = access.ok_or_else(|| {
-                ToolError::Execution(format!("{tool} published credential access is missing"))
+                ToolError::DefinitiveFailure(format!(
+                    "{tool} published credential access is missing"
+                ))
             })?;
             resolver
                 .ok_or_else(|| {
-                    ToolError::Execution(format!("{tool} credential resolver is unavailable"))
+                    ToolError::DefinitiveFailure(format!(
+                        "{tool} credential resolver is unavailable"
+                    ))
                 })?
                 .resolve(access, provider_id)
                 .await
                 .map(Some)
-                .map_err(ToolError::Execution)
+                .map_err(ToolError::DefinitiveFailure)
         }
     }
 }
@@ -1048,7 +1053,7 @@ impl Tool for ProviderServerWebSearchTool {
     const DESCRIPTION: &'static str = "Search the web through the selected model provider";
 
     async fn call(&self, _args: WebSearchArgs) -> Result<String, ToolError> {
-        Err(ToolError::Execution(
+        Err(ToolError::DefinitiveFailure(
             "provider-server WebSearch reached host execution".into(),
         ))
     }
@@ -1348,8 +1353,9 @@ impl Tool for RoutedWebFetchTool {
                 Err(error) => return Err(error),
             }
         }
-        Err(last_unavailable
-            .unwrap_or_else(|| ToolError::Execution("web-fetch route plan has no targets".into())))
+        Err(last_unavailable.unwrap_or_else(|| {
+            ToolError::DefinitiveFailure("web-fetch route plan has no targets".into())
+        }))
     }
 }
 
