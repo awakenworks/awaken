@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_environment_realization_contract::{
+use awaken_executable_environment_contract::{
     EnvironmentImageBuildError, EnvironmentImageBuildRecord, EnvironmentImageBuildStore,
 };
 use sqlx::postgres::PgPool;
@@ -210,7 +210,7 @@ mod tests {
         async fn concurrent_claims(
             build_store: Arc<dyn EnvironmentImageBuildStore>,
             now_ms: u64,
-        ) -> Vec<awaken_environment_realization_contract::EnvironmentImageBuildClaim> {
+        ) -> Vec<awaken_executable_environment_contract::EnvironmentImageBuildClaim> {
             const CLAIMERS: usize = 16;
             let barrier = Arc::new(Barrier::new(CLAIMERS));
             let mut tasks = Vec::with_capacity(CLAIMERS);
@@ -264,7 +264,7 @@ mod tests {
         assert!(
             matches!(
                 reopened.get(&demand.build_key).await.expect("P5 read").expect("P5 row").state,
-                awaken_environment_realization_contract::EnvironmentImageBuildState::Ready {
+                awaken_executable_environment_contract::EnvironmentImageBuildState::Ready {
                     ref image,
                     attempt: 2,
                     ..

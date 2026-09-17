@@ -174,7 +174,6 @@ tokio = { workspace = true, features = ["test-util"] }
 awaken-credential.workspace = true
 awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-environment-image-build = { workspace = true, features = ["test-support"] }
-awaken-environment-realization-contract.workspace = true
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-admin-config-api = { workspace = true, features = ["test-support"] }
 awaken-captured-content-store = { workspace = true, features = ["test-support"] }

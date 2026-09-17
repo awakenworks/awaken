@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use awaken_environment_realization_contract::EnvironmentImageBuildError;
+use awaken_executable_environment_contract::EnvironmentImageBuildError;
 use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::{
     ManagedSessionRepository, McpAttachmentRealizer, PersistedSession, RunError,

@@ -12,7 +12,7 @@ authority = "environment-image"
 [dependencies]
 async-trait.workspace = true
 awaken-environment-contract.workspace = true
-awaken-environment-realization-contract.workspace = true
+awaken-executable-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-sandbox-container.workspace = true
 

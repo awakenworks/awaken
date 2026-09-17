@@ -12,7 +12,6 @@ authority = "environment-image"
 [dependencies]
 async-trait.workspace = true
 awaken-environment-contract.workspace = true
-awaken-environment-realization-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-sqlite-pool.workspace = true

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_environment_realization_contract::{
+use awaken_executable_environment_contract::{
     EnvironmentImageBuildDemand, EnvironmentImageBuildError, EnvironmentImageBuildState,
     EnvironmentImageBuildStore, EnvironmentImageBuilder, EnvironmentImageReadiness,
 };
