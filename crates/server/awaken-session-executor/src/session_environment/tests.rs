@@ -7,10 +7,12 @@ use awaken_provisioning_contract::{
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
     SandboxControlServiceKind, SandboxControlServicePublisher,
 };
+use awaken_sandbox_local::FilesystemHandleCodec as _;
 use awaken_sandbox_local::NamespaceProvider;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -577,8 +579,8 @@ fn current_fake_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle {
         .collect::<Vec<_>>();
     pc::SandboxHandle::container_v2(
         "session-container",
-        pc::ContainerSandboxHandleV2 {
-            previous: pc::ContainerSandboxHandleV1 {
+        awaken_sandbox_container::ContainerSandboxHandleV2 {
+            previous: awaken_sandbox_container::ContainerSandboxHandleV1 {
                 container_id: "container-session-container".into(),
                 outputs_path: spec.outputs_path.clone(),
                 base_env: spec.env.clone(),
@@ -1084,7 +1086,7 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     #[cfg(target_os = "macos")]
     assert_eq!(environment.handle().provider_kind(), "seatbelt");
     #[cfg(not(target_os = "macos"))]
-    assert_eq!(environment.handle().provider_kind(), "bwrap");
+    assert_eq!(environment.handle().provider_kind(), "bubblewrap");
 
     let mut native_command = pc::Command::new([
         "/bin/sh",
@@ -3834,10 +3836,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
             .validate_closed_observation(
                 &handle,
                 &pc::SandboxObservation::DefinitivelyUnavailable {
-                    physical_incarnation: handle
-                        .filesystem_physical_incarnation()
-                        .unwrap()
-                        .map(str::to_owned),
+                    physical_incarnation: handle.filesystem_physical_incarnation().unwrap(),
                 },
             )
             .is_err(),

@@ -34,7 +34,7 @@ pub(crate) fn authorize_terminal_disposal(
             Some(realization_marker::RebuildSource {
                 fingerprint: evidence.fingerprint(),
                 effect_fence: evidence.effect_fence(),
-                physical_incarnation: evidence.physical_incarnation(),
+                physical_incarnation: evidence.physical_incarnation().to_owned(),
             }),
             None,
             effect_fence,

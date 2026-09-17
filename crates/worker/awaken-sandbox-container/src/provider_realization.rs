@@ -200,7 +200,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             spec,
             pc::SandboxHandle::container(
                 &spec.scope,
-                pc::ContainerSandboxHandleV1 {
+                crate::ContainerSandboxHandleV1 {
                     container_id: container_id.clone(),
                     outputs_path: spec.outputs_path.clone(),
                     base_env: spec.env.clone(),

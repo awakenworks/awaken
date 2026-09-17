@@ -7,6 +7,7 @@ use std::sync::Arc;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{
     ContainerEnvironment, ContainerProvider, ContainerRuntime, ContainerState, EnvironmentFile,

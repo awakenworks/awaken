@@ -33,6 +33,7 @@ mod cgroup;
 mod egress;
 mod exec_attempts;
 mod files;
+mod handle;
 mod live_inputs;
 mod packages;
 mod podman_plan;
@@ -58,6 +59,11 @@ use exec_attempts::ExecAttempts;
 pub(crate) use exec_attempts::exec_orphan_reaper_command;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) use exec_attempts::{exec_pid_file, exec_pid_file_prelude};
+pub use handle::{
+    ContainerContinuationHandle, ContainerHandleCodec, ContainerSandboxHandleV1,
+    ContainerSandboxHandleV2, HostBindRestorationHandle, KubernetesPodUid,
+    SandboxControlIncarnation,
+};
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 #[cfg(any(test, feature = "podman"))]
@@ -68,7 +74,7 @@ pub use provider_contract::{
     ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
     ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
-    ContainerRealizationNamespace, EnvironmentFile, PreparedContainer,
+    ContainerRealizationNamespace, DecodedContainerHandle, EnvironmentFile, PreparedContainer,
     PreparedContainerDisposition,
 };
 pub use resident_hand::ResidentHandConfig;
@@ -1196,7 +1202,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// Secret-free base requirements retained across attempt processes.
     base_env: Vec<pc::EnvVar>,
     control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
-    sandbox_control_incarnation: Option<pc::SandboxControlIncarnation>,
+    sandbox_control_incarnation: Option<crate::SandboxControlIncarnation>,
     control_publication: Arc<ContainerControlPublicationRegistry>,
     /// Resolution inputs retained so a capable runtime can project a later File
     /// generation through the same canonical BlobSource used at creation.
@@ -1206,7 +1212,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// gain a projector merely because the newly started runtime supports one.
     live_input_projection: bool,
     /// Runtime-owned incarnation evidence carried through Worker adoption.
-    runtime_handle: Option<pc::ContainerContinuationHandle>,
+    runtime_handle: Option<crate::ContainerContinuationHandle>,
     /// Exact independently governed paths retained only for checkpoint safety.
     continuation_excluded_paths: Vec<String>,
     /// Current V2 create-or-adopt evidence. `None` is retained only when a
@@ -1372,8 +1378,9 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
         access.admit()?;
         let handle = pc::Sandbox::handle(self);
         handle.container_physical_incarnation()?;
+        let decoded = DecodedContainerHandle::decode(&handle)?;
         let mut expectation =
-            ContainerObservationExpectation::from_handle_for_effect(&handle, access.effect_fence)?;
+            ContainerObservationExpectation::from_decoded_for_effect(&decoded, access.effect_fence);
         expectation.retained_attempt = self.retained_attempt.as_ref();
         let result = self
             .runtime
@@ -1617,7 +1624,7 @@ impl ContainerCleanupState {
         &self,
         runtime: &R,
         container_id: &str,
-        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        runtime_handle: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.remove_done.lock().await;
         if !*done {
@@ -1706,7 +1713,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         if let Some(handle) = &self.adopted_handle {
             return handle.clone();
         }
-        let previous = pc::ContainerSandboxHandleV1 {
+        let previous = crate::ContainerSandboxHandleV1 {
             container_id: self.container_id.clone(),
             outputs_path: self.outputs_path.clone(),
             base_env: self.base_env.clone(),
@@ -1720,7 +1727,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
             (Some(adoption_fingerprint), Some(realization_fingerprint)) => {
                 pc::SandboxHandle::container_v2(
                     &self.id,
-                    pc::ContainerSandboxHandleV2 {
+                    crate::ContainerSandboxHandleV2 {
                         previous,
                         adoption_fingerprint: adoption_fingerprint.clone(),
                         realization_fingerprint: realization_fingerprint.clone(),
@@ -1913,10 +1920,11 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         // and Hand I/O must not be repeated after that persistence boundary.
         let handle = self.handle();
         handle.container_physical_incarnation()?;
-        let mut expectation = ContainerObservationExpectation::from_handle_for_effect(
-            &handle,
+        let decoded = DecodedContainerHandle::decode(&handle)?;
+        let mut expectation = ContainerObservationExpectation::from_decoded_for_effect(
+            &decoded,
             authorization.effect_fence(),
-        )?;
+        );
         // The same retained participant ownership used for warm observation
         // remains available at physical disposal. Authorization and immutable
         // fingerprints still gate deletion; cold wrappers retain no proof.

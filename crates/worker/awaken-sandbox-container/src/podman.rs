@@ -1110,7 +1110,7 @@ impl ContainerRuntime for PodmanRuntime {
     async fn handle_extra(
         &self,
         container_id: &str,
-    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
+    ) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
         if self
             .inspect_restoration_identity_with_state(container_id)
             .await?
@@ -1123,10 +1123,14 @@ impl ContainerRuntime for PodmanRuntime {
         let staging_root = live_inputs
             .parent()
             .ok_or_else(|| backend("Podman live-input root has no staging parent"))?;
-        Ok(Some(pc::ContainerContinuationHandle::HostBindRestoration(
-            pc::HostBindRestorationHandle::for_restore(staging_root.to_string_lossy().into_owned())
+        Ok(Some(
+            crate::ContainerContinuationHandle::HostBindRestoration(
+                crate::HostBindRestorationHandle::for_restore(
+                    staging_root.to_string_lossy().into_owned(),
+                )
                 .map_err(|error| backend(error.to_string()))?,
-        )))
+            ),
+        ))
     }
 
     async fn observe(
@@ -1357,7 +1361,7 @@ impl ContainerRuntime for PodmanRuntime {
     async fn remove_exact_incarnation(
         &self,
         container_id: &str,
-        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        runtime_handle: Option<&crate::ContainerContinuationHandle>,
         authorization: &pc::SandboxDisposalAuthorization,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {

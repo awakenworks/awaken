@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::podman::PodmanRuntime;
 use awaken_sandbox_container::{
     ContainerPlan, ContainerProvider, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,

@@ -40,6 +40,7 @@ schema = ["dep:schemars"]
 test-support = []
 
 [dev-dependencies]
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 awaken-reliability-testkit.workspace = true
 # The work-queue port's in-memory impl is exercised by `#[tokio::test]`s.
 tokio = { workspace = true, features = ["rt", "macros"] }

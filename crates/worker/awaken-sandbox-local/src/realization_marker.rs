@@ -10,6 +10,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::FilesystemHandleCodec as _;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_fs::{DirectoryIdentity, PathEntry};
 use serde::{Deserialize, Serialize};
@@ -146,7 +147,7 @@ struct TerminalSourceRecord {
 pub(crate) struct RebuildSource<'a> {
     pub(crate) fingerprint: &'a pc::SandboxRealizationFingerprint,
     pub(crate) effect_fence: &'a pc::SandboxEffectFence,
-    pub(crate) physical_incarnation: &'a str,
+    pub(crate) physical_incarnation: String,
 }
 
 pub(crate) fn rebuild_source(
