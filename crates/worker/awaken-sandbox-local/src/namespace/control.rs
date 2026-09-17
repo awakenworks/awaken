@@ -2,12 +2,14 @@
 
 use super::*;
 use awaken_sandbox_control::{
-    PublishedSandboxControlService, SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlPublicationLease,
-    SandboxControlPublicationSlot, SandboxControlPublicationTask, SandboxControlPublishError,
+    PublishedSandboxControlService, SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlPublishError,
     SandboxControlService, SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 #[cfg(target_os = "linux")]
-use awaken_sandbox_control::{REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, serve_one};
+use awaken_sandbox_control_transport::{REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, serve_one};
+use awaken_sandbox_control_transport::{
+    SandboxControlPublicationLease, SandboxControlPublicationSlot, SandboxControlPublicationTask,
+};
 
 #[cfg(target_os = "linux")]
 const PRIVATE_CONTROL_HOST_PARENT: &str = ".awaken-control";
@@ -1001,7 +1003,7 @@ mod tests {
             let mut channel = tokio::net::UnixStream::connect(address.path())
                 .await
                 .unwrap();
-            awaken_sandbox_control::write_frame(
+            awaken_sandbox_control_transport::write_frame(
                 &mut channel,
                 &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
                     query: awaken_sandbox_control::RepositoryGitCredentialQuery {
@@ -1081,7 +1083,7 @@ mod tests {
             let mut channel = tokio::net::UnixStream::connect(address.path())
                 .await
                 .unwrap();
-            awaken_sandbox_control::write_frame(
+            awaken_sandbox_control_transport::write_frame(
                 &mut channel,
                 &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
                     query: awaken_sandbox_control::RepositoryGitCredentialQuery {
@@ -1095,7 +1097,7 @@ mod tests {
             .unwrap();
             assert!(
                 matches!(
-                    awaken_sandbox_control::read_frame::<
+                    awaken_sandbox_control_transport::read_frame::<
                         _,
                         awaken_sandbox_control::SandboxControlResponse,
                     >(&mut channel)

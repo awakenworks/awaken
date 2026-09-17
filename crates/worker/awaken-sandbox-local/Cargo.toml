@@ -24,6 +24,7 @@ awaken-local-process.workspace = true
 awaken-sandbox-fs.workspace = true
 awaken-agent-channel.workspace = true
 awaken-sandbox-control.workspace = true
+awaken-sandbox-control-transport.workspace = true
 # BLAKE3 content id for the mount pin (was awaken_file_store::content_id) — kept a
 # leaf dep so this worker-tier crate links no durable store (A-G17).
 blake3 = "1"

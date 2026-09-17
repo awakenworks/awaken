@@ -4926,7 +4926,7 @@ async fn take_control_peer(runtime: &FakeRuntime) -> tokio::io::DuplexStream {
 }
 
 async fn exchange_unavailable(peer: &mut tokio::io::DuplexStream) {
-    awaken_sandbox_control::write_frame(
+    awaken_sandbox_control_transport::write_frame(
         peer,
         &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
             query: awaken_sandbox_control::RepositoryGitCredentialQuery {
@@ -4939,9 +4939,10 @@ async fn exchange_unavailable(peer: &mut tokio::io::DuplexStream) {
     .await
     .unwrap();
     assert!(matches!(
-        awaken_sandbox_control::read_frame::<_, awaken_sandbox_control::SandboxControlResponse>(
-            peer
-        )
+        awaken_sandbox_control_transport::read_frame::<
+            _,
+            awaken_sandbox_control::SandboxControlResponse,
+        >(peer)
         .await
         .unwrap(),
         awaken_sandbox_control::SandboxControlResponse::Unavailable

@@ -6,9 +6,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::{SandboxControlService, SandboxControlServiceKind};
 use awaken_sandbox_control::{
-    CapabilityExpiresAtUnixMs, REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, RepositoryGitCredentialQuery,
-    SandboxControlRequest, SandboxControlResponse, SandboxControlSecret,
+    CapabilityExpiresAtUnixMs, RepositoryGitCredentialQuery, SandboxControlRequest,
+    SandboxControlResponse, SandboxControlSecret,
 };
+use awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
 
 const CREDENTIAL_OPERATION_TTL: Duration = Duration::from_secs(120);
 
