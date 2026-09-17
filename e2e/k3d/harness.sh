@@ -526,7 +526,12 @@ k3d_create_cluster() {
     --eviction-threshold "$eviction" "${images[@]}" || return "$?"
   k3d_delete_cluster "$cluster" || return "$?"
   local args=(
-    cluster create "$cluster" --agents "$agents" --wait --timeout 180s
+    # Lifecycle decision table: C1 create succeeds -> the scenario cleanup owns
+    # normal teardown; C2 create fails + caller keeps failures -> retain the
+    # exact partial nodes for diagnostics; C3 create fails + caller cleans ->
+    # the same cleanup owner deletes every exact residue.  K3D auto-rollback
+    # would race C2/C3 and erase node logs before either policy can observe them.
+    cluster create "$cluster" --agents "$agents" --wait --timeout 180s --no-rollback
     --runtime-ulimit "nofile=65536:65536"
     # Repository scenarios install and import every component they exercise.
     # Disable the unused bundled controllers so an offline proof run cannot
@@ -1219,9 +1224,12 @@ print(json.dumps(value))
   # exact images; C2 bundled ingress/metrics are not scenario dependencies.
   # C1+C2 => E1 the canonical builder disables both controllers, preventing
   # unbounded external image-pull retries from perturbing timing-sensitive
-  # proofs. K3DH1 exercises the only cluster-construction owner.
+  # proofs. K3DH1 exercises the only cluster-construction owner. Lifecycle
+  # rule L1 success or failure leaves teardown/retention to the scenario's one
+  # installed cleanup owner; K3D must not run a competing automatic rollback.
   [[ "${k3d_calls[1]}" = *"--k3s-arg --disable=traefik@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--k3s-arg --disable=metrics-server@server:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--no-rollback"* ]]
 
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 0
