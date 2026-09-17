@@ -26,9 +26,15 @@ awaken_append_repo_tools
 source_dir="$cache_root/$kani_revision-${kani_patch_sha256:0:12}"
 qualification_sha256="$(sha256sum "$0" "$script_dir/fixtures/cbmc_recursive_alias.c" "$script_dir/fixtures/kani_wide_niche.rs" |
   cut -d ' ' -f 1 | sha256sum | cut -d ' ' -f 1)"
+# One receipt per qualification procedure. Worktrees at different revisions of
+# this script share one built package; a single receipt made each of them
+# withdraw the other's judgement on every run. Each procedure now owns its own
+# receipt beside the artifact, and none can invalidate another's.
+qualified_receipt="qualified-${qualification_sha256:0:12}.txt"
+qualified_pending="qualified-${qualification_sha256:0:12}.pending"
 # The cache directory names the *artifact*: exactly the three inputs that decide
 # the bytes of cbmc/goto-cc/goto-instrument. The judgement that those bytes are
-# trustworthy is a separate fact, recorded in `qualified.txt` inside the
+# trustworthy is a separate fact, recorded in `qualified-<procedure>.txt` inside the
 # directory and still bound to `qualification_sha256`. Folding the judgement
 # into the directory name made every edit of this script — a comment, a locale
 # fix — discard a built CBMC and demand a rebuild that needs cmake and ninja,
@@ -137,13 +143,14 @@ verify_backend() {
   verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch"
   local identity name selected
   identity="$(backend_identity)" || exit 1
-  if [ ! -f "$backend_root/qualified.txt" ]; then
-    echo "Kani backend was built but never qualified: $backend_root" >&2
+  if [ ! -f "$backend_root/$qualified_receipt" ]; then
+    echo "Kani backend was never qualified by this procedure: $backend_root/$qualified_receipt" >&2
     echo "  run scripts/ci/bootstrap_kani.sh to re-run the qualification fixtures" >&2
     exit 1
   fi
-  if [ "$(cat "$backend_root/qualified.txt")" != "$identity" ]; then
+  if [ "$(cat "$backend_root/$qualified_receipt")" != "$identity" ]; then
     echo "Kani backend differs from its qualified cache: $backend_root" >&2
+    echo "  run scripts/ci/bootstrap_kani.sh to re-run the qualification fixtures" >&2
     exit 1
   fi
   for name in cbmc goto-cc goto-instrument; do
@@ -178,6 +185,12 @@ if [ "${1:-}" = "--build-identity" ] && [ "$#" -eq 1 ]; then
   # recorded file instead of guessed at. Claims nothing about qualification.
   build_identity
   exit $?
+elif [ "${1:-}" = "--solver-tools" ] && [ "$#" -eq 1 ]; then
+  # Read-only: the released Kani bundle ships the external SAT solvers (kissat)
+  # that the source-built driver execs by name. It claims nothing about
+  # qualification; a caller only appends it to PATH.
+  printf '%s\n' "$HOME/.kani/kani-$kani_backend_version/bin"
+  exit 0
 elif [ "${1:-}" = "--paths" ] && [ "$#" -eq 1 ]; then
   # Selection is read-only and does not claim qualification. The runner invokes
   # --verify-source before any proof, using these frozen physical directories.
@@ -194,7 +207,7 @@ elif [ "${1:-}" = "--verify-source" ] && [ "$#" -eq 2 ]; then
   backend_identity
   exit 0
 elif [ "$#" -ne 0 ]; then
-  echo "usage: bootstrap_kani.sh [--build-identity | --paths | --verify-source PATH]" >&2
+  echo "usage: bootstrap_kani.sh [--build-identity | --solver-tools | --paths | --verify-source PATH]" >&2
   exit 1
 fi
 
@@ -208,16 +221,16 @@ fi
 # cmake the moment this script was edited.
 if [ -n "${AWAKEN_KANI_BACKEND_DIR:-}" ]; then
   verify_backend
-elif [ -f "$backend_root/qualified.txt" ] &&
-     [ "$(cat "$backend_root/qualified.txt")" = "$(backend_identity 2>/dev/null)" ]; then
+elif [ -f "$backend_root/$qualified_receipt" ] &&
+     [ "$(cat "$backend_root/$qualified_receipt")" = "$(backend_identity 2>/dev/null)" ]; then
   verify_backend
 else
-  if [ -f "$backend_root/qualified.txt" ]; then
-    echo "Re-qualifying: the CBMC package was judged by a different procedure" >&2
+  if [ -f "$backend_root/$qualified_receipt" ]; then
+    echo "Re-qualifying: the CBMC package no longer matches this procedure's receipt" >&2
     # Withdraw the claim before re-judging: between here and publication this
     # package is exactly as unqualified as a fresh one, and every rule below
     # treats it that way.
-    rm -f -- "$backend_root/qualified.txt"
+    rm -f -- "$backend_root/$qualified_receipt"
   fi
   # A symlink cannot redirect the only writable, unqualified build destination.
   if [ "$backend_root" != "$(readlink -m "$cache_root")/$backend_key" ]; then
@@ -230,7 +243,7 @@ else
   fi
   # These are exclusively owned unqualified outputs. Unlink destinations before
   # any writer opens them, preserving old targets of symlinks and hard links.
-  rm -f -- "$backend_root"/{qualified.pending,unit.log,z3.log,vla1.log,Pointer_Arithmetic1.log,Pointer_Arithmetic17.log,leaf.log,internal.log,leaf.goto,internal.goto}
+  rm -f -- "$backend_root/$qualified_pending" "$backend_root"/{unit.log,z3.log,vla1.log,Pointer_Arithmetic1.log,Pointer_Arithmetic17.log,leaf.log,internal.log,leaf.goto,internal.goto}
   # The artifact and the judgement are separate facts. When a build receipt is
   # already here and still describes exactly these bytes, this procedure has
   # nothing to rebuild: it re-runs the qualification fixtures below against the
@@ -315,7 +328,7 @@ else
     [ "$result" -eq 10 ]
     grep -q 'main.assertion.1.*FAILURE' "$backend_root/$order.log"
   done
-  backend_identity > "$backend_root/qualified.pending"
+  backend_identity > "$backend_root/$qualified_pending"
 fi
 
 if [ ! -d "$source_dir/.git" ]; then
@@ -353,12 +366,12 @@ if [ ! -f "$source_dir/target/awaken-kani-build.sha256" ]; then
   kani_build_digest > "$receipt_tmp"
   mv "$receipt_tmp" "$source_dir/target/awaken-kani-build.sha256"
 fi
-if [ ! -f "$backend_root/qualified.txt" ]; then
+if [ ! -f "$backend_root/$qualified_receipt" ]; then
   # The actual Kani fixture must also accept this exact GOTO/backend package.
   # Recheck bytes after execution, then publish; no failed fixture can bless it.
   identity="$(backend_identity)"
-  [ "$identity" = "$(cat "$backend_root/qualified.pending")" ]
-  mv -T "$backend_root/qualified.pending" "$backend_root/qualified.txt"
+  [ "$identity" = "$(cat "$backend_root/$qualified_pending")" ]
+  mv -T "$backend_root/$qualified_pending" "$backend_root/$qualified_receipt"
 fi
 ln -sfnT "$source_dir" "$cache_root/current"
 

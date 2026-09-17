@@ -98,6 +98,12 @@ export AWAKEN_KANI_BACKEND_DIR="$kani_backend_dir"
 if [ -x "$kani_source_dir/scripts/cargo-kani" ]; then
   export PATH="$kani_source_dir/scripts:$kani_backend_dir:$PATH"
 fi
+# The driver execs external solvers (kissat) by name; they ship in the released
+# bundle, which a non-login PATH does not carry. Appended, never prepended.
+kani_solver_tools="$(scripts/ci/bootstrap_kani.sh --solver-tools)"
+if [ -d "$kani_solver_tools" ] && [[ ":$PATH:" != *":$kani_solver_tools:"* ]]; then
+  export PATH="$PATH:$kani_solver_tools"
+fi
 
 rust_trace_dir="$formal_artifact_dir/rust-traces"
 rendered_trace_dir="$formal_artifact_dir/rendered-traces"
@@ -336,14 +342,36 @@ if command -v cargo-kani >/dev/null 2>&1; then
       fi
     fi
     # Kani does not report an absent solver as an absent tool: every check
-    # ends in ERROR and the batch reads "0 of N failed ... VERIFICATION FAILED",
-    # indistinguishable from a proof regression. Decide the solver before
-    # running, for explicit selections and profile-expanded ones alike.
-    if [[ " $* " == *" --solver z3 "* ]] && ! z3_is_pinned; then
-      echo "skipped Z3 harnesses of $package: install the pinned solver ($z3_version) on PATH (TLAPS bundles it)"
-      missing=1
-      return 0
-    fi
+    # ends in ERROR (z3) or `execvp <solver> failed` and the batch reads
+    # "0 of N failed ... VERIFICATION FAILED", indistinguishable from a proof
+    # regression. Decide every external solver before running, for explicit
+    # selections and profile-expanded ones alike.
+    local argument selecting=0
+    for argument in "$@"; do
+      if [ "$selecting" -eq 1 ]; then
+        selecting=0
+        case "$argument" in
+          # Compiled into CBMC; nothing to find.
+          cadical|minisat) ;;
+          z3)
+            if ! z3_is_pinned; then
+              echo "skipped Z3 harnesses of $package: install the pinned solver ($z3_version) on PATH (TLAPS bundles it)"
+              missing=1
+              return 0
+            fi
+            ;;
+          *)
+            if ! command -v "$argument" >/dev/null 2>&1; then
+              echo "skipped $argument harnesses of $package: the $argument solver is not on PATH (the released Kani bundle ships it: $kani_solver_tools)"
+              missing=1
+              return 0
+            fi
+            ;;
+        esac
+      elif [ "$argument" = "--solver" ]; then
+        selecting=1
+      fi
+    done
     # The driver's build-directory requirement is owned by
     # `awaken_configure_kani_driver_target`; scripts/ci/kani.sh applies the same
     # one for a person invoking a harness directly.
