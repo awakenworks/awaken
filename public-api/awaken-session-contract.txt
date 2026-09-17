@@ -2448,7 +2448,6 @@ pub const fn awaken_session_contract::classify_session_event_batch_admission(boo
 pub fn awaken_session_contract::coordinated_thread_failed(&awaken_agent_contract::agent::run::RunState) -> bool
 pub fn awaken_session_contract::coordinated_thread_id(&str, &awaken_agent_contract::agent::run::Id, &str) -> awaken_agent_contract::agent::thread::Id
 pub fn awaken_session_contract::decode_session_event_batch_operation(&str) -> core::option::Option<awaken_session_contract::SessionEventBatchOperation<'_>>
-pub async fn awaken_session_contract::drive_session_realization(&awaken_session_contract::SessionId, core::option::Option<awaken_agent_contract::agent::run::Id>, &dyn awaken_session_contract::SessionRealizationControl, &dyn awaken_session_contract::SessionProjectionSynchronizer, &dyn awaken_session_contract::McpAttachmentRealizer, awaken_session_contract::SessionRealizationDirective, awaken_runtime_contract::authority_lease::AuthorityProofStarted) -> core::result::Result<(), awaken_session_contract::SessionRealizationDriveError>
 pub fn awaken_session_contract::ensure_typed_mcp_toolset_policies(&mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, &[awaken_runtime_contract::agent_bindings::AgentMcpServerBinding], bool) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_contract::epoch_millis_to_rfc3339(u64) -> alloc::string::String
 pub fn awaken_session_contract::event_admission_closed() -> awaken_session_contract::RunError

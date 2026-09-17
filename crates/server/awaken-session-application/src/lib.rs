@@ -208,6 +208,7 @@ mod realization;
 mod resource_reconciliation;
 mod run_admission;
 mod runtime_commands;
+mod session_realization_driver;
 mod terminal_cleanup_driver;
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
@@ -226,6 +227,7 @@ pub use runtime_commands::{
     SessionRepositoryOwner, SessionRepositoryResourceInput, SessionRunExecutionObservation,
     SessionToolUseObservation,
 };
+pub use session_realization_driver::drive_session_realization;
 pub use terminal_cleanup_driver::{
     SessionTerminalCleanupDriveOutcome, drive_session_terminal_cleanup,
 };

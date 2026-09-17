@@ -201,7 +201,7 @@ pub use session_realization::{
     SessionRealizationProgress, SessionRealizationTarget, SessionRepositoryPublicationProjection,
     SessionResourceMaterializationIntent, SessionResourceMaterializationTarget,
     SessionTerminalCleanupAssignment, SessionTerminalCleanupPreparationAuthorization,
-    SessionTerminalCleanupWork, drive_session_realization, frozen_agent_publication_decision,
+    SessionTerminalCleanupWork, frozen_agent_publication_decision,
     frozen_sandbox_layout_publication_decision, legacy_agent_publication_decision,
     project_effective_agent_publication, realization_generation_authorizes,
     realization_lease_authorizes, realization_lease_generation_authorizes,

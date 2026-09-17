@@ -706,7 +706,13 @@ async fn preferred_user_drive_failure_retains_receipt_and_recovery_wake() {
     assert!(drive_error.is_some(), "E1 exact drive failure is reported");
     assert_eq!(accepted.events.len(), 1, "E1 exact receipt");
     assert!(
-        !repository.get(&SessionId::from(session_id)).await.unwrap().event_batches[0].events[0].processed,
+        !repository
+            .get(&SessionId::from(session_id))
+            .await
+            .unwrap()
+            .event_batches[0]
+            .events[0]
+            .processed,
         "E2"
     );
     tokio::time::timeout(
