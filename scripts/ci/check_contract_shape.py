@@ -2,7 +2,7 @@
 """Ratchet the shape of the contract layer so it can only get simpler.
 
 A crate whose Cargo metadata declares ``layer = "contract"`` is the published
-seam between bounded contexts (ADR-0059, ADR-0080). Five shapes make such a
+seam between bounded contexts (ADR-0059, ADR-0081). Five shapes make such a
 seam harder to consume and evolve, and every one of them predates this gate:
 
 1. **Graph** -- contract crates must form a DAG, and a crate's depth (longest
@@ -313,13 +313,13 @@ def measure(crates: dict[str, ContractCrate]) -> tuple[list[str], dict[str, Meas
 
 HOW_TO_FIX = {
     "depth": "depend on the lower contract that owns the vocabulary instead of one that re-exports it",
-    "production_lines": "split cohesive vocabulary into its own crate (ADR-0080 split-facade policy) "
+    "production_lines": "split cohesive vocabulary into its own crate (ADR-0081 split-facade policy) "
     "or move behaviour out of the contract",
     "backend_nouns": "move the backend-named type into its provider/adapter crate and keep a neutral "
     "name in the contract (ADR-0059 §1)",
     "catch_all_errors": "give the failure a typed variant the caller can classify instead of a message",
     "capability_defaults": "require the method, or express the optional capability as a supertrait "
-    "the capable implementations add (ADR-0080 capability ladder)",
+    "the capable implementations add (ADR-0081 capability ladder)",
 }
 
 
@@ -421,7 +421,7 @@ def render_baseline(
         crates[name] = entry
     document = {
         "$comment": (
-            "Contract-shape ratchet (scripts/ci/check_contract_shape.py, ADR-0080). Numbers may "
+            "Contract-shape ratchet (scripts/ci/check_contract_shape.py, ADR-0081). Numbers may "
             "only fall; raising one requires --write-baseline --reason, recorded in growth_reasons."
         ),
         "crates": crates,

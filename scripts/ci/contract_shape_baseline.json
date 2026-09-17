@@ -1,5 +1,5 @@
 {
-  "$comment": "Contract-shape ratchet (scripts/ci/check_contract_shape.py, ADR-0080). Numbers may only fall; raising one requires --write-baseline --reason, recorded in growth_reasons.",
+  "$comment": "Contract-shape ratchet (scripts/ci/check_contract_shape.py, ADR-0081). Numbers may only fall; raising one requires --write-baseline --reason, recorded in growth_reasons.",
   "crates": {
     "awaken-acp-contract": {
       "depth": 2

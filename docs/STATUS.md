@@ -215,6 +215,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0078-terminal-recovery-retains-the-existing-session-authority.md` | Implemented terminal Resource projection, terminal-only release, and bounded same-process Kubernetes physical join | Not required | n/a |
 | `adr/0079-one-tool-authorization-vocabulary-and-opaque-backend-configuration.md` | Implemented single authorization vocabulary, retired mode axis, fail-closed baseline, and opaque backend session configuration | Not required | n/a |
 | `adr/0080-full-gate-freshness-and-declared-tool-environment.md` | Implemented full-gate record and freshness policy, one declared gate-tool manifest, stage tool/disk prechecks, and the build-space reclamation rules | Not required | n/a |
+| `adr/0081-contract-layering-and-ratchet-guardrails.md` | Accepted contract layering; ratchet guardrails, deployment fact ownership, executable Environment contract merge, Hosted Runtime vocabulary placement and async Resource Registry ports implemented; guard-passing fences and typed sandbox errors land separately | Not required | n/a |
 
 ## Implementation Context
 
