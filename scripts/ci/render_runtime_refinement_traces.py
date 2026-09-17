@@ -310,8 +310,30 @@ def generation_identity(g: dict[str, Any]) -> tuple[str, int]:
     return (g["generation"]["attachment_id"], g["generation"]["version"])
 
 
+def generation_key(generation: dict[str, Any]) -> str:
+    """The model key of one complete generation: attachment, version AND digest.
+
+    Rust names a generation by the whole `McpGeneration` witness (its equality
+    includes the content digest) at the root and at every directive, call and
+    report. Dropping the digest from one side made keys that name the same
+    generation unequal; keeping it on both makes a stale digest a refinement
+    failure instead of an alias for the current version.
+    """
+    return json.dumps([generation["attachment_id"], generation["version"], generation["content_digest"]],
+        separators=(",", ":"))
+
+
+def root_generation_key(key: str) -> str:
+    """Decode a root attachment key (serialized `McpGeneration`) to its model key."""
+    path = "event.data.attachments.key"
+    try: generation = json.loads(key)
+    except json.JSONDecodeError: raise ValueError(f"observation schema violation at {path}") from None
+    validate_observation_schema(generation, MCP_GENERATION_SCHEMA, path)
+    return generation_key(generation)
+
+
 def project_generation(g: dict[str, Any]) -> dict[str, Any]:
-    return {"key": json.dumps(list(generation_identity(g)), separators=(",", ":")),
+    return {"key": generation_key(g["generation"]),
         "session": g["session_id"], "incarnation": g["runtime_incarnation"],
         "epoch": g["lease_epoch"], "expiry": g["lease_expires_at_unix_ms"]}
 
@@ -333,17 +355,20 @@ def project_realization_trace(events: list[dict[str, Any]]) -> list[dict[str, An
         data, point = event["data"], event["point"]
         if "attachments" in data:
             lease = data["lease"]
+            attachments = [dict(a, key=root_generation_key(a["key"])) for a in data["attachments"]]
+            if len({a["key"] for a in attachments}) != len(attachments):
+                raise ValueError("observation schema violation at event.data.attachments")
             state.update(revision=data["revision"], created=data["created"], updated=data["updated"],
                 owner=lease["owner"] if lease else "none", incarnation=lease["runtime_incarnation"] if lease else "none",
                 epoch=lease["epoch"] if lease else 0, expiry=lease["expires_at_unix_ms"] if lease else 0,
-                active=sorted(a["key"] for a in data["attachments"] if a["state"] == "active"),
-                acked=sorted(a["key"] for a in data["attachments"] if a["state"] == "active" and a["ack"]),
-                known=sorted(a["key"] for a in data["attachments"]),
-                pending=sorted(a["key"] for a in data["attachments"] if a["state"] in {"requested", "realizing"}),
-                retiring=sorted(a["key"] for a in data["attachments"] if a["state"] == "draining"),
+                active=sorted(a["key"] for a in attachments if a["state"] == "active"),
+                acked=sorted(a["key"] for a in attachments if a["state"] == "active" and a["ack"]),
+                known=sorted(a["key"] for a in attachments),
+                pending=sorted(a["key"] for a in attachments if a["state"] in {"requested", "realizing"}),
+                retiring=sorted(a["key"] for a in attachments if a["state"] == "draining"),
                 rootrefs=[dict(key=a["key"], session=event["session"], incarnation=a["claim"]["runtime_incarnation"],
                     epoch=a["claim"]["lease_epoch"], expiry=a["claim"]["lease_expires_at_unix_ms"])
-                    for a in data["attachments"] if a["claim"] is not None])
+                    for a in attachments if a["claim"] is not None])
         if not state: raise ValueError("realization trace must begin with an observed root")
         for field in (*effect_fields, *plan_fields): state.setdefault(field, [])
         state.setdefault("action", "none")
