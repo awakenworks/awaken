@@ -34,6 +34,7 @@ def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = No
                      "scripts/ci/fixtures/cbmc_recursive_alias.c", "scripts/ci/fixtures/kani_wide_niche.rs",
                      "scripts/ci/_deadline.sh", "scripts/ci/deadline.py",
                      "scripts/ci/_provider_environment.sh", "scripts/ci/check-reliability.sh",
+                     "scripts/ci/check_node_dependencies.py",
                      "rust-toolchain.toml"):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -153,7 +154,12 @@ class EvidenceTests(unittest.TestCase):
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
         # End at this conditional's own indentation, not the next package
         # batch: another solver selection can legally follow the closing fi.
-        selection = "  if command -v z3" + source.split("  if command -v z3", 1)[1].split("\n  fi\n", 1)[0] + "\n  fi\n"
+        # The real runner decides the solver for every batch, so execute it
+        # (and its pinned-version helper) around the one explicit Z3 batch.
+        runner = source[source.index("  run_kani() {"):source.index("  run_kani awaken-agent-contract")]
+        invocation = "  run_kani awaken-protocol-managed --solver z3" + source.split(
+            "  run_kani awaken-protocol-managed --solver z3", 1)[1].split("\n\n", 1)[0].split("\n  #", 1)[0] + "\n"
+        selection = runner + invocation
         strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
         version = begin_record(self.root, True, 100)["proof_toolchain"]["z3"]
         for installed, reported, version_exit, proof_exit, strict, expected in (
@@ -172,7 +178,8 @@ class EvidenceTests(unittest.TestCase):
                     tool.chmod(0o755)
                 calls = bindir / "calls"
                 script = f"set -euo pipefail\nmissing=0\nrequire_tools={strict}\nz3_version={shlex.quote(version)}\n"
-                script += "run_kani() { printf '%s\\n' \"$*\" > \"$CALLS\"; return \"$PROOF_EXIT\"; }\n"
+                script += "kani_jobs=1\nkani_batch_timeout_seconds=1\nawaken_configure_kani_driver_target() { :; }\n"
+                script += "run_with_deadline() { shift; printf '%s\\n' \"$*\" > \"$CALLS\"; return \"$PROOF_EXIT\"; }\n"
                 result = subprocess.run(["/bin/bash", "-c", script + selection + strict_check],
                                         env=dict(os.environ, PATH=str(bindir), CALLS=str(calls), PROOF_EXIT=str(proof_exit)),
                                         capture_output=True, text=True, timeout=10)
@@ -180,7 +187,7 @@ class EvidenceTests(unittest.TestCase):
                 invoked = installed and reported == version and version_exit == 0
                 self.assertEqual(calls.exists(), invoked)
                 if invoked:
-                    self.assertEqual(calls.read_text().strip(), "awaken-protocol-managed --solver z3 --harness memory_time_filter_compares_visible_milliseconds_without_merging_them")
+                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse -j 1 --solver z3 --harness memory_time_filter_compares_visible_milliseconds_without_merging_them")
                 if not installed:
                     self.assertIn("skipped Z3", result.stdout)
         passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)

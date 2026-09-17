@@ -26,6 +26,9 @@ if [ "${1:-}" = "--session-observations" ]; then
   }
   trap finish_session_evidence EXIT
   echo "Session evidence: $session_evidence_dir"
+  # The suite ends in an e2e TypeScript drill. Name an uninstalled e2e root
+  # before fourteen minutes of Rust tests, not as `Command "tsx" not found`.
+  python3 scripts/ci/check_node_dependencies.py
   {
   cargo test --locked --features awaken-store-sqlite/test-support \
     -p awaken-session-contract -p awaken-session-application \

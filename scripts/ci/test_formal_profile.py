@@ -5,9 +5,12 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import runpy
 import shlex
+import shutil
+import tempfile
 from pathlib import Path
 import subprocess
 import sys
@@ -454,16 +457,24 @@ class ProfileTests(unittest.TestCase):
                     for candidate_prefix in (prefix, prefix[:2] + prefix[4:]):
                         self.assertFalse(options.checked_loop_override(
                             candidate_package, candidate_prefix, legacy_tail, True), "P4")
-            shell = ("kani_jobs=1; kani_batch_timeout_seconds=600; CARGO_TARGET_DIR=/tmp/checked-profile-test\n"
+            # A Z3 profile runs only against the pinned solver; stand one in so
+            # this test observes argv, not the machine's solver installation.
+            pinned_z3 = re.search(r'readonly z3_version="([^"]+)"', gate).group(1)
+            solver_bin = Path(tempfile.mkdtemp())
+            self.addCleanup(shutil.rmtree, solver_bin, True)
+            (solver_bin / "z3").write_text(f"#!/bin/sh\necho '{pinned_z3}'\n")
+            (solver_bin / "z3").chmod(0o755)
+            shell = (f"z3_version='{pinned_z3}'; kani_jobs=1; kani_batch_timeout_seconds=600; CARGO_TARGET_DIR=/tmp/checked-profile-test\n"
                      "run_with_deadline() { printf '%s\\n' \"$@\"; }\n" + runner + '\nrun_kani "$@"')
+            solver_env = dict(os.environ, PATH=f"{solver_bin}{os.pathsep}{os.environ['PATH']}")
             good = subprocess.run(["bash", "-c", shell, "profile-test", package, *selected],
-                                  cwd=root, text=True, capture_output=True)
+                                  cwd=root, text=True, capture_output=True, env=solver_env)
             self.assertEqual(good.returncode, 0, good.stderr)
             self.assertEqual(good.stdout.splitlines()[9:], expanded)
             for label, candidate_package, candidate in invalid:
                 with self.subTest(profile=profile, runtime=label):
                     bad = subprocess.run(["bash", "-c", shell, "profile-test", candidate_package, *candidate],
-                                         cwd=root, text=True, capture_output=True)
+                                         cwd=root, text=True, capture_output=True, env=solver_env)
                     self.assertEqual(bad.returncode, 2, bad.stderr)
                     self.assertEqual(bad.stdout, "")
                     self.assertIn("formal Kani options:", bad.stderr)
