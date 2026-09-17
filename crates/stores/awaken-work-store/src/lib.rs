@@ -15,11 +15,10 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use awaken_agent_contract::RedactedString;
 use awaken_session_contract::work_queue::{
-    ClaimedWork, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionWorkLease,
-    SessionWorkReleaseAdmission, WorkItem, WorkMutationResult, WorkQueue, WorkQueueError,
-    WorkSessionAccess, session_work_release_admission,
+    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
+    SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkMutationResult,
+    WorkQueue, WorkQueueError, WorkSessionAccess, session_work_release_admission,
 };
 fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string())
@@ -50,7 +49,14 @@ pub use inmem::InMemoryWorkQueue;
 mod schema;
 use schema::*;
 mod session_access;
-pub(crate) use session_access::session_token_sha256;
+
+/// Distinct well-formed Session-access digests for queue fixtures. The queue
+/// treats the digest as opaque, so fixtures need no bearer or hash algorithm.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn test_session_access_digest(seed: u64) -> SessionAccessDigest {
+    SessionAccessDigest::from_hex(format!("{seed:064x}")).expect("fixture digest is hex")
+}
 
 /// SQLite persistence for the environment work queue. Ownership, epoch and expiry
 /// are durable because they are safety authority; only poller liveness is ephemeral.
@@ -202,7 +208,7 @@ impl WorkQueue for SqliteWorkQueue {
         let env_id = env_id.to_string();
         let lease_owner = lease_owner.to_string();
         self.with_connection(move |conn| {
-            Self::claim_inner(conn, &env_id, &lease_owner, now_ms, age_ms, false)
+            Self::claim_inner(conn, &env_id, &lease_owner, now_ms, age_ms, None)
                 .map(|claim| claim.map(|claim| claim.item))
         })
         .await
@@ -215,10 +221,12 @@ impl WorkQueue for SqliteWorkQueue {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        session_access: &SessionAccessDigest,
+    ) -> Result<Option<WorkClaim>, WorkQueueError> {
         self.book.record_poll(env_id, poller_id, now_ms);
         let env_id = env_id.to_string();
         let lease_owner = lease_owner.to_string();
+        let session_access = session_access.clone();
         self.with_connection(move |conn| {
             Self::claim_inner(
                 conn,
@@ -226,7 +234,7 @@ impl WorkQueue for SqliteWorkQueue {
                 &lease_owner,
                 now_ms,
                 reclaim_older_than_ms,
-                true,
+                Some(session_access),
             )
         })
         .await
@@ -234,10 +242,10 @@ impl WorkQueue for SqliteWorkQueue {
 
     async fn authenticate_session_access(
         &self,
-        presented: &RedactedString,
+        presented: &SessionAccessDigest,
         now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
-        let digest = session_token_sha256(presented);
+        let digest = presented.as_str().to_string();
         self.with_connection(move |conn| {
             conn.query_row(
                 "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
@@ -718,7 +726,7 @@ impl WorkQueue for PostgresWorkQueue {
         age_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         Ok(self
-            .claim_inner(env_id, lease_owner, poller_id, now_ms, age_ms, false)
+            .claim_inner(env_id, lease_owner, poller_id, now_ms, age_ms, None)
             .await?
             .map(|claim| claim.item))
     }
@@ -730,24 +738,25 @@ impl WorkQueue for PostgresWorkQueue {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        session_access: &SessionAccessDigest,
+    ) -> Result<Option<WorkClaim>, WorkQueueError> {
         self.claim_inner(
             env_id,
             lease_owner,
             poller_id,
             now_ms,
             reclaim_older_than_ms,
-            true,
+            Some(session_access.clone()),
         )
         .await
     }
 
     async fn authenticate_session_access(
         &self,
-        presented: &RedactedString,
+        presented: &SessionAccessDigest,
         now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
-        let digest = session_token_sha256(presented);
+        let digest = presented.as_str();
         let row = sqlx::query(
             "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
              FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
@@ -1513,32 +1522,43 @@ mod tests {
                 .await
                 .unwrap();
             let claimed = q
-                .claim_with_session_access("env", "owner-a", "poller", 0, None)
+                .claim_with_session_access(
+                    "env",
+                    "owner-a",
+                    "poller",
+                    0,
+                    None,
+                    &test_session_access_digest(1),
+                )
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(claimed.item.id, health, "T1");
-            assert!(claimed.sessions_token.is_none(), "T1");
+            assert!(claimed.session_access.is_none(), "T1");
             q.stop("env", &health, "owner-a").await.unwrap();
             let claimed = q
-                .claim_with_session_access("env", "owner-a", "poller", 1, None)
+                .claim_with_session_access(
+                    "env",
+                    "owner-a",
+                    "poller",
+                    1,
+                    None,
+                    &test_session_access_digest(2),
+                )
                 .await
                 .unwrap()
                 .unwrap();
-            let token = claimed.sessions_token.expect("T2 session token");
+            let token = claimed.session_access.expect("T2 session token");
             let first_access = q
                 .authenticate_session_access(&token, 2)
                 .await
                 .unwrap()
                 .expect("T2 current access");
             assert!(
-                q.authenticate_session_access(
-                    &RedactedString::from("sk-ant-req-wrong".to_string()),
-                    2,
-                )
-                .await
-                .unwrap()
-                .is_none(),
+                q.authenticate_session_access(&test_session_access_digest(u64::MAX), 2,)
+                    .await
+                    .unwrap()
+                    .is_none(),
                 "T3"
             );
             (claimed.item.id, token, first_access)
@@ -1553,11 +1573,18 @@ mod tests {
             "T4"
         );
         let replacement = reopened
-            .claim_with_session_access("env", "owner-b", "poller-b", LEASE_TTL_MS + 1, None)
+            .claim_with_session_access(
+                "env",
+                "owner-b",
+                "poller-b",
+                LEASE_TTL_MS + 1,
+                None,
+                &test_session_access_digest(3),
+            )
             .await
             .unwrap()
             .unwrap();
-        let replacement_token = replacement.sessions_token.expect("T5 replacement token");
+        let replacement_token = replacement.session_access.expect("T5 replacement token");
         assert_eq!(replacement.item.id, work_id, "T5 same Work");
         assert!(
             reopened

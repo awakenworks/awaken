@@ -1,12 +1,10 @@
-//! Session-scoped bearer issuance and epoch-fenced lease mutations.
+//! Session-access digest binding and epoch-fenced lease mutations.
+//!
+//! The bearer is minted by the issuing application; this store only persists
+//! the pre-minted digest in the same statement that writes the lease epoch.
 
 use super::*;
-use awaken_agent_contract::RedactedString;
-use awaken_iam_core::{EntropySource, OsEntropy};
-use base64::Engine as _;
-use sha2::{Digest, Sha256};
-
-const SESSION_TOKEN_BYTES: usize = 32;
+use awaken_session_contract::work_queue::SessionAccessDigest;
 
 // SQL adapters share these exact column shapes. Keeping the aliases beside the
 // conversion boundary prevents SQLite and PostgreSQL from independently
@@ -23,22 +21,6 @@ type StoredClaimCandidate = (
 );
 type StoredLeaseAuthority = (Option<String>, i64, Option<i64>, Option<i64>);
 
-pub(crate) fn issue_session_token() -> RedactedString {
-    let mut bytes = [0_u8; SESSION_TOKEN_BYTES];
-    OsEntropy.fill_bytes(&mut bytes);
-    RedactedString::new(format!(
-        "sk-ant-req-{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-    ))
-}
-
-pub(crate) fn session_token_sha256(token: &RedactedString) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"awaken-work-session-token-v1\0");
-    digest.update(token.expose_secret().as_bytes());
-    format!("{:x}", digest.finalize())
-}
-
 impl SqliteWorkQueue {
     pub(super) fn claim_inner(
         conn: &mut Connection,
@@ -46,8 +28,8 @@ impl SqliteWorkQueue {
         lease_owner: &str,
         now_ms: u64,
         age_ms: Option<u64>,
-        mint_session_access: bool,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        session_access: Option<SessionAccessDigest>,
+    ) -> Result<Option<WorkClaim>, WorkQueueError> {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
@@ -96,9 +78,8 @@ impl SqliteWorkQueue {
             return Err(WorkQueueError::Storage("work lease epoch exhausted".into()));
         };
         let next_epoch = stored_lease_epoch(next_authority.epoch)?;
-        let sessions_token =
-            (mint_session_access && data_type == "session").then(issue_session_token);
-        let token_hash = sessions_token.as_ref().map(session_token_sha256);
+        let session_access = session_access.filter(|_| data_type == "session");
+        let token_hash = session_access.as_ref().map(SessionAccessDigest::as_str);
         tx.execute(
             "UPDATE work_queue_item \
              SET state = 'active', started_at = ?1, lease_owner = ?2, \
@@ -118,9 +99,9 @@ impl SqliteWorkQueue {
         .map_err(storage)?;
         let item = Self::owned(&tx, env_id, &wid)?;
         tx.commit().map_err(storage)?;
-        Ok(item.map(|item| ClaimedWork {
+        Ok(item.map(|item| WorkClaim {
             item,
-            sessions_token,
+            session_access,
         }))
     }
 
@@ -382,8 +363,8 @@ impl PostgresWorkQueue {
         poller_id: &str,
         now_ms: u64,
         age_ms: Option<u64>,
-        mint_session_access: bool,
-    ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        session_access: Option<SessionAccessDigest>,
+    ) -> Result<Option<WorkClaim>, WorkQueueError> {
         self.book.record_poll(env_id, poller_id, now_ms);
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let cleared = reclaimed_lease_authority();
@@ -457,9 +438,8 @@ impl PostgresWorkQueue {
             return Err(WorkQueueError::Storage("work lease epoch exhausted".into()));
         };
         let next_epoch = stored_lease_epoch(next_authority.epoch)?;
-        let sessions_token =
-            (mint_session_access && data_type == "session").then(issue_session_token);
-        let token_hash = sessions_token.as_ref().map(session_token_sha256);
+        let session_access = session_access.filter(|_| data_type == "session");
+        let token_hash = session_access.as_ref().map(SessionAccessDigest::as_str);
         sqlx::query(
             "UPDATE work_queue_item \
              SET state = 'active', started_at = $1, lease_owner = $2, \
@@ -487,9 +467,9 @@ impl PostgresWorkQueue {
         .map_err(storage)?;
         let item = pg_row_to_item(&row)?;
         tx.commit().await.map_err(storage)?;
-        Ok(Some(ClaimedWork {
+        Ok(Some(WorkClaim {
             item,
-            sessions_token,
+            session_access,
         }))
     }
 
@@ -719,10 +699,17 @@ mod epoch_tests {
                 .await
                 .unwrap();
             let outcome = queue
-                .claim_with_session_access(&env, "worker", "poller", 0, None)
+                .claim_with_session_access(
+                    &env,
+                    "worker",
+                    "poller",
+                    0,
+                    None,
+                    &test_session_access_digest(1),
+                )
                 .await;
             if epoch == i64::MAX - 1 {
-                assert!(outcome.unwrap().unwrap().sessions_token.is_some(), "E3");
+                assert!(outcome.unwrap().unwrap().session_access.is_some(), "E3");
             } else {
                 assert!(matches!(outcome, Err(WorkQueueError::Storage(_))), "E1/E2");
             }
@@ -732,7 +719,11 @@ mod epoch_tests {
             }).await.unwrap();
             if epoch == i64::MAX - 1 {
                 assert_eq!((row.0.as_str(), row.1), ("active", i64::MAX));
-                assert!(row.2.is_some());
+                assert_eq!(
+                    row.2.as_deref(),
+                    Some(test_session_access_digest(1).as_str()),
+                    "E3 exact pre-minted digest bound with the lease"
+                );
             } else {
                 assert_eq!(row, ("queued".into(), epoch, None));
             }
@@ -774,17 +765,28 @@ mod epoch_tests {
                 .await
                 .unwrap();
             let outcome = queue
-                .claim_with_session_access(&env, "worker", "poller", 0, None)
+                .claim_with_session_access(
+                    &env,
+                    "worker",
+                    "poller",
+                    0,
+                    None,
+                    &test_session_access_digest(2),
+                )
                 .await;
             if epoch == i64::MAX - 1 {
-                assert!(outcome.unwrap().unwrap().sessions_token.is_some(), "E3");
+                assert!(outcome.unwrap().unwrap().session_access.is_some(), "E3");
             } else {
                 assert!(matches!(outcome, Err(WorkQueueError::Storage(_))), "E1/E2");
             }
             let row: (String, i64, Option<String>) = sqlx::query_as("SELECT state, lease_epoch, session_token_sha256 FROM work_queue_item WHERE work_id = $1").bind(&work).fetch_one(&pool).await.unwrap();
             if epoch == i64::MAX - 1 {
                 assert_eq!((row.0.as_str(), row.1), ("active", i64::MAX));
-                assert!(row.2.is_some());
+                assert_eq!(
+                    row.2.as_deref(),
+                    Some(test_session_access_digest(2).as_str()),
+                    "E3 exact pre-minted digest bound with the lease"
+                );
             } else {
                 assert_eq!(row, ("queued".into(), epoch, None));
             }

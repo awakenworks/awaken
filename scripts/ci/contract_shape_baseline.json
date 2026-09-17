@@ -84,9 +84,12 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 16990,
+      "production_lines": 17020,
       "catch_all_errors": 11,
-      "capability_defaults": 49
+      "capability_defaults": 49,
+      "growth_reasons": {
+        "production_lines": "session-access digest newtype and queue-side WorkClaim replace bearer minting inside the WorkQueue port (token issuance moved to environment-execution-application)"
+      }
     },
     "awaken-tenancy": {
       "depth": 0

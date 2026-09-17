@@ -11,6 +11,8 @@ authority = "environment-execution"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+# Platform OS CSPRNG seam for the per-Session Work bearer this application issues.
+awaken-iam-core.workspace = true
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
@@ -18,6 +20,8 @@ awaken-provisioning-contract.workspace = true
 awaken-session-application.workspace = true
 awaken-session-contract.workspace = true
 async-trait.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
 serde_json.workspace = true
 thiserror.workspace = true
 

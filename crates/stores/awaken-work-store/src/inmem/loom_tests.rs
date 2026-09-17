@@ -1,5 +1,6 @@
 //! Whole reference-queue authority interleavings, using the actual public port.
 use super::*;
+use crate::test_session_access_digest;
 use awaken_session_contract::SessionId;
 use loom::{sync::Arc, thread};
 use std::{
@@ -88,10 +89,17 @@ fn token_authentication_never_borrows_a_replacement_epoch() {
     check_interleavings(|| {
         let queue = Arc::new(InMemoryWorkQueue::new());
         complete(queue.enqueue_session("env", &SessionId::from("session"))).unwrap();
-        let claim = complete(queue.claim_with_session_access("env", "owner-a", "poller", 0, None))
-            .unwrap()
-            .unwrap();
-        let token = claim.sessions_token.unwrap();
+        let claim = complete(queue.claim_with_session_access(
+            "env",
+            "owner-a",
+            "poller",
+            0,
+            None,
+            &test_session_access_digest(1),
+        ))
+        .unwrap()
+        .unwrap();
+        let token = claim.session_access.unwrap();
         let authenticating = Arc::clone(&queue);
         let auth = thread::spawn(move || {
             complete(authenticating.authenticate_session_access(&token, 1)).unwrap()
@@ -104,6 +112,7 @@ fn token_authentication_never_borrows_a_replacement_epoch() {
                 "poller",
                 LEASE_TTL_MS,
                 None,
+                &test_session_access_digest(2),
             ))
             .unwrap()
             .unwrap();
@@ -131,9 +140,16 @@ fn owner_teardown_cannot_clear_an_intervening_reclaim() {
     check_interleavings(|| {
         let queue = Arc::new(InMemoryWorkQueue::new());
         complete(queue.enqueue_session("env", &SessionId::from("session"))).unwrap();
-        complete(queue.claim_with_session_access("env", "owner-a", "poller", 0, None))
-            .unwrap()
-            .unwrap();
+        complete(queue.claim_with_session_access(
+            "env",
+            "owner-a",
+            "poller",
+            0,
+            None,
+            &test_session_access_digest(3),
+        ))
+        .unwrap()
+        .unwrap();
         let retiring = Arc::clone(&queue);
         let release = thread::spawn(move || complete(retiring.release_owner("owner-a")).unwrap());
         let claiming = Arc::clone(&queue);
@@ -144,12 +160,13 @@ fn owner_teardown_cannot_clear_an_intervening_reclaim() {
                 "poller",
                 LEASE_TTL_MS,
                 None,
+                &test_session_access_digest(4),
             ))
             .unwrap()
             .unwrap()
         });
         release.join().unwrap();
-        let token = replacement.join().unwrap().sessions_token.unwrap();
+        let token = replacement.join().unwrap().session_access.unwrap();
         let access = complete(queue.authenticate_session_access(&token, LEASE_TTL_MS))
             .unwrap()
             .expect("teardown of A cannot revoke B's claim");
