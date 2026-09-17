@@ -5,6 +5,7 @@
 
 mod checkpoint_upload;
 mod error;
+mod fence;
 mod foundation;
 mod handle;
 mod repository_publication;
@@ -13,6 +14,7 @@ mod restore_wire;
 mod runtime;
 
 pub use checkpoint_upload::SandboxCheckpointUpload;
+pub use fence::{FenceSuccession, FenceToken, SandboxEffectFence, fence_succession};
 pub use foundation::*;
 pub use handle::*;
 pub use repository_publication::{

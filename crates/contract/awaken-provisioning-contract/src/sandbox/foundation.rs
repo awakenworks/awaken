@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use awaken_resource_contract::InputResourceId;
 use serde::{Deserialize, Serialize};
 
-use super::runtime::SandboxEffectFence;
+use super::fence::SandboxEffectFence;
 use super::{
     RepositoryPublicationError, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
 };

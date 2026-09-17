@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{SandboxEffectFence, SandboxError};
+use crate::FenceToken;
 
 /// Immutable half of an aggregate-derived Sandbox disposal authorization.
 ///

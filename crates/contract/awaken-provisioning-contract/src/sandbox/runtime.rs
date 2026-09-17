@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::spec::{Command, SandboxSpec};
 use crate::vocab::{Artifact, MountAccess, MountRequirement, RealizedMount};
 
+use super::fence::SandboxEffectFence;
 use super::foundation::*;
 use super::handle::SandboxHandle;
 use super::restore_contract::{SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget};
@@ -67,118 +68,6 @@ pub enum SandboxObservation {
     /// non-destructive permanent rejection, not transient unavailability and
     /// never replacement authority.
     Incompatible { reason: String },
-}
-
-/// Provider-neutral authorization fence for one physical Sandbox effect.
-///
-/// The operation identity and lease fields are projected from an existing
-/// aggregate-owned effect and realization lease. Providers may persist this
-/// value as backend evidence, but must never mint or reinterpret it as a second
-/// ownership authority.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SandboxEffectFence {
-    pub operation_id: String,
-    pub owner: String,
-    pub runtime_incarnation: String,
-    pub epoch: u64,
-    pub expires_at_unix_ms: u64,
-}
-
-impl SandboxEffectFence {
-    pub fn new(
-        operation_id: impl Into<String>,
-        owner: impl Into<String>,
-        runtime_incarnation: impl Into<String>,
-        epoch: u64,
-        expires_at_unix_ms: u64,
-    ) -> Result<Self, SandboxError> {
-        let fence = Self {
-            operation_id: operation_id.into(),
-            owner: owner.into(),
-            runtime_incarnation: runtime_incarnation.into(),
-            epoch,
-            expires_at_unix_ms,
-        };
-        fence.validate_identity()?;
-        Ok(fence)
-    }
-
-    /// Validate the complete aggregate effect identity carried across provider
-    /// boundaries. Deserialized and structurally constructed values use the
-    /// same rule as [`Self::new`].
-    pub fn validate_identity(&self) -> Result<(), SandboxError> {
-        for (field, value) in [
-            ("operation id", self.operation_id.as_str()),
-            ("owner", self.owner.as_str()),
-            ("runtime incarnation", self.runtime_incarnation.as_str()),
-        ] {
-            if value.trim().is_empty() {
-                return Err(SandboxError::invalid(format!(
-                    "Sandbox effect fence requires a non-empty {field}"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// Validate identity and expiry against a caller-observed clock instant.
-    /// Clock acquisition remains adapter-owned; the decision rule does not.
-    pub fn validate_live_at(&self, now_unix_ms: u64) -> Result<(), SandboxError> {
-        self.validate_identity()?;
-        if self.expired_at(now_unix_ms) {
-            return Err(SandboxError::fence_rejected(
-                "Sandbox effect fence expired before the provider boundary",
-            ));
-        }
-        Ok(())
-    }
-
-    #[must_use]
-    pub const fn expired_at(&self, now_unix_ms: u64) -> bool {
-        now_unix_ms >= self.expires_at_unix_ms
-    }
-
-    /// Compare the immutable aggregate effect identity while deliberately
-    /// ignoring its renewable expiry boundary.
-    #[must_use]
-    pub fn same_effect_identity(&self, other: &Self) -> bool {
-        self.operation_id == other.operation_id
-            && self.owner == other.owner
-            && self.runtime_incarnation == other.runtime_incarnation
-            && self.epoch == other.epoch
-    }
-
-    /// Compare the realization lease independently of the aggregate operation.
-    /// An aggregate-authorized successor effect may reuse process-local state
-    /// only while all three lease coordinates remain exact.
-    #[must_use]
-    pub fn same_realization_lease(&self, other: &Self) -> bool {
-        self.owner == other.owner
-            && self.runtime_incarnation == other.runtime_incarnation
-            && self.epoch == other.epoch
-    }
-
-    /// Whether an aggregate-authorized successor may take over a provider
-    /// participant created under this fence. A renewal preserves the exact
-    /// owner/incarnation/epoch and may only extend expiry; a reassignment must
-    /// advance the aggregate's monotonic epoch. Operation identity is checked
-    /// separately by the typed effect that owns the transition.
-    #[must_use]
-    pub fn authorizes_successor(&self, successor: &Self) -> bool {
-        successor.epoch > self.epoch
-            || (self.same_realization_lease(successor)
-                && successor.expires_at_unix_ms >= self.expires_at_unix_ms)
-    }
-
-    /// Whether this fence authorizes a successor for the same aggregate
-    /// operation. This is the canonical provider-preparation comparison:
-    /// callers must not combine lease monotonicity with a separately guessed
-    /// operation identity.
-    #[must_use]
-    pub fn authorizes_effect_successor(&self, successor: &Self) -> bool {
-        self.operation_id == successor.operation_id && self.authorizes_successor(successor)
-    }
 }
 
 /// Isolation strength, ordered `Workdir < Namespace < Container`. A provider

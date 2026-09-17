@@ -62,10 +62,10 @@ pub use prepare::{
     validate_sandbox_control_services, validate_trusted_host_mount_requirements,
 };
 pub use sandbox::{
-    BlobSource, CheckpointObjectMetadata, ExitStatus, HandleEvidence, IsolationClass,
-    IsolationPolicy, MemoryMaterializationEvidence, MemoryMaterializationHead, MemoryMount,
-    MemoryMountOutcome, MemoryMounter, MemoryReconciliationAck, OnUnmet, PolicySelection,
-    ProcessHandle, RepositoryHttpBasicCredential, RepositoryPublicationError,
+    BlobSource, CheckpointObjectMetadata, ExitStatus, FenceSuccession, FenceToken, HandleEvidence,
+    IsolationClass, IsolationPolicy, MemoryMaterializationEvidence, MemoryMaterializationHead,
+    MemoryMount, MemoryMountOutcome, MemoryMounter, MemoryReconciliationAck, OnUnmet,
+    PolicySelection, ProcessHandle, RepositoryHttpBasicCredential, RepositoryPublicationError,
     RepositoryPublicationExpectation, RepositoryPublicationReceipt, RepositoryPublicationRejection,
     RepositoryRealizationPlan, RepositoryRealizer, ResourceInputDefaultMounts, Sandbox,
     SandboxCapabilities, SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore,
@@ -75,7 +75,7 @@ pub use sandbox::{
     SandboxRestoreResult, SandboxRestoreTarget, SandboxRestoreTargetDisposition, SandboxStatus,
     SecretBroker, SecretWritebackEffect, SelectionError, Signal, StoredCheckpointObject,
     WorkspaceLayout, capability_requirements_satisfied, checkpoint_exclusions_fingerprint,
-    memory_materialization_mount_path, resource_input_default_mounts,
+    fence_succession, memory_materialization_mount_path, resource_input_default_mounts,
     sandbox_spec_security_fingerprint, select_provider, select_provider_with_policy,
     validate_checkpoint_exclusions_for_spec, validate_repository_mount_path,
     validate_repository_mount_paths, validate_repository_sandbox_adoption_layout,

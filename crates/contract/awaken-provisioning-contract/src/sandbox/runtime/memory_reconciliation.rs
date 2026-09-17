@@ -2,6 +2,7 @@
 
 use super::super::foundation::{MemoryMaterializationEvidence, SandboxError};
 use super::SandboxEffectFence;
+use crate::FenceToken;
 use crate::with_current_sandbox_effect;
 
 #[derive(Debug)]

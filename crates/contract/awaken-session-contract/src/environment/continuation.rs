@@ -4,6 +4,8 @@
 //! every public transition method remain owned by `SessionEnvironmentState`;
 //! providers still advance them solely through exact receipts.
 
+use awaken_provisioning_contract::FenceToken;
+
 use super::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef, SandboxGeneration,
     SessionEnvironmentOperation, SessionEnvironmentReceiptError, SessionEnvironmentState,
