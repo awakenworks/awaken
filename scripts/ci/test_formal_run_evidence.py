@@ -195,6 +195,40 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "toolchain"):
             validate_record(changed, self.root, 110)
 
+    def test_external_sat_solver_is_found_before_proof_or_named_missing(self):
+        # S1 kissat on PATH -> the batch runs; S2 kissat absent -> no proof
+        # runs, the batch is named skipped, strict mode fails and diagnostic
+        # mode completes; S3 a solver compiled into CBMC (cadical) needs no
+        # binary. Absent kissat used to read as "0 of N failed ... FAILED".
+        source = (self.root / "scripts/ci/check_formal.sh").read_text()
+        runner = source[source.index("  run_kani() {"):source.index("  run_kani awaken-agent-contract")]
+        strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
+        for solver, installed, strict, expected, invoked in (
+            ("kissat", True, 1, 0, True),
+            ("kissat", False, 1, 1, False),
+            ("kissat", False, 0, 0, False),
+            ("cadical", False, 1, 0, True),
+        ):
+            with self.subTest(solver=solver, installed=installed, strict=strict), tempfile.TemporaryDirectory() as temporary:
+                bindir = Path(temporary)
+                if installed:
+                    (bindir / solver).write_text("#!/bin/sh\nexit 0\n")
+                    (bindir / solver).chmod(0o755)
+                calls = bindir / "calls"
+                script = (f"set -euo pipefail\nmissing=0\nrequire_tools={strict}\nz3_version=unused\n"
+                          "kani_solver_tools=/released/kani/bin\nkani_jobs=1\nkani_batch_timeout_seconds=1\n"
+                          "awaken_configure_kani_driver_target() { :; }\n"
+                          "run_with_deadline() { shift; printf '%s\\n' \"$*\" > \"$CALLS\"; }\n")
+                invocation = f"  run_kani awaken-protocol-managed --harness a --solver {solver} --harness b\n"
+                result = subprocess.run(["/bin/bash", "-c", script + runner + invocation + strict_check],
+                                        env=dict(os.environ, PATH=str(bindir) + os.pathsep + "/usr/bin:/bin", CALLS=str(calls)),
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertEqual(calls.exists(), invoked)
+                if not installed and solver == "kissat":
+                    self.assertIn("skipped kissat harnesses of awaken-protocol-managed", result.stdout)
+                    self.assertIn("/released/kani/bin", result.stdout)
+
     def test_artifact_success_failure_and_source_binding(self):
         # A1 unchanged source + exit 0 -> Passed; A2 exit 23 -> Failed with
         # identical raw/model/log bytes retained; A3 changed source -> Failed.

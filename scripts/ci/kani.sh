@@ -36,6 +36,12 @@ export AWAKEN_KANI_BACKEND_DIR="$kani_backend_dir"
 if [ -x "$kani_source_dir/scripts/cargo-kani" ]; then
   export PATH="$kani_source_dir/scripts:$kani_backend_dir:$PATH"
 fi
+# The driver execs external solvers (kissat) by name; they ship in the released
+# bundle, which a non-login PATH does not carry. Appended, never prepended.
+kani_solver_tools="$(scripts/ci/bootstrap_kani.sh --solver-tools)"
+if [ -d "$kani_solver_tools" ] && [[ ":$PATH:" != *":$kani_solver_tools:"* ]]; then
+  export PATH="$PATH:$kani_solver_tools"
+fi
 
 # Keep the compiler and the driver in the one tree the driver reads. The rule
 # itself belongs to the cargo-target authority, shared with the batch runner.

@@ -1,4 +1,5 @@
 """Bootstrap publication rules; compiler semantics are checked by the real Kani fixture."""
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -196,7 +197,7 @@ class BootstrapTests(unittest.TestCase):
                 result = self.run_bootstrap(**changes)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual((self.cache / "current").resolve(), self.previous)
-                self.assertFalse(any(self.cache.glob("cbmc-*/qualified.txt")))
+                self.assertFalse(any(self.cache.glob("cbmc-*/qualified-*.txt")))
                 calls = self.calls.read_text()
                 self.assertEqual("cargo build-dev" in calls, reaches_build)
                 self.assertEqual(any(line.startswith("kani ") for line in calls.splitlines()), reaches_check)
@@ -248,6 +249,17 @@ class BootstrapTests(unittest.TestCase):
     def backend(self):
         return next(self.cache.glob("cbmc-*"))
 
+    def procedure_key(self):
+        """The fixture script's own qualification digest, derived as the script derives it."""
+        files = [self.scripts / "bootstrap_kani.sh",
+                 self.scripts / "fixtures/cbmc_recursive_alias.c",
+                 self.scripts / "fixtures/kani_wide_niche.rs"]
+        lines = "".join(hashlib.sha256(path.read_bytes()).hexdigest() + "\n" for path in files)
+        return hashlib.sha256(lines.encode()).hexdigest()[:12]
+
+    def receipt(self, package):
+        return package / f"qualified-{self.procedure_key()}.txt"
+
     def verify(self, **changes):
         return subprocess.run(["bash", str(self.scripts / "bootstrap_kani.sh"),
                                "--verify-source", str(self.patched)],
@@ -273,7 +285,7 @@ class BootstrapTests(unittest.TestCase):
                 result = self.run_bootstrap(**changes)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertEqual((self.cache / "current").resolve(), self.previous)
-                self.assertFalse(any(self.cache.glob("cbmc-*/qualified.txt")))
+                self.assertFalse(any(self.cache.glob("cbmc-*/qualified-*.txt")))
                 self.assertEqual("cmake --build" in self.calls.read_text(), builds)
                 self.assertNotIn("kani ", self.calls.read_text())
 
@@ -291,7 +303,8 @@ class BootstrapTests(unittest.TestCase):
                 os.link(old, destination)
             else:
                 destination.symlink_to(old)
-        for output in ("qualified.pending", "unit.log", "z3.log", "leaf.goto", "internal.log"):
+        pending = f"qualified-{self.procedure_key()}.pending"
+        for output in (pending, "unit.log", "z3.log", "leaf.goto", "internal.log"):
             destination = backend / output
             destination.unlink(missing_ok=True)
             destination.symlink_to(old)
@@ -325,7 +338,7 @@ class BootstrapTests(unittest.TestCase):
         # only observes; it cannot rebuild or rerun a green mock to bless drift.
         self.assertEqual(self.run_bootstrap().returncode, 0)
         backend = self.backend()
-        good_receipt = (backend / "qualified.txt").read_bytes()
+        good_receipt = self.receipt(backend).read_bytes()
         for relative in ("bin/cbmc", "bin/goto-cc", "bin/goto-instrument", "build/CMakeCache.txt"):
             for action in ("bytes", "missing", "symlink"):
                 with self.subTest(relative=relative, action=action):
@@ -351,13 +364,13 @@ class BootstrapTests(unittest.TestCase):
                     if path.exists() or path.is_symlink():
                         path.unlink()
                     path.write_bytes(original); path.chmod(mode)
-                    self.assertEqual((backend / "qualified.txt").read_bytes(), good_receipt)
+                    self.assertEqual(self.receipt(backend).read_bytes(), good_receipt)
         for changes in ({"CBMC_ACTUAL_REVISION": "wrong"}, {"CBMC_DRIFT": "1"},
                         {"CBMC_STAGED": "1"}, {"CBMC_UNTRACKED": "1"}):
             self.assertNotEqual(self.verify(**changes).returncode, 0)
         config = backend / "build/CMakeCache.txt"
         config.unlink()
-        (backend / "qualified.txt").write_text(good_receipt.decode().split("configuration_sha256=")[0])
+        self.receipt(backend).write_text(good_receipt.decode().split("configuration_sha256=")[0])
         self.assertNotEqual(self.verify().returncode, 0)
 
     def test_selected_backend_contract_and_path_shadow_are_rejected(self):
@@ -427,7 +440,8 @@ class BootstrapTests(unittest.TestCase):
         | Q2   | the cbmc revision                     | a different package; cmake runs   |
         | Q3   | nothing                               | the package is reused             |
         | Q4   | one published backend binary's bytes  | rebuilt, never reused or blessed  |
-        | Q5   | (always)                              | qualified.txt extends built.txt   |
+        | Q5   | (always)                              | the receipt extends built.txt     |
+        | Q6   | the procedure, then back again        | both receipts coexist untouched   |
 
         Folding the procedure into the package name made Q1 behave like Q2, so
         editing a comment in the bootstrap discarded a built CBMC and demanded a
@@ -439,7 +453,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(self.run_bootstrap().returncode, 0)
         package = self.backend()
         built = (package / "built.txt").read_text()
-        qualified = (package / "qualified.txt").read_text()
+        first_receipt = self.receipt(package)
+        qualified = first_receipt.read_text()
         self.assertTrue(
             qualified.startswith(built),
             "Q5 the qualification receipt must open with the build receipt verbatim",
@@ -460,10 +475,15 @@ class BootstrapTests(unittest.TestCase):
                          if line.startswith("cmake")]
         self.assertEqual(rebuilt_tools, [], "Q1 an edited procedure must not rebuild")
         self.assertEqual((package / "built.txt").read_text(), built, "Q1 the build fact is unchanged")
+        second_receipt = self.receipt(package)
+        self.assertNotEqual(second_receipt, first_receipt, "Q1 a changed procedure owns its own receipt")
         self.assertNotEqual(
-            (package / "qualified.txt").read_text(), qualified,
+            second_receipt.read_text(), qualified,
             "Q1 a changed procedure must produce a new judgement",
         )
+        # Q6: the earlier procedure's judgement survives; a worktree still on
+        # that revision of the script must not have to re-qualify.
+        self.assertEqual(first_receipt.read_text(), qualified, "Q6 another procedure's receipt is untouched")
 
         # Q3: an untouched tree reuses the package and still does not rebuild.
         self.calls.write_text("")
@@ -477,7 +497,7 @@ class BootstrapTests(unittest.TestCase):
         # package against every later attempt, which is the failure a
         # half-finished earlier run leaves behind; the answer is to rebuild from
         # the reviewed source, and the substituted bytes must not survive it.
-        (package / "qualified.txt").unlink()
+        self.receipt(package).unlink()
         substituted = "#!/bin/sh\nexit 0\n"
         (package / "bin/cbmc").write_text(substituted)
         self.calls.write_text("")
@@ -490,7 +510,7 @@ class BootstrapTests(unittest.TestCase):
             "Q4 the substituted bytes must not survive the rebuild",
         )
         self.assertTrue(
-            (package / "qualified.txt").read_text().startswith((package / "built.txt").read_text()),
+            self.receipt(package).read_text().startswith((package / "built.txt").read_text()),
             "Q4 the new judgement names the newly built bytes",
         )
 
@@ -510,7 +530,7 @@ class BootstrapTests(unittest.TestCase):
         packages = sorted(path.name for path in self.cache.glob("cbmc-*"))
         self.assertEqual(len(packages), 2, f"Q2 a new artifact needs its own package: {packages}")
         self.assertIn("cmake", self.calls.read_text(), "Q2 a changed artifact input must rebuild")
-        self.assertTrue((first / "qualified.txt").exists(), "Q2 the previous package is untouched")
+        self.assertTrue(any(first.glob("qualified-*.txt")), "Q2 the previous package is untouched")
 
 
 if __name__ == "__main__":
