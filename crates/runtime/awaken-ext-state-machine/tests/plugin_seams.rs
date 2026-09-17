@@ -248,8 +248,11 @@ async fn gate_denies_write_before_read() {
         .gate(&ctx("Write", json!({"file_path": "a.rs"})), &store)
         .await;
     // A state-machine gate decides on committed state, not on an authored
-    // permission policy, so it names no basis.
-    assert_eq!(decision.basis, None);
+    // permission policy, so it names itself a plugin gate.
+    assert_eq!(
+        decision.authority,
+        awaken_runtime_contract::permission::GateAuthority::PluginGate
+    );
     match decision.outcome {
         GateOutcome::Block { reason } => assert_eq!(reason, "Read a.rs before writing."),
         other => panic!("expected block, got {other:?}"),
@@ -267,7 +270,10 @@ async fn gate_allows_write_after_read() {
         .gate(&ctx("Write", json!({"file_path": "a.rs"})), &store)
         .await;
     assert_eq!(decision.outcome, GateOutcome::Allow);
-    assert_eq!(decision.basis, None);
+    assert_eq!(
+        decision.authority,
+        awaken_runtime_contract::permission::GateAuthority::PluginGate
+    );
 }
 
 #[tokio::test]

@@ -67,23 +67,6 @@ pub(crate) async fn spill_tool_output(
     Ok(output)
 }
 
-/// Build the audit draft for one gated tool call (ADR-0030). The decision label
-/// is the permission-relevant view of the gate outcome; the policy and reason
-/// are whatever basis the deciding gate stated, never inferred from the label.
-pub(super) fn permission_audit(call: &ToolCall, decision: &GateDecision) -> EventDraft {
-    RunEvent::PermissionDecided {
-        tool_id: call.tool_id.clone(),
-        call_id: call.call_id.clone(),
-        decision: decision.outcome.decision_label().to_string(),
-        policy: decision.basis.as_ref().map(|basis| basis.policy),
-        reason_code: decision
-            .basis
-            .as_ref()
-            .and_then(|basis| basis.reason_code.clone()),
-    }
-    .into()
-}
-
 /// Handle the reserved client-side `tool_search` meta-tool (ADR-0053). It searches
 /// the same combined static/dynamic catalog used to build the model request, reveals
 /// every match by canonical id, and returns Claude-compatible `tool_reference`
@@ -299,60 +282,91 @@ pub(super) async fn resume_into_messages(
     }
 }
 
+/// One call's gate result: the outcome that drives execution and, when a real
+/// gate decided (a host gate or a per-Run policy is installed), the audit fact
+/// that records it (ADR-0030 D4). No gate means no audit.
+pub(crate) struct GatedCall {
+    pub(crate) outcome: GateOutcome,
+    pub(crate) audit: Option<EventDraft>,
+}
+
 /// Consult the gate chain: the host permission gate first, then any
 /// plugin-contributed gates in dependency order. A call runs only if every gate
 /// allows it; the first non-`Allow` outcome wins, and the host permission gate is
 /// absolute (a plugin gate can further restrict but never widen it, G21). An
 /// absent host gate allows (used only in tests). Gates read the run's state.
 ///
-/// The basis is the deciding gate's own: a non-`Allow` outcome carries the
-/// basis of the gate that produced it, and a final `Allow` carries the basis of
-/// the outermost authored policy that allowed (the per-Run policy if it stated
-/// one, else the host gate's). A later gate can only restrict, so an allow it
-/// merely passed through is still the authored policy's allow.
+/// The authority is the deciding gate's own: a non-`Allow` outcome carries the
+/// authority of the gate that produced it, and a final `Allow` carries the
+/// outermost authored policy that allowed (the per-Run policy if it was one,
+/// else the host gate's), falling back to the host gate's own authority and
+/// then the per-Run narrowing's. A later gate can only restrict, so an allow it
+/// merely passed through is still the earlier authority's allow. Only when
+/// neither a host gate nor a per-Run policy is installed is there no authority
+/// for a final `Allow` — and exactly then nothing is audited.
 pub(crate) async fn gate_decision(
     runtime: &Runtime,
     call: &ToolCall,
     env: &ResolvedExecutionEnv,
     state: &Store,
     context: &RuntimeRunContext,
-) -> GateDecision {
+) -> GatedCall {
+    // Audit the decision of a real (policy-backed) gate (ADR-0030).
+    let audited = runtime.gate().is_some() || context.tool_permission_policy.is_some();
+    let decided = |decision: GateDecision| GatedCall {
+        // The decision label is the permission-relevant view of the outcome;
+        // who decided, the policy and the reason are the authority the deciding
+        // gate stated, never inferred from the label.
+        audit: audited.then(|| decision.audit_fact(call).into()),
+        outcome: decision.outcome,
+    };
     if context.tool_capability_narrowing
         == awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
     {
-        return GateDecision::without_basis(GateOutcome::Block {
+        return decided(GateDecision::run_narrowing(GateOutcome::Block {
             reason: "tools are disabled for this Run".into(),
-        });
+        }));
     }
     let ctx = ToolCall {
         tool_id: call.tool_id.clone(),
         call_id: call.call_id.clone(),
         arguments: call.arguments.clone(),
     };
-    let mut allowed_on = None;
+    let mut allowed_on: Option<GateAuthority> = None;
     if let Some(narrowing) = &context.tool_permission_policy {
         let decision = narrowing.evaluate(&ctx).await.into_gate_decision();
         if !matches!(decision.outcome, GateOutcome::Allow) {
-            return decision;
+            return decided(decision);
         }
-        allowed_on = decision.basis;
+        allowed_on = Some(decision.authority);
     }
     if let Some(gate) = runtime.gate() {
         let host = gate.gate(&ctx, state).await;
         if !matches!(host.outcome, GateOutcome::Allow) {
-            return host;
+            return decided(host);
         }
-        allowed_on = allowed_on.or(host.basis);
+        allowed_on = Some(match allowed_on {
+            Some(policy @ GateAuthority::Policy(_)) => policy,
+            _ => host.authority,
+        });
     }
     for gate in env.tool_gates() {
         let decision = gate.gate(&ctx, state).await;
         if !matches!(decision.outcome, GateOutcome::Allow) {
-            return decision;
+            return decided(decision);
         }
     }
-    GateDecision {
-        outcome: GateOutcome::Allow,
-        basis: allowed_on,
+    match allowed_on {
+        Some(authority) => decided(GateDecision {
+            outcome: GateOutcome::Allow,
+            authority,
+        }),
+        // Neither a host gate nor a per-Run policy is installed: `audited` is
+        // false, so there is no decider to name and nothing to record.
+        None => GatedCall {
+            outcome: GateOutcome::Allow,
+            audit: None,
+        },
     }
 }
 

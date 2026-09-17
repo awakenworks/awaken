@@ -665,7 +665,7 @@ mod tests {
     #[async_trait]
     impl ToolGateHook for DenyGate {
         async fn gate(&self, ctx: &ToolCall, _state: &Store) -> GateDecision {
-            GateDecision::without_basis(GateOutcome::Block {
+            GateDecision::plugin_gate(GateOutcome::Block {
                 reason: format!("{} is not allowed here", ctx.tool_id),
             })
         }
@@ -696,7 +696,7 @@ mod tests {
     #[async_trait]
     impl ToolGateHook for SetResultGate {
         async fn gate(&self, ctx: &ToolCall, _state: &Store) -> GateDecision {
-            GateDecision::without_basis(GateOutcome::SetResult(ToolOutput::ok(
+            GateDecision::plugin_gate(GateOutcome::SetResult(ToolOutput::ok(
                 ctx.call_id.clone(),
                 "supplied by the gate",
             )))
@@ -728,7 +728,7 @@ mod tests {
     #[async_trait]
     impl ToolGateHook for ScheduleGate {
         async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
-            GateDecision::without_basis(GateOutcome::Schedule {
+            GateDecision::plugin_gate(GateOutcome::Schedule {
                 correlation_id: "corr-1".to_string(),
                 action_kind: None,
             })
@@ -763,7 +763,7 @@ mod tests {
     #[async_trait]
     impl ToolGateHook for ConfirmGate {
         async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
-            GateDecision::without_basis(GateOutcome::RequireConfirmation {
+            GateDecision::plugin_gate(GateOutcome::RequireConfirmation {
                 correlation_id: "approval-1".to_string(),
             })
         }
@@ -809,7 +809,7 @@ mod tests {
     #[async_trait]
     impl ToolGateHook for AllowGate {
         async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
-            GateDecision::without_basis(GateOutcome::Allow)
+            GateDecision::plugin_gate(GateOutcome::Allow)
         }
     }
 

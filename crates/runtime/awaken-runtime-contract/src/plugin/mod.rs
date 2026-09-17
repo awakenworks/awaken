@@ -186,7 +186,7 @@ mod tests {
             _ctx: &crate::permission::ToolCall,
             _state: &Store,
         ) -> crate::permission::GateDecision {
-            crate::permission::GateDecision::without_basis(crate::permission::GateOutcome::Allow)
+            crate::permission::GateDecision::plugin_gate(crate::permission::GateOutcome::Allow)
         }
     }
 

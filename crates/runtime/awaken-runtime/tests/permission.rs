@@ -132,7 +132,12 @@ struct FixedPolicy(ToolPermissionVerdict);
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for FixedPolicy {
     async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
-        ToolPermissionRuling::without_basis(self.0.clone())
+        ToolPermissionRuling::policy(
+            self.0.clone(),
+            awaken_runtime_contract::permission::PermissionBasis::fixed(
+                awaken_runtime_contract::permission::PermissionPolicy::Rule,
+            ),
+        )
     }
 }
 
@@ -507,13 +512,18 @@ struct RecordingDenyCanonical {
 impl ToolPermissionPolicy for RecordingDenyCanonical {
     async fn evaluate(&self, ctx: &ToolCall) -> ToolPermissionRuling {
         self.seen.lock().unwrap().push(ctx.tool_id.clone());
-        ToolPermissionRuling::without_basis(if ctx.tool_id == "echo" {
-            ToolPermissionVerdict::Deny {
-                reason: "canonical echo denied".to_string(),
-            }
-        } else {
-            ToolPermissionVerdict::Allow
-        })
+        ToolPermissionRuling::policy(
+            if ctx.tool_id == "echo" {
+                ToolPermissionVerdict::Deny {
+                    reason: "canonical echo denied".to_string(),
+                }
+            } else {
+                ToolPermissionVerdict::Allow
+            },
+            awaken_runtime_contract::permission::PermissionBasis::fixed(
+                awaken_runtime_contract::permission::PermissionPolicy::Rule,
+            ),
+        )
     }
 }
 
@@ -643,9 +653,14 @@ struct AskByCall;
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for AskByCall {
     async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
-        ToolPermissionRuling::without_basis(ToolPermissionVerdict::RequireConfirmation {
-            correlation_id: format!("permission-{}", call.call_id),
-        })
+        ToolPermissionRuling::policy(
+            ToolPermissionVerdict::RequireConfirmation {
+                correlation_id: format!("permission-{}", call.call_id),
+            },
+            awaken_runtime_contract::permission::PermissionBasis::fixed(
+                awaken_runtime_contract::permission::PermissionPolicy::Rule,
+            ),
+        )
     }
 }
 
@@ -1124,7 +1139,10 @@ impl ToolPermissionPolicy for BasisPolicy {
     }
 }
 
-fn audited_rows(commit: &MemoryCommitCoordinator) -> Vec<(String, Option<String>, Option<String>)> {
+/// `(decision, decided_by, policy, reason_code)` as the committed payload renders them.
+type AuditedPayload = (String, Option<String>, Option<String>, Option<String>);
+
+fn audited_rows(commit: &MemoryCommitCoordinator) -> Vec<AuditedPayload> {
     commit
         .committed()
         .events
@@ -1133,6 +1151,10 @@ fn audited_rows(commit: &MemoryCommitCoordinator) -> Vec<(String, Option<String>
         .map(|e| {
             (
                 e.payload["decision"].as_str().unwrap_or("").to_string(),
+                e.payload
+                    .get("decided_by")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
                 e.payload
                     .get("policy")
                     .and_then(|v| v.as_str())
@@ -1150,79 +1172,82 @@ fn audited_rows(commit: &MemoryCommitCoordinator) -> Vec<(String, Option<String>
 async fn the_gate_audits_the_policy_and_reason_the_deciding_policy_stated() {
     // Cause/effect graph: C1 the authored policy fixed the answer
     // (always_allow / always_ask); C2 the policy was `auto` and the evaluator
-    // allowed, refused, or reached no conclusion; C3 the policy stated no basis
-    // (a fixed host policy outside the authored vocabulary). Effects: E1 the
+    // allowed, refused, or reached no conclusion; C3 an authored `rule`
+    // refused (a disabled tool or a matched deny rule, ADR-0030 D4); C4 the
+    // ruling was a per-Run narrowing's, not a policy's. Effects: E1 the
     // committed `PermissionDecided` row carries the decision label the gate
-    // outcome maps to; E2 `policy` is the stated policy; E3 `reason_code` is
-    // present exactly for an `auto` refusal (`high_risk`) or an `auto`
-    // ask (`indeterminate`); E4 with no stated basis neither key is written.
+    // outcome maps to; E2 `decided_by` names who decided; E3 `policy` is the
+    // stated policy; E4 `reason_code` is present exactly for an `auto` refusal
+    // (`high_risk`) or an `auto` ask (`indeterminate`); E5 a narrowing writes
+    // neither `policy` nor `reason_code`.
     //
-    // | Rule | verdict | stated basis | decision | policy | reason_code |
-    // |---|---|---|---|---|---|
-    // | G1 | Allow | always_allow | allow | always_allow | - |
-    // | G2 | RequireConfirmation | always_ask | ask | always_ask | - |
-    // | G3 | Allow | auto | allow | auto | - |
-    // | G4 | Deny | auto/high_risk | deny | auto | high_risk |
-    // | G5 | RequireConfirmation | auto/indeterminate | ask | auto | indeterminate |
-    // | G6 | Deny | none | deny | - | - |
+    // | Rule | verdict | stated authority | decision | decided_by | policy | reason_code |
+    // |---|---|---|---|---|---|---|
+    // | G1 | Allow | always_allow | allow | policy | always_allow | - |
+    // | G2 | RequireConfirmation | always_ask | ask | policy | always_ask | - |
+    // | G3 | Allow | auto | allow | policy | auto | - |
+    // | G4 | Deny | auto/high_risk | deny | policy | auto | high_risk |
+    // | G5 | RequireConfirmation | auto/indeterminate | ask | policy | auto | indeterminate |
+    // | G6 | Deny | rule | deny | policy | rule | - |
+    // | G7 | Deny | run narrowing | deny | run_narrowing | - | - |
     let ask = || ToolPermissionVerdict::RequireConfirmation {
         correlation_id: TICKET.to_string(),
     };
     let deny = || ToolPermissionVerdict::Deny {
         reason: "no".to_string(),
     };
-    /// `(decision, policy, reason_code)` as the committed payload renders them.
-    type AuditedRow<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
-    let rows: [(&str, ToolPermissionRuling, AuditedRow<'_>); 6] = [
+    /// `(decision, decided_by, policy, reason_code)` as the committed payload renders them.
+    type AuditedRow<'a> = (&'a str, &'a str, Option<&'a str>, Option<&'a str>);
+    let rows: [(&str, ToolPermissionRuling, AuditedRow<'_>); 7] = [
         (
             "G1",
-            ToolPermissionRuling {
-                verdict: ToolPermissionVerdict::Allow,
-                basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
-            },
-            ("allow", Some("always_allow"), None),
+            ToolPermissionRuling::policy(
+                ToolPermissionVerdict::Allow,
+                PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
+            ),
+            ("allow", "policy", Some("always_allow"), None),
         ),
         (
             "G2",
-            ToolPermissionRuling {
-                verdict: ask(),
-                basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAsk)),
-            },
-            ("ask", Some("always_ask"), None),
+            ToolPermissionRuling::policy(
+                ask(),
+                PermissionBasis::fixed(PermissionPolicy::AlwaysAsk),
+            ),
+            ("ask", "policy", Some("always_ask"), None),
         ),
         (
             "G3",
-            ToolPermissionRuling {
-                verdict: ToolPermissionVerdict::Allow,
-                basis: Some(PermissionBasis::auto(None)),
-            },
-            ("allow", Some("auto"), None),
+            ToolPermissionRuling::policy(ToolPermissionVerdict::Allow, PermissionBasis::auto(None)),
+            ("allow", "policy", Some("auto"), None),
         ),
         (
             "G4",
-            ToolPermissionRuling {
-                verdict: deny(),
-                basis: Some(PermissionBasis::auto(Some(PermissionReasonCode::HIGH_RISK))),
-            },
-            ("deny", Some("auto"), Some("high_risk")),
+            ToolPermissionRuling::policy(
+                deny(),
+                PermissionBasis::auto(Some(PermissionReasonCode::HIGH_RISK)),
+            ),
+            ("deny", "policy", Some("auto"), Some("high_risk")),
         ),
         (
             "G5",
-            ToolPermissionRuling {
-                verdict: ask(),
-                basis: Some(PermissionBasis::auto(Some(
-                    PermissionReasonCode::INDETERMINATE,
-                ))),
-            },
-            ("ask", Some("auto"), Some("indeterminate")),
+            ToolPermissionRuling::policy(
+                ask(),
+                PermissionBasis::auto(Some(PermissionReasonCode::INDETERMINATE)),
+            ),
+            ("ask", "policy", Some("auto"), Some("indeterminate")),
         ),
         (
             "G6",
-            ToolPermissionRuling::without_basis(deny()),
-            ("deny", None, None),
+            ToolPermissionRuling::policy(deny(), PermissionBasis::fixed(PermissionPolicy::Rule)),
+            ("deny", "policy", Some("rule"), None),
+        ),
+        (
+            "G7",
+            ToolPermissionRuling::run_narrowing(deny()),
+            ("deny", "run_narrowing", None, None),
         ),
     ];
-    for (rule, ruling, (decision, policy, reason_code)) in rows {
+    for (rule, ruling, (decision, decided_by, policy, reason_code)) in rows {
         let ran = Arc::new(AtomicUsize::new(0));
         let runtime = Runtime::new()
             .with_llm(Arc::new(ToolThenText {
@@ -1242,6 +1267,7 @@ async fn the_gate_audits_the_policy_and_reason_the_deciding_policy_stated() {
             audited_rows(&commit),
             vec![(
                 decision.to_string(),
+                Some(decided_by.to_string()),
                 policy.map(str::to_string),
                 reason_code.map(str::to_string)
             )],
@@ -1258,12 +1284,12 @@ async fn the_gate_audits_the_policy_and_reason_the_deciding_policy_stated() {
 #[tokio::test]
 async fn a_per_run_deny_all_narrowing_audits_no_policy_even_over_a_stating_gate() {
     // The narrowing decides before any authored policy is consulted, so the
-    // row it writes names none — attributing the denial to the authored
+    // row it writes names itself (`run_narrowing`) and no policy — attributing the denial to the authored
     // `always_allow` would claim the author refused a call they allowed.
     //
-    // | Rule | narrowing | host policy basis | decision | policy |
-    // |---|---|---|---|---|
-    // | N1 | DenyAll | always_allow | deny | - |
+    // | Rule | narrowing | host policy basis | decision | decided_by | policy |
+    // |---|---|---|---|---|---|
+    // | N1 | DenyAll | always_allow | deny | run_narrowing | - |
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText {
@@ -1273,10 +1299,10 @@ async fn a_per_run_deny_all_narrowing_audits_no_policy_even_over_a_stating_gate(
         }))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(PermissionGate::new(Arc::new(BasisPolicy(
-            ToolPermissionRuling {
-                verdict: ToolPermissionVerdict::Allow,
-                basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
-            },
+            ToolPermissionRuling::policy(
+                ToolPermissionVerdict::Allow,
+                PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
+            ),
         )))));
     runtime.register_snapshot(snapshot());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -1286,7 +1312,12 @@ async fn a_per_run_deny_all_narrowing_audits_no_policy_even_over_a_stating_gate(
         .expect("the restricted Run completes");
     assert_eq!(
         audited_rows(&commit),
-        vec![("deny".to_string(), None, None)],
+        vec![(
+            "deny".to_string(),
+            Some("run_narrowing".to_string()),
+            None,
+            None
+        )],
         "N1"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 0, "N1");

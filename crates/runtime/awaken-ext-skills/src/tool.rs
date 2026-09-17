@@ -139,28 +139,27 @@ impl SkillAllowedToolsGate {
 impl ToolGateHook for SkillAllowedToolsGate {
     async fn gate(&self, call: &ToolCall, state: &Store) -> GateDecision {
         // The inner gate decides first and its decision is returned whole: the
-        // basis it named belongs to the policy that refused, and this gate has
-        // no standing to restate it. Only where the inner gate allowed does the
-        // skill intersection speak, and that is not an authored permission
-        // policy, so it names no basis of its own.
+        // authority it named belongs to the gate that refused, and this gate has
+        // no standing to restate it. Where the inner gate allowed and the skill
+        // intersection also allows, this gate merely passes that allow through,
+        // so it is still the inner authority's allow (a later gate can only
+        // restrict). Only a skill refusal is this gate's own decision, and the
+        // skill intersection is a plugin gate, not an authored policy.
         let platform = self.inner.gate(call, state).await;
         if platform.outcome != GateOutcome::Allow {
             return platform;
         }
-        GateDecision::without_basis(
-            if matches!(call.tool_id.as_str(), SKILL_LIST_TOOL_ID | SKILL_TOOL_ID)
-                || self.active.allows(&call.tool_id)
-            {
-                GateOutcome::Allow
-            } else {
-                GateOutcome::Block {
-                    reason: format!(
-                        "tool `{}` is outside the active skill allowed_tools intersection",
-                        call.tool_id
-                    ),
-                }
-            },
-        )
+        if matches!(call.tool_id.as_str(), SKILL_LIST_TOOL_ID | SKILL_TOOL_ID)
+            || self.active.allows(&call.tool_id)
+        {
+            return platform;
+        }
+        GateDecision::plugin_gate(GateOutcome::Block {
+            reason: format!(
+                "tool `{}` is outside the active skill allowed_tools intersection",
+                call.tool_id
+            ),
+        })
     }
 }
 
@@ -1155,8 +1154,14 @@ mod tests {
     #[async_trait]
     impl ToolGateHook for AllowGate {
         async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
-            GateDecision::without_basis(GateOutcome::Allow)
+            GateDecision::policy(GateOutcome::Allow, platform_basis())
         }
+    }
+
+    fn platform_basis() -> awaken_runtime_contract::permission::PermissionBasis {
+        awaken_runtime_contract::permission::PermissionBasis::fixed(
+            awaken_runtime_contract::permission::PermissionPolicy::AlwaysAllow,
+        )
     }
 
     fn ctx(tool_id: &str, args: serde_json::Value) -> ToolCall {
@@ -1211,18 +1216,27 @@ mod tests {
             GateOutcome::Allow
         );
         active.narrow(&["read".into(), "mcp__github__*".into()]);
+        // Who decided: an allow the skill intersection merely passes through is
+        // still the platform policy's; a refusal is the plugin gate's own.
+        //
+        // | Rule | platform | skill intersection | outcome | authority |
+        // |---|---|---|---|---|
+        // | K1 | allow (always_allow) | allows `read` | Allow | Policy(always_allow) |
+        // | K2 | allow (always_allow) | refuses `bash` | Block | PluginGate |
+        let allowed = gate.gate(&ctx("read", serde_json::json!({})), &state).await;
+        assert_eq!(allowed.outcome, GateOutcome::Allow, "K1");
         assert_eq!(
-            gate.gate(&ctx("read", serde_json::json!({})), &state)
-                .await
-                .outcome,
-            GateOutcome::Allow
+            allowed.authority,
+            awaken_runtime_contract::permission::GateAuthority::Policy(platform_basis()),
+            "K1"
         );
-        assert!(matches!(
-            gate.gate(&ctx("bash", serde_json::json!({})), &state)
-                .await
-                .outcome,
-            GateOutcome::Block { .. }
-        ));
+        let refused = gate.gate(&ctx("bash", serde_json::json!({})), &state).await;
+        assert!(matches!(refused.outcome, GateOutcome::Block { .. }), "K2");
+        assert_eq!(
+            refused.authority,
+            awaken_runtime_contract::permission::GateAuthority::PluginGate,
+            "K2"
+        );
         active.narrow(&["read".into(), "bash".into()]);
         assert!(matches!(
             gate.gate(&ctx("bash", serde_json::json!({})), &state)
@@ -1244,20 +1258,35 @@ mod tests {
         #[async_trait]
         impl ToolGateHook for DenyGate {
             async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
-                GateDecision::without_basis(GateOutcome::Block {
-                    reason: "platform policy".into(),
-                })
+                GateDecision::policy(
+                    GateOutcome::Block {
+                        reason: "platform policy".into(),
+                    },
+                    awaken_runtime_contract::permission::PermissionBasis::fixed(
+                        awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                    ),
+                )
             }
         }
 
         let gate = SkillAllowedToolsGate::new(Arc::new(DenyGate), ActiveSkillTools::new());
+        let decision = gate
+            .gate(&ctx("read", serde_json::json!({})), &Store::new())
+            .await;
         assert_eq!(
-            gate.gate(&ctx("read", serde_json::json!({})), &Store::new())
-                .await
-                .outcome,
+            decision.outcome,
             GateOutcome::Block {
                 reason: "platform policy".into(),
             }
+        );
+        assert_eq!(
+            decision.authority,
+            awaken_runtime_contract::permission::GateAuthority::Policy(
+                awaken_runtime_contract::permission::PermissionBasis::fixed(
+                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                )
+            ),
+            "the platform's refusal keeps the platform's authority"
         );
     }
 

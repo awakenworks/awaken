@@ -108,7 +108,7 @@ impl ToolGateHook for SuspendGate {
         _ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::RequireConfirmation {
+        GateDecision::plugin_gate(GateOutcome::RequireConfirmation {
             correlation_id: "ticket-1".to_string(),
         })
     }

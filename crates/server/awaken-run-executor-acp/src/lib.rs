@@ -62,7 +62,7 @@ use awaken_runtime_contract::execution::{
 };
 use awaken_runtime_contract::llm::{ThreadUsage, ThreadUsageKey, TokenUsage};
 use awaken_runtime_contract::permission::{
-    ToolCall, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
+    GateAuthority, ToolCall, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
 };
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{

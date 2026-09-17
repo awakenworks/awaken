@@ -828,15 +828,13 @@ impl ToolGateHook for AwaitTheAwaitTool {
         ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> awaken_runtime_contract::permission::GateDecision {
-        awaken_runtime_contract::permission::GateDecision::without_basis(
-            if ctx.tool_id == "Await" {
-                GateOutcome::RequireConfirmation {
-                    correlation_id: "await-ticket".to_string(),
-                }
-            } else {
-                GateOutcome::Allow
-            },
-        )
+        awaken_runtime_contract::permission::GateDecision::plugin_gate(if ctx.tool_id == "Await" {
+            GateOutcome::RequireConfirmation {
+                correlation_id: "await-ticket".to_string(),
+            }
+        } else {
+            GateOutcome::Allow
+        })
     }
 }
 

@@ -54,23 +54,12 @@ pub(crate) struct PermissionAudit(
 impl PermissionAudit {
     pub(crate) fn record(&self, call: &ToolCall, ruling: &ToolPermissionRuling) {
         let draft: awaken_agent_contract::audit::draft::Draft =
-            awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided {
-                tool_id: call.tool_id.clone(),
-                call_id: call.call_id.clone(),
-                decision: ruling
-                    .verdict
-                    .kind()
-                    .gate_outcome_kind()
-                    .audit_decision()
-                    .as_str()
-                    .to_string(),
-                policy: ruling.basis.as_ref().map(|basis| basis.policy),
-                reason_code: ruling
-                    .basis
-                    .as_ref()
-                    .and_then(|basis| basis.reason_code.clone()),
-            }
-            .into();
+            GateAuthority::from(ruling.authority.clone())
+                .permission_decided(
+                    call,
+                    ruling.verdict.kind().gate_outcome_kind().audit_decision(),
+                )
+                .into();
         self.0
             .lock()
             .expect("ACP permission audit lock poisoned")

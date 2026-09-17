@@ -12,8 +12,8 @@ use awaken_ext_permission::{
 };
 use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement;
 use awaken_runtime_contract::permission::{
-    PermissionBasis, PermissionPolicy, PermissionReasonCode, ToolCall, ToolPermissionPolicy,
-    ToolPermissionVerdict,
+    PermissionBasis, PermissionPolicy, PermissionReasonCode, RulingAuthority, ToolCall,
+    ToolPermissionPolicy, ToolPermissionVerdict,
 };
 use serde_json::json;
 
@@ -936,7 +936,7 @@ async fn every_ruling_names_the_policy_that_decided_and_the_auto_grounds() {
                   verdict: fn(&ToolPermissionVerdict) -> bool,
                   basis: PermissionBasis| {
         assert!(verdict(&ruling.verdict), "{rule}: {:?}", ruling.verdict);
-        assert_eq!(ruling.basis, Some(basis), "{rule}");
+        assert_eq!(ruling.authority, RulingAuthority::Policy(basis), "{rule}");
     };
     let is_allow = |v: &ToolPermissionVerdict| matches!(v, ToolPermissionVerdict::Allow);
     let is_ask =

@@ -428,6 +428,12 @@ impl awaken_agent_contract::audit::permission::PermissionConfirmation
 pub const fn awaken_agent_contract::audit::permission::PermissionConfirmation::as_str(self) -> &'static str
 impl core::convert::From<&awaken_agent_contract::agent::awaiting::PermissionDecision> for awaken_agent_contract::audit::permission::PermissionConfirmation
 pub fn awaken_agent_contract::audit::permission::PermissionConfirmation::from(&awaken_agent_contract::agent::awaiting::PermissionDecision) -> Self
+pub enum awaken_agent_contract::audit::permission::PermissionDecider
+pub awaken_agent_contract::audit::permission::PermissionDecider::PluginGate
+pub awaken_agent_contract::audit::permission::PermissionDecider::Policy
+pub awaken_agent_contract::audit::permission::PermissionDecider::RunNarrowing
+impl awaken_agent_contract::audit::permission::PermissionDecider
+pub const fn awaken_agent_contract::audit::permission::PermissionDecider::as_str(self) -> &'static str
 pub enum awaken_agent_contract::audit::permission::PermissionPolicy
 pub awaken_agent_contract::audit::permission::PermissionPolicy::AlwaysAllow
 pub awaken_agent_contract::audit::permission::PermissionPolicy::AlwaysAsk
@@ -460,6 +466,7 @@ pub awaken_agent_contract::audit::run_event::RunEvent::PermissionConfirmed::resu
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionConfirmed::tool_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::call_id: alloc::string::String
+pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::decided_by: awaken_agent_contract::audit::permission::PermissionDecider
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::decision: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::policy: core::option::Option<awaken_agent_contract::audit::permission::PermissionPolicy>
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::reason_code: core::option::Option<awaken_agent_contract::audit::permission::PermissionReasonCode>

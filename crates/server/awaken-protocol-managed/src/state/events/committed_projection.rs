@@ -1194,10 +1194,13 @@ impl ManagedState {
 /// The audit kind is the one place a permission decision is written down, so
 /// reading it here keeps the projection reporting a recorded answer rather than
 /// inferring one. An unrecognized decision label is skipped: a value this
-/// version does not understand must not be flattened into `allow`. The policy
-/// and reason code are additive fields: a row written before they existed has
-/// none, and a policy label outside the closed vocabulary reads as none, so the
-/// decision is still reported while the `evaluation` it cannot name is absent.
+/// version does not understand must not be flattened into `allow`. The decider,
+/// policy and reason code are additive fields: a row written before they
+/// existed has none, and a policy label outside the closed vocabulary reads as
+/// none, so the decision is still reported while the `evaluation` it cannot
+/// name is absent. A row whose `decided_by` is not `policy` (a per-Run
+/// narrowing, a plugin gate, or a label this version does not know) projects no
+/// `evaluation`: the SDK object only has policy vocabulary.
 /// The reason code is an open registry and is carried as recorded, including a
 /// code this version has no name for.
 fn harvest_permission_decisions<'a>(
@@ -1220,9 +1223,21 @@ fn harvest_permission_decisions<'a>(
                 Some("deny") => EvaluatedPermission::Deny,
                 _ => continue,
             };
+            // Only a policy decider has a policy to project. A row written
+            // before `decided_by` existed names none and keeps its policy; a
+            // per-Run narrowing, a plugin gate or a decider label this version
+            // does not know has no SDK `evaluation` to report.
+            let policy_decided = match event.payload.get("decided_by") {
+                None => true,
+                Some(label) => matches!(
+                    serde_json::from_value(label.clone()),
+                    Ok(awaken_agent_contract::audit::permission::PermissionDecider::Policy)
+                ),
+            };
             let policy = event
                 .payload
                 .get("policy")
+                .filter(|_| policy_decided)
                 .and_then(|value| serde_json::from_value(value.clone()).ok());
             let reason_code = event
                 .payload

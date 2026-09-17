@@ -731,10 +731,7 @@ impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
                 }
             }
         };
-        ToolPermissionRuling {
-            verdict,
-            basis: Some(basis),
-        }
+        ToolPermissionRuling::policy(verdict, basis)
     }
 }
 

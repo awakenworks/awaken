@@ -207,7 +207,7 @@ impl ToolGateHook for AllowGate {
         _ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Allow)
+        GateDecision::plugin_gate(GateOutcome::Allow)
     }
 }
 
@@ -219,9 +219,9 @@ impl ToolGateHook for ImmediateGate {
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
         if call.tool_id != self.tool_id {
-            return GateDecision::without_basis(GateOutcome::Allow);
+            return GateDecision::plugin_gate(GateOutcome::Allow);
         }
-        GateDecision::without_basis(match self.decision {
+        GateDecision::plugin_gate(match self.decision {
             ImmediateDecision::Block => GateOutcome::Block {
                 reason: "policy denied the call".to_string(),
             },

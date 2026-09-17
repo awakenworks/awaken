@@ -1012,7 +1012,7 @@ impl ToolGateHook for SuspendAdvisorGate {
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
         assert_eq!(call.tool_id, ADVISOR_TOOL_ID, "D4/C1");
-        GateDecision::without_basis(GateOutcome::RequireConfirmation {
+        GateDecision::plugin_gate(GateOutcome::RequireConfirmation {
             correlation_id: "advisor-approval".into(),
         })
     }

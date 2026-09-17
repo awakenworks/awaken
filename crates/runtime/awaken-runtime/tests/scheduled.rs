@@ -102,7 +102,7 @@ impl ToolGateHook for ScheduleGate {
         _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Schedule {
+        GateDecision::plugin_gate(GateOutcome::Schedule {
             correlation_id: "sched-1".to_string(),
             action_kind: None,
         })
@@ -118,7 +118,7 @@ impl ToolGateHook for ScheduleEveryGate {
         call: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Schedule {
+        GateDecision::plugin_gate(GateOutcome::Schedule {
             correlation_id: format!("sched-{}", call.call_id),
             action_kind: None,
         })
@@ -134,7 +134,7 @@ impl ToolGateHook for UnknownKindGate {
         _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Schedule {
+        GateDecision::plugin_gate(GateOutcome::Schedule {
             correlation_id: "sched-1".to_string(),
             action_kind: Some("plugin-only-kind".to_string()),
         })
@@ -149,7 +149,7 @@ impl ToolGateHook for SuspendGate {
         _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::RequireConfirmation {
+        GateDecision::plugin_gate(GateOutcome::RequireConfirmation {
             correlation_id: "perm-1".to_string(),
         })
     }

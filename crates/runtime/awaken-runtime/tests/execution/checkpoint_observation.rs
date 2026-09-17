@@ -40,7 +40,7 @@ impl ToolGateHook for RecoveryTool {
         _: &ToolCall,
         _: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Allow)
+        GateDecision::plugin_gate(GateOutcome::Allow)
     }
 }
 

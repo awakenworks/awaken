@@ -47,7 +47,12 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
     impl ToolPermissionPolicy for ExactPolicy {
         async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
             assert_eq!(call.tool_id, self.expected);
-            ToolPermissionRuling::without_basis(ToolPermissionVerdict::Allow)
+            ToolPermissionRuling::policy(
+                ToolPermissionVerdict::Allow,
+                awaken_runtime_contract::permission::PermissionBasis::fixed(
+                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                ),
+            )
         }
     }
 
@@ -194,15 +199,20 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
             } else {
                 "ask"
             };
-            ToolPermissionRuling::without_basis(match behavior {
-                "allow" => ToolPermissionVerdict::Allow,
-                "deny" => ToolPermissionVerdict::Deny {
-                    reason: "denied by alias policy".into(),
+            ToolPermissionRuling::policy(
+                match behavior {
+                    "allow" => ToolPermissionVerdict::Allow,
+                    "deny" => ToolPermissionVerdict::Deny {
+                        reason: "denied by alias policy".into(),
+                    },
+                    _ => ToolPermissionVerdict::RequireConfirmation {
+                        correlation_id: format!("confirm:{}", call.call_id),
+                    },
                 },
-                _ => ToolPermissionVerdict::RequireConfirmation {
-                    correlation_id: format!("confirm:{}", call.call_id),
-                },
-            })
+                awaken_runtime_contract::permission::PermissionBasis::fixed(
+                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                ),
+            )
         }
     }
 
@@ -2933,7 +2943,12 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
     #[async_trait]
     impl ToolPermissionPolicy for FixedPolicy {
         async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionRuling {
-            ToolPermissionRuling::without_basis(self.0.clone())
+            ToolPermissionRuling::policy(
+                self.0.clone(),
+                awaken_runtime_contract::permission::PermissionBasis::fixed(
+                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                ),
+            )
         }
     }
 
@@ -2976,8 +2991,8 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
     // grounds); C2 a per-Run narrowing refuses one before the session policy is
     // consulted; C3 an allowing narrowing lets the session policy answer.
     // Effects: E1 one `PermissionDecided` fact per decided call, carrying the
-    // gate label and that policy; E2 the narrowing's own refusal is recorded
-    // once, by the narrowing; E3 an allowing narrowing records nothing of its
+    // gate label, `decided_by: policy` and that policy; E2 the narrowing's own
+    // refusal is recorded once, by the narrowing, as `decided_by: run_narrowing`; E3 an allowing narrowing records nothing of its
     // own — the session policy's record is the answer.
     //
     // | Rule | C1 | C2 | C3 | Effect |
@@ -3013,7 +3028,14 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
             arguments: serde_json::json!({"cmd": "ls"}),
         }
     }
-    fn facts(audit: &PermissionAudit) -> Vec<(String, String, Option<String>, Option<String>)> {
+    type Fact = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    fn facts(audit: &PermissionAudit) -> Vec<Fact> {
         audit
             .drain()
             .into_iter()
@@ -3030,6 +3052,7 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
                         .as_str()
                         .unwrap_or_default()
                         .into(),
+                    text("decided_by"),
                     text("policy"),
                     text("reason_code"),
                 )
@@ -3037,18 +3060,16 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
             .collect()
     }
 
-    let allowing = RulingPolicy(ToolPermissionRuling {
-        verdict: ToolPermissionVerdict::Allow,
-        basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
-    });
-    let judged = RulingPolicy(ToolPermissionRuling {
-        verdict: ToolPermissionVerdict::RequireConfirmation {
+    let allowing = RulingPolicy(ToolPermissionRuling::policy(
+        ToolPermissionVerdict::Allow,
+        PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
+    ));
+    let judged = RulingPolicy(ToolPermissionRuling::policy(
+        ToolPermissionVerdict::RequireConfirmation {
             correlation_id: "tk".into(),
         },
-        basis: Some(PermissionBasis::auto(Some(
-            PermissionReasonCode::INDETERMINATE,
-        ))),
-    });
+        PermissionBasis::auto(Some(PermissionReasonCode::INDETERMINATE)),
+    ));
 
     // L1 / L2: the session policy decides and its record names the policy.
     for (rule, policy, call_id, decision, expected_policy, expected_reason) in [
@@ -3071,10 +3092,7 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
     ] {
         let audit = Arc::new(PermissionAudit::default());
         let resolver = NeutralPermissionResolver {
-            policy: Arc::new(RulingPolicy(ToolPermissionRuling {
-                verdict: policy.0.verdict.clone(),
-                basis: policy.0.basis.clone(),
-            })),
+            policy: Arc::new(RulingPolicy(policy.0.clone())),
             grant_observer: None,
             audit: None,
         }
@@ -3085,6 +3103,7 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
             vec![(
                 call_id.to_string(),
                 decision.to_string(),
+                Some("policy".to_string()),
                 Some(expected_policy.as_str().to_string()),
                 expected_reason.map(|code: PermissionReasonCode| code.as_str().to_string()),
             )],
@@ -3095,10 +3114,10 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
     // L3: a narrowing that refuses is the decision, recorded by the narrowing.
     let audit = Arc::new(PermissionAudit::default());
     let session_policy = NeutralPermissionResolver {
-        policy: Arc::new(RulingPolicy(ToolPermissionRuling {
-            verdict: ToolPermissionVerdict::Allow,
-            basis: Some(PermissionBasis::fixed(PermissionPolicy::AlwaysAllow)),
-        })),
+        policy: Arc::new(RulingPolicy(ToolPermissionRuling::policy(
+            ToolPermissionVerdict::Allow,
+            PermissionBasis::fixed(PermissionPolicy::AlwaysAllow),
+        ))),
         grant_observer: None,
         audit: None,
     }
@@ -3113,16 +3132,19 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
     let recorded = facts(&audit);
     assert_eq!(recorded.len(), 1, "L3/E2 one record, not two");
     assert_eq!(
-        (recorded[0].1.as_str(), recorded[0].2.as_deref()),
-        ("deny", None),
-        "L3/E2 a per-Run narrowing names no authored policy"
+        (
+            recorded[0].1.as_str(),
+            recorded[0].2.as_deref(),
+            recorded[0].3.as_deref()
+        ),
+        ("deny", Some("run_narrowing"), None),
+        "L3/E2 a per-Run narrowing names itself and no authored policy"
     );
 
     // L4: an allowing narrowing defers, and only the session policy's record stands.
-    let narrowing_allow = RulingPolicy(ToolPermissionRuling {
-        verdict: ToolPermissionVerdict::Allow,
-        basis: None,
-    });
+    let narrowing_allow = RulingPolicy(ToolPermissionRuling::run_narrowing(
+        ToolPermissionVerdict::Allow,
+    ));
     let narrowed = NarrowedPermissionResolver {
         base: &session_policy,
         narrowing: &narrowing_allow,
@@ -3134,6 +3156,7 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
         vec![(
             "c4".to_string(),
             "allow".to_string(),
+            Some("policy".to_string()),
             Some(PermissionPolicy::AlwaysAllow.as_str().to_string()),
             None,
         )],
@@ -3152,7 +3175,7 @@ async fn per_run_permission_is_an_intersection_with_acp_authority() {
     #[async_trait]
     impl ToolPermissionPolicy for FixedPolicy {
         async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
-            ToolPermissionRuling::without_basis(self.0.clone())
+            ToolPermissionRuling::run_narrowing(self.0.clone())
         }
     }
 
@@ -3312,9 +3335,14 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 changed || call.arguments == serde_json::json!({"cmd":"echo ok"}),
                 "AR0 permission input supersedes placeholder"
             );
-            ToolPermissionRuling::without_basis(ToolPermissionVerdict::RequireConfirmation {
-                correlation_id: if changed { "approval-2" } else { "approval-1" }.to_string(),
-            })
+            ToolPermissionRuling::policy(
+                ToolPermissionVerdict::RequireConfirmation {
+                    correlation_id: if changed { "approval-2" } else { "approval-1" }.to_string(),
+                },
+                awaken_runtime_contract::permission::PermissionBasis::fixed(
+                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                ),
+            )
         }
     }
 
