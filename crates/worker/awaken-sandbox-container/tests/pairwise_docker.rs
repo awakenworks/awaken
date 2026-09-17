@@ -39,7 +39,9 @@ impl pc::SecretBroker for CredentialBroker {
     }
 
     async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("process secrets are not configured"))
+        Err(pc::SandboxError::unsupported(
+            "process secrets are not configured",
+        ))
     }
 
     async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {

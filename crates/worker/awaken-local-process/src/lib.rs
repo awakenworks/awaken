@@ -132,7 +132,9 @@ impl LocalProcess {
         let group = i32::try_from(group)
             .ok()
             .filter(|group| *group > 1)
-            .ok_or_else(|| SandboxError::new("invalid private signal group"))?;
+            .ok_or_else(|| {
+                SandboxError::backend("bind_private_signal_group", "invalid private signal group")
+            })?;
         let group = Pid::from_raw(group);
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -145,13 +147,15 @@ impl LocalProcess {
                         return Ok(());
                     }
                     Ok(_) | Err(nix::errno::Errno::ESRCH) => {}
-                    Err(error) => return Err(SandboxError::new(error.to_string())),
+                    Err(error) => {
+                        return Err(SandboxError::backend("bind_private_signal_group", error));
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
         })
         .await
-        .map_err(|_| SandboxError::new("private signal group setup timed out"))?
+        .map_err(|_| SandboxError::timeout("private signal group setup timed out"))?
     }
 
     pub fn take_stderr(&mut self) -> Option<ChildStderr> {
@@ -173,9 +177,10 @@ fn group_signal_result(result: Result<(), nix::errno::Errno>) -> Result<(), Sand
         // EPERM (including an ambiguous macOS response after natural exit) is
         // not proof that the group is absent. A reaped leader says nothing
         // about surviving descendants. Preserve every error except exact ESRCH.
-        Err(error) => Err(SandboxError::new(format!(
-            "process-group signal failed: {error}"
-        ))),
+        Err(error) => Err(SandboxError::backend(
+            "group_signal_result",
+            format!("process-group signal failed: {error}"),
+        )),
     }
 }
 
@@ -195,7 +200,7 @@ impl ProcessHandle for LocalProcess {
             .await
             .try_wait()
             .map(|status| status.map(exit))
-            .map_err(|error| SandboxError::new(error.to_string()))
+            .map_err(|error| SandboxError::backend("poll", error))
     }
 
     async fn signal(&self, signal: Signal) -> Result<(), SandboxError> {
@@ -223,7 +228,7 @@ impl ProcessHandle for LocalProcess {
                 .lock()
                 .await
                 .start_kill()
-                .map_err(|error| SandboxError::new(error.to_string()))
+                .map_err(|error| SandboxError::backend("signal", error))
         }
     }
 }

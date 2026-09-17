@@ -9,8 +9,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_sandbox_control::{
     CapabilityExpiresAtUnixMs, RepositoryGitCredentialQuery, SandboxControlRequest,
-    SandboxControlResponse, read_frame, write_frame,
+    SandboxControlResponse,
 };
+use awaken_sandbox_control_transport::{read_frame, write_frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -44,7 +45,7 @@ fn parse_args(args: &[String]) -> Result<(PathBuf, Operation), GitCredentialErro
         return Err(GitCredentialError::InvalidInvocation);
     };
     if socket_flag != "--socket"
-        || socket != awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH
+        || socket != awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH
     {
         return Err(GitCredentialError::InvalidInvocation);
     }
@@ -334,7 +335,7 @@ mod tests {
          * zeroized buffer; E2=never open a control channel or retain state.
          * Rule: R7 C1+C2=>E1+E2.
          */
-        let socket = awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
+        let socket = awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
         assert_eq!(
             parse_args(&["--socket".into(), socket.into(), "store".into()])
                 .unwrap()
@@ -358,7 +359,7 @@ mod tests {
          * Rules: R7 C1+C2+C3=>E1+E2+E3. This is forward-compatible by rule,
          * not by an operation-version allowlist.
          */
-        let socket = awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
+        let socket = awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
         for name in ["capability", "future-operation"] {
             let operation = parse_args(&["--socket".into(), socket.into(), name.into()])
                 .expect("open Git operation")

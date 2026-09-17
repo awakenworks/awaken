@@ -304,7 +304,7 @@ async fn failed_term_escalation_requires_real_child_exit_before_ack() {
             if signal == Signal::Kill && self.deliver_kill {
                 self.process.signal(signal).await
             } else {
-                Err(SandboxError::new("injected signal transport failure"))
+                Err(SandboxError::transport("injected signal transport failure"))
             }
         }
     }
@@ -561,7 +561,7 @@ impl ProcessHandle for CountingProcess {
                 signaled: false,
             })),
             1 => Ok(None),
-            2 => Err(SandboxError::new("transport unavailable")),
+            2 => Err(SandboxError::transport("transport unavailable")),
             _ => std::future::pending().await,
         }
     }
@@ -5188,7 +5188,7 @@ impl awaken_provisioning_contract::SecretBroker for MatrixSecretBroker {
     ) -> std::result::Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
         (reference == "lease://matrix")
             .then(|| br#"{"OPENAI_API_KEY":"matrix-secret"}"#.to_vec()) // awaken-allow: secret
-            .ok_or_else(|| awaken_provisioning_contract::SandboxError::new("unknown lease"))
+            .ok_or_else(|| awaken_provisioning_contract::SandboxError::not_found("unknown lease"))
     }
 
     async fn materialize_process(
@@ -5197,7 +5197,7 @@ impl awaken_provisioning_contract::SecretBroker for MatrixSecretBroker {
     ) -> std::result::Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
         (reference == "lease://matrix")
             .then(|| b"matrix-secret".to_vec())
-            .ok_or_else(|| awaken_provisioning_contract::SandboxError::new("unknown lease"))
+            .ok_or_else(|| awaken_provisioning_contract::SandboxError::not_found("unknown lease"))
     }
 
     async fn write_back(
@@ -5205,7 +5205,7 @@ impl awaken_provisioning_contract::SecretBroker for MatrixSecretBroker {
         _reference: &str,
         _bytes: Vec<u8>,
     ) -> std::result::Result<(), awaken_provisioning_contract::SandboxError> {
-        Err(awaken_provisioning_contract::SandboxError::new(
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
             "not supported",
         ))
     }

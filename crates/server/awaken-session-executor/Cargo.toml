@@ -46,6 +46,7 @@ awaken-sandbox-fs = { workspace = true }
 # environment selected by worker configuration.
 awaken-sandbox-container = { workspace = true }
 awaken-sandbox-control.workspace = true
+awaken-sandbox-control-transport.workspace = true
 # The content-addressed store the host serves files/artifacts from + adapts behind
 # the sandbox providers' BlobSource port (was re-exported via awaken-sandbox-local,
 # now a direct dependency since that worker-tier crate no longer links it).

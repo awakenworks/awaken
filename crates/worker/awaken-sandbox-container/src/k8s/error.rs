@@ -2,8 +2,8 @@
 
 use crate::RuntimeError;
 
-pub(crate) fn backend(error: impl std::fmt::Display) -> RuntimeError {
-    RuntimeError::Backend(error.to_string())
+pub(crate) fn backend(error: impl crate::runtime::RuntimeFailure) -> RuntimeError {
+    error.into_runtime_error()
 }
 
 pub(crate) fn api_conflict(error: &kube::Error) -> bool {

@@ -1857,6 +1857,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-resource-contract",
+ "awaken-runtime-contract",
  "awaken-sandbox-control",
  "serde",
  "serde_json",
@@ -2109,6 +2110,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-sandbox-control",
+ "awaken-sandbox-control-transport",
  "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-sandbox-memoryd",
@@ -2137,6 +2139,7 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-sandbox-control",
+ "awaken-sandbox-control-transport",
  "awaken-sandbox-memoryd",
  "awaken-tool-relay",
  "base64 0.22.1",
@@ -2164,6 +2167,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "awaken-sandbox-control-transport"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-sandbox-control",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "zeroize",
@@ -2192,6 +2206,7 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-sandbox-control",
+ "awaken-sandbox-control-transport",
  "awaken-sandbox-fs",
  "awaken-sandbox-memoryd",
  "awaken-session-contract",
@@ -2439,6 +2454,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-sandbox-container",
  "awaken-sandbox-control",
+ "awaken-sandbox-control-transport",
  "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",

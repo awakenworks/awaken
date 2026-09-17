@@ -45,6 +45,7 @@ mod recovery;
 mod resident_hand;
 mod restore_target;
 mod runtime;
+mod runtime_error;
 mod secret;
 mod staged_mounts;
 mod writable;
@@ -529,19 +530,19 @@ fn validated_recovered_memory_projections(
     let materializations = handle.memory_materializations()?;
     if projections.is_empty() {
         if materializations.is_some_and(|materializations| !materializations.is_empty()) {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::conflict(
                 "container handle carries Memory evidence absent from the frozen specification",
             ));
         }
         return Ok(Vec::new());
     }
     let materializations = materializations.ok_or_else(|| {
-        pc::SandboxError::new(
+        pc::SandboxError::unsupported(
             "legacy container handle cannot reconstruct copy-backed Memory participants",
         )
     })?;
     if materializations.len() != projections.len() {
-        return Err(pc::SandboxError::new(
+        return Err(pc::SandboxError::conflict(
             "container Memory evidence does not exactly cover the frozen specification",
         ));
     }
@@ -555,7 +556,7 @@ fn validated_recovered_memory_projections(
                         && materialization.mount_path == projection.mount_path
                 })
                 .ok_or_else(|| {
-                    pc::SandboxError::new(
+                    pc::SandboxError::conflict(
                         "container Memory evidence differs from the frozen specification",
                     )
                 })?;
@@ -591,14 +592,14 @@ fn memory_snapshot_tar(root: &std::path::Path) -> Result<Vec<u8>, pc::SandboxErr
         bytes: &mut u64,
     ) -> Result<(), pc::SandboxError> {
         let entries = std::fs::read_dir(directory)
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| pc::SandboxError::backend("append", error))?;
         for entry in entries {
-            let entry = entry.map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            let entry = entry.map_err(|error| pc::SandboxError::backend("append", error))?;
             let path = entry.path();
             let metadata = std::fs::symlink_metadata(&path)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("append", error))?;
             if metadata.file_type().is_symlink() {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::invalid(
                     "Memory snapshot must not contain symbolic links",
                 ));
             }
@@ -607,23 +608,23 @@ fn memory_snapshot_tar(root: &std::path::Path) -> Result<Vec<u8>, pc::SandboxErr
                 continue;
             }
             if !metadata.is_file() {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::invalid(
                     "Memory snapshot contains a non-regular file",
                 ));
             }
             *files = files.saturating_add(1);
             *bytes = bytes.saturating_add(metadata.len());
             if *files > MAX_MEMORY_SNAPSHOT_FILES || *bytes > MAX_MEMORY_SNAPSHOT_BYTES {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::invalid(
                     "Memory snapshot exceeds the remote-container projection limit",
                 ));
             }
             let relative = path
                 .strip_prefix(root)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("append", error))?;
             archive
                 .append_path_with_name(&path, relative)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("append", error))?;
         }
         Ok(())
     }
@@ -634,7 +635,7 @@ fn memory_snapshot_tar(root: &std::path::Path) -> Result<Vec<u8>, pc::SandboxErr
     append(&mut archive, root, root, &mut files, &mut bytes)?;
     archive
         .into_inner()
-        .map_err(|error| pc::SandboxError::new(error.to_string()))
+        .map_err(|error| pc::SandboxError::backend("append", error))
 }
 
 fn replace_memory_snapshot(
@@ -642,9 +643,11 @@ fn replace_memory_snapshot(
     files: &[EnvironmentFile],
 ) -> Result<(), pc::SandboxError> {
     if root.exists() {
-        std::fs::remove_dir_all(root).map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        std::fs::remove_dir_all(root)
+            .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
     }
-    std::fs::create_dir_all(root).map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    std::fs::create_dir_all(root)
+        .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
     let mut total = 0_u64;
     for file in files {
         let relative = std::path::Path::new(&file.path);
@@ -654,23 +657,23 @@ fn replace_memory_snapshot(
                 .components()
                 .any(|component| !matches!(component, std::path::Component::Normal(_)))
         {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "unsafe path in harvested Memory snapshot",
             ));
         }
         total = total.saturating_add(file.bytes.len() as u64);
         if total > MAX_MEMORY_SNAPSHOT_BYTES || files.len() > MAX_MEMORY_SNAPSHOT_FILES {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "harvested Memory snapshot exceeds the projection limit",
             ));
         }
         let destination = root.join(relative);
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
         }
         std::fs::write(destination, &file.bytes)
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
     }
     Ok(())
 }
@@ -681,12 +684,14 @@ fn make_memory_tree_accessible(
     access: pc::MountAccess,
 ) -> Result<(), pc::SandboxError> {
     use std::os::unix::fs::PermissionsExt;
-    for entry in std::fs::read_dir(root).map_err(|e| pc::SandboxError::new(e.to_string()))? {
+    for entry in std::fs::read_dir(root)
+        .map_err(|e| pc::SandboxError::backend("make_memory_tree_accessible", e))?
+    {
         let path = entry
-            .map_err(|e| pc::SandboxError::new(e.to_string()))?
+            .map_err(|e| pc::SandboxError::backend("make_memory_tree_accessible", e))?
             .path();
-        let metadata =
-            std::fs::symlink_metadata(&path).map_err(|e| pc::SandboxError::new(e.to_string()))?;
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| pc::SandboxError::backend("make_memory_tree_accessible", e))?;
         if metadata.is_dir() {
             make_memory_tree_accessible(&path, access)?;
         }
@@ -702,7 +707,7 @@ fn make_memory_tree_accessible(
             0o444
         };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
-            .map_err(|e| pc::SandboxError::new(e.to_string()))?;
+            .map_err(|e| pc::SandboxError::backend("make_memory_tree_accessible", e))?;
     }
     let mode = if access == pc::MountAccess::ReadWrite {
         0o777
@@ -710,7 +715,7 @@ fn make_memory_tree_accessible(
         0o555
     };
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(mode))
-        .map_err(|e| pc::SandboxError::new(e.to_string()))
+        .map_err(|e| pc::SandboxError::backend("make_memory_tree_accessible", e))
 }
 
 /// The per-run host staging dir (created once, lazily), kept alive by the returned guard.
@@ -740,14 +745,18 @@ pub(crate) fn staging_dir(
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(err(RuntimeError::Backend(format!("stage dir: {error}"))));
+                return Err(pc::SandboxError::backend(
+                    "staging_dir",
+                    format!("stage dir: {error}"),
+                ));
             }
         }
     }
     let d = created.ok_or_else(|| {
-        err(RuntimeError::Backend(
-            "could not allocate a unique staging directory".into(),
-        ))
+        pc::SandboxError::backend(
+            "staging_dir",
+            "could not allocate a unique staging directory",
+        )
     })?;
     Ok(d)
 }
@@ -787,17 +796,23 @@ pub(crate) fn staging_dir_for_backend_attempt(
         return if existing.path() == path {
             Ok(path)
         } else {
-            Err(pc::SandboxError::new(
+            Err(pc::SandboxError::conflict(
                 "container Memory staging belongs to a different backend attempt",
             ))
         };
     }
     *guard = Some(match disposition {
         PreparedContainerDisposition::FreshReservation => create_staging_guard(path.clone())
-            .map_err(|error| err(RuntimeError::Backend(format!("stage dir: {error}"))))?,
+            .map_err(|error| {
+                pc::SandboxError::backend(
+                    "staging_dir_for_backend_attempt",
+                    format!("stage dir: {error}"),
+                )
+            })?,
         PreparedContainerDisposition::RecoveringReservation
         | PreparedContainerDisposition::AlreadyActive => {
-            restore_target::retained_host_staging_path(path.clone()).map_err(err)?
+            restore_target::retained_host_staging_path(path.clone())
+                .map_err(pc::SandboxError::from)?
         }
     });
     Ok(path)
@@ -833,9 +848,9 @@ fn verify_hash(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::Sandbox
     if let Some(expected) = declared_hash(source) {
         let got = content_fingerprint(bytes);
         if got != expected {
-            return Err(err(RuntimeError::Backend(format!(
+            return Err(pc::SandboxError::conflict(format!(
                 "mount content hash mismatch: declared {expected}, realized {got}"
-            ))));
+            )));
         }
     }
     Ok(())
@@ -915,8 +930,8 @@ async fn resolve_and_stage(
                 &bind.mount_path,
                 persistent_volume_claims,
             ) {
-                bind.source_ref =
-                    source_ref.map_err(|message| err(RuntimeError::Backend(message)))?;
+                bind.source_ref = source_ref
+                    .map_err(|message| pc::SandboxError::backend("resolve_and_stage", message))?;
                 continue;
             }
             match &mount.source {
@@ -929,11 +944,11 @@ async fn resolve_and_stage(
                             bytes
                         }
                         None if mount.required => {
-                            return Err(err(RuntimeError::Backend(format!(
+                            return Err(pc::SandboxError::not_found(format!(
                                 "required mount `{}` did not resolve: no seed or store bytes \
                                  for its content id",
                                 bind.mount_path
-                            ))));
+                            )));
                         }
                         // An optional miss stays unrealized (forward-compat, like the seed path).
                         None => continue,
@@ -948,14 +963,14 @@ async fn resolve_and_stage(
         let directory_bind = mount.is_some_and(pc::MountRequirement::is_secret_writeback);
         let config_mount_path = if directory_bind {
             let (parent, filename) = original_mount_path.rsplit_once('/').ok_or_else(|| {
-                err(RuntimeError::Backend(format!(
+                pc::SandboxError::invalid(format!(
                     "credential mount needs an absolute file path: {original_mount_path}"
-                )))
+                ))
             })?;
             if parent.is_empty() || filename.is_empty() {
-                return Err(err(RuntimeError::Backend(format!(
+                return Err(pc::SandboxError::invalid(format!(
                     "credential mount needs a non-root parent and filename: {original_mount_path}"
-                ))));
+                )));
             }
             Some((parent.to_string(), filename.to_string()))
         } else {
@@ -970,14 +985,20 @@ async fn resolve_and_stage(
                 let config_dir =
                     dir.join(format!("credential-{}", stage_name(&original_mount_path)));
                 std::fs::create_dir(&config_dir).map_err(|e| {
-                    err(RuntimeError::Backend(format!("stage credential dir: {e}")))
+                    pc::SandboxError::backend(
+                        "resolve_and_stage",
+                        format!("stage credential dir: {e}"),
+                    )
                 })?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o777))
                         .map_err(|e| {
-                        err(RuntimeError::Backend(format!("secure credential dir: {e}")))
+                        pc::SandboxError::backend(
+                            "resolve_and_stage",
+                            format!("secure credential dir: {e}"),
+                        )
                     })?;
                 }
                 bind.mount_path = parent.clone();
@@ -987,14 +1008,18 @@ async fn resolve_and_stage(
                 let host_file = dir.join(stage_name(&original_mount_path));
                 (host_file.clone(), host_file)
             };
-            std::fs::write(&host_file, &bytes)
-                .map_err(|e| err(RuntimeError::Backend(format!("stage mount content: {e}"))))?;
+            std::fs::write(&host_file, &bytes).map_err(|e| {
+                pc::SandboxError::backend("resolve_and_stage", format!("stage mount content: {e}"))
+            })?;
             #[cfg(unix)]
             if mount.is_some_and(|mount| mount.access == pc::MountAccess::ReadWrite) {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&host_file, std::fs::Permissions::from_mode(0o666))
                     .map_err(|e| {
-                        err(RuntimeError::Backend(format!("secure writable mount: {e}")))
+                        pc::SandboxError::backend(
+                            "resolve_and_stage",
+                            format!("secure writable mount: {e}"),
+                        )
                     })?;
             }
             bind.source_ref = host_source.to_string_lossy().into_owned();
@@ -1157,10 +1182,6 @@ fn container_plan_with_allowlist(
     })
 }
 
-fn err(e: RuntimeError) -> pc::SandboxError {
-    pc::SandboxError::new(e.to_string())
-}
-
 mod provider;
 pub use provider::ContainerProvider;
 
@@ -1250,7 +1271,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
             self.runtime
                 .spawn_agent(&self.container_id, command)
                 .await
-                .map_err(err)
+                .map_err(pc::SandboxError::from)
         })
     }
 
@@ -1284,7 +1305,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         self.runtime
             .reap_exec_orphans(&self.container_id)
             .await
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         self.execs.clear_orphans();
         Ok(())
     }
@@ -1358,7 +1379,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
             .runtime
             .checkpoint_upload(expectation, access, mutation)
             .await
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         access.admit()?;
         Ok(result)
     }
@@ -1406,7 +1427,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
         self.runtime
             .open_channel(&self.container_id)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
@@ -1502,12 +1523,12 @@ impl ContainerCleanupState {
             .iter()
             .any(|projection| projection.access == pc::MountAccess::ReadWrite);
         if (!secret_writebacks.is_empty() || has_writable_memory) && !reconstructible {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "container terminal participants depend on an unrecoverable host-bind attempt",
             ));
         }
         if !secret_writebacks.is_empty() && secret_broker.is_none() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "recovered writable Secret has no credential broker",
             ));
         }
@@ -1515,7 +1536,7 @@ impl ContainerCleanupState {
             projection.access == pc::MountAccess::ReadWrite
                 && projection.write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
         }) {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "recovered native Memory cannot satisfy write-through consistency",
             ));
         }
@@ -1545,24 +1566,28 @@ impl ContainerCleanupState {
         }
         if !self.secret_writebacks.is_empty() {
             let broker = self.secret_broker.as_ref().ok_or_else(|| {
-                pc::SandboxError::new("durable writable Secret has no credential broker")
+                pc::SandboxError::unsupported("durable writable Secret has no credential broker")
             })?;
             for item in &self.secret_writebacks {
                 authorize()?;
                 let bytes = match runtime
                     .read_live_file(container_id, &item.mount_path)
                     .await
-                    .map_err(err)?
+                    .map_err(pc::SandboxError::from)?
                 {
                     Some(bytes) => bytes,
                     None => {
                         let staged_path = item.staged_path.as_ref().ok_or_else(|| {
-                            pc::SandboxError::new(
+                            pc::SandboxError::backend(
+                                "write_back_secrets",
                                 "native container credential harvest returned no live bytes",
                             )
                         })?;
                         std::fs::read(staged_path).map_err(|e| {
-                            pc::SandboxError::new(format!("read refreshed credential file: {e}"))
+                            pc::SandboxError::backend(
+                                "write_back_secrets",
+                                format!("read refreshed credential file: {e}"),
+                            )
                         })?
                     }
                 };
@@ -1599,7 +1624,7 @@ impl ContainerCleanupState {
             runtime
                 .remove_with_handle(container_id, runtime_handle)
                 .await
-                .map_err(err)?;
+                .map_err(pc::SandboxError::from)?;
             self.release_dependencies(&|effect| effect()).await?;
             *done = true;
         }
@@ -1625,7 +1650,7 @@ impl ContainerCleanupState {
             runtime
                 .dispose_authorized(expectation, authorization, authority)
                 .await
-                .map_err(err)?;
+                .map_err(pc::SandboxError::from)?;
             admit(&mut || Ok(()))?;
             self.release_dependencies(&admit).await?;
             admit(&mut || {
@@ -1727,7 +1752,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         self.runtime
             .spawn(&self.container_id, command)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     async fn attach(
@@ -1741,14 +1766,14 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         self.runtime
             .artifacts(&self.container_id)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
         self.runtime
             .read_artifact(&self.container_id, id)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     fn realized(&self) -> &[pc::RealizedMount] {
@@ -1762,7 +1787,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         self.runtime
             .process(&self.container_id, process_id)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
@@ -1770,7 +1795,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
             .runtime
             .inspect(&self.container_id)
             .await
-            .map_err(err)?
+            .map_err(pc::SandboxError::from)?
         {
             ContainerState::Provisioning => Ok(pc::SandboxStatus::Provisioning),
             ContainerState::Running => Ok(pc::SandboxStatus::Ready),
@@ -1782,7 +1807,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         self.runtime
             .touch_lease(&self.container_id)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     async fn acknowledge_memory_reconciliation(
@@ -1809,7 +1834,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
                         .filter_map(|mount| mount.materialization.as_ref())
                         .any(|materialization| !expected_materializations.contains(materialization))
                     {
-                        return Err(pc::SandboxError::new(
+                        return Err(pc::SandboxError::conflict(
                             "Container CopyMount guard differs from its durable Memory evidence",
                         ));
                     }
@@ -1830,7 +1855,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
         if self.adoption_fingerprint.is_none() || self.realization_fingerprint.is_none() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "legacy container handle cannot authorize fenced physical disposal",
             ));
         }
@@ -1878,7 +1903,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     ) -> Result<(), pc::SandboxError> {
         authorization.validate()?;
         if self.adoption_fingerprint.is_none() || self.realization_fingerprint.is_none() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "legacy container handle cannot authorize fenced physical disposal",
             ));
         }

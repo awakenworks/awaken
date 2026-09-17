@@ -762,7 +762,7 @@ impl pc::MemoryMounter for UncertainMemoryMounter {
                 realization: pc::Realization::Copy,
             }));
         }
-        pc::MemoryMountOutcome::RecoveryRequired(pc::SandboxError::new(
+        pc::MemoryMountOutcome::RecoveryRequired(pc::SandboxError::transport(
             "mount response was lost after a possible effect",
         ))
     }
@@ -784,7 +784,9 @@ impl pc::MemoryMounter for UncertainMemoryMounter {
             |value| value.checked_sub(1),
         );
         if remaining.is_ok() {
-            Err(pc::SandboxError::new("mount recovery remains unavailable"))
+            Err(pc::SandboxError::transport(
+                "mount recovery remains unavailable",
+            ))
         } else {
             if let Some(gate) = &self.recovery_response_gate {
                 gate.acquire().await.unwrap().forget();
@@ -1081,9 +1083,9 @@ impl pc::MemoryMounter for HarvestingMemoryMounter {
         let result: Result<Box<dyn pc::MemoryMount>, pc::SandboxError> = (|| {
             *self.reference.lock().unwrap() = Some(store_id.to_owned());
             std::fs::create_dir_all(host_path)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("mount", error))?;
             std::fs::write(host_path.join("seed.txt"), b"seed")
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                .map_err(|error| pc::SandboxError::backend("mount", error))?;
             Ok(Box::new(HarvestingMemoryMount {
                 root: host_path.to_path_buf(),
                 harvested: self.harvested.clone(),
@@ -2775,9 +2777,10 @@ impl pc::MemoryMounter for FakeMemoryMounter {
         _access: pc::MountAccess,
     ) -> pc::MemoryMountOutcome {
         let result: Result<Box<dyn pc::MemoryMount>, pc::SandboxError> = (|| {
-            std::fs::create_dir_all(host_path).map_err(|e| pc::SandboxError::new(e.to_string()))?;
+            std::fs::create_dir_all(host_path)
+                .map_err(|e| pc::SandboxError::backend("mount", e))?;
             std::fs::write(host_path.join("seed.txt"), b"seed")
-                .map_err(|e| pc::SandboxError::new(e.to_string()))?;
+                .map_err(|e| pc::SandboxError::backend("mount", e))?;
             Ok(Box::new(FakeMemoryMount {
                 torn_down: self.torn_down.clone(),
                 fail_teardown: self.fail_teardown,
@@ -2816,7 +2819,10 @@ impl pc::MemoryMount for FakeMemoryMount {
             let _permit = gate.acquire().await.unwrap();
         }
         if self.fail_teardown {
-            Err(pc::SandboxError::new("injected Memory teardown failure"))
+            Err(pc::SandboxError::backend(
+                "teardown",
+                "injected Memory teardown failure",
+            ))
         } else {
             Ok(())
         }
@@ -4440,7 +4446,9 @@ struct RecordingSecretBroker {
 impl RecordingSecretBroker {
     fn record_writeback(&self, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
         if self.reject_writeback.load(Ordering::SeqCst) {
-            return Err(pc::SandboxError::new("injected write-back rejection"));
+            return Err(pc::SandboxError::unauthorized(
+                "injected write-back rejection",
+            ));
         }
         *self.current.lock().unwrap() = bytes.clone();
         self.writes.lock().unwrap().push(bytes);
@@ -4926,7 +4934,7 @@ async fn take_control_peer(runtime: &FakeRuntime) -> tokio::io::DuplexStream {
 }
 
 async fn exchange_unavailable(peer: &mut tokio::io::DuplexStream) {
-    awaken_sandbox_control::write_frame(
+    awaken_sandbox_control_transport::write_frame(
         peer,
         &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
             query: awaken_sandbox_control::RepositoryGitCredentialQuery {
@@ -4939,9 +4947,10 @@ async fn exchange_unavailable(peer: &mut tokio::io::DuplexStream) {
     .await
     .unwrap();
     assert!(matches!(
-        awaken_sandbox_control::read_frame::<_, awaken_sandbox_control::SandboxControlResponse>(
-            peer
-        )
+        awaken_sandbox_control_transport::read_frame::<
+            _,
+            awaken_sandbox_control::SandboxControlResponse,
+        >(peer)
         .await
         .unwrap(),
         awaken_sandbox_control::SandboxControlResponse::Unavailable
@@ -5663,15 +5672,15 @@ struct RejectingSecretBroker;
 #[async_trait]
 impl pc::SecretBroker for RejectingSecretBroker {
     async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("claim expired"))
+        Err(pc::SandboxError::fence_rejected("claim expired"))
     }
 
     async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("claim expired"))
+        Err(pc::SandboxError::fence_rejected("claim expired"))
     }
 
     async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new("not supported"))
+        Err(pc::SandboxError::unsupported("not supported"))
     }
 }
 

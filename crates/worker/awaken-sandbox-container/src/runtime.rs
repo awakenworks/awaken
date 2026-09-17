@@ -12,6 +12,9 @@ use crate::podman_plan::RootfsPlan;
 use crate::provider_contract::ContainerEffectFence;
 use crate::provider_contract::{PreparedContainer, PreparedContainerDisposition};
 use crate::resident_hand::ResidentHandConfig;
+pub use crate::runtime_error::RuntimeError;
+#[cfg(any(feature = "docker", feature = "k8s"))]
+pub(crate) use crate::runtime_error::RuntimeFailure;
 
 /// Stable label every managed Sandbox container/pod carries. The wire value is
 /// retained for compatibility with existing resources; it is discovery evidence,
@@ -107,10 +110,20 @@ pub(crate) fn container_effect_fence_from_values(
 pub(crate) fn container_runtime_unix_now_ms() -> Result<u64, pc::SandboxError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| pc::SandboxError::new(format!("read Sandbox effect time: {error}")))?
+        .map_err(|error| {
+            pc::SandboxError::backend(
+                "container_runtime_unix_now_ms",
+                format!("read Sandbox effect time: {error}"),
+            )
+        })?
         .as_millis()
         .try_into()
-        .map_err(|_| pc::SandboxError::new("Sandbox effect time exceeds u64"))
+        .map_err(|_| {
+            pc::SandboxError::backend(
+                "container_runtime_unix_now_ms",
+                "Sandbox effect time exceeds u64",
+            )
+        })
 }
 /// Identifies the runtime incarnation that currently owns a container. It fences
 /// realization/adoption only and cannot authorize garbage collection.
@@ -330,40 +343,6 @@ impl K8sContinuationVolume {
             ));
         }
         Ok(())
-    }
-}
-
-/// A container/pod runtime failure.
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeError {
-    #[error("container {0:?} not found")]
-    NotFound(String),
-    #[error("container runtime failed: {0}")]
-    Backend(String),
-    /// The adapter crossed a backend mutation boundary and could not prove
-    /// whether that exact effect converged. Callers must retain every staged
-    /// participant that the physical object may still reference; treating this
-    /// as an ordinary backend rejection would turn response loss into dangling
-    /// host binds or prematurely torn-down Memory mounts.
-    #[error("container runtime effect may have committed: {0}")]
-    MayHaveCommitted(String),
-    /// The current invocation reached another idempotent provider boundary
-    /// after its immutable effect generation was renewed. The caller may retry
-    /// only that same effect with a monotonic fence supplied by the existing
-    /// Session authority; it must retain all staged participants meanwhile.
-    #[error("container runtime effect fence expired before the next provider boundary")]
-    EffectFenceExpired,
-}
-
-impl RuntimeError {
-    /// Classify an error observed after this invocation crossed its first
-    /// backend mutation boundary. The wrapper is idempotent so nested runtime
-    /// adapters cannot erase the stronger outcome.
-    pub(crate) fn after_mutation(self) -> Self {
-        match self {
-            Self::MayHaveCommitted(_) | Self::EffectFenceExpired => self,
-            error => Self::MayHaveCommitted(error.to_string()),
-        }
     }
 }
 

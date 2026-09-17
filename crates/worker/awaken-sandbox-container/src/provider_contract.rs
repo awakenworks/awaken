@@ -73,7 +73,7 @@ impl ContainerRealizationNamespace {
         for part in parts {
             let part = part.trim();
             if part.is_empty() {
-                return Err(pc::SandboxError::new(
+                return Err(pc::SandboxError::invalid(
                     "container realization namespace has an empty stable identity part",
                 ));
             }
@@ -82,7 +82,7 @@ impl ContainerRealizationNamespace {
             hasher.update(part.as_bytes());
         }
         if count == 0 {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::invalid(
                 "container realization namespace requires stable identity evidence",
             ));
         }
@@ -309,7 +309,7 @@ pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
         _access: crate::ContainerCheckpointAccess<'_>,
         _mutation: crate::ContainerCheckpointMutation<'_>,
     ) -> Result<Option<pc::SandboxCheckpointUpload>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container environment does not implement a fenced checkpoint participant",
         ))
     }
@@ -337,7 +337,7 @@ pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
     }
 
     async fn remove_live_input_path(&self, _path: &str) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "late mount removal is unsupported on this container tier",
         ))
     }
@@ -345,7 +345,7 @@ pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
     /// Record one successfully materialized sandbox-visible tree in the
     /// provider's current V2 durable-handle evidence.
     fn record_owned_path(&self, _path: &str) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container environment does not support durable owned-path evidence",
         ))
     }
@@ -356,7 +356,7 @@ pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
     ) -> Result<RuntimeAgentProcess, pc::SandboxError>;
 
     async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannel>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container environment does not expose a resident agent channel",
         ))
     }
@@ -479,7 +479,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         intent: ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         if effect_fence.is_some() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "container provider does not implement fenced Environment creation",
             ));
         }
@@ -491,7 +491,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         &self,
         _adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container provider does not implement effect-free observation",
         ))
     }
@@ -501,7 +501,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _adoption: ContainerEnvironmentAdoption<'_>,
         _effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container provider does not implement fenced Environment observation",
         ))
     }
@@ -522,7 +522,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         if effect_fence.is_some() {
-            return Err(pc::SandboxError::new(
+            return Err(pc::SandboxError::unsupported(
                 "container provider does not implement fenced Environment adoption",
             ));
         }
@@ -548,7 +548,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _terminal_effect_fence: &ContainerEffectFence,
         _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container provider does not implement fenced terminal preparation",
         ))
     }
@@ -560,7 +560,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
     ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container provider does not implement exact restore target acquisition",
         ))
     }
@@ -571,7 +571,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _request: &pc::SandboxRestoreRequest,
         _store: &dyn pc::SandboxCheckpointStore,
     ) -> Result<pc::SandboxRestoreResult<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container provider does not implement checkpoint restore",
         ))
     }
@@ -583,7 +583,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _authorization: &pc::SandboxDisposalAuthorization,
         _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new(
+        Err(pc::SandboxError::unsupported(
             "container provider does not implement exact restored-target disposal",
         ))
     }

@@ -22,7 +22,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             self.forward_proxy.as_ref(),
             self.allowlist_proxy.as_ref(),
         )
-        .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+        .map_err(pc::SandboxError::from)?;
         plan.binds.retain(|bind| {
             !exclusions
                 .iter()
@@ -44,7 +44,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         request.validate_for_spec(spec)?;
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
-            .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+            .map_err(pc::SandboxError::from)?;
 
         let evidence = request.evidence(spec);
         let mut plan =
@@ -58,13 +58,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .runtime
             .recover_restore_target(&runtime_scope, &plan, &plan_fingerprint, &evidence)
             .await
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         if recovered.as_ref().is_some_and(|target| {
             target.disposition != pc::SandboxRestoreTargetDisposition::Recovered
         }) {
-            return Err(err(RuntimeError::Backend(
-                "restore observation reported a non-recovered physical target".into(),
-            )));
+            return Err(pc::SandboxError::conflict(
+                "restore observation reported a non-recovered physical target",
+            ));
         }
 
         let mut staging = StagedMounts::default();
@@ -74,21 +74,21 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     RootfsPlan::Image(reference) => reference.clone(),
                     RootfsPlan::HostUserland => plan.image.clone(),
                     _ => {
-                        return Err(err(RuntimeError::Backend(
-                            "package provisioning requires an OCI image rootfs".into(),
-                        )));
+                        return Err(pc::SandboxError::unsupported(
+                            "package provisioning requires an OCI image rootfs",
+                        ));
                     }
                 };
                 plan.image = if let Some(provisioner) = &self.package_provisioner {
                     provisioner
                         .prepare_package_image(&base_image, &plan.packages, &spec.network)
                         .await
-                        .map_err(err)?
+                        .map_err(pc::SandboxError::from)?
                 } else {
                     self.runtime
                         .prepare_package_image(&base_image, &plan.packages, &spec.network)
                         .await
-                        .map_err(err)?
+                        .map_err(pc::SandboxError::from)?
                 };
                 plan.rootfs = RootfsPlan::Image(plan.image.clone());
             }
@@ -116,7 +116,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     if let Some(staging) = staging.guard.as_mut() {
                         staging.retain_for_restoration();
                     }
-                    return Err(err(error));
+                    return Err(pc::SandboxError::from(error));
                 }
             },
         };
@@ -136,30 +136,30 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 if let Some(staging) = staging.guard.as_mut() {
                     staging.retain_for_restoration();
                 }
-                return Err(err(error.after_mutation()));
+                return Err(pc::SandboxError::from(error.after_mutation()));
             }
         };
 
         if self.runtime.uses_host_live_input_bind() {
-            let physical_staging = retained_host_staging(runtime_handle.as_ref()).map_err(err)?;
+            let physical_staging =
+                retained_host_staging(runtime_handle.as_ref()).map_err(pc::SandboxError::from)?;
             let physical_staging = physical_staging.ok_or_else(|| {
-                err(RuntimeError::Backend(
-                    "host-bind restore target omitted its physical staging locator".into(),
-                ))
+                pc::SandboxError::invalid(
+                    "host-bind restore target omitted its physical staging locator",
+                )
             })?;
             match disposition {
                 pc::SandboxRestoreTargetDisposition::Created => {
                     let current = staging.guard.as_mut().ok_or_else(|| {
-                        err(RuntimeError::Backend(
-                            "created host-bind restore target has no staging directory".into(),
-                        ))
+                        pc::SandboxError::not_found(
+                            "created host-bind restore target has no staging directory",
+                        )
                     })?;
                     if current.path() != physical_staging.path() {
                         current.retain_for_restoration();
-                        return Err(err(RuntimeError::Backend(
-                            "created host-bind restore target reported another staging directory"
-                                .into(),
-                        )));
+                        return Err(pc::SandboxError::conflict(
+                            "created host-bind restore target reported another staging directory",
+                        ));
                     }
                     current.retain_for_restoration();
                 }
@@ -176,23 +176,23 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .runtime
             .restoration_evidence(&container_id)
             .await
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         if observed.as_ref() != Some(&evidence) {
-            return Err(err(RuntimeError::Backend(
-                "container restore target omitted or changed its exact physical evidence".into(),
-            )));
+            return Err(pc::SandboxError::conflict(
+                "container restore target omitted or changed its exact physical evidence",
+            ));
         }
         if self
             .runtime
             .restoration_plan_fingerprint(&container_id)
             .await
-            .map_err(err)?
+            .map_err(pc::SandboxError::from)?
             .as_deref()
             != Some(plan_fingerprint.as_str())
         {
-            return Err(err(RuntimeError::Backend(
-                "container restore target differs from its exact immutable plan".into(),
-            )));
+            return Err(pc::SandboxError::conflict(
+                "container restore target differs from its exact immutable plan",
+            ));
         }
 
         let continuation_excluded_paths = request.checkpoint.excluded_mounts.clone();
@@ -253,11 +253,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         admit()?;
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
-            .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+            .map_err(pc::SandboxError::from)?;
         let evidence = handle.restoration().cloned().ok_or_else(|| {
-            err(RuntimeError::Backend(
-                "restored container handle has no exact evidence".into(),
-            ))
+            pc::SandboxError::not_found("restored container handle has no exact evidence")
         })?;
         let payload = recovery::decode_handle(handle)?;
         if handle.sandbox_id != spec.scope
@@ -270,35 +268,38 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )
             .is_err()
         {
-            return Err(err(RuntimeError::Backend(
-                "restored container handle differs from the exact SandboxSpec or checkpoint exclusions"
-                    .into(),
-            )));
+            return Err(pc::SandboxError::conflict(
+                "restored container handle differs from the exact SandboxSpec or checkpoint exclusions",
+            ));
         }
         if !payload.control_services.is_empty() || payload.sandbox_control_incarnation.is_some() {
-            return Err(err(RuntimeError::Backend(
-                "restore target must not publish independently governed control services before root CAS"
-                    .into(),
-            )));
+            return Err(pc::SandboxError::invalid(
+                "restore target must not publish independently governed control services before root CAS",
+            ));
         }
 
         let container_id = payload.container_id;
-        if self.runtime.inspect(&container_id).await.map_err(err)? == ContainerState::Gone {
-            return Err(err(RuntimeError::NotFound(container_id)));
+        if self
+            .runtime
+            .inspect(&container_id)
+            .await
+            .map_err(pc::SandboxError::from)?
+            == ContainerState::Gone
+        {
+            return Err(pc::SandboxError::from(RuntimeError::NotFound(container_id)));
         }
         admit()?;
         if self
             .runtime
             .restoration_evidence(&container_id)
             .await
-            .map_err(err)?
+            .map_err(pc::SandboxError::from)?
             .as_ref()
             != Some(&evidence)
         {
-            return Err(err(RuntimeError::Backend(
-                "container restore evidence differs between physical target and durable handle"
-                    .into(),
-            )));
+            return Err(pc::SandboxError::conflict(
+                "container restore evidence differs between physical target and durable handle",
+            ));
         }
         admit()?;
         let expected_plan = restoration_plan_fingerprint(
@@ -308,29 +309,28 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .runtime
             .restoration_plan_fingerprint(&container_id)
             .await
-            .map_err(err)?
+            .map_err(pc::SandboxError::from)?
             .as_deref()
             != Some(expected_plan.as_str())
         {
-            return Err(err(RuntimeError::Backend(
-                "container physical realization differs from the exact restore plan".into(),
-            )));
+            return Err(pc::SandboxError::conflict(
+                "container physical realization differs from the exact restore plan",
+            ));
         }
         admit()?;
         let observed_runtime_handle = self
             .runtime
             .handle_extra(&container_id)
             .await
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         if observed_runtime_handle.as_ref() != payload.runtime_handle.as_ref() {
-            return Err(err(RuntimeError::Backend(
-                "container continuation handle differs between physical target and durable binding"
-                    .into(),
-            )));
+            return Err(pc::SandboxError::conflict(
+                "container continuation handle differs between physical target and durable binding",
+            ));
         }
         admit()?;
-        let recovered_staging =
-            retained_host_staging(payload.runtime_handle.as_ref()).map_err(err)?;
+        let recovered_staging = retained_host_staging(payload.runtime_handle.as_ref())
+            .map_err(pc::SandboxError::from)?;
 
         Ok(ContainerSandbox {
             retained_attempt: None,
@@ -391,7 +391,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
         request.validate_for_spec(spec)?;
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
-            .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+            .map_err(pc::SandboxError::from)?;
         let plan = self.restoration_environment_plan(spec, &request.checkpoint.excluded_mounts)?;
         let plan_fingerprint = restoration_plan_fingerprint(&plan);
         let evidence = request.evidence(spec);
@@ -406,7 +406,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 authority,
             )
             .await
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
     }
 }

@@ -153,15 +153,17 @@ pub(crate) fn rebuild_source(
     handle: &pc::SandboxHandle,
 ) -> Result<RebuildSource<'_>, pc::SandboxError> {
     Ok(RebuildSource {
-        fingerprint: handle
-            .realization_fingerprint()
-            .ok_or_else(|| err("legacy sandbox handle cannot authorize rebuild"))?,
-        effect_fence: handle
-            .filesystem_effect_fence()?
-            .ok_or_else(|| err("legacy sandbox handle has no rebuild effect fence"))?,
-        physical_incarnation: handle
-            .filesystem_physical_incarnation()?
-            .ok_or_else(|| err("legacy sandbox handle has no physical rebuild incarnation"))?,
+        fingerprint: handle.realization_fingerprint().ok_or_else(|| {
+            pc::SandboxError::unsupported("legacy sandbox handle cannot authorize rebuild")
+        })?,
+        effect_fence: handle.filesystem_effect_fence()?.ok_or_else(|| {
+            pc::SandboxError::unsupported("legacy sandbox handle has no rebuild effect fence")
+        })?,
+        physical_incarnation: handle.filesystem_physical_incarnation()?.ok_or_else(|| {
+            pc::SandboxError::unsupported(
+                "legacy sandbox handle has no physical rebuild incarnation",
+            )
+        })?,
     })
 }
 
@@ -253,7 +255,7 @@ impl LiveRealization {
                 Ok(Some(observed))
             }
             (Self::LegacyAdopted, PathEntry::Directory(observed)) => Ok(Some(observed)),
-            _ => Err(err(format!(
+            _ => Err(pc::SandboxError::conflict(format!(
                 "sandbox root `{}` has a foreign file type or physical identity",
                 root.display()
             ))),
@@ -264,8 +266,9 @@ impl LiveRealization {
         &self,
         root: &Path,
     ) -> Result<DirectoryIdentity, pc::SandboxError> {
-        self.root_identity_for_access(root)?
-            .ok_or_else(|| err(format!("sandbox root `{}` is absent", root.display())))
+        self.root_identity_for_access(root)?.ok_or_else(|| {
+            pc::SandboxError::not_found(format!("sandbox root `{}` is absent", root.display()))
+        })
     }
 }
 
@@ -286,9 +289,9 @@ pub(crate) struct CreationGuard {
 
 impl CreationGuard {
     fn lock(&self) -> Result<&awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
-        self.lock
-            .as_ref()
-            .ok_or_else(|| err("filesystem creation lifecycle lock was released"))
+        self.lock.as_ref().ok_or_else(|| {
+            pc::SandboxError::conflict("filesystem creation lifecycle lock was released")
+        })
     }
 
     #[cfg(test)]
@@ -305,15 +308,20 @@ impl CreationGuard {
         self.marker
             .completion
             .as_ref()
-            .ok_or_else(|| err("Ready filesystem realization has no exact completion receipt"))
+            .ok_or_else(|| {
+                pc::SandboxError::not_found(
+                    "Ready filesystem realization has no exact completion receipt",
+                )
+            })
             .map(Some)
     }
 
     pub(crate) fn validate_before_mutation(&self) -> Result<(), pc::SandboxError> {
-        let observed = read_marker_locked(&self.root, self.lock()?)?
-            .ok_or_else(|| err("filesystem creation lost its realization marker"))?;
+        let observed = read_marker_locked(&self.root, self.lock()?)?.ok_or_else(|| {
+            pc::SandboxError::gone("filesystem creation lost its realization marker")
+        })?;
         if observed != self.marker {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "filesystem creation marker changed under its held lifecycle lock",
             ));
         }
@@ -333,7 +341,7 @@ impl CreationGuard {
                 require_exact_root_locked(&self.root, self.lock()?, identity)?;
                 self.lock()?
                     .clear_sibling_directory_contents_exact(root_leaf(&self.root)?, identity)
-                    .map_err(err)
+                    .map_err(|error| pc::SandboxError::backend("prepare_root", error))
             }
             Admission::Ready => Ok(()),
         }
@@ -348,10 +356,11 @@ impl CreationGuard {
         let identity = required_root_identity(&self.marker)?;
         require_exact_root_locked(&self.root, self.lock()?, identity)?;
         if self.admission == Admission::Ready {
-            let observed = read_marker_locked(&self.root, self.lock()?)?
-                .ok_or_else(|| err("Ready filesystem replay lost its realization marker"))?;
+            let observed = read_marker_locked(&self.root, self.lock()?)?.ok_or_else(|| {
+                pc::SandboxError::gone("Ready filesystem replay lost its realization marker")
+            })?;
             if observed != self.marker || self.marker.completion.as_ref() != Some(receipt) {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "Ready filesystem response-loss replay changed its completion receipt",
                 ));
             }
@@ -382,10 +391,11 @@ impl CreationGuard {
                 remove_marker_exact_locked(&self.root, self.lock()?, &self.marker)
             }
             RealizationPhase::Recreating => {
-                let source =
-                    self.marker.rebuild_source.as_ref().ok_or_else(|| {
-                        err("recreating sandbox marker has no exact rebuild source")
-                    })?;
+                let source = self.marker.rebuild_source.as_ref().ok_or_else(|| {
+                    pc::SandboxError::not_found(
+                        "recreating sandbox marker has no exact rebuild source",
+                    )
+                })?;
                 let restored = RealizationMarker {
                     schema: MARKER_SCHEMA,
                     fingerprint: self.marker.fingerprint.clone(),
@@ -403,7 +413,9 @@ impl CreationGuard {
                 };
                 replace_marker_locked(&self.root, self.lock()?, &self.marker, &restored)
             }
-            _ => Err(err("sandbox creation guard entered a non-creation phase")),
+            _ => Err(pc::SandboxError::conflict(
+                "sandbox creation guard entered a non-creation phase",
+            )),
         }
     }
 }
@@ -421,24 +433,26 @@ pub(crate) struct LegacyCreationGuard {
 
 impl LegacyCreationGuard {
     fn lock(&self) -> Result<&awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
-        self.lock
-            .as_ref()
-            .ok_or_else(|| err("legacy filesystem creation lock was released"))
+        self.lock.as_ref().ok_or_else(|| {
+            pc::SandboxError::conflict("legacy filesystem creation lock was released")
+        })
     }
 
     pub(crate) fn validate_before_mutation(&self) -> Result<(), pc::SandboxError> {
         require_marker_absence_locked(&self.root, self.lock()?)?;
         let identity = self
             .identity
-            .ok_or_else(|| err("legacy sandbox root was not prepared"))?;
+            .ok_or_else(|| pc::SandboxError::not_ready("legacy sandbox root was not prepared"))?;
         // The record this creation published must still name the exact root it
         // is about to mutate. Without this, a guard whose record was retained
         // or removed underneath would keep writing into a root that a later
         // attempt has already been told to refuse.
         let record = crate::abandoned_realization::read_creation_record(self.lock()?, &self.root)?
-            .ok_or_else(|| err("legacy sandbox creation lost its durable creation record"))?;
+            .ok_or_else(|| {
+                pc::SandboxError::gone("legacy sandbox creation lost its durable creation record")
+            })?;
         if record.is_retained() || record.root_identity() != Some(identity) {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "legacy sandbox creation record no longer names the root being mutated",
             ));
         }
@@ -455,7 +469,7 @@ impl LegacyCreationGuard {
             return self
                 .lock()?
                 .clear_sibling_directory_contents_exact(root_leaf(&self.root)?, identity)
-                .map_err(err);
+                .map_err(|error| pc::SandboxError::backend("prepare_root", error));
         }
         require_absent_locked(
             &self.root,
@@ -466,7 +480,7 @@ impl LegacyCreationGuard {
         let identity = self
             .lock()?
             .create_sibling_directory_noreplace(root_leaf(&self.root)?)
-            .map_err(err)?;
+            .map_err(|error| pc::SandboxError::backend("prepare_root", error))?;
         // Bind the record to the inode immediately. Until this lands, a later
         // attempt still recognizes the root — the record standing at all is
         // what makes it ours — but it cannot detect a substitution.
@@ -482,7 +496,7 @@ impl LegacyCreationGuard {
     pub(crate) fn complete(&mut self) -> Result<LegacyLiveEvidence, pc::SandboxError> {
         let identity = self
             .identity
-            .ok_or_else(|| err("legacy sandbox root was not prepared"))?;
+            .ok_or_else(|| pc::SandboxError::not_ready("legacy sandbox root was not prepared"))?;
         require_exact_root_locked(&self.root, self.lock()?, identity)?;
         // The creation settled, so the root is live work from here on. Dropping
         // the record is what makes a finished sandbox stop looking like an
@@ -507,7 +521,7 @@ impl LegacyCreationGuard {
         if let Some(identity) = self.identity {
             self.lock()?
                 .remove_sibling_directory_tree_exact(root_leaf(&self.root)?, identity)
-                .map_err(err)?;
+                .map_err(|error| pc::SandboxError::backend("abort_creation", error))?;
         }
         crate::abandoned_realization::clear_creation_record(self.lock()?, &self.root)
     }
@@ -534,7 +548,9 @@ pub(crate) struct RemovalGuard {
 impl RemovalGuard {
     fn validate_disposal_authorization(&self) -> Result<(), pc::SandboxError> {
         let authorization = self.marker.disposal_authorization.as_ref().ok_or_else(|| {
-            err("filesystem physical mutation has no aggregate authorization authority")
+            pc::SandboxError::fence_rejected(
+                "filesystem physical mutation has no aggregate authorization authority",
+            )
         })?;
         authorization.validate()
     }
@@ -546,7 +562,7 @@ impl RemovalGuard {
             return Ok(self.marker.completion.as_ref());
         }
         if self.marker.terminal_source.is_some() && self.marker.completion.is_none() {
-            return Err(err(
+            return Err(pc::SandboxError::not_found(
                 "completed filesystem realization entered terminal cleanup without its receipt",
             ));
         }
@@ -558,13 +574,13 @@ impl RemovalGuard {
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<(), pc::SandboxError> {
         if self.marker.disposal_authorization.is_some() {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "filesystem realization already entered aggregate-authorized physical authorization",
             ));
         }
         effect_fence.validate_identity()?;
         if !self.marker.effect_fence.authorizes_successor(effect_fence) {
-            return Err(err(
+            return Err(pc::SandboxError::fence_rejected(
                 "terminal disposal fence is stale, foreign, or regresses lease expiry",
             ));
         }
@@ -595,14 +611,15 @@ impl RemovalGuard {
                 authorization.effect_fence()
             });
         if !authority.authorizes_successor(effect_fence) {
-            return Err(err(
+            return Err(pc::SandboxError::unauthorized(
                 "terminal reconstruction is not authorized by its durable predecessor",
             ));
         }
-        let observed = read_marker_locked(&self.root, &self.lock)?
-            .ok_or_else(|| err("terminal reconstruction lost its realization marker"))?;
+        let observed = read_marker_locked(&self.root, &self.lock)?.ok_or_else(|| {
+            pc::SandboxError::gone("terminal reconstruction lost its realization marker")
+        })?;
         if observed != self.marker || self.marker.phase != RealizationPhase::Removing {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "terminal reconstruction marker changed under its held lifecycle lock",
             ));
         }
@@ -626,7 +643,7 @@ impl RemovalGuard {
     ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
         execution_participant::require_quiescent(&self.marker)?;
         if self.marker.disposal_authorization.is_some() {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "filesystem realization already entered aggregate-authorized physical authorization",
             ));
         }
@@ -642,7 +659,7 @@ impl RemovalGuard {
                 .effect_fence
                 .authorizes_effect_successor(effect_fence)
             {
-                return Err(err(
+                return Err(pc::SandboxError::fence_rejected(
                     "provider preparation fence is shorter or belongs to another operation",
                 ));
             }
@@ -653,7 +670,7 @@ impl RemovalGuard {
             .effect_fence
             .authorizes_effect_successor(effect_fence)
         {
-            return Err(err(
+            return Err(pc::SandboxError::fence_rejected(
                 "provider preparation fence is stale, foreign, or has a lower epoch",
             ));
         }
@@ -680,7 +697,7 @@ impl RemovalGuard {
         let advance = match self.marker.disposal_authorization.as_ref() {
             None => {
                 if &self.marker.effect_fence != authorization.prepared_effect_fence() {
-                    return Err(err(
+                    return Err(pc::SandboxError::fence_rejected(
                         "physical disposal does not identify the exact prepared aggregate effect",
                     ));
                 }
@@ -691,7 +708,7 @@ impl RemovalGuard {
                     || observed.preparation_fingerprint()
                         != authorization.preparation_fingerprint() =>
             {
-                return Err(err(
+                return Err(pc::SandboxError::conflict(
                     "physical disposal conflicts with the immutable aggregate preparation",
                 ));
             }
@@ -704,7 +721,7 @@ impl RemovalGuard {
                 true
             }
             Some(_) => {
-                return Err(err(
+                return Err(pc::SandboxError::fence_rejected(
                     "physical disposal successor is stale or conflicts with a newer takeover",
                 ));
             }
@@ -724,7 +741,9 @@ impl RemovalGuard {
     ) -> Result<(), pc::SandboxError> {
         expected_effect_fence.validate_identity()?;
         let source = self.marker.terminal_source.as_ref().ok_or_else(|| {
-            err("Removing checkpoint participant has no terminal source evidence")
+            pc::SandboxError::not_found(
+                "Removing checkpoint participant has no terminal source evidence",
+            )
         })?;
         if source.expected_effect_fence.is_some()
             || source
@@ -736,14 +755,14 @@ impl RemovalGuard {
                 .authorizes_successor(expected_effect_fence)
             || !expected_effect_fence.authorizes_successor(&self.marker.effect_fence)
         {
-            return Err(err(
+            return Err(pc::SandboxError::fence_rejected(
                 "terminal checkpoint cleanup is not an authorized Suspend continuation",
             ));
         }
         if let Some(recorded) = &self.checkpoint_expected_effect_fence
             && !recorded.same_effect_identity(expected_effect_fence)
         {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "terminal checkpoint cleanup changed its expected source effect",
             ));
         }
@@ -755,14 +774,18 @@ impl RemovalGuard {
         let expected = self
             .checkpoint_expected_effect_fence
             .as_ref()
-            .ok_or_else(|| err("terminal checkpoint cleanup has no bound expected effect"))?;
+            .ok_or_else(|| {
+                pc::SandboxError::not_found(
+                    "terminal checkpoint cleanup has no bound expected effect",
+                )
+            })?;
         self.marker.effect_fence.validate_identity()?;
-        let marker = read_marker_locked(&self.root, &self.lock)?
-            .ok_or_else(|| err("terminal checkpoint cleanup lost its realization marker"))?;
-        let source = marker
-            .terminal_source
-            .as_ref()
-            .ok_or_else(|| err("terminal checkpoint cleanup lost its immutable source evidence"))?;
+        let marker = read_marker_locked(&self.root, &self.lock)?.ok_or_else(|| {
+            pc::SandboxError::gone("terminal checkpoint cleanup lost its realization marker")
+        })?;
+        let source = marker.terminal_source.as_ref().ok_or_else(|| {
+            pc::SandboxError::gone("terminal checkpoint cleanup lost its immutable source evidence")
+        })?;
         if marker.phase != RealizationPhase::Removing
             || !marker
                 .effect_fence
@@ -774,7 +797,7 @@ impl RemovalGuard {
             || !expected.authorizes_successor(&marker.effect_fence)
             || marker != self.marker
         {
-            return Err(err(
+            return Err(pc::SandboxError::conflict(
                 "terminal checkpoint cleanup no longer owns the exact Removing participant",
             ));
         }
@@ -845,9 +868,6 @@ pub(crate) use checkpoint_participant::CheckpointParticipantGuard;
 mod execution_participant;
 #[cfg(target_os = "linux")]
 pub(crate) use execution_participant::{begin_execution, verify_execution_quiescence};
-fn err(error: impl ToString) -> pc::SandboxError {
-    pc::SandboxError::new(error.to_string())
-}
 
 fn is_distinct_authorized_rebuild(
     observed: &pc::SandboxEffectFence,
@@ -863,10 +883,13 @@ mod marker_paths;
 use marker_paths::*;
 fn classify(path: &Path) -> Result<PathEntry, pc::SandboxError> {
     awaken_sandbox_fs::classify_nofollow(path).map_err(|error| {
-        err(format!(
-            "inspect sandbox realization path `{}`: {error}",
-            path.display()
-        ))
+        pc::SandboxError::backend(
+            "classify",
+            format!(
+                "inspect sandbox realization path `{}`: {error}",
+                path.display()
+            ),
+        )
     })
 }
 
@@ -875,10 +898,13 @@ fn classify_locked(
     leaf: &Path,
 ) -> Result<PathEntry, pc::SandboxError> {
     lock.classify_sibling_nofollow(leaf).map_err(|error| {
-        err(format!(
-            "inspect locked sandbox realization sibling `{}`: {error}",
-            leaf.display()
-        ))
+        pc::SandboxError::backend(
+            "classify_locked",
+            format!(
+                "inspect locked sandbox realization sibling `{}`: {error}",
+                leaf.display()
+            ),
+        )
     })
 }
 
@@ -890,7 +916,7 @@ fn require_absent_locked(
 ) -> Result<(), pc::SandboxError> {
     match classify_locked(lock, leaf)? {
         PathEntry::Absent => Ok(()),
-        _ => Err(err(format!(
+        _ => Err(pc::SandboxError::conflict(format!(
             "{description} `{}` is not absent",
             root.parent()
                 .unwrap_or_else(|| Path::new(""))
@@ -907,15 +933,15 @@ fn require_no_untracked_stage_locked(
     let name = root
         .file_name()
         .and_then(|value| value.to_str())
-        .ok_or_else(|| err("sandbox root has no portable final component"))?;
+        .ok_or_else(|| pc::SandboxError::invalid("sandbox root has no portable final component"))?;
     let prefix = format!(".{name}.awaken-realization-stage-");
     if lock
         .sibling_names()
-        .map_err(err)?
+        .map_err(|error| pc::SandboxError::backend("require_no_untracked_stage_locked", error))?
         .iter()
         .any(|candidate| candidate.to_string_lossy().starts_with(&prefix))
     {
-        Err(err(
+        Err(pc::SandboxError::conflict(
             "handle-free terminal cleanup found an untracked private realization stage",
         ))
     } else {
@@ -930,8 +956,11 @@ fn require_exact_root_locked(
 ) -> Result<(), pc::SandboxError> {
     match classify_locked(lock, root_leaf(root)?)? {
         PathEntry::Directory(observed) if observed == expected => Ok(()),
-        PathEntry::Absent => Err(err(format!("sandbox root `{}` is absent", root.display()))),
-        _ => Err(err(format!(
+        PathEntry::Absent => Err(pc::SandboxError::not_found(format!(
+            "sandbox root `{}` is absent",
+            root.display()
+        ))),
+        _ => Err(pc::SandboxError::conflict(format!(
             "sandbox root `{}` has a foreign file type or identity",
             root.display()
         ))),
@@ -940,20 +969,20 @@ fn require_exact_root_locked(
 
 fn decode_marker(bytes: &[u8], display: &Path) -> Result<RealizationMarker, pc::SandboxError> {
     let marker: RealizationMarker = serde_json::from_slice(bytes).map_err(|error| {
-        err(format!(
+        pc::SandboxError::invalid(format!(
             "decode sandbox realization marker `{}`: {error}",
             display.display()
         ))
     })?;
     if marker.schema != MARKER_SCHEMA {
-        return Err(err(format!(
+        return Err(pc::SandboxError::unsupported(format!(
             "sandbox realization marker `{}` has unsupported schema {}",
             display.display(),
             marker.schema
         )));
     }
     if marker.physical_incarnation.trim().is_empty() {
-        return Err(err(
+        return Err(pc::SandboxError::invalid(
             "sandbox realization marker has an empty physical incarnation",
         ));
     }
@@ -995,7 +1024,7 @@ fn validate_marker_disposal_authorization(
         RealizationPhase::Removing | RealizationPhase::Removed
     ) || terminal_source.is_none()
     {
-        return Err(err(
+        return Err(pc::SandboxError::invalid(
             "filesystem disposal authorization exists outside terminal removal",
         ));
     }
@@ -1012,7 +1041,7 @@ fn validate_marker_disposal_authorization(
         && !(latest.authorizes_successor(marker_effect_fence)
             && marker_effect_fence.operation_id == latest.operation_id)
     {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "filesystem disposal authorization conflicts with the marker effect",
         ));
     }
@@ -1021,10 +1050,13 @@ fn validate_marker_disposal_authorization(
 
 fn read_marker_path(path: &Path) -> Result<RealizationMarker, pc::SandboxError> {
     let bytes = awaken_sandbox_fs::read_regular_file_nofollow(path).map_err(|error| {
-        err(format!(
-            "read sandbox realization marker `{}`: {error}",
-            path.display()
-        ))
+        pc::SandboxError::backend(
+            "read_marker_path",
+            format!(
+                "read sandbox realization marker `{}`: {error}",
+                path.display()
+            ),
+        )
     })?;
     decode_marker(&bytes, path)
 }
@@ -1034,7 +1066,7 @@ fn read_marker(root: &Path) -> Result<Option<RealizationMarker>, pc::SandboxErro
     match classify(&path)? {
         PathEntry::Absent => Ok(None),
         PathEntry::RegularFile => read_marker_path(&path).map(Some),
-        _ => Err(err(format!(
+        _ => Err(pc::SandboxError::invalid(format!(
             "sandbox realization marker `{}` is not a regular file",
             path.display()
         ))),
@@ -1052,17 +1084,20 @@ fn read_marker_locked(
             let bytes = lock
                 .read_sibling_regular_file_nofollow(&leaf)
                 .map_err(|error| {
-                    err(format!(
-                        "read locked sandbox realization marker `{}`: {error}",
-                        marker_path(root).map_or_else(
-                            |_| leaf.display().to_string(),
-                            |path| path.display().to_string()
-                        )
-                    ))
+                    pc::SandboxError::backend(
+                        "read_marker_locked",
+                        format!(
+                            "read locked sandbox realization marker `{}`: {error}",
+                            marker_path(root).map_or_else(
+                                |_| leaf.display().to_string(),
+                                |path| path.display().to_string()
+                            )
+                        ),
+                    )
                 })?;
             decode_marker(&bytes, &marker_path(root)?).map(Some)
         }
-        _ => Err(err(format!(
+        _ => Err(pc::SandboxError::invalid(format!(
             "sandbox realization marker `{}` is not a regular file",
             marker_path(root)?.display()
         ))),
@@ -1070,7 +1105,7 @@ fn read_marker_locked(
 }
 
 fn encode_marker(marker: &RealizationMarker) -> Result<Vec<u8>, pc::SandboxError> {
-    serde_json::to_vec(marker).map_err(err)
+    serde_json::to_vec(marker).map_err(|error| pc::SandboxError::backend("encode_marker", error))
 }
 
 fn publish_marker_locked(
@@ -1079,7 +1114,7 @@ fn publish_marker_locked(
     marker: &RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
     lock.publish_sibling_file_noreplace(&marker_leaf(root)?, &encode_marker(marker)?)
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("publish_marker_locked", error))
 }
 
 fn replace_marker_locked(
@@ -1090,12 +1125,12 @@ fn replace_marker_locked(
 ) -> Result<(), pc::SandboxError> {
     let leaf = marker_leaf(root)?;
     if read_marker_locked(root, lock)? != Some(expected.clone()) {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "sandbox realization marker changed during a locked transition",
         ));
     }
     lock.replace_sibling_regular_file_atomic(&leaf, &encode_marker(next)?)
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("replace_marker_locked", error))
 }
 
 fn remove_marker_exact_locked(
@@ -1105,12 +1140,12 @@ fn remove_marker_exact_locked(
 ) -> Result<(), pc::SandboxError> {
     let leaf = marker_leaf(root)?;
     if read_marker_locked(root, lock)? != Some(expected.clone()) {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "sandbox realization marker changed before compensation",
         ));
     }
     lock.remove_sibling_regular_file_nofollow(&leaf)
-        .map_err(err)
+        .map_err(|error| pc::SandboxError::backend("remove_marker_exact_locked", error))
 }
 
 fn require_marker_absence_locked(
@@ -1119,7 +1154,7 @@ fn require_marker_absence_locked(
 ) -> Result<(), pc::SandboxError> {
     match read_marker_locked(root, lock)? {
         None => Ok(()),
-        Some(_) => Err(err(format!(
+        Some(_) => Err(pc::SandboxError::unsupported(format!(
             "legacy sandbox handle cannot claim current realization evidence `{}`",
             marker_path(root)?.display()
         ))),
@@ -1129,11 +1164,9 @@ fn require_marker_absence_locked(
 fn required_root_identity(
     marker: &RealizationMarker,
 ) -> Result<DirectoryIdentity, pc::SandboxError> {
-    marker
-        .root
-        .identity
-        .map(Into::into)
-        .ok_or_else(|| err("sandbox realization marker has no root inode evidence"))
+    marker.root.identity.map(Into::into).ok_or_else(|| {
+        pc::SandboxError::not_found("sandbox realization marker has no root inode evidence")
+    })
 }
 
 fn evidence(marker: &RealizationMarker) -> Result<RealizationEvidence, pc::SandboxError> {
@@ -1170,7 +1203,7 @@ fn ensure_root_published(
         match classify_locked(lock, &stage_leaf)? {
             PathEntry::Absent => {}
             _ => {
-                return Err(err(format!(
+                return Err(pc::SandboxError::conflict(format!(
                     "sandbox private stage `{}` exists without durable inode evidence",
                     stage.display()
                 )));
@@ -1179,7 +1212,7 @@ fn ensure_root_published(
         let previous = marker.clone();
         marker.root.identity = Some(
             lock.create_sibling_directory_noreplace(&stage_leaf)
-                .map_err(err)?
+                .map_err(|error| pc::SandboxError::backend("ensure_root_published", error))?
                 .into(),
         );
         // Marker replacement failure leaves no durable identity that could
@@ -1193,7 +1226,7 @@ fn ensure_root_published(
     match (marker.root.published, root_entry, stage_entry) {
         (false, PathEntry::Absent, PathEntry::Directory(observed)) if observed == identity => {
             lock.publish_sibling_directory_noreplace(&stage_leaf, root_leaf)
-                .map_err(err)?;
+                .map_err(|error| pc::SandboxError::backend("ensure_root_published", error))?;
             let previous = marker.clone();
             marker.root.published = true;
             replace_marker_locked(root, lock, &previous, marker)
@@ -1205,7 +1238,7 @@ fn ensure_root_published(
             replace_marker_locked(root, lock, &previous, marker)
         }
         (true, PathEntry::Directory(observed), PathEntry::Absent) if observed == identity => Ok(()),
-        _ => Err(err(format!(
+        _ => Err(pc::SandboxError::conflict(format!(
             "sandbox root or private stage was substituted for incarnation `{}`",
             marker.physical_incarnation
         ))),
@@ -1255,7 +1288,7 @@ fn owned_realization_path_from_entries(
     let Some(identity) = marker.root.identity.map(Into::into) else {
         return match (root_entry, stage_entry) {
             (PathEntry::Absent, PathEntry::Absent) => Ok(OwnedRealizationPath::Absent),
-            _ => Err(err(
+            _ => Err(pc::SandboxError::invalid(
                 "sandbox realization has a physical path without durable inode evidence",
             )),
         };
@@ -1276,7 +1309,7 @@ fn owned_realization_path_from_entries(
                 identity,
             })
         }
-        _ => Err(err(format!(
+        _ => Err(pc::SandboxError::conflict(format!(
             "sandbox root or private stage was substituted for incarnation `{}`",
             marker.physical_incarnation
         ))),
@@ -1291,7 +1324,7 @@ fn require_realization_absent(
     execution_participant::require_quiescent(marker)?;
     match owned_realization_path_locked(root, lock, marker)? {
         OwnedRealizationPath::Absent => Ok(()),
-        OwnedRealizationPath::Exact { path, .. } => Err(err(format!(
+        OwnedRealizationPath::Exact { path, .. } => Err(pc::SandboxError::conflict(format!(
             "terminal sandbox realization `{}` is not absent",
             path.display()
         ))),
@@ -1313,7 +1346,9 @@ fn remove_owned_root_or_stage_locked(
                 stage_leaf(&marker.root)?
             };
             lock.remove_sibling_directory_tree_exact(leaf, identity)
-                .map_err(err)
+                .map_err(|error| {
+                    pc::SandboxError::backend("remove_owned_root_or_stage_locked", error)
+                })
         }
     }
 }
@@ -1364,7 +1399,7 @@ pub(crate) fn begin(
     let lock = acquire(root)?;
     let Some(mut observed) = read_marker_locked(root, &lock)? else {
         if source.is_some() {
-            return Err(err(
+            return Err(pc::SandboxError::not_found(
                 "sandbox rebuild source has no provider realization marker",
             ));
         }
@@ -1394,7 +1429,7 @@ pub(crate) fn begin(
     };
 
     if observed.fingerprint != *fingerprint {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "sandbox realization belongs to a different immutable specification",
         ));
     }
@@ -1405,7 +1440,9 @@ pub(crate) fn begin(
                 || !observed.effect_fence.same_effect_identity(effect_fence)
                 || observed.restore_input_fingerprint.as_deref() != restore_input_fingerprint
             {
-                return Err(err("incomplete sandbox creation belongs to another effect"));
+                return Err(pc::SandboxError::conflict(
+                    "incomplete sandbox creation belongs to another effect",
+                ));
             }
             if effect_fence.expires_at_unix_ms > observed.effect_fence.expires_at_unix_ms {
                 let previous = observed.clone();
@@ -1421,26 +1458,28 @@ pub(crate) fn begin(
             })
         }
         RealizationPhase::Recreating => {
-            let recorded = observed
-                .rebuild_source
-                .as_ref()
-                .ok_or_else(|| err("recreating sandbox has no source evidence"))?;
+            let recorded = observed.rebuild_source.as_ref().ok_or_else(|| {
+                pc::SandboxError::not_found("recreating sandbox has no source evidence")
+            })?;
             if recorded.phase == RealizationPhase::Removed {
                 let restore_input = restore_input_fingerprint.ok_or_else(|| {
-                    err("checkpoint restore retry has no exact restore input fingerprint")
+                    pc::SandboxError::invalid(
+                        "checkpoint restore retry has no exact restore input fingerprint",
+                    )
                 })?;
                 if source.is_some()
                     || !observed.effect_fence.same_effect_identity(effect_fence)
                     || observed.restore_input_fingerprint.as_deref() != Some(restore_input)
                 {
-                    return Err(err(
+                    return Err(pc::SandboxError::conflict(
                         "checkpoint restore retry conflicts with its Removed predecessor",
                     ));
                 }
                 validate_removed_restore_source(recorded, restore_input)?;
             } else {
-                let source = source
-                    .ok_or_else(|| err("recreating sandbox requires its exact source handle"))?;
+                let source = source.ok_or_else(|| {
+                    pc::SandboxError::invalid("recreating sandbox requires its exact source handle")
+                })?;
                 if recorded.physical_incarnation != source.physical_incarnation
                     || !recorded
                         .effect_fence
@@ -1449,7 +1488,7 @@ pub(crate) fn begin(
                     || observed.fingerprint != *source.fingerprint
                     || observed.restore_input_fingerprint.as_deref() != restore_input_fingerprint
                 {
-                    return Err(err(
+                    return Err(pc::SandboxError::conflict(
                         "recreating sandbox source or effect evidence conflicts",
                     ));
                 }
@@ -1480,19 +1519,21 @@ pub(crate) fn begin(
                         lock: Some(lock),
                     })
                 } else {
-                    Err(err(
+                    Err(pc::SandboxError::conflict(
                         "ready sandbox root conflicts with another create or rebuild effect",
                     ))
                 }
             }
             PathEntry::Absent => {
                 let source = source.ok_or_else(|| {
-                    err("missing ready sandbox requires an exact V2 rebuild source handle")
+                    pc::SandboxError::not_found(
+                        "missing ready sandbox requires an exact V2 rebuild source handle",
+                    )
                 })?;
                 if !source_matches(&observed, &source)
                     || !is_distinct_authorized_rebuild(&observed.effect_fence, effect_fence)
                 {
-                    return Err(err(
+                    return Err(pc::SandboxError::fence_rejected(
                         "sandbox rebuild source or authorization is stale/conflicting",
                     ));
                 }
@@ -1531,21 +1572,23 @@ pub(crate) fn begin(
                     lock: Some(lock),
                 })
             }
-            _ => Err(err(
+            _ => Err(pc::SandboxError::conflict(
                 "ready sandbox root has a foreign type or physical identity",
             )),
         },
         RealizationPhase::Removed => {
             if source.is_some() {
-                return Err(err(
+                return Err(pc::SandboxError::fence_rejected(
                     "Removed filesystem restoration does not accept a stale source handle",
                 ));
             }
             let restore_input = restore_input_fingerprint.ok_or_else(|| {
-                err("Removed filesystem can only transition through an exact checkpoint restore")
+                pc::SandboxError::invalid(
+                    "Removed filesystem can only transition through an exact checkpoint restore",
+                )
             })?;
             if !is_distinct_authorized_rebuild(&observed.effect_fence, effect_fence) {
-                return Err(err(
+                return Err(pc::SandboxError::fence_rejected(
                     "checkpoint restore fence does not authorize the Removed predecessor",
                 ));
             }
@@ -1586,7 +1629,7 @@ pub(crate) fn begin(
                 lock: Some(lock),
             })
         }
-        RealizationPhase::Removing => Err(err(
+        RealizationPhase::Removing => Err(pc::SandboxError::gone(
             "terminal sandbox realization cannot be created or rebuilt",
         )),
     }
@@ -1614,7 +1657,7 @@ pub(crate) fn begin_legacy(root: &Path) -> Result<LegacyCreationGuard, pc::Sandb
         LegacyRootDisposition::Create => None,
         LegacyRootDisposition::Reclaim(identity) => Some(identity),
         LegacyRootDisposition::Refuse(reason) => {
-            return Err(err(format!(
+            return Err(pc::SandboxError::invalid(format!(
                 "legacy sandbox root `{}` {reason}",
                 root.display()
             )));
@@ -1664,7 +1707,7 @@ fn validate_ready_operation_marker(
             .authorizes_successor(authorization_effect_fence)
         || !operation_effect_fence.authorizes_successor(authorization_effect_fence)
     {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "ready operation does not identify the current filesystem realization",
         ));
     }
@@ -1702,7 +1745,7 @@ pub(crate) fn begin_ready_terminal_checkpoint(
         .same_effect_identity(expected_effect_fence)
         || expected_effect_fence.same_effect_identity(terminal_effect_fence)
     {
-        return Err(err(
+        return Err(pc::SandboxError::invalid(
             "terminal checkpoint cleanup requires distinct realization, Suspend, and terminal effects",
         ));
     }
@@ -1727,8 +1770,9 @@ fn begin_ready_operation_with_authorization(
     // Admission and receipt lookup are read-only; expiry is checked at every
     // WAL/store mutation boundary by the guard methods below.
     let lock = acquire(root)?;
-    let marker = read_marker_locked(root, &lock)?
-        .ok_or_else(|| err("ready filesystem operation has no realization marker"))?;
+    let marker = read_marker_locked(root, &lock)?.ok_or_else(|| {
+        pc::SandboxError::not_found("ready filesystem operation has no realization marker")
+    })?;
     validate_ready_operation_marker(
         root,
         &marker,
@@ -1828,7 +1872,7 @@ pub(crate) fn begin_terminal_takeover(
         execution_participant::require_quiescent(&marker)?;
         return match owned {
             OwnedRealizationPath::Absent => Ok(None),
-            OwnedRealizationPath::Exact { .. } => Err(err(
+            OwnedRealizationPath::Exact { .. } => Err(pc::SandboxError::conflict(
                 "removed filesystem realization still has a physical participant",
             )),
         };
@@ -1836,7 +1880,7 @@ pub(crate) fn begin_terminal_takeover(
     if marker.phase == RealizationPhase::Ready
         && matches!(&owned, OwnedRealizationPath::Exact { path, .. } if path != root)
     {
-        return Err(err(
+        return Err(pc::SandboxError::conflict(
             "ready filesystem realization is stranded at its private stage",
         ));
     }
@@ -1853,7 +1897,9 @@ pub(crate) fn begin_terminal_takeover(
         .effect_fence
         .authorizes_successor(terminal_effect_fence)
     {
-        return Err(err("terminal cleanup fence is stale or foreign"));
+        return Err(pc::SandboxError::fence_rejected(
+            "terminal cleanup fence is stale or foreign",
+        ));
     }
 
     // Reopening an existing Removing participant is effect-free. In
@@ -1900,7 +1946,7 @@ pub(crate) fn dispose_legacy(
     live_identity: Option<DirectoryIdentity>,
 ) -> Result<(), pc::SandboxError> {
     let Some(identity) = live_identity else {
-        return Err(err(
+        return Err(pc::SandboxError::unsupported(
             "legacy adopted sandbox has no destructive root evidence",
         ));
     };
@@ -1910,8 +1956,10 @@ pub(crate) fn dispose_legacy(
         PathEntry::Absent => Ok(()),
         PathEntry::Directory(observed) if observed == identity => lock
             .remove_sibling_directory_tree_exact(root_leaf(root)?, identity)
-            .map_err(err),
-        _ => Err(err("legacy sandbox root was substituted before disposal")),
+            .map_err(|error| pc::SandboxError::backend("dispose_legacy", error)),
+        _ => Err(pc::SandboxError::conflict(
+            "legacy sandbox root was substituted before disposal",
+        )),
     }
 }
 

@@ -121,7 +121,10 @@ impl AgentSandbox for Sandbox {
             .is_some_and(|arg| arg == "channel-listen");
         self.commands.lock().unwrap().push(command);
         if !helper && self.primary_fails {
-            return Err(pc::SandboxError::new("primary fixture failure"));
+            return Err(pc::SandboxError::backend(
+                "spawn_agent",
+                "primary fixture failure",
+            ));
         }
         let process = if helper {
             self.helper.clone()

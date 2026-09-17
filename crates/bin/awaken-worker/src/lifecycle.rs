@@ -1193,8 +1193,8 @@ mod tests {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             match (self.mode, call) {
                 (1, 0) | (2, _) => std::future::pending().await,
-                (3, _) => Err(awaken_provisioning_contract::SandboxError(
-                    "evidence lost".into(),
+                (3, _) => Err(awaken_provisioning_contract::SandboxError::gone(
+                    "evidence lost",
                 )),
                 _ => Ok(()),
             }

@@ -40,7 +40,7 @@ pub(crate) fn provision_repo_at(
             return Err(different_repository_error(&dest));
         }
         RepositoryDestinationState::Incomplete => {
-            return Err(SandboxError(format!(
+            return Err(SandboxError::conflict(format!(
                 "repository destination `{}` is occupied by an incomplete or non-Repository tree",
                 dest.display()
             )));
@@ -49,12 +49,13 @@ pub(crate) fn provision_repo_at(
     }
 
     let parent = dest.parent().ok_or_else(|| {
-        SandboxError(format!(
+        SandboxError::invalid(format!(
             "repository destination `{}` has no parent",
             dest.display()
         ))
     })?;
-    std::fs::create_dir_all(parent).map_err(|error| SandboxError(error.to_string()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| SandboxError::backend("provision_repo_at", error))?;
     let stage_guard = repository_stage(parent)?;
     let stage = stage_guard.path().to_path_buf();
     let mut args = vec!["clone".to_string(), "--no-checkout".to_string()];
@@ -76,8 +77,8 @@ pub(crate) fn provision_repo_at(
             run_git(Some(&stage), &["reset", "--hard", "HEAD"])?;
         }
         if !realized_repository_matches(&stage, url, initial_branch, initial_commit) {
-            return Err(SandboxError(
-                "staged repository does not match the exact realization plan".into(),
+            return Err(SandboxError::conflict(
+                "staged repository does not match the exact realization plan",
             ));
         }
         Ok(())
@@ -96,10 +97,13 @@ pub(crate) fn provision_repo_at(
     match destination_state {
         RepositoryDestinationState::Exact => {
             return stage_guard.close().map_err(|error| {
-                SandboxError(format!(
-                    "remove current-attempt Repository stage `{}`: {error}",
-                    stage.display()
-                ))
+                SandboxError::backend(
+                    "provision_repo_at",
+                    format!(
+                        "remove current-attempt Repository stage `{}`: {error}",
+                        stage.display()
+                    ),
+                )
             });
         }
         RepositoryDestinationState::CompleteDifferent => {
@@ -107,7 +111,7 @@ pub(crate) fn provision_repo_at(
             return Err(cleanup_error(error, stage_guard));
         }
         RepositoryDestinationState::Incomplete => {
-            let error = SandboxError(format!(
+            let error = SandboxError::conflict(format!(
                 "repository destination `{}` became occupied before atomic publication",
                 dest.display()
             ));
@@ -117,19 +121,24 @@ pub(crate) fn provision_repo_at(
     }
 
     if let Err(error) = publish_directory_noreplace(&stage, &dest) {
-        let error = SandboxError(format!(
-            "atomically publish staged repository `{}` to absent destination `{}`: {error}",
-            stage.display(),
-            dest.display()
-        ));
+        let error = SandboxError::backend(
+            "provision_repo_at",
+            format!(
+                "atomically publish staged repository `{}` to absent destination `{}`: {error}",
+                stage.display(),
+                dest.display()
+            ),
+        );
         if repository_destination_state(&dest, url, initial_branch, initial_commit)
             .is_ok_and(|state| state == RepositoryDestinationState::Exact)
         {
             return stage_guard.close().map_err(|cleanup| {
-                SandboxError(format!(
-                    "{error}; exact concurrent Repository won but current stage `{}` could not be removed: {cleanup}",
-                    stage.display()
-                ))
+                error.map_detail(|detail| {
+                    format!(
+                        "{detail}; exact concurrent Repository won but current stage `{}` could not be removed: {cleanup}",
+                        stage.display()
+                    )
+                })
             });
         }
         return Err(cleanup_error(error, stage_guard));
@@ -141,10 +150,13 @@ pub(crate) fn provision_repo_at(
     if realized_repository_matches(&dest, url, initial_branch, initial_commit) {
         Ok(())
     } else {
-        Err(SandboxError(format!(
-            "atomically published Repository `{}` failed exact post-publication verification",
-            dest.display()
-        )))
+        Err(SandboxError::backend(
+            "provision_repo_at",
+            format!(
+                "atomically published Repository `{}` failed exact post-publication verification",
+                dest.display()
+            ),
+        ))
     }
 }
 
@@ -167,7 +179,7 @@ fn repository_destination_state(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(RepositoryDestinationState::Absent);
         }
-        Err(error) => return Err(SandboxError(error.to_string())),
+        Err(error) => return Err(SandboxError::backend("repository_destination_state", error)),
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Ok(RepositoryDestinationState::Incomplete);
@@ -197,22 +209,24 @@ fn repository_stage(parent: &Path) -> Result<tempfile::TempDir, SandboxError> {
         .prefix(".awaken-repository-")
         .suffix(".stage")
         .tempdir_in(parent)
-        .map_err(|error| SandboxError(error.to_string()))
+        .map_err(|error| SandboxError::backend("repository_stage", error))
 }
 
 fn cleanup_error(error: SandboxError, stage: tempfile::TempDir) -> SandboxError {
     let path = stage.path().to_path_buf();
     match stage.close() {
         Ok(()) => error,
-        Err(cleanup) => SandboxError(format!(
-            "{error}; failed to remove owned repository stage `{}`: {cleanup}",
-            path.display()
-        )),
+        Err(cleanup) => error.map_detail(|detail| {
+            format!(
+                "{detail}; failed to remove owned repository stage `{}`: {cleanup}",
+                path.display()
+            )
+        }),
     }
 }
 
 fn different_repository_error(destination: &Path) -> SandboxError {
-    SandboxError(format!(
+    SandboxError::conflict(format!(
         "repository destination `{}` already contains a complete different realization",
         destination.display()
     ))
@@ -276,60 +290,58 @@ fn repository_publish_source(
     destination: &Path,
     expectation: &awaken_provisioning_contract::RepositoryPublicationExpectation,
 ) -> Result<RepositoryPublishSource, SandboxError> {
-    expectation
-        .validate()
-        .map_err(|error| SandboxError(error.0))?;
+    expectation.validate()?;
     run_git(None, &["check-ref-format", "--branch", &expectation.branch])?;
-    let destination_metadata =
-        std::fs::symlink_metadata(destination).map_err(|error| SandboxError(error.to_string()))?;
+    let destination_metadata = std::fs::symlink_metadata(destination)
+        .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     if destination_metadata.file_type().is_symlink() || !destination_metadata.is_dir() {
-        return Err(SandboxError(
-            "repository destination is not an in-jail directory".into(),
+        return Err(SandboxError::invalid(
+            "repository destination is not an in-jail directory",
         ));
     }
     let canonical_root = root
         .root()
         .canonicalize()
-        .map_err(|error| SandboxError(error.to_string()))?;
+        .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     let canonical_destination = destination
         .canonicalize()
-        .map_err(|error| SandboxError(error.to_string()))?;
+        .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     if !canonical_destination.starts_with(&canonical_root) {
-        return Err(SandboxError(
-            "repository destination escapes the sandbox root".into(),
+        return Err(SandboxError::invalid(
+            "repository destination escapes the sandbox root",
         ));
     }
     let git_dir = destination.join(".git");
-    let git_metadata =
-        std::fs::symlink_metadata(&git_dir).map_err(|error| SandboxError(error.to_string()))?;
+    let git_metadata = std::fs::symlink_metadata(&git_dir)
+        .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     if git_metadata.file_type().is_symlink() || !git_metadata.is_dir() {
-        return Err(SandboxError(
-            "repository Git directory is not an in-tree directory".into(),
+        return Err(SandboxError::invalid(
+            "repository Git directory is not an in-tree directory",
         ));
     }
     let git_dir = git_dir
         .canonicalize()
-        .map_err(|error| SandboxError(error.to_string()))?;
+        .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     let objects = git_dir.join("objects");
-    let object_metadata =
-        std::fs::symlink_metadata(&objects).map_err(|error| SandboxError(error.to_string()))?;
+    let object_metadata = std::fs::symlink_metadata(&objects)
+        .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     if object_metadata.file_type().is_symlink() || !object_metadata.is_dir() {
-        return Err(SandboxError(
-            "repository object directory is not an in-tree directory".into(),
+        return Err(SandboxError::invalid(
+            "repository object directory is not an in-tree directory",
         ));
     }
     let objects = objects
         .canonicalize()
-        .map_err(|error| SandboxError(error.to_string()))?;
+        .map_err(|error| SandboxError::backend("repository_publish_source", error))?;
     if !git_dir.starts_with(&canonical_destination) || !objects.starts_with(&git_dir) {
-        return Err(SandboxError(
-            "repository Git object directory escapes the working tree".into(),
+        return Err(SandboxError::invalid(
+            "repository Git object directory escapes the working tree",
         ));
     }
     for alternate in ["info/alternates", "info/http-alternates"] {
         if std::fs::symlink_metadata(objects.join(alternate)).is_ok() {
-            return Err(SandboxError(
-                "repository object alternates are not publishable".into(),
+            return Err(SandboxError::unsupported(
+                "repository object alternates are not publishable",
             ));
         }
     }
@@ -338,15 +350,15 @@ fn repository_publish_source(
         Some(destination),
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
     )
-    .map_err(|_| SandboxError("cannot push a repository with detached HEAD".into()))?;
+    .map_err(|_| SandboxError::conflict("cannot push a repository with detached HEAD"))?;
     let branch = branch.trim();
     if branch.is_empty() || branch == "HEAD" {
-        return Err(SandboxError(
-            "cannot push a repository with detached HEAD".into(),
+        return Err(SandboxError::conflict(
+            "cannot push a repository with detached HEAD",
         ));
     }
     if branch != expectation.branch {
-        return Err(SandboxError(format!(
+        return Err(SandboxError::conflict(format!(
             "repository current branch `{branch}` does not match expected branch `{}`",
             expectation.branch
         )));
@@ -357,12 +369,12 @@ fn repository_publish_source(
     )?;
     let commit = commit.trim();
     if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(SandboxError(
-            "repository HEAD did not resolve to a full 40-hex object identifier".into(),
+        return Err(SandboxError::invalid(
+            "repository HEAD did not resolve to a full 40-hex object identifier",
         ));
     }
     if commit != expectation.commit {
-        return Err(SandboxError(format!(
+        return Err(SandboxError::conflict(format!(
             "repository HEAD `{commit}` does not match expected commit `{}`",
             expectation.commit
         )));
@@ -372,7 +384,8 @@ fn repository_publish_source(
 }
 
 fn ephemeral_publish_git_dir(commit: &str) -> Result<tempfile::TempDir, SandboxError> {
-    let temp = tempfile::tempdir().map_err(|error| SandboxError(error.to_string()))?;
+    let temp = tempfile::tempdir()
+        .map_err(|error| SandboxError::backend("ephemeral_publish_git_dir", error))?;
     let git_dir = temp.path().join("git");
     for directory in [
         git_dir.join("objects/info"),
@@ -380,15 +393,16 @@ fn ephemeral_publish_git_dir(commit: &str) -> Result<tempfile::TempDir, SandboxE
         git_dir.join("refs/heads"),
         git_dir.join("refs/tags"),
     ] {
-        std::fs::create_dir_all(directory).map_err(|error| SandboxError(error.to_string()))?;
+        std::fs::create_dir_all(directory)
+            .map_err(|error| SandboxError::backend("ephemeral_publish_git_dir", error))?;
     }
     std::fs::write(git_dir.join("HEAD"), b"ref: refs/heads/awaken-publish\n")
-        .map_err(|error| SandboxError(error.to_string()))?;
+        .map_err(|error| SandboxError::backend("ephemeral_publish_git_dir", error))?;
     std::fs::write(
         git_dir.join("refs/heads/awaken-publish"),
         format!("{commit}\n"),
     )
-    .map_err(|error| SandboxError(error.to_string()))?;
+    .map_err(|error| SandboxError::backend("ephemeral_publish_git_dir", error))?;
     Ok(temp)
 }
 
@@ -403,13 +417,15 @@ fn observed_remote_commit(
     let mut lines = output.lines();
     let line = lines.next().expect("non-empty output has one line");
     if lines.next().is_some() {
-        return Err(SandboxError(
-            "repository remote returned multiple rows for one exact ref".into(),
+        return Err(SandboxError::backend(
+            "observed_remote_commit",
+            "repository remote returned multiple rows for one exact ref",
         ));
     }
     let Some((commit, remote_ref)) = line.split_once('\t') else {
-        return Err(SandboxError(
-            "repository remote returned a malformed exact-ref observation".into(),
+        return Err(SandboxError::backend(
+            "observed_remote_commit",
+            "repository remote returned a malformed exact-ref observation",
         ));
     };
     if commit.len() != 40
@@ -418,8 +434,9 @@ fn observed_remote_commit(
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
         || remote_ref != expected_ref
     {
-        return Err(SandboxError(
-            "repository remote returned a malformed exact-ref observation".into(),
+        return Err(SandboxError::backend(
+            "observed_remote_commit",
+            "repository remote returned a malformed exact-ref observation",
         ));
     }
     Ok(Some(commit.to_owned()))
@@ -511,15 +528,15 @@ pub(crate) fn push_repo_to_at(
     expectation: &awaken_provisioning_contract::RepositoryPublicationExpectation,
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
 ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
-    let unavailable = |error: SandboxError| {
-        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.0))
-    };
+    // Every pre-network refusal keeps its class: detached HEAD and a moved
+    // branch are conflicts, a malformed expectation is invalid.
+    let unavailable = pc::RepositoryPublicationError::Unavailable;
     expectation
         .validate()
         .map_err(pc::RepositoryPublicationError::Unavailable)?;
     if plan.access == awaken_provisioning_contract::MountAccess::ReadOnly {
         return Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::new("read-only repository cannot be published"),
+            pc::SandboxError::unauthorized("read-only repository cannot be published"),
         ));
     }
     let dest = jailed_at(root, logical).map_err(unavailable)?;
@@ -571,14 +588,15 @@ pub(crate) fn push_repo_to_at(
         RepositoryPublicationReobservation::Published => {
             Ok(awaken_provisioning_contract::RepositoryPublicationReceipt::new(plan, expectation))
         }
-        RepositoryPublicationReobservation::Unchanged => Err(
-            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(match push {
-                Ok(()) => {
-                    "repository remote did not confirm the expected commit after push".to_owned()
-                }
-                Err(error) => error.0,
-            })),
-        ),
+        RepositoryPublicationReobservation::Unchanged => {
+            Err(pc::RepositoryPublicationError::Unavailable(match push {
+                Ok(()) => pc::SandboxError::backend(
+                    "push_repo_to_at",
+                    "repository remote did not confirm the expected commit after push",
+                ),
+                Err(error) => error,
+            }))
+        }
         RepositoryPublicationReobservation::Rejected(rejection) => {
             Err(pc::RepositoryPublicationError::Rejected(rejection))
         }
@@ -1185,11 +1203,7 @@ mod tests {
             None,
         )
         .expect_err("A2 SSH has no typed credential path");
-        assert!(
-            error
-                .0
-                .contains("anonymous repository transport must be HTTPS")
-        );
+        assert!(matches!(error, SandboxError::Invalid(_)), "A2 {error}");
 
         let server = CrossHostRedirectGitHttp::serve();
         let credential =
@@ -1207,7 +1221,7 @@ mod tests {
             "Z2l0OmFtYmllbnQtdHJhY2UtY2FwYWJpbGl0eQ==",
         ] {
             assert!(
-                !error.0.contains(secret_representation),
+                !error.to_string().contains(secret_representation),
                 "A4 Git errors must not contain a raw or encoded credential"
             );
         }
@@ -1390,11 +1404,17 @@ mod tests {
         };
         let error = push_repo_to_at(&root, "repo", &plan, &expectation, None)
             .expect_err("detached HEAD rejects before network");
-        assert!(matches!(
-            error,
-            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error)
-                if error.0.contains("detached HEAD")
-        ));
+        // Detached HEAD is observed repository state contradicting the exact
+        // publication expectation: a typed, permanent conflict before network.
+        let awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error) = error
+        else {
+            panic!("detached HEAD is not a remote rejection");
+        };
+        assert!(matches!(error, pc::SandboxError::Conflict(_)), "{error}");
+        assert_eq!(
+            awaken_runtime_contract::resilience::Classify::disposition(&error),
+            awaken_runtime_contract::resilience::Disposition::Permanent
+        );
     }
 
     /// CAS observation cause/effect table, including an ambiguous failed push.
@@ -1499,8 +1519,9 @@ mod tests {
         ] {
             assert!(matches!(
                 push_repo_to_at(&root, "missing", &plan, &expectation, None),
-                Err(pc::RepositoryPublicationError::Unavailable(error))
-                    if error.0.contains("canonical lowercase 40-hex")
+                Err(pc::RepositoryPublicationError::Unavailable(
+                    pc::SandboxError::Invalid(_)
+                ))
             ));
         }
     }
@@ -1584,8 +1605,9 @@ mod tests {
             .expect_err("P1 read-only fails before transport");
         assert!(matches!(
             error,
-            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error)
-                if error.0.contains("read-only")
+            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(
+                pc::SandboxError::Unauthorized(_)
+            )
         ));
 
         let wrong_branch = awaken_provisioning_contract::RepositoryPublicationExpectation {
@@ -1597,8 +1619,9 @@ mod tests {
             .expect_err("P2 wrong local branch fails before transport");
         assert!(matches!(
             error,
-            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error)
-                if error.0.contains("does not match expected branch")
+            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(
+                pc::SandboxError::Conflict(_)
+            )
         ));
 
         let wrong_commit = awaken_provisioning_contract::RepositoryPublicationExpectation {
@@ -1610,8 +1633,9 @@ mod tests {
             .expect_err("P3 wrong local commit fails before transport");
         assert!(matches!(
             error,
-            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error)
-                if error.0.contains("does not match expected commit")
+            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(
+                pc::SandboxError::Conflict(_)
+            )
         ));
 
         let rejected_transport = awaken_provisioning_contract::RepositoryRealizationPlan {

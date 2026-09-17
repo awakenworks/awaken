@@ -76,7 +76,10 @@ async fn compensation_preserves_phase_and_all_failure_evidence() {
                         secret.clone()
                     }],
                     "injected creation phase",
-                    pc::SandboxError::new("original failure"),
+                    pc::SandboxError::backend(
+                        "compensation_preserves_phase_and_all_failure_evidence",
+                        "original failure",
+                    ),
                 )
                 .await;
                 let retained = phase == "ready" || failures != 0 || foreign_path;
@@ -134,12 +137,19 @@ async fn compensation_preserves_phase_and_all_failure_evidence() {
                             &isolated,
                             std::slice::from_ref(&secret),
                             "exact retry",
-                            pc::SandboxError::new("retry cause"),
+                            pc::SandboxError::backend(
+                                "compensation_preserves_phase_and_all_failure_evidence",
+                                "retry cause",
+                            ),
                         )
                         .await;
                         assert_eq!(
                             error.to_string(),
-                            pc::SandboxError::new("retry cause").to_string(),
+                            pc::SandboxError::backend(
+                                "compensation_preserves_phase_and_all_failure_evidence",
+                                "retry cause"
+                            )
+                            .to_string(),
                             "R4 no repeated cleanup failure"
                         );
                         assert_eq!(root.exists(), phase == "ready", "R3/R4");
@@ -203,7 +213,10 @@ async fn recreating_compensation_restores_exact_source_only_after_memory_cleanup
             &isolated,
             &[],
             "rebuild",
-            pc::SandboxError::new("original failure"),
+            pc::SandboxError::backend(
+                "recreating_compensation_restores_exact_source_only_after_memory_cleanup",
+                "original failure",
+            ),
         )
         .await;
         assert!(error.to_string().contains("original failure"));
@@ -238,12 +251,19 @@ async fn recreating_compensation_restores_exact_source_only_after_memory_cleanup
                 &isolated,
                 &[],
                 "rebuild retry",
-                pc::SandboxError::new("retry cause"),
+                pc::SandboxError::backend(
+                    "recreating_compensation_restores_exact_source_only_after_memory_cleanup",
+                    "retry cause",
+                ),
             )
             .await;
             assert_eq!(
                 error.to_string(),
-                pc::SandboxError::new("retry cause").to_string()
+                pc::SandboxError::backend(
+                    "recreating_compensation_restores_exact_source_only_after_memory_cleanup",
+                    "retry cause"
+                )
+                .to_string()
             );
         }
         assert!(!root.exists(), "R2 remove only failed rebuilt bytes");
@@ -291,7 +311,10 @@ async fn compensation_reports_abort_conflict_without_deleting_foreign_stage() {
         &isolated,
         std::slice::from_ref(&secret),
         "conflicted creation",
-        pc::SandboxError::new("original failure"),
+        pc::SandboxError::backend(
+            "compensation_reports_abort_conflict_without_deleting_foreign_stage",
+            "original failure",
+        ),
     )
     .await
     .to_string();
@@ -324,12 +347,19 @@ async fn compensation_reports_abort_conflict_without_deleting_foreign_stage() {
         &isolated,
         &[secret],
         "exact retry",
-        pc::SandboxError::new("retry cause"),
+        pc::SandboxError::backend(
+            "compensation_reports_abort_conflict_without_deleting_foreign_stage",
+            "retry cause",
+        ),
     )
     .await;
     assert_eq!(
         error.to_string(),
-        pc::SandboxError::new("retry cause").to_string()
+        pc::SandboxError::backend(
+            "compensation_reports_abort_conflict_without_deleting_foreign_stage",
+            "retry cause"
+        )
+        .to_string()
     );
     assert!(!root.exists(), "R2 owned root removed");
     assert!(read_marker(&root).unwrap().is_none(), "R2 marker removed");
@@ -380,7 +410,10 @@ async fn cancelled_compensation_retains_original_memory_and_root_until_exact_ret
             &isolated,
             &paths,
             "cancelled creation",
-            pc::SandboxError::new("original failure"),
+            pc::SandboxError::backend(
+                "cancelled_compensation_retains_original_memory_and_root_until_exact_retry",
+                "original failure",
+            ),
         ));
         std::future::poll_fn(|cx| {
             assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
@@ -413,12 +446,19 @@ async fn cancelled_compensation_retains_original_memory_and_root_until_exact_ret
             &isolated,
             &paths,
             "exact retry",
-            pc::SandboxError::new("retry cause"),
+            pc::SandboxError::backend(
+                "cancelled_compensation_retains_original_memory_and_root_until_exact_retry",
+                "retry cause",
+            ),
         )
         .await;
         assert_eq!(
             error.to_string(),
-            pc::SandboxError::new("retry cause").to_string()
+            pc::SandboxError::backend(
+                "cancelled_compensation_retains_original_memory_and_root_until_exact_retry",
+                "retry cause"
+            )
+            .to_string()
         );
         assert_eq!(
             root.exists(),

@@ -115,20 +115,22 @@ pub(super) fn stage_host_projection(
 ) -> Result<(), pc::SandboxError> {
     let root = staging_dir(guard, scope)?.join("live-inputs");
     std::fs::create_dir_all(&root)
-        .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+        .map_err(|error| pc::SandboxError::backend("stage_host_projection", error.to_string()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))
-            .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).map_err(
+            |error| pc::SandboxError::backend("stage_host_projection", error.to_string()),
+        )?;
     }
 
     let mut retained = Vec::with_capacity(binds.len() + 1);
     for bind in std::mem::take(binds) {
         if manages(&bind) {
-            let bytes = std::fs::read(&bind.source_ref)
-                .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
-            project_host_input(&root, &bind.mount_path, &bytes).map_err(err)?;
+            let bytes = std::fs::read(&bind.source_ref).map_err(|error| {
+                pc::SandboxError::backend("stage_host_projection", error.to_string())
+            })?;
+            project_host_input(&root, &bind.mount_path, &bytes).map_err(pc::SandboxError::from)?;
         } else {
             retained.push(bind);
         }
@@ -194,10 +196,10 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
             _ => None,
         }
         .ok_or_else(|| {
-            err(RuntimeError::Backend(format!(
+            pc::SandboxError::invalid(format!(
                 "live input `{}` did not resolve to bytes",
                 requirement.mount_path
-            )))
+            ))
         })?;
         verify_hash(&requirement.source, &bytes)?;
         Ok(bytes)
@@ -205,14 +207,14 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 
     pub async fn remove_live_input_path(&self, path: &str) -> Result<(), pc::SandboxError> {
         if live_input_relative_path(path).is_none() || !self.live_input_projection {
-            return Err(err(RuntimeError::Backend(
-                "late mount removal is unsupported on this container tier".into(),
-            )));
+            return Err(pc::SandboxError::unsupported(
+                "late mount removal is unsupported on this container tier",
+            ));
         }
         self.runtime
             .remove_live_input(&self.container_id, path)
             .await
-            .map_err(err)
+            .map_err(pc::SandboxError::from)
     }
 
     pub(super) async fn attach_live_input(
@@ -220,16 +222,15 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         req: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
         if !self.live_input_projection || !Self::validates_live_input(&req) {
-            return Err(err(RuntimeError::Backend(
-                "late attach unsupported on this container tier or outside its read-only input root"
-                    .into(),
-            )));
+            return Err(pc::SandboxError::unsupported(
+                "late attach unsupported on this container tier or outside its read-only input root",
+            ));
         }
         let bytes = self.resolve_live_input(&req).await?;
         self.runtime
             .project_live_input(&self.container_id, &req.mount_path, &bytes)
             .await
-            .map_err(err)?;
+            .map_err(pc::SandboxError::from)?;
         Ok(pc::RealizedMount {
             mount_id: req.mount_id,
             mount_path: req.mount_path,

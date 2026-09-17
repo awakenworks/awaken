@@ -409,8 +409,8 @@ pub async fn awaken_session_executor::SharedHost::pool_accepting_work(&self) -> 
 pub async fn awaken_session_executor::SharedHost::pool_can_resume_work(&self) -> bool
 pub fn awaken_session_executor::SharedHost::pool_in_flight(&self) -> u32
 pub async fn awaken_session_executor::SharedHost::prewarm_cache_volume(&self, awaken_session_executor::CacheVolumeWarmup) -> core::result::Result<(), alloc::string::String>
-pub async fn awaken_session_executor::SharedHost::prewarm_default_environment_capacity(&self, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::foundation::SandboxError>
-pub async fn awaken_session_executor::SharedHost::prewarm_environment_snapshot(&self, &awaken_session_contract::baseline::EnvironmentSnapshot, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::foundation::SandboxError>
+pub async fn awaken_session_executor::SharedHost::prewarm_default_environment_capacity(&self, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::error::SandboxError>
+pub async fn awaken_session_executor::SharedHost::prewarm_environment_snapshot(&self, &awaken_session_contract::baseline::EnvironmentSnapshot, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::error::SandboxError>
 pub fn awaken_session_executor::SharedHost::provision_local_workspace() -> alloc::string::String
 pub fn awaken_session_executor::SharedHost::provision_local_workspace_at(&std::path::Path) -> alloc::string::String
 pub fn awaken_session_executor::SharedHost::publish_local_workspace_at(&std::path::Path, &str) -> core::io::error::Result<alloc::string::String>
