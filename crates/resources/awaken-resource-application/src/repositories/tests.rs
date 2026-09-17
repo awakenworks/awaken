@@ -87,6 +87,7 @@ async fn exact_retry_survives_config_changes_but_changed_payload_and_retirement_
             expected_current: ConfigVersion::INITIAL,
             config: next.clone(),
         })
+        .await
         .unwrap();
     assert_eq!(
         app.create_idempotent(command(), "request-1")
@@ -107,6 +108,7 @@ async fn exact_retry_survives_config_changes_but_changed_payload_and_retirement_
                 id: original.definition.id.clone(),
                 state,
             })
+            .await
             .unwrap();
         assert!(
             matches!(
@@ -156,6 +158,7 @@ async fn workspace_scoping_and_session_ownership_apply_to_both_list_and_get() {
                 definition,
                 initial_config: config,
             })
+            .await
             .unwrap();
         assert!(app.get("workspace-a", id).await.unwrap().is_none());
     }

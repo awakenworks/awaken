@@ -499,7 +499,7 @@ impl SessionApplication {
         Ok(None)
     }
 
-    pub fn resolve_session_inputs(
+    pub async fn resolve_session_inputs(
         &self,
         workspace_id: &str,
         agent_defaults: &[awaken_resource_contract::InputBinding],
@@ -513,10 +513,11 @@ impl SessionApplication {
             agent_defaults,
             session_inputs,
         )
+        .await
         .map_err(|error| RunError::bad_request(error.to_string()))
     }
 
-    pub fn session_memory_store(
+    pub async fn session_memory_store(
         &self,
         workspace_id: &str,
         memory_store_id: &str,
@@ -527,6 +528,7 @@ impl SessionApplication {
                 RunError::bad_request("memory resources require a configured Resource Registry")
             })?
             .find_memory_store(workspace_id, memory_store_id)
+            .await
             .map_err(|error| RunError::bad_request(error.to_string()))?
             .ok_or_else(|| {
                 RunError::bad_request(format!(
@@ -639,16 +641,18 @@ impl SessionApplication {
             initial_config.clone(),
         )
         .map_err(&map_registry_error)?;
-        let (registered_state, registry_provenance) = match catalog.register_repository(
-            awaken_resource_contract::RegisterRepository {
+        let (registered_state, registry_provenance) = match catalog
+            .register_repository(awaken_resource_contract::RegisterRepository {
                 definition: definition.clone(),
                 initial_config: initial_config.clone(),
-            },
-        ) {
+            })
+            .await
+        {
             Ok(()) => (initial_state, SessionParticipantProvenance::Applied),
             Err(awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(_)) => {
                 let stored_definition = catalog
                     .find_repository(&definition.workspace_id, definition.id.as_str())
+                    .await
                     .map_err(&map_registry_error)?;
                 let stored_config = catalog
                     .find_repository_config(
@@ -656,6 +660,7 @@ impl SessionApplication {
                         definition.id.as_str(),
                         awaken_resource_contract::ConfigVersion::INITIAL,
                     )
+                    .await
                     .map_err(&map_registry_error)?;
                 let Some(stored_definition) = stored_definition else {
                     return Err(RunError::bad_request(
@@ -764,12 +769,13 @@ impl SessionApplication {
                 credential: Some(credential_entry),
             });
         }
-        if let Err(error) =
-            catalog.change_repository_state(awaken_resource_contract::ChangeRepositoryState {
+        if let Err(error) = catalog
+            .change_repository_state(awaken_resource_contract::ChangeRepositoryState {
                 workspace_id: definition.workspace_id.clone(),
                 id: repository_id.clone(),
                 state: awaken_resource_contract::ResourceState::Active,
             })
+            .await
         {
             let first = map_registry_error(error);
             let configured = ConfiguredSessionRepository {

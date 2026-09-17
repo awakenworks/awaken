@@ -1817,7 +1817,6 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-runtime",
- "awaken-store-runtime",
  "parking_lot",
  "proptest",
  "rusqlite",

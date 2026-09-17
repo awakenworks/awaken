@@ -183,7 +183,7 @@ impl ManagedState {
     /// binding plan before entering Skill/File/Vault/Repository effects. The
     /// returned value is consumed unchanged by effect lowering, so replacement
     /// semantics and layout validation cannot drift between two preflights.
-    pub(crate) fn prepare_session_input_attachments(
+    pub(crate) async fn prepare_session_input_attachments(
         &self,
         session_id: &str,
         owner_scope: &str,
@@ -213,6 +213,7 @@ impl ManagedState {
                 let definition = self
                     .application
                     .session_memory_store(owner_scope, memory_store_id.as_str())
+                    .await
                     .map_err(StateError::Run)?;
                 resource.mount_path = unique_memory_mount_path(
                     &definition.name,

@@ -1921,7 +1921,7 @@ impl SessionApplication {
         let Some(catalog) = self.resource_registry() else {
             return OwnedRepositoryRetirement::Pending;
         };
-        let definition = match catalog.find_repository(owner_scope, repository_id) {
+        let definition = match catalog.find_repository(owner_scope, repository_id).await {
             Ok(Some(definition)) => definition,
             // The prior idempotent attempt may already have retired and purged
             // the Registry participant before its Session-root completion CAS.
@@ -1970,6 +1970,7 @@ impl SessionApplication {
                 id: repository_id.into(),
                 state: awaken_resource_contract::ResourceState::Deleted,
             })
+            .await
             .is_ok()
         {
             OwnedRepositoryRetirement::Retired

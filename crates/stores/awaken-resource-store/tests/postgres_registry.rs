@@ -105,11 +105,15 @@ async fn resource_registry_repository_owns_schema_cas_and_restart_durability() {
     let aggregate = MemoryStoreAggregate::register(definition, initial)
         .expect("R1 valid MemoryStore aggregate");
     assert_eq!(
-        store.insert_memory_store(&aggregate).expect("R1 insert"),
+        store
+            .insert_memory_store(&aggregate)
+            .await
+            .expect("R1 insert"),
         InsertOutcome::Inserted
     );
     let stored = store
         .load_memory_store("memory-1")
+        .await
         .expect("R1 load")
         .expect("R1 aggregate");
     let mut updated = stored.aggregate;
@@ -125,6 +129,7 @@ async fn resource_registry_repository_owns_schema_cas_and_restart_durability() {
     assert_eq!(
         store
             .replace_memory_store(stored.revision, &updated)
+            .await
             .expect("R2 replace"),
         ReplaceOutcome::Replaced {
             revision: stored.revision.checked_next().expect("R2 next revision")
@@ -133,6 +138,7 @@ async fn resource_registry_repository_owns_schema_cas_and_restart_durability() {
     assert_eq!(
         store
             .replace_memory_store(stored.revision, &aggregate)
+            .await
             .expect("R3 stale replace is classified"),
         ReplaceOutcome::ConcurrentModification
     );
@@ -143,11 +149,13 @@ async fn resource_registry_repository_owns_schema_cas_and_restart_durability() {
     assert_eq!(
         store
             .insert_repository(&repository)
+            .await
             .expect("R4 insert repository"),
         InsertOutcome::Inserted
     );
     let stored_repository = store
         .load_repository("repository-1")
+        .await
         .expect("R4 load repository")
         .expect("R4 repository aggregate");
     let mut updated_repository = stored_repository.aggregate;
@@ -163,6 +171,7 @@ async fn resource_registry_repository_owns_schema_cas_and_restart_durability() {
     assert!(matches!(
         store
             .replace_repository(stored_repository.revision, &updated_repository)
+            .await
             .expect("R5 replace repository"),
         ReplaceOutcome::Replaced { .. }
     ));
@@ -174,6 +183,7 @@ async fn resource_registry_repository_owns_schema_cas_and_restart_durability() {
     assert_eq!(
         reopened
             .load_memory_store("memory-1")
+            .await
             .expect("R6 durable load")
             .expect("R6 durable aggregate")
             .aggregate
@@ -184,6 +194,7 @@ async fn resource_registry_repository_owns_schema_cas_and_restart_durability() {
     assert_eq!(
         reopened
             .load_repository("repository-1")
+            .await
             .expect("R6 durable repository load")
             .expect("R6 durable repository aggregate")
             .aggregate
@@ -195,6 +206,7 @@ async fn resource_registry_repository_owns_schema_cas_and_restart_durability() {
     assert_eq!(
         reopened
             .load_repository("repository-1")
+            .await
             .expect("R6 durable repository load")
             .expect("R6 durable repository aggregate")
             .aggregate

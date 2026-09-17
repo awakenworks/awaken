@@ -413,6 +413,7 @@ async fn verify_run_repository_binding(
             &request.repository_id,
             request.config_version,
         )
+        .await
         .is_err()
     {
         return StatusCode::FORBIDDEN.into_response();
@@ -534,6 +535,7 @@ async fn verify_session_repository_binding(
                 &request.repository_id,
                 request.config_version,
             )
+            .await
             .is_err()
     {
         return StatusCode::FORBIDDEN.into_response();

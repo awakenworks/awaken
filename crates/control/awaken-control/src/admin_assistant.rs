@@ -378,6 +378,7 @@ impl ResourceInventory for HostResourceInventory {
         // management inventory intentionally retains archived definitions.
         self.memory
             .list_memory_stores(workspace_id)
+            .await
             .unwrap_or_default()
             .into_iter()
             .filter(|definition| {
@@ -1673,6 +1674,7 @@ mod tests {
                         retention_policy: Default::default(),
                     },
                 })
+                .await
                 .expect("register inventory fixture");
         }
         let skills = Arc::new(InMemorySkillStore::new());

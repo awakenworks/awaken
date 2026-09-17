@@ -679,10 +679,10 @@ async fn memory_operation(
             )
         }
     };
-    if let Err(error) =
-        service
-            .validator
-            .verify_memory_binding(&workspace_id, &memory_store_id, config_version)
+    if let Err(error) = service
+        .validator
+        .verify_memory_binding(&workspace_id, &memory_store_id, config_version)
+        .await
     {
         return (
             StatusCode::CONFLICT,

@@ -252,7 +252,8 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         );
         Ok(self
             .registry
-            .register_memory_store_idempotent(memory_store_registration(command))?)
+            .register_memory_store_idempotent(memory_store_registration(command))
+            .await?)
     }
 
     async fn create(
@@ -261,7 +262,7 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
     ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
         let registration = memory_store_registration(command);
         let definition = registration.definition.clone();
-        self.registry.register_memory_store(registration)?;
+        self.registry.register_memory_store(registration).await?;
         Ok(definition)
     }
 
@@ -270,14 +271,14 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<MemoryStoreDefinition>, MemoryStoreApplicationError> {
-        Ok(self.registry.find_memory_store(workspace_id, id)?)
+        Ok(self.registry.find_memory_store(workspace_id, id).await?)
     }
 
     async fn list(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<MemoryStoreDefinition>, MemoryStoreApplicationError> {
-        Ok(self.registry.list_memory_stores(workspace_id)?)
+        Ok(self.registry.list_memory_stores(workspace_id).await?)
     }
 
     async fn update(
@@ -286,7 +287,8 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
     ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
         let mut definition = required_store(
             self.registry
-                .find_memory_store(&command.workspace_id, command.id.as_ref())?,
+                .find_memory_store(&command.workspace_id, command.id.as_ref())
+                .await?,
             command.id.as_ref(),
         )?;
         if let Some(name) = command.name {
@@ -312,10 +314,12 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
                 name: definition.name,
                 description: definition.description,
                 metadata: definition.metadata,
-            })?;
+            })
+            .await?;
         required_store(
             self.registry
-                .find_memory_store(&definition.workspace_id, definition.id.as_ref())?,
+                .find_memory_store(&definition.workspace_id, definition.id.as_ref())
+                .await?,
             definition.id.as_ref(),
         )
     }
@@ -331,8 +335,9 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
                 workspace_id: workspace_id.into(),
                 id: id.into(),
                 state,
-            })?;
-        required_store(self.registry.find_memory_store(workspace_id, id)?, id)
+            })
+            .await?;
+        required_store(self.registry.find_memory_store(workspace_id, id).await?, id)
     }
 
     async fn delete(
@@ -341,10 +346,12 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         id: &str,
         requested_at_unix_ms: u64,
     ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
-        let definition = required_store(self.registry.find_memory_store(workspace_id, id)?, id)?;
+        let definition =
+            required_store(self.registry.find_memory_store(workspace_id, id).await?, id)?;
         let config = self
             .registry
-            .find_memory_store_config(workspace_id, id, definition.current_config_version)?
+            .find_memory_store_config(workspace_id, id, definition.current_config_version)
+            .await?
             .ok_or_else(
                 || awaken_resource_contract::ResourceRegistryError::ConfigNotFound {
                     id: id.to_string(),

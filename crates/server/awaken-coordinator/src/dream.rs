@@ -324,6 +324,7 @@ impl DreamExecutor for BuiltInDreamAgent {
         }
         self.catalog
             .resolve_memory_store(&request.workspace_id, &request.source_memory_store_id)
+            .await
             .map_err(|error| {
                 DreamFailure::new("input_memory_store_unavailable", error.to_string())
             })?;

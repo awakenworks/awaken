@@ -441,6 +441,7 @@ impl crate::ManagedHost {
                         )
                     })?
                     .verify_memory_binding(&workspace, &memory_store_id, config_version)
+                    .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
                 ResourceBindingCheck::Repository {
                     repository_id,
@@ -1700,6 +1701,7 @@ impl crate::ManagedHost {
                     })?;
                     validator
                         .verify_memory_binding(workspace, memory_store_id.as_str(), config.version)
+                        .await
                         .map_err(|error| RunError::bad_request(error.to_string()))?;
                     staged.binding_checks.push(
                         crate::provisioning::ResourceBindingCheck::MemoryStore {

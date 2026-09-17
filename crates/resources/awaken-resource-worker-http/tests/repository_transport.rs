@@ -169,8 +169,9 @@ fn terminal_publication_command(
         .expect("terminal publication command")
 }
 
+#[async_trait::async_trait]
 impl LiveResourceBindingVerifier for ExactRepositoryRegistry {
-    fn verify_memory_binding(
+    async fn verify_memory_binding(
         &self,
         _workspace_id: &str,
         _id: &str,
@@ -179,7 +180,7 @@ impl LiveResourceBindingVerifier for ExactRepositoryRegistry {
         Err(ResourceRegistryError::NotFound("memory".into()))
     }
 
-    fn verify_repository_binding(
+    async fn verify_repository_binding(
         &self,
         workspace_id: &str,
         id: &str,

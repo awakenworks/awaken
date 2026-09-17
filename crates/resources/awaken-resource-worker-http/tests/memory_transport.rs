@@ -49,7 +49,7 @@ fn memory_input(
     }
 }
 
-fn create_store(catalog: &awaken_resource_application::RegistryApplication, id: &str) {
+async fn create_store(catalog: &awaken_resource_application::RegistryApplication, id: &str) {
     catalog
         .register_memory_store(RegisterMemoryStore {
             definition: MemoryStoreDefinition {
@@ -68,6 +68,7 @@ fn create_store(catalog: &awaken_resource_application::RegistryApplication, id: 
                 retention_policy: Default::default(),
             },
         })
+        .await
         .expect("register test MemoryStore");
 }
 
@@ -403,8 +404,8 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
         storage,
     ));
-    create_store(&catalog, "memory-rw");
-    create_store(&catalog, "memory-ro");
+    create_store(&catalog, "memory-rw").await;
+    create_store(&catalog, "memory-ro").await;
     let resources = awaken_session_contract::ResolvedSessionResources::try_new(
         vec![
             memory_input("rw", "memory-rw", ResourceAccess::ReadWrite),
@@ -571,6 +572,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
             id: "memory-rw".into(),
             state: ResourceState::Archived,
         })
+        .await
         .expect("archive test MemoryStore");
     let archived = client.snapshot_heads(&rw).await.expect_err("M8");
     assert!(
@@ -620,7 +622,7 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
         storage,
     ));
-    create_store(&catalog, "memory-realization");
+    create_store(&catalog, "memory-realization").await;
     let dispatch = Arc::new(MemoryDispatchStore::new());
     let (directory, identity) = support::ready_worker("worker-realization-memory").await;
     let lease = awaken_session_contract::SessionRealizationLease {
@@ -790,7 +792,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
         storage,
     ));
-    create_store(&catalog, "memory-terminal");
+    create_store(&catalog, "memory-terminal").await;
 
     let dispatch = Arc::new(MemoryDispatchStore::new());
     dispatch

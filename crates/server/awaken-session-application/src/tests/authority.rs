@@ -147,7 +147,7 @@ fn token_repository_input(session_id: &str, name: &str) -> SessionRepositoryReso
     input
 }
 
-fn register_replayed_token_repository(
+async fn register_replayed_token_repository(
     registry: &dyn awaken_resource_contract::ResourceRegistry,
     input: &SessionRepositoryResourceInput,
 ) {
@@ -183,6 +183,7 @@ fn register_replayed_token_repository(
             definition,
             initial_config,
         })
+        .await
         .expect("register replay fixture");
 }
 
@@ -264,7 +265,7 @@ fn session_with_repository_retirement(
     session
 }
 
-fn register_retirement_repository(
+async fn register_retirement_repository(
     registry: &dyn awaken_resource_contract::ResourceRegistry,
     session_id: &str,
     marked: bool,
@@ -298,6 +299,7 @@ fn register_retirement_repository(
                 clone_policy: Default::default(),
             },
         })
+        .await
         .expect("register retirement fixture");
     registry
         .change_repository_state(awaken_resource_contract::ChangeRepositoryState {
@@ -305,6 +307,7 @@ fn register_retirement_repository(
             id: repository_id.into(),
             state: awaken_resource_contract::ResourceState::Active,
         })
+        .await
         .expect("activate retirement fixture");
 }
 
@@ -346,18 +349,19 @@ impl FaultInjectingResourceRegistry {
     }
 }
 
+#[async_trait::async_trait]
 impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegistry {
-    fn list_repositories(
+    async fn list_repositories(
         &self,
         workspace_id: &str,
     ) -> Result<
         Vec<awaken_resource_contract::RepositoryDefinition>,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.list_repositories(workspace_id)
+        self.inner.list_repositories(workspace_id).await
     }
 
-    fn find_memory_store(
+    async fn find_memory_store(
         &self,
         workspace_id: &str,
         id: &str,
@@ -365,20 +369,20 @@ impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegis
         Option<awaken_resource_contract::MemoryStoreDefinition>,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.find_memory_store(workspace_id, id)
+        self.inner.find_memory_store(workspace_id, id).await
     }
 
-    fn list_memory_stores(
+    async fn list_memory_stores(
         &self,
         workspace_id: &str,
     ) -> Result<
         Vec<awaken_resource_contract::MemoryStoreDefinition>,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.list_memory_stores(workspace_id)
+        self.inner.list_memory_stores(workspace_id).await
     }
 
-    fn find_memory_store_config(
+    async fn find_memory_store_config(
         &self,
         workspace_id: &str,
         id: &str,
@@ -389,9 +393,10 @@ impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegis
     > {
         self.inner
             .find_memory_store_config(workspace_id, id, version)
+            .await
     }
 
-    fn find_repository(
+    async fn find_repository(
         &self,
         workspace_id: &str,
         id: &str,
@@ -399,10 +404,10 @@ impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegis
         Option<awaken_resource_contract::RepositoryDefinition>,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.find_repository(workspace_id, id)
+        self.inner.find_repository(workspace_id, id).await
     }
 
-    fn find_repository_config(
+    async fn find_repository_config(
         &self,
         workspace_id: &str,
         id: &str,
@@ -411,60 +416,63 @@ impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegis
         Option<awaken_resource_contract::RepositoryConfigVersion>,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.find_repository_config(workspace_id, id, version)
+        self.inner
+            .find_repository_config(workspace_id, id, version)
+            .await
     }
 }
 
+#[async_trait::async_trait]
 impl awaken_resource_contract::ResourceAdministration for FaultInjectingResourceRegistry {
-    fn register_repository_idempotent(
+    async fn register_repository_idempotent(
         &self,
         command: awaken_resource_contract::RegisterRepository,
     ) -> Result<
         awaken_resource_contract::RepositoryDefinition,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.register_repository_idempotent(command)
+        self.inner.register_repository_idempotent(command).await
     }
 
-    fn register_memory_store_idempotent(
+    async fn register_memory_store_idempotent(
         &self,
         command: awaken_resource_contract::RegisterMemoryStore,
     ) -> Result<
         awaken_resource_contract::MemoryStoreDefinition,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.register_memory_store_idempotent(command)
+        self.inner.register_memory_store_idempotent(command).await
     }
 
-    fn register_memory_store(
+    async fn register_memory_store(
         &self,
         command: awaken_resource_contract::RegisterMemoryStore,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.register_memory_store(command)
+        self.inner.register_memory_store(command).await
     }
 
-    fn update_memory_store_profile(
+    async fn update_memory_store_profile(
         &self,
         command: awaken_resource_contract::UpdateMemoryStoreProfile,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.update_memory_store_profile(command)
+        self.inner.update_memory_store_profile(command).await
     }
 
-    fn publish_memory_store_config(
+    async fn publish_memory_store_config(
         &self,
         command: awaken_resource_contract::PublishMemoryStoreConfig,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.publish_memory_store_config(command)
+        self.inner.publish_memory_store_config(command).await
     }
 
-    fn change_memory_store_state(
+    async fn change_memory_store_state(
         &self,
         command: awaken_resource_contract::ChangeMemoryStoreState,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.change_memory_store_state(command)
+        self.inner.change_memory_store_state(command).await
     }
 
-    fn register_repository(
+    async fn register_repository(
         &self,
         command: awaken_resource_contract::RegisterRepository,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
@@ -476,17 +484,17 @@ impl awaken_resource_contract::ResourceAdministration for FaultInjectingResource
                 ),
             );
         }
-        self.inner.register_repository(command)
+        self.inner.register_repository(command).await
     }
 
-    fn publish_repository_config(
+    async fn publish_repository_config(
         &self,
         command: awaken_resource_contract::PublishRepositoryConfig,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.publish_repository_config(command)
+        self.inner.publish_repository_config(command).await
     }
 
-    fn change_repository_state(
+    async fn change_repository_state(
         &self,
         command: awaken_resource_contract::ChangeRepositoryState,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
@@ -500,12 +508,13 @@ impl awaken_resource_contract::ResourceAdministration for FaultInjectingResource
                 );
             }
         }
-        self.inner.change_repository_state(command)
+        self.inner.change_repository_state(command).await
     }
 }
 
+#[async_trait::async_trait]
 impl awaken_resource_contract::ExecutionResourceResolver for FaultInjectingResourceRegistry {
-    fn resolve_memory_store(
+    async fn resolve_memory_store(
         &self,
         workspace_id: &str,
         id: &str,
@@ -513,10 +522,10 @@ impl awaken_resource_contract::ExecutionResourceResolver for FaultInjectingResou
         awaken_resource_contract::MemoryStoreConfigVersion,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.resolve_memory_store(workspace_id, id)
+        self.inner.resolve_memory_store(workspace_id, id).await
     }
 
-    fn resolve_repository(
+    async fn resolve_repository(
         &self,
         workspace_id: &str,
         id: &str,
@@ -524,21 +533,24 @@ impl awaken_resource_contract::ExecutionResourceResolver for FaultInjectingResou
         awaken_resource_contract::RepositoryConfigVersion,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.resolve_repository(workspace_id, id)
+        self.inner.resolve_repository(workspace_id, id).await
     }
 }
 
+#[async_trait::async_trait]
 impl awaken_resource_contract::LiveResourceBindingVerifier for FaultInjectingResourceRegistry {
-    fn verify_memory_binding(
+    async fn verify_memory_binding(
         &self,
         workspace_id: &str,
         id: &str,
         version: awaken_resource_contract::ConfigVersion,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.verify_memory_binding(workspace_id, id, version)
+        self.inner
+            .verify_memory_binding(workspace_id, id, version)
+            .await
     }
 
-    fn verify_repository_binding(
+    async fn verify_repository_binding(
         &self,
         workspace_id: &str,
         id: &str,
@@ -546,6 +558,7 @@ impl awaken_resource_contract::LiveResourceBindingVerifier for FaultInjectingRes
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
         self.inner
             .verify_repository_binding(workspace_id, id, version)
+            .await
     }
 }
 
@@ -749,6 +762,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     assert_eq!(
         registry
             .find_repository("workspace", &repository_id)
+            .await
             .expect("inventory")
             .expect("registered definition")
             .name,
@@ -762,6 +776,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
                 &repository_id,
                 awaken_resource_contract::ConfigVersion::INITIAL,
             )
+            .await
             .expect("inventory")
             .expect("registered config")
             .remote_url,
@@ -802,11 +817,15 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     let app = repository_saga_application(registry.clone(), ingress.clone());
     let repository_state = |session_id: &str| {
         let repository_id = managed_repository_id(session_id);
-        inner
-            .find_repository("workspace", &repository_id)
-            .expect("Registry inventory")
-            .expect("Repository definition")
-            .state
+        let inner = inner.clone();
+        async move {
+            inner
+                .find_repository("workspace", &repository_id)
+                .await
+                .expect("Registry inventory")
+                .expect("Repository definition")
+                .state
+        }
     };
     let credential_ref = |session_id: &str| awaken_credential_contract::CredentialRef {
         id: format!("{}:credential", managed_repository_id(session_id)),
@@ -827,6 +846,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     assert!(
         inner
             .find_repository("workspace", &managed_repository_id("repo-dual"))
+            .await
             .unwrap()
             .is_none(),
         "S1/E1 zero Registry write"
@@ -843,6 +863,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     assert!(
         inner
             .find_repository("workspace", &managed_repository_id("repo-invalid"))
+            .await
             .unwrap()
             .is_none(),
         "S2/E1 zero Registry write"
@@ -860,6 +881,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     assert!(
         inner
             .find_repository("workspace", &managed_repository_id("repo-register"))
+            .await
             .unwrap()
             .is_none(),
         "S3 register failure does not persist"
@@ -877,12 +899,14 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
         "S4/E3 ingress failure"
     );
     assert_eq!(
-        repository_state("repo-ingress-applied"),
+        repository_state("repo-ingress-applied").await,
         awaken_resource_contract::ResourceState::Deleted,
         "S4/E3 only this command's Applied Registry participant retires"
     );
     assert!(matches!(
-        inner.resolve_repository("workspace", &managed_repository_id("repo-ingress-applied")),
+        inner
+            .resolve_repository("workspace", &managed_repository_id("repo-ingress-applied"))
+            .await,
         Err(awaken_resource_contract::ResourceRegistryError::NotActive {
             state: awaken_resource_contract::ResourceState::Deleted,
             ..
@@ -900,6 +924,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
                 &managed_repository_id("repo-ingress-applied"),
                 awaken_resource_contract::ConfigVersion::INITIAL,
             )
+            .await
             .unwrap()
             .expect("S4 config")
             .credential_binding
@@ -915,14 +940,14 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     );
 
     let replayed_ingress = token_repository_input("repo-ingress-replayed", "Ingress Replayed");
-    register_replayed_token_repository(inner.as_ref(), &replayed_ingress);
+    register_replayed_token_repository(inner.as_ref(), &replayed_ingress).await;
     ingress.fail_next();
     let retirements_before = ingress.retirements().len();
     app.configure_session_repository(replayed_ingress)
         .await
         .expect_err("S5 injected Vault failure");
     assert_eq!(
-        repository_state("repo-ingress-replayed"),
+        repository_state("repo-ingress-replayed").await,
         awaken_resource_contract::ResourceState::Suspended,
         "S5/E5 replayed Registry truth is not retired"
     );
@@ -949,7 +974,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
         "S6/E5 conflict never reaches Vault"
     );
     assert_eq!(
-        repository_state("repo-ingress-replayed"),
+        repository_state("repo-ingress-replayed").await,
         awaken_resource_contract::ResourceState::Suspended,
         "S6/E5 conflicting replay preserves prior Registry truth"
     );
@@ -968,7 +993,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     .await
     .expect_err("S7 injected activation failure");
     assert_eq!(
-        repository_state("repo-activate-aa"),
+        repository_state("repo-activate-aa").await,
         awaken_resource_contract::ResourceState::Deleted,
         "S7/E3 Applied Registry participant retires"
     );
@@ -987,7 +1012,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
         .await
         .expect_err("S8 injected activation failure");
     assert_eq!(
-        repository_state("repo-activate-ar"),
+        repository_state("repo-activate-ar").await,
         awaken_resource_contract::ResourceState::Deleted,
         "S8/E3 Applied Registry participant retires"
     );
@@ -999,14 +1024,14 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
 
     let replayed_registry_applied_vault =
         token_repository_input("repo-activate-ra", "Activate Replayed Applied");
-    register_replayed_token_repository(inner.as_ref(), &replayed_registry_applied_vault);
+    register_replayed_token_repository(inner.as_ref(), &replayed_registry_applied_vault).await;
     let retirements_before = ingress.retirements().len();
     registry.fail_next_activation();
     app.configure_session_repository(replayed_registry_applied_vault)
         .await
         .expect_err("S9 injected activation failure");
     assert_eq!(
-        repository_state("repo-activate-ra"),
+        repository_state("repo-activate-ra").await,
         awaken_resource_contract::ResourceState::Suspended,
         "S9/E5 Replayed Registry participant is not retired"
     );
@@ -1018,7 +1043,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
 
     let replayed_registry_replayed_vault =
         token_repository_input("repo-activate-rr", "Activate Replayed Replayed");
-    register_replayed_token_repository(inner.as_ref(), &replayed_registry_replayed_vault);
+    register_replayed_token_repository(inner.as_ref(), &replayed_registry_replayed_vault).await;
     ingress.seed_replayed_source(&replayed_registry_replayed_vault.id);
     let retirements_before = ingress.retirements().len();
     registry.fail_next_activation();
@@ -1026,7 +1051,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
         .await
         .expect_err("S10 injected activation failure");
     assert_eq!(
-        repository_state("repo-activate-rr"),
+        repository_state("repo-activate-rr").await,
         awaken_resource_contract::ResourceState::Suspended,
         "S10/E5 Replayed Registry participant is not retired"
     );
@@ -1058,7 +1083,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
         "S11 Vault provenance"
     );
     assert_eq!(
-        repository_state("repo-activate-success"),
+        repository_state("repo-activate-success").await,
         awaken_resource_contract::ResourceState::Active,
         "S11/E6"
     );
@@ -1126,7 +1151,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
         id: format!("{}:credential", managed_repository_id(markerless_id)),
         revision: 7,
     };
-    register_retirement_repository(registry.as_ref(), markerless_id, false, true);
+    register_retirement_repository(registry.as_ref(), markerless_id, false, true).await;
     create(
         sessions.as_ref(),
         session_with_repository_retirement(
@@ -1180,6 +1205,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     assert_eq!(
         registry
             .find_repository("workspace", &managed_repository_id(markerless_id))
+            .await
             .unwrap()
             .unwrap()
             .state,
@@ -1218,7 +1244,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         revision: 13,
     };
     let manifest = repository_retirement_resources(session_id, Some(credential.clone()));
-    register_retirement_repository(registry.as_ref(), session_id, true, true);
+    register_retirement_repository(registry.as_ref(), session_id, true, true).await;
 
     {
         let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
@@ -1272,6 +1298,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         assert_eq!(
             registry
                 .find_repository("workspace", &managed_repository_id(session_id))
+                .await
                 .unwrap()
                 .unwrap()
                 .state,
@@ -1306,6 +1333,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     assert_eq!(
         registry
             .find_repository("workspace", &managed_repository_id(session_id))
+            .await
             .unwrap()
             .unwrap()
             .state,

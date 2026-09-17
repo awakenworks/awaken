@@ -8,7 +8,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use sqlx::Row;
 use sqlx::types::Json;
 
-use crate::postgres::{PostgresResourceStore, block};
+use crate::postgres::PostgresResourceStore;
 use crate::schema::REGISTRY_NS;
 
 const MEMORY: &str = "memory_store";
@@ -23,42 +23,37 @@ fn corrupt(error: impl ToString) -> RegistryRepositoryError {
 }
 
 impl PostgresResourceStore {
-    fn registry_record<T>(
+    async fn registry_record<T>(
         &self,
         kind: &str,
         id: &str,
     ) -> Result<Option<Stored<T>>, RegistryRepositoryError>
     where
-        T: DeserializeOwned + Send + 'static,
+        T: DeserializeOwned,
     {
         let sql =
             format!("SELECT revision, data FROM {REGISTRY_NS}_entry WHERE kind = $1 AND id = $2");
-        let pool = self.pool.clone();
-        let kind = kind.to_owned();
-        let id = id.to_owned();
-        block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .bind(kind)
-                .bind(id)
-                .fetch_optional(&pool)
-                .await
-                .map_err(unavailable)?
-                .map(|row| {
-                    let revision: i64 = row.try_get("revision").map_err(corrupt)?;
-                    let revision = u64::try_from(revision)
-                        .map_err(corrupt)
-                        .and_then(AggregateRevision::new)?;
-                    let Json(aggregate): Json<T> = row.try_get("data").map_err(corrupt)?;
-                    Ok(Stored {
-                        revision,
-                        aggregate,
-                    })
+        sqlx::query(&sql)
+            .bind(kind)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(unavailable)?
+            .map(|row| {
+                let revision: i64 = row.try_get("revision").map_err(corrupt)?;
+                let revision = u64::try_from(revision)
+                    .map_err(corrupt)
+                    .and_then(AggregateRevision::new)?;
+                let Json(aggregate): Json<T> = row.try_get("data").map_err(corrupt)?;
+                Ok(Stored {
+                    revision,
+                    aggregate,
                 })
-                .transpose()
-        })
+            })
+            .transpose()
     }
 
-    fn insert_registry_record<T: Serialize>(
+    async fn insert_registry_record<T: Serialize>(
         &self,
         kind: &str,
         id: &str,
@@ -68,17 +63,13 @@ impl PostgresResourceStore {
             "INSERT INTO {REGISTRY_NS}_entry (kind, id, revision, data) VALUES ($1, $2, 1, $3)"
         );
         let data = serde_json::to_value(aggregate).map_err(corrupt)?;
-        let pool = self.pool.clone();
-        let kind = kind.to_owned();
-        let id = id.to_owned();
-        match block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .bind(kind)
-                .bind(id)
-                .bind(Json(data))
-                .execute(&pool)
-                .await
-        }) {
+        match sqlx::query(&sql)
+            .bind(kind)
+            .bind(id)
+            .bind(Json(data))
+            .execute(&self.pool)
+            .await
+        {
             Ok(_) => Ok(InsertOutcome::Inserted),
             Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23505") => {
                 Ok(InsertOutcome::AlreadyRegistered)
@@ -87,7 +78,7 @@ impl PostgresResourceStore {
         }
     }
 
-    fn replace_registry_record<T: Serialize>(
+    async fn replace_registry_record<T: Serialize>(
         &self,
         kind: &str,
         id: &str,
@@ -104,21 +95,16 @@ impl PostgresResourceStore {
              WHERE kind = $1 AND id = $2 AND revision = $3"
         );
         let data = serde_json::to_value(aggregate).map_err(corrupt)?;
-        let pool = self.pool.clone();
-        let kind = kind.to_owned();
-        let id = id.to_owned();
-        let changed = block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .bind(kind)
-                .bind(id)
-                .bind(expected_revision.get() as i64)
-                .bind(next.get() as i64)
-                .bind(Json(data))
-                .execute(&pool)
-                .await
-                .map(|result| result.rows_affected())
-                .map_err(unavailable)
-        })?;
+        let changed = sqlx::query(&sql)
+            .bind(kind)
+            .bind(id)
+            .bind(expected_revision.get() as i64)
+            .bind(next.get() as i64)
+            .bind(Json(data))
+            .execute(&self.pool)
+            .await
+            .map(|result| result.rows_affected())
+            .map_err(unavailable)?;
         Ok(if changed == 1 {
             ReplaceOutcome::Replaced { revision: next }
         } else {
@@ -126,46 +112,46 @@ impl PostgresResourceStore {
         })
     }
 
-    fn list_registry_records<T: DeserializeOwned + Send + 'static>(
+    async fn list_registry_records<T: DeserializeOwned>(
         &self,
         kind: &'static str,
-        validate: impl Fn(&T, &str) -> Result<(), RegistryRepositoryError> + Send + 'static,
+        validate: impl Fn(&T, &str) -> Result<(), RegistryRepositoryError>,
     ) -> Result<Vec<Stored<T>>, RegistryRepositoryError> {
         let sql = format!(
             "SELECT id, revision, data FROM {REGISTRY_NS}_entry WHERE kind = $1 ORDER BY id"
         );
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .bind(kind)
-                .fetch_all(&pool)
-                .await
-                .map_err(unavailable)?
-                .into_iter()
-                .map(|row| {
-                    let id: String = row.try_get("id").map_err(corrupt)?;
-                    let revision: i64 = row.try_get("revision").map_err(corrupt)?;
-                    let revision = u64::try_from(revision)
-                        .map_err(corrupt)
-                        .and_then(AggregateRevision::new)?;
-                    let Json(aggregate): Json<T> = row.try_get("data").map_err(corrupt)?;
-                    validate(&aggregate, &id)?;
-                    Ok(Stored {
-                        revision,
-                        aggregate,
-                    })
+        sqlx::query(&sql)
+            .bind(kind)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(unavailable)?
+            .into_iter()
+            .map(|row| {
+                let id: String = row.try_get("id").map_err(corrupt)?;
+                let revision: i64 = row.try_get("revision").map_err(corrupt)?;
+                let revision = u64::try_from(revision)
+                    .map_err(corrupt)
+                    .and_then(AggregateRevision::new)?;
+                let Json(aggregate): Json<T> = row.try_get("data").map_err(corrupt)?;
+                validate(&aggregate, &id)?;
+                Ok(Stored {
+                    revision,
+                    aggregate,
                 })
-                .collect()
-        })
+            })
+            .collect()
     }
 }
 
+#[async_trait::async_trait]
 impl ResourceRegistryRepository for PostgresResourceStore {
-    fn load_memory_store(
+    async fn load_memory_store(
         &self,
         id: &str,
     ) -> Result<Option<Stored<MemoryStoreAggregate>>, RegistryRepositoryError> {
-        let stored = self.registry_record::<MemoryStoreAggregate>(MEMORY, id)?;
+        let stored = self
+            .registry_record::<MemoryStoreAggregate>(MEMORY, id)
+            .await?;
         if let Some(stored) = &stored {
             if stored.aggregate.definition().id.as_str() != id {
                 return Err(corrupt(format!(
@@ -178,14 +164,15 @@ impl ResourceRegistryRepository for PostgresResourceStore {
         Ok(stored)
     }
 
-    fn insert_memory_store(
+    async fn insert_memory_store(
         &self,
         aggregate: &MemoryStoreAggregate,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
         self.insert_registry_record(MEMORY, aggregate.definition().id.as_str(), aggregate)
+            .await
     }
 
-    fn replace_memory_store(
+    async fn replace_memory_store(
         &self,
         expected_revision: AggregateRevision,
         aggregate: &MemoryStoreAggregate,
@@ -196,9 +183,10 @@ impl ResourceRegistryRepository for PostgresResourceStore {
             expected_revision,
             aggregate,
         )
+        .await
     }
 
-    fn list_memory_stores(
+    async fn list_memory_stores(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<Stored<MemoryStoreAggregate>>, RegistryRepositoryError> {
@@ -210,13 +198,14 @@ impl ResourceRegistryRepository for PostgresResourceStore {
                     )));
                 }
                 aggregate.validate_integrity().map_err(corrupt)
-            })?
+            })
+            .await?
             .into_iter()
             .filter(|stored| stored.aggregate.definition().workspace_id == workspace_id)
             .collect())
     }
 
-    fn list_repositories(
+    async fn list_repositories(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<Stored<RepositoryAggregate>>, RegistryRepositoryError> {
@@ -228,17 +217,20 @@ impl ResourceRegistryRepository for PostgresResourceStore {
                     )));
                 }
                 aggregate.validate_integrity().map_err(corrupt)
-            })?
+            })
+            .await?
             .into_iter()
             .filter(|stored| stored.aggregate.definition().workspace_id == workspace_id)
             .collect())
     }
 
-    fn load_repository(
+    async fn load_repository(
         &self,
         id: &str,
     ) -> Result<Option<Stored<RepositoryAggregate>>, RegistryRepositoryError> {
-        let stored = self.registry_record::<RepositoryAggregate>(REPOSITORY, id)?;
+        let stored = self
+            .registry_record::<RepositoryAggregate>(REPOSITORY, id)
+            .await?;
         if let Some(stored) = &stored {
             if stored.aggregate.definition().id.as_str() != id {
                 return Err(corrupt(format!(
@@ -251,14 +243,15 @@ impl ResourceRegistryRepository for PostgresResourceStore {
         Ok(stored)
     }
 
-    fn insert_repository(
+    async fn insert_repository(
         &self,
         aggregate: &RepositoryAggregate,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
         self.insert_registry_record(REPOSITORY, aggregate.definition().id.as_str(), aggregate)
+            .await
     }
 
-    fn replace_repository(
+    async fn replace_repository(
         &self,
         expected_revision: AggregateRevision,
         aggregate: &RepositoryAggregate,
@@ -269,5 +262,6 @@ impl ResourceRegistryRepository for PostgresResourceStore {
             expected_revision,
             aggregate,
         )
+        .await
     }
 }

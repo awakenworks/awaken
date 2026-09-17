@@ -27,7 +27,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
+async fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
     // Cause/effect decision table shared by every backend:
     // R1 absent + aligned V1 -> registered; duplicate -> AlreadyRegistered.
     // R2 wrong Workspace -> hidden and no mutation.
@@ -55,17 +55,21 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             definition: definition.clone(),
             initial_config: initial.clone(),
         })
+        .await
         .expect("R1 register MemoryStore");
     assert!(matches!(
-        registry.register_memory_store(RegisterMemoryStore {
-            definition,
-            initial_config: initial,
-        }),
+        registry
+            .register_memory_store(RegisterMemoryStore {
+                definition,
+                initial_config: initial,
+            })
+            .await,
         Err(ResourceRegistryError::AlreadyRegistered(_))
     ));
     assert!(
         registry
             .find_memory_store("another-workspace", &fixture.memory_id)
+            .await
             .expect("R2 workspace-scoped lookup")
             .is_none()
     );
@@ -77,6 +81,7 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             description: "profile".into(),
             metadata: [("owner".into(), "registry".into())].into(),
         })
+        .await
         .expect("R2 update profile");
     let mut second = registry
         .find_memory_store_config(
@@ -84,16 +89,19 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             &fixture.memory_id,
             ConfigVersion::INITIAL,
         )
+        .await
         .expect("R3 read V1")
         .expect("R3 V1 exists");
     second.version = ConfigVersion(2);
     second.retention_policy.retention_days = Some(30);
     assert!(matches!(
-        registry.publish_memory_store_config(PublishMemoryStoreConfig {
-            workspace_id: "another-workspace".into(),
-            expected_current: ConfigVersion::INITIAL,
-            config: second.clone(),
-        }),
+        registry
+            .publish_memory_store_config(PublishMemoryStoreConfig {
+                workspace_id: "another-workspace".into(),
+                expected_current: ConfigVersion::INITIAL,
+                config: second.clone(),
+            })
+            .await,
         Err(ResourceRegistryError::NotFound(_))
     ));
     registry
@@ -102,18 +110,22 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             expected_current: ConfigVersion::INITIAL,
             config: second,
         })
+        .await
         .expect("R3 publish V2");
     let mut third = registry
         .find_memory_store_config(&fixture.workspace, &fixture.memory_id, ConfigVersion(2))
+        .await
         .expect("R4 read V2")
         .expect("R4 V2 exists");
     third.version = ConfigVersion(3);
     assert!(matches!(
-        registry.publish_memory_store_config(PublishMemoryStoreConfig {
-            workspace_id: fixture.workspace.clone(),
-            expected_current: ConfigVersion::INITIAL,
-            config: third,
-        }),
+        registry
+            .publish_memory_store_config(PublishMemoryStoreConfig {
+                workspace_id: fixture.workspace.clone(),
+                expected_current: ConfigVersion::INITIAL,
+                config: third,
+            })
+            .await,
         Err(ResourceRegistryError::ConfigConflict { .. })
     ));
     registry
@@ -122,6 +134,7 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             &fixture.memory_id,
             ConfigVersion::INITIAL,
         )
+        .await
         .expect("R3 immutable V1 remains bound");
     registry
         .change_memory_store_state(ChangeMemoryStoreState {
@@ -129,14 +142,18 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             id: fixture.memory_id.as_str().into(),
             state: ResourceState::Suspended,
         })
+        .await
         .expect("R5 suspend MemoryStore");
     assert!(matches!(
-        registry.resolve_memory_store(&fixture.workspace, &fixture.memory_id),
+        registry
+            .resolve_memory_store(&fixture.workspace, &fixture.memory_id)
+            .await,
         Err(ResourceRegistryError::NotActive { .. })
     ));
     assert_eq!(
         registry
             .list_memory_stores(&fixture.workspace)
+            .await
             .expect("R5 list inventory")
             .len(),
         1
@@ -166,14 +183,17 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             definition: repository.clone(),
             initial_config: initial_repository.clone(),
         })
+        .await
         .expect("R6 register Repository");
     assert_eq!(
         registry
             .list_repositories(&fixture.workspace)
+            .await
             .expect("R7 inventory"),
         vec![
             registry
                 .find_repository(&fixture.workspace, &fixture.repository_id)
+                .await
                 .unwrap()
                 .unwrap()
         ]
@@ -181,6 +201,7 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
     assert!(
         registry
             .list_repositories("another-workspace")
+            .await
             .expect("R7 isolation")
             .is_empty()
     );
@@ -193,16 +214,22 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             expected_current: ConfigVersion::INITIAL,
             config: second_repository,
         })
+        .await
         .expect("R6 publish Repository V2");
     assert_eq!(
         registry
             .resolve_repository(&fixture.workspace, &fixture.repository_id)
+            .await
             .expect("R6 resolve Repository")
             .version,
         ConfigVersion(2)
     );
     assert_eq!(
-        registry.list_repositories(&fixture.workspace).unwrap()[0].current_config_version,
+        registry
+            .list_repositories(&fixture.workspace)
+            .await
+            .unwrap()[0]
+            .current_config_version,
         ConfigVersion(2)
     );
     assert_eq!(
@@ -212,6 +239,7 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
                 &fixture.repository_id,
                 ConfigVersion::INITIAL
             )
+            .await
             .unwrap()
             .unwrap()
             .remote_url,
@@ -233,6 +261,7 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
                 clone_policy: Default::default(),
             },
         })
+        .await
         .expect("R7 second repository");
     registry
         .change_repository_state(ChangeRepositoryState {
@@ -240,8 +269,12 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             id: retired_id.as_str().into(),
             state: ResourceState::Suspended,
         })
+        .await
         .expect("R7 suspended");
-    let inventory = registry.list_repositories(&fixture.workspace).unwrap();
+    let inventory = registry
+        .list_repositories(&fixture.workspace)
+        .await
+        .unwrap();
     assert_eq!(inventory.len(), 2);
     assert!(
         inventory.windows(2).all(|pair| pair[0].id < pair[1].id),
@@ -250,6 +283,7 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
     assert!(
         registry
             .resolve_repository(&fixture.workspace, &retired_id)
+            .await
             .is_err(),
         "R7 listing grants no execution"
     );
@@ -259,10 +293,12 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             id: retired_id.as_str().into(),
             state: ResourceState::Deleted,
         })
+        .await
         .expect("R7 deleted");
     assert_eq!(
         registry
             .list_repositories(&fixture.workspace)
+            .await
             .unwrap()
             .len(),
         1,
@@ -270,11 +306,12 @@ fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
     );
 }
 
-fn verify_reopen(registry: &dyn ResourceRegistry, fixture: &Fixture) {
+async fn verify_reopen(registry: &dyn ResourceRegistry, fixture: &Fixture) {
     // Restart oracle: logical profile, current pointer, and immutable history
     // must be recovered exactly; lifecycle still prevents execution.
     let definition = registry
         .find_memory_store(&fixture.workspace, &fixture.memory_id)
+        .await
         .expect("reopen MemoryStore")
         .expect("durable MemoryStore");
     assert_eq!(definition.name, "Renamed Memory");
@@ -287,18 +324,21 @@ fn verify_reopen(registry: &dyn ResourceRegistry, fixture: &Fixture) {
                 &fixture.memory_id,
                 ConfigVersion::INITIAL,
             )
+            .await
             .expect("reopen V1")
             .is_some()
     );
     assert_eq!(
         registry
             .resolve_repository(&fixture.workspace, &fixture.repository_id)
+            .await
             .expect("reopen Repository")
             .version,
         ConfigVersion(2)
     );
     let repositories = registry
         .list_repositories(&fixture.workspace)
+        .await
         .expect("reopen repository inventory");
     assert_eq!(repositories.len(), 1);
     assert_eq!(repositories[0].id.as_str(), fixture.repository_id);
@@ -325,8 +365,8 @@ fn replay_request(workspace: &str) -> RegisterMemoryStore {
     }
 }
 
-#[test]
-fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen() {
     // Lost response + concurrent retry must converge on one identity. The
     // retained receipt, not today's editable profile, decides payload equality.
     let root = tempfile::tempdir().unwrap();
@@ -335,27 +375,31 @@ fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen() {
     {
         let application = open_embedded(root.path()).unwrap();
         let registry = application.authorities().resource_registry();
-        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let start = std::sync::Arc::new(tokio::sync::Barrier::new(8));
         let handles = (0..8)
             .map(|_| {
                 let registry = registry.clone();
                 let request = request.clone();
                 let start = start.clone();
-                std::thread::spawn(move || {
-                    start.wait();
-                    registry.register_memory_store_idempotent(request).unwrap()
+                tokio::spawn(async move {
+                    start.wait().await;
+                    registry
+                        .register_memory_store_idempotent(request)
+                        .await
+                        .unwrap()
                 })
             })
             .collect::<Vec<_>>();
-        let results = handles
-            .into_iter()
-            .map(|handle| handle.join().unwrap())
-            .collect::<Vec<_>>();
+        let mut results = Vec::with_capacity(handles.len());
+        for handle in handles {
+            results.push(handle.await.unwrap());
+        }
         first = results[0].clone();
         assert!(results.iter().all(|result| result == &first));
         assert_eq!(
             registry
                 .list_memory_stores("workspace-replay")
+                .await
                 .unwrap()
                 .len(),
             1
@@ -376,7 +420,7 @@ fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen() {
                 _ => changed.definition.workspace_id = "foreign-workspace".into(),
             }
             assert!(matches!(
-                registry.register_memory_store_idempotent(changed),
+                registry.register_memory_store_idempotent(changed).await,
                 Err(ResourceRegistryError::AlreadyRegistered(_))
             ));
         }
@@ -388,6 +432,7 @@ fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen() {
                 description: "Keep this edit".into(),
                 metadata: Default::default(),
             })
+            .await
             .unwrap();
         let mut config = request.initial_config.clone();
         config.version = ConfigVersion(2);
@@ -398,13 +443,17 @@ fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen() {
                 expected_current: ConfigVersion::INITIAL,
                 config,
             })
+            .await
             .unwrap();
     }
     let reopened = open_embedded(root.path()).unwrap();
     let registry = reopened.authorities().resource_registry();
     let mut retry = request.clone();
     retry.definition.timestamps = awaken_resource_contract::ResourceTimestamps::created(12345);
-    let replay = registry.register_memory_store_idempotent(retry).unwrap();
+    let replay = registry
+        .register_memory_store_idempotent(retry)
+        .await
+        .unwrap();
     assert_eq!(replay.id, first.id);
     assert_eq!(replay.name, "Edited later");
     assert_eq!(replay.description, "Keep this edit");
@@ -424,22 +473,26 @@ fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen() {
                 id: first.id.clone(),
                 state,
             })
+            .await
             .unwrap();
         assert!(matches!(
-            registry.register_memory_store_idempotent(request.clone()),
+            registry
+                .register_memory_store_idempotent(request.clone())
+                .await,
             Err(ResourceRegistryError::NotActive { .. })
         ));
     }
     assert!(
         registry
             .list_memory_stores(&first.workspace_id)
+            .await
             .unwrap()
             .is_empty()
     );
 }
 
-#[test]
-fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows() {
     let root = tempfile::tempdir().unwrap();
     let fixture = fixture();
     let request = RegisterRepository {
@@ -466,24 +519,28 @@ fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows(
     {
         let application = open_embedded(root.path()).unwrap();
         let registry = application.authorities().resource_registry();
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
         let workers: Vec<_> = (0..8)
             .map(|_| {
                 let registry = registry.clone();
                 let barrier = barrier.clone();
                 let request = request.clone();
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    registry.register_repository_idempotent(request).unwrap()
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    registry
+                        .register_repository_idempotent(request)
+                        .await
+                        .unwrap()
                 })
             })
             .collect();
         for worker in workers {
-            assert_eq!(worker.join().unwrap().id, request.definition.id);
+            assert_eq!(worker.await.unwrap().id, request.definition.id);
         }
         assert_eq!(
             registry
                 .list_repositories(&fixture.workspace)
+                .await
                 .unwrap()
                 .len(),
             1
@@ -491,9 +548,9 @@ fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows(
         let mut legacy = request.clone();
         legacy.definition.id = "legacy-repository-without-receipt".into();
         legacy.initial_config.repository_id = legacy.definition.id.clone();
-        registry.register_repository(legacy.clone()).unwrap();
+        registry.register_repository(legacy.clone()).await.unwrap();
         assert!(matches!(
-            registry.register_repository_idempotent(legacy),
+            registry.register_repository_idempotent(legacy).await,
             Err(ResourceRegistryError::AlreadyRegistered(_))
         ));
         let mut config = request.initial_config.clone();
@@ -505,17 +562,22 @@ fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows(
                 expected_current: ConfigVersion::INITIAL,
                 config,
             })
+            .await
             .unwrap();
     }
     let reopened = open_embedded(root.path()).unwrap();
     let registry = reopened.authorities().resource_registry();
     let mut retry = request.clone();
     retry.definition.timestamps = awaken_resource_contract::ResourceTimestamps::created(1234);
-    let replay = registry.register_repository_idempotent(retry).unwrap();
+    let replay = registry
+        .register_repository_idempotent(retry)
+        .await
+        .unwrap();
     assert_eq!(replay.current_config_version, ConfigVersion(2));
     assert_eq!(
         registry
             .find_repository_config(&fixture.workspace, &fixture.repository_id, ConfigVersion(2))
+            .await
             .unwrap()
             .unwrap()
             .initial_branch
@@ -525,7 +587,7 @@ fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows(
     let mut changed = request.clone();
     changed.definition.workspace_id = "foreign".into();
     assert!(matches!(
-        registry.register_repository_idempotent(changed),
+        registry.register_repository_idempotent(changed).await,
         Err(ResourceRegistryError::AlreadyRegistered(_))
     ));
     for state in [
@@ -539,16 +601,19 @@ fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows(
                 id: request.definition.id.clone(),
                 state,
             })
+            .await
             .unwrap();
         assert!(matches!(
-            registry.register_repository_idempotent(request.clone()),
+            registry
+                .register_repository_idempotent(request.clone())
+                .await,
             Err(ResourceRegistryError::NotActive { .. })
         ));
     }
 }
 
-#[test]
-fn embedded_registry_satisfies_the_shared_contract_and_survives_reopen() {
+#[tokio::test]
+async fn embedded_registry_satisfies_the_shared_contract_and_survives_reopen() {
     let root = tempfile::tempdir().expect("embedded Registry root");
     let fixture = fixture();
     {
@@ -556,13 +621,15 @@ fn embedded_registry_satisfies_the_shared_contract_and_survives_reopen() {
         exercise_registry(
             application.authorities().resource_registry().as_ref(),
             &fixture,
-        );
+        )
+        .await;
     }
     let reopened = open_embedded(root.path()).expect("reopen embedded Resources");
     verify_reopen(
         reopened.authorities().resource_registry().as_ref(),
         &fixture,
-    );
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -578,7 +645,8 @@ async fn postgres_registry_satisfies_the_same_contract_and_survives_reconnect() 
         exercise_registry(
             application.authorities().resource_registry().as_ref(),
             &fixture,
-        );
+        )
+        .await;
     }
     let reopened = open_postgres(&url, SchemaMode::Verify)
         .await
@@ -586,5 +654,6 @@ async fn postgres_registry_satisfies_the_same_contract_and_survives_reconnect() 
     verify_reopen(
         reopened.authorities().resource_registry().as_ref(),
         &fixture,
-    );
+    )
+    .await;
 }

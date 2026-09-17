@@ -274,6 +274,7 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
             id: ids[0].clone().into(),
             state: ResourceState::Deleted,
         })
+        .await
         .unwrap();
     assert_eq!(
         call(

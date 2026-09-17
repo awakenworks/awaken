@@ -1111,6 +1111,7 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
                         retention_policy: Default::default(),
                     },
                 })
+                .await
                 .unwrap();
         }
     }

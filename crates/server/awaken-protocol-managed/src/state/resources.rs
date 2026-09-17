@@ -45,7 +45,7 @@ impl ManagedState {
         }
     }
 
-    fn resolve_live_file_input(
+    async fn resolve_live_file_input(
         &self,
         owner_scope: &str,
         binding_id: String,
@@ -63,6 +63,7 @@ impl ManagedState {
             &[],
             &[attachment],
         )
+        .await
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?
         .into_parts();
         inputs
@@ -119,6 +120,7 @@ impl ManagedState {
                 let definition = self
                     .application
                     .session_memory_store(owner_scope, memory_store_id.as_str())
+                    .await
                     .map_err(StateError::Run)?;
                 resource.mount_path = super::resource::unique_memory_mount_path(
                     &definition.name,
@@ -277,11 +279,11 @@ impl ManagedState {
                 binding: input_binding(binding_id, &input, repository_id),
                 replaces: None,
             };
-            let (mut resolved, _) = match self.application.resolve_session_inputs(
-                owner_scope,
-                &[],
-                &[attachment],
-            ) {
+            let (mut resolved, _) = match self
+                .application
+                .resolve_session_inputs(owner_scope, &[], &[attachment])
+                .await
+            {
                 Ok(resources) => resources.into_parts(),
                 Err(first) => {
                     if !self
@@ -596,7 +598,9 @@ impl ManagedState {
             }
             suffix += 1;
         };
-        let input = self.resolve_live_file_input(&owner_scope, binding_id, &parsed)?;
+        let input = self
+            .resolve_live_file_input(&owner_scope, binding_id, &parsed)
+            .await?;
         let desired = current
             .attach(input.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
