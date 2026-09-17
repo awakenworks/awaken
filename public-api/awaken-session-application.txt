@@ -98,6 +98,9 @@ pub awaken_session_application::SessionResourceManifestError::ProjectionAfterCom
 pub awaken_session_application::SessionResourceManifestError::Rejected(awaken_session_contract::session::RunError)
 pub awaken_session_application::SessionResourceManifestError::Terminal
 pub awaken_session_application::SessionResourceManifestError::Unavailable(alloc::string::String)
+pub enum awaken_session_application::SessionTerminalCleanupDriveOutcome
+pub awaken_session_application::SessionTerminalCleanupDriveOutcome::Completed
+pub awaken_session_application::SessionTerminalCleanupDriveOutcome::Pending
 pub enum awaken_session_application::SessionUpdateError
 pub awaken_session_application::SessionUpdateError::Conflict
 pub awaken_session_application::SessionUpdateError::IdempotencyMismatch
@@ -558,5 +561,6 @@ pub fn awaken_session_application::SessionEnvironmentSource::resolve_current_for
 pub fn awaken_session_application::SessionEnvironmentSource::resolve_exact_for_session<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, u64, core::option::Option<&'life2 str>, &'life3 [awaken_agent_contract::mcp_target::McpTarget]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_application::ResolvedSessionEnvironment>, awaken_executable_environment_contract::image_realization::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_session_application::SessionEnvironmentSource::retire_session_work<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::work_queue::WorkItem>, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_application::SessionEnvironmentSource::wake_session_work<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub async fn awaken_session_application::drive_session_terminal_cleanup(&str, &awaken_session_contract::session_repo::repository_port::SessionRealizationLease, &dyn awaken_session_contract::session_realization::SessionRealizationControl, &dyn awaken_session_contract::session::SessionRuntime) -> core::result::Result<awaken_session_application::SessionTerminalCleanupDriveOutcome, awaken_session_contract::session_realization::SessionRealizationDriveError>
 pub const fn awaken_session_application::environment_requires_external_owner(awaken_session_contract::baseline::SessionRuntimePlacement) -> bool
 pub const fn awaken_session_application::runtime_placement_for_topology(awaken_session_application::SessionExecutionPlacement) -> awaken_session_contract::baseline::SessionRuntimePlacement

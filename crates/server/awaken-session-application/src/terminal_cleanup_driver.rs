@@ -5,11 +5,11 @@
 //! exact evidence through `SessionRealizationControl`; it persists no cursor,
 //! retry record, receipt, or topology-specific state.
 
-use super::SessionTerminalCleanupAction;
-use crate::{
+use awaken_session_contract::{
     RunError, SessionRealizationControl, SessionRealizationControlFailure,
     SessionRealizationDriveError, SessionRepositoryPublicationEffect, SessionRuntime,
-    SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupEffect, SessionTerminalCleanupWork,
+    SessionTerminalCleanupAction, SessionTerminalCleanupDisposalEffect,
+    SessionTerminalCleanupEffect, SessionTerminalCleanupWork,
     realization_lease_generation_authorizes,
 };
 
@@ -41,7 +41,7 @@ async fn next_work(
     control: &dyn SessionRealizationControl,
     runtime: &dyn SessionRuntime,
     session_id: &str,
-    lease: &crate::SessionRealizationLease,
+    lease: &awaken_session_contract::SessionRealizationLease,
 ) -> Result<
     Option<(
         SessionTerminalCleanupWork,
@@ -66,7 +66,7 @@ async fn next_work(
 /// durable.
 pub async fn drive_session_terminal_cleanup(
     session_id: &str,
-    asserted_lease: &crate::SessionRealizationLease,
+    asserted_lease: &awaken_session_contract::SessionRealizationLease,
     control: &dyn SessionRealizationControl,
     runtime: &dyn SessionRuntime,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
@@ -283,14 +283,14 @@ pub async fn drive_session_terminal_cleanup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_session_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, FrozenSessionProjection, SessionCleanupCommand,
         SessionCleanupDisposalReceipt, SessionCleanupOperation, SessionRealizationDirective,
         SessionTerminalCleanupAssignment, SessionTerminalCleanupWork, StepOutcome,
         ToolPermissionDecision,
     };
-    use awaken_agent_contract::agent::content::ContentBlock;
     use std::{
         collections::VecDeque,
         sync::{
@@ -299,8 +299,8 @@ mod tests {
         },
     };
 
-    fn lease() -> crate::SessionRealizationLease {
-        crate::SessionRealizationLease {
+    fn lease() -> awaken_session_contract::SessionRealizationLease {
+        awaken_session_contract::SessionRealizationLease {
             owner: "worker".into(),
             runtime_incarnation: "worker/boot".into(),
             epoch: 3,
@@ -308,7 +308,7 @@ mod tests {
         }
     }
 
-    fn publication_command() -> crate::SessionRepositoryPublicationCommand {
+    fn publication_command() -> awaken_session_contract::SessionRepositoryPublicationCommand {
         serde_json::from_value(serde_json::json!({
             "session_id": "session",
             "effect_id": "publication-effect",
@@ -338,70 +338,68 @@ mod tests {
         .expect("valid publication command")
     }
 
-    fn preparation(effect: &SessionTerminalCleanupEffect) -> crate::SessionCleanupPreparation {
-        crate::SessionCleanupPreparation::try_new(
-            effect,
-            effect.sandbox_effect_fence().unwrap(),
-            Vec::new(),
-        )
-        .unwrap()
-    }
-
     fn projection() -> FrozenSessionProjection {
-        let baseline = crate::SessionBaseline::compile(crate::SessionBaselineInputs {
-            environment: crate::EnvironmentSnapshot {
-                environment_id: "environment".into(),
-                revision: crate::EnvironmentRevision(1),
-                self_hosted: false,
-                config_fingerprint: crate::EnvironmentFingerprint("environment-v1".into()),
-                sandbox: Default::default(),
-                sandbox_provisioning: Default::default(),
-                idle_retention: Default::default(),
-                packages: Default::default(),
-                prepared_image: None,
-                network: crate::SessionNetworkPolicy::Unrestricted,
-                credential_realization: awaken_credential_contract::CredentialRealizationProfile {
-                    inference_holder: awaken_credential_contract::PlaintextHolder::new(
-                        awaken_credential_contract::PlaintextBoundary::Workload,
-                        "awaken.workload.acp",
+        let baseline = awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment: awaken_session_contract::EnvironmentSnapshot {
+                    environment_id: "environment".into(),
+                    revision: awaken_session_contract::EnvironmentRevision(1),
+                    self_hosted: false,
+                    config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                        "environment-v1".into(),
                     ),
-                    mcp_holder: awaken_credential_contract::PlaintextHolder::new(
-                        awaken_credential_contract::PlaintextBoundary::Worker,
-                        "awaken.worker",
-                    ),
-                    resource_holder: awaken_credential_contract::PlaintextHolder::new(
-                        awaken_credential_contract::PlaintextBoundary::Worker,
-                        "awaken.worker",
-                    ),
+                    sandbox: Default::default(),
+                    sandbox_provisioning: Default::default(),
+                    idle_retention: Default::default(),
+                    packages: Default::default(),
+                    prepared_image: None,
+                    network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    credential_realization:
+                        awaken_credential_contract::CredentialRealizationProfile {
+                            inference_holder: awaken_credential_contract::PlaintextHolder::new(
+                                awaken_credential_contract::PlaintextBoundary::Workload,
+                                "awaken.workload.acp",
+                            ),
+                            mcp_holder: awaken_credential_contract::PlaintextHolder::new(
+                                awaken_credential_contract::PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                            resource_holder: awaken_credential_contract::PlaintextHolder::new(
+                                awaken_credential_contract::PlaintextBoundary::Worker,
+                                "awaken.worker",
+                            ),
+                        },
                 },
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+                mcp_authoring: Default::default(),
+                agent_id: "agent".into(),
+                agent_revision: None,
+                model: "model".into(),
+                model_override: None,
+                runtime: None,
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
             },
-            runtime_placement: crate::SessionRuntimePlacement::Local,
-            mcp_authoring: Default::default(),
-            agent_id: "agent".into(),
-            agent_revision: None,
-            model: "model".into(),
-            model_override: None,
-            runtime: None,
-            delegate_ids: Vec::new(),
-            toolsets: Vec::new(),
-            mounts: Vec::new(),
-            env: Vec::new(),
-            prompts: Vec::new(),
-            transcript_prefix: None,
-        });
+        );
         FrozenSessionProjection {
             workspace_id: "workspace".into(),
-            revision: crate::SessionRevision(2),
+            revision: awaken_session_contract::SessionRevision(2),
             baseline,
             agent_publication: None,
             environment: Default::default(),
             resource_revision: 0,
             resources: Default::default(),
-            previous_resource_manifest: Some(crate::SessionResourceManifest::at_revision(
-                "workspace",
-                0,
-                Default::default(),
-            )),
+            previous_resource_manifest: Some(
+                awaken_session_contract::SessionResourceManifest::at_revision(
+                    "workspace",
+                    0,
+                    Default::default(),
+                ),
+            ),
             tools: Default::default(),
             mcp: Vec::new(),
             request_context: Vec::new(),
@@ -410,14 +408,17 @@ mod tests {
 
     fn work(
         action: SessionTerminalCleanupAction,
-        lease: &crate::SessionRealizationLease,
+        lease: &awaken_session_contract::SessionRealizationLease,
     ) -> SessionTerminalCleanupWork {
         SessionTerminalCleanupWork {
             assignment: SessionTerminalCleanupAssignment {
                 session_id: "session".into(),
                 projection: projection(),
-                authority: crate::SessionRealizationLeaseReceipt::issued_at(lease.clone(), 0)
-                    .unwrap(),
+                authority: awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                    lease.clone(),
+                    0,
+                )
+                .unwrap(),
             },
             action,
         }
@@ -425,7 +426,7 @@ mod tests {
 
     struct RecordingControl {
         work: Mutex<VecDeque<SessionTerminalCleanupWork>>,
-        publication: Mutex<Option<crate::SessionRepositoryPublicationProjection>>,
+        publication: Mutex<Option<awaken_session_contract::SessionRepositoryPublicationProjection>>,
         events: Arc<Mutex<Vec<String>>>,
         stale_authorization_once: AtomicBool,
     }
@@ -463,7 +464,7 @@ mod tests {
         async fn terminal_cleanup_work(
             &self,
             _session_id: &str,
-            _lease: &crate::SessionRealizationLease,
+            _lease: &awaken_session_contract::SessionRealizationLease,
         ) -> Result<Option<SessionTerminalCleanupWork>, SessionRealizationControlFailure> {
             self.events.lock().unwrap().push("poll".into());
             Ok(self.work.lock().unwrap().pop_front())
@@ -472,9 +473,9 @@ mod tests {
         async fn terminal_repository_publication_command(
             &self,
             _session_id: &str,
-            _lease: &crate::SessionRealizationLease,
+            _lease: &awaken_session_contract::SessionRealizationLease,
         ) -> Result<
-            Option<crate::SessionRepositoryPublicationProjection>,
+            Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
             SessionRealizationControlFailure,
         > {
             self.events
@@ -487,8 +488,8 @@ mod tests {
         async fn record_terminal_repository_publication_receipt(
             &self,
             _session_id: &str,
-            lease: &crate::SessionRealizationLease,
-            _receipt: crate::SessionRepositoryPublicationReceipt,
+            lease: &awaken_session_contract::SessionRealizationLease,
+            _receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events.lock().unwrap().push(format!(
                 "record-publication-receipt:{}:{}",
@@ -500,8 +501,8 @@ mod tests {
         async fn record_terminal_repository_publication_rejection(
             &self,
             _session_id: &str,
-            lease: &crate::SessionRealizationLease,
-            _rejection: crate::SessionRepositoryPublicationRejection,
+            lease: &awaken_session_contract::SessionRealizationLease,
+            _rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events.lock().unwrap().push(format!(
                 "record-publication-rejection:{}:{}",
@@ -514,7 +515,7 @@ mod tests {
             &self,
             effect: &SessionTerminalCleanupEffect,
         ) -> Result<
-            crate::SessionTerminalCleanupPreparationAuthorization,
+            awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
             SessionRealizationControlFailure,
         > {
             self.events
@@ -524,7 +525,7 @@ mod tests {
             if self.stale_authorization_once.swap(false, Ordering::SeqCst) {
                 return Err(SessionRealizationControlFailure::NotReady);
             }
-            crate::SessionTerminalCleanupPreparationAuthorization::try_new(
+            awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
                 effect.clone(),
                 "workspace".into(),
                 None,
@@ -533,8 +534,8 @@ mod tests {
 
         async fn record_terminal_cleanup_preparation(
             &self,
-            _lease: &crate::SessionRealizationLease,
-            preparation: crate::SessionCleanupPreparation,
+            _lease: &awaken_session_contract::SessionRealizationLease,
+            preparation: awaken_session_contract::SessionCleanupPreparation,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events
                 .lock()
@@ -556,7 +557,7 @@ mod tests {
 
         async fn record_terminal_cleanup_disposal(
             &self,
-            _lease: &crate::SessionRealizationLease,
+            _lease: &awaken_session_contract::SessionRealizationLease,
             _receipt: SessionCleanupDisposalReceipt,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events.lock().unwrap().push("record-disposal".into());
@@ -621,7 +622,7 @@ mod tests {
         async fn install_terminal_cleanup_assignment(
             &self,
             _assignment: &SessionTerminalCleanupAssignment,
-            _proof: crate::ObservedSessionRealizationLease,
+            _proof: awaken_session_contract::ObservedSessionRealizationLease,
         ) -> Result<(), RunError> {
             self.events.lock().unwrap().push("install".into());
             Ok(())
@@ -629,8 +630,8 @@ mod tests {
 
         async fn execute_terminal_repository_publication_for_lease(
             &self,
-            _command: crate::SessionRepositoryPublicationCommand,
-            lease: &crate::SessionRealizationLease,
+            _command: awaken_session_contract::SessionRepositoryPublicationCommand,
+            lease: &awaken_session_contract::SessionRealizationLease,
         ) -> Result<SessionRepositoryPublicationEffect, RunError> {
             self.events.lock().unwrap().push(format!(
                 "publish:{}:{}",
@@ -644,8 +645,8 @@ mod tests {
         async fn prepare_terminal_cleanup_for_effect(
             &self,
             effect: SessionTerminalCleanupEffect,
-            authorization: crate::SessionTerminalCleanupPreparationAuthorization,
-        ) -> Result<crate::SessionCleanupPreparation, RunError> {
+            authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
             authorization
                 .verify_for(&effect)
                 .map_err(|error| RunError::internal(error.to_string()))?;
@@ -663,7 +664,7 @@ mod tests {
             let provider_prepared_effect_fence = effect
                 .sandbox_effect_fence()
                 .map_err(|error| RunError::internal(error.to_string()))?;
-            crate::SessionCleanupPreparation::try_new(
+            awaken_session_contract::SessionCleanupPreparation::try_new(
                 &effect,
                 provider_prepared_effect_fence,
                 Vec::new(),
@@ -699,7 +700,7 @@ mod tests {
         async fn acknowledge_completed_terminal_cleanup(
             &self,
             _session_id: &str,
-            _lease: &crate::SessionRealizationLease,
+            _lease: &awaken_session_contract::SessionRealizationLease,
         ) {
             self.events.lock().unwrap().push("ack-completed".into());
         }
@@ -728,41 +729,31 @@ mod tests {
             },
             &lease,
         );
-        cleanup
-            .record_preparation(
-                "session",
-                preparation(&SessionTerminalCleanupEffect::new(child, lease.clone())),
-                None,
-            )
-            .unwrap();
         let root_work = work(
             SessionTerminalCleanupAction::Prepare {
                 commands: vec![root.clone()],
             },
             &lease,
         );
-        cleanup
-            .record_preparation(
-                "session",
-                preparation(&SessionTerminalCleanupEffect::new(root, lease.clone())),
-                Some(
-                    crate::SessionCleanupRepositoryPreparation::new(
-                        "session",
-                        "workspace",
-                        &crate::SessionResourceState::default(),
-                    )
-                    .unwrap(),
-                ),
-            )
-            .unwrap();
-        let provider_disposal = cleanup
-            .terminal_provider_disposal_preparation("session")
-            .unwrap();
+        // The aggregate law that the last preparation receipt projects this
+        // one disposal is pinned beside `SessionCleanupOperation`; this driver
+        // test starts from that projected closed action.
+        let root_effect = SessionTerminalCleanupEffect::new(root, lease.clone());
         let disposal_work = work(
-            cleanup
-                .terminal_work_action("session", provider_disposal.as_ref())
-                .unwrap()
-                .expect("disposal is ready"),
+            SessionTerminalCleanupAction::Dispose {
+                command: awaken_session_contract::SessionCleanupDisposalCommand {
+                    session_id: "session".into(),
+                    effect_id: root_effect.command.effect_id.clone(),
+                    preparation_fingerprint: "root-preparation".into(),
+                    provider_disposal:
+                        awaken_provisioning_contract::SandboxDisposalPreparation::new(
+                            root_effect.sandbox_effect_fence().unwrap(),
+                            "root-preparation",
+                        )
+                        .unwrap(),
+                    restore_target: None,
+                },
+            },
             &lease,
         );
 
@@ -930,7 +921,7 @@ mod tests {
         let mut current_lease = assigned_lease.clone();
         current_lease.expires_at_unix_ms = 20_000;
         let command = publication_command();
-        let receipt = crate::SessionRepositoryPublicationReceipt::new(
+        let receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
             &command,
             awaken_provisioning_contract::RepositoryPublicationReceipt {
                 repository_id: "repository".into(),
@@ -939,7 +930,7 @@ mod tests {
                 commit: "0123456789abcdef0123456789abcdef01234567".into(),
             },
         );
-        let rejection = crate::SessionRepositoryPublicationRejection::new(
+        let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
             &command,
             awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
         )
@@ -964,7 +955,7 @@ mod tests {
                     &assigned_lease,
                 )])),
                 publication: Mutex::new(Some(
-                    crate::SessionRepositoryPublicationProjection::try_new(
+                    awaken_session_contract::SessionRepositoryPublicationProjection::try_new(
                         "workspace".into(),
                         command.clone(),
                         current_lease.clone(),
@@ -1042,7 +1033,7 @@ mod tests {
                     &assigned_lease,
                 )])),
                 publication: Mutex::new(Some(
-                    crate::SessionRepositoryPublicationProjection::try_new(
+                    awaken_session_contract::SessionRepositoryPublicationProjection::try_new(
                         "workspace".into(),
                         projected_command,
                         current_lease,

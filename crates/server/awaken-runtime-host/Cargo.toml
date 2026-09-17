@@ -17,6 +17,9 @@ awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-local-process.workspace = true
 awaken-session-contract.workspace = true
+# The one topology-neutral terminal cleanup driver is Session application
+# orchestration over contract ports; local and remote Workers both call it.
+awaken-session-application.workspace = true
 awaken-resource-contract.workspace = true
 awaken-resource-application = { workspace = true, optional = true }
 awaken-runtime = { workspace = true }
