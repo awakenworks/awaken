@@ -12,6 +12,7 @@ authority = "runtime"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
+awaken-tool-contract.workspace = true
 awaken-tenancy.workspace = true
 async-trait.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

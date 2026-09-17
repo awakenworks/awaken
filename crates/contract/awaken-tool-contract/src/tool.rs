@@ -12,12 +12,29 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{Command as StateCommand, Store as StateStore};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::num::NonZeroU16;
 use std::sync::Arc;
 use thiserror::Error;
 
-pub use crate::llm::ToolCall;
+/// A model's request to invoke one tool. `tool_id` is the resolved descriptor
+/// id; `call_id` correlates the later result. No permission grant is implied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub call_id: String,
+    pub tool_id: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Stable SHA-256 content identity of one serializable value.
+///
+/// Byte-identical to `awaken_runtime_contract::resolution::content_fingerprint`:
+/// the tool operation ledger id is durable, so its derivation must not change
+/// when the tool vocabulary moved out of the runtime contract.
+fn content_fingerprint<T: Serialize + ?Sized>(value: &T) -> Result<String, serde_json::Error> {
+    serde_json::to_vec(value).map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+}
 
 tokio::task_local! {
     /// Runtime-owned context of the current durable tool invocation.
@@ -93,7 +110,7 @@ impl ToolOperationToken {
             .as_ref()
             .map(|scope| scope.0.0.as_str());
         let run_id = self.run_id.as_ref().map(|run_id| run_id.0.as_str());
-        let fingerprint = crate::resolution::content_fingerprint(&(
+        let fingerprint = content_fingerprint(&(
             "tool-operation-v2",
             execution_scope,
             infrastructure_scope,
@@ -288,7 +305,7 @@ impl ToolRecoveryMode {
 /// budget enforced by the constructors and by Serde's `NonZeroU16` decoding.
 ///
 /// ```compile_fail
-/// use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+/// use awaken_tool_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 ///
 /// let _ = ToolRecoveryPolicy {
 ///     mode: ToolRecoveryMode::NeverReplay,
@@ -892,7 +909,7 @@ pub trait RawTool: Send + Sync {
 pub async fn invoke_raw_tool(
     tool: &dyn RawTool,
     call: ToolCall,
-    cancellation: Option<&crate::CancellationToken>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<ToolOutput, ToolError> {
     match cancellation {
         Some(token) => {
@@ -1283,6 +1300,12 @@ mod recovery_tests {
         let token = ToolOperationToken::from_context(&base).unwrap();
         let exact = token.ledger_id(Some("session-1"));
         assert_eq!(exact, token.ledger_id(Some("session-1")));
+        // The ledger id is durable: pin its exact derivation so relocating the
+        // fingerprint helper cannot silently re-key existing operations.
+        assert_eq!(
+            exact,
+            "tool-op-v2:cb26b0faa5f3ac87a98cc9d1637f3e403ead294734799af645277e066252a6d1"
+        );
 
         let mut another_operation = base.clone();
         another_operation.operation_id = "operation-2".into();

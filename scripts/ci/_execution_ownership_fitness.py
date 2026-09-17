@@ -118,7 +118,7 @@ PARALLEL_RAW_TOOL_REGISTRY = re.compile(
     r"HashMap\s*<\s*String\s*,\s*(?:std::sync::)?Arc\s*<\s*dyn\s+RawTool\s*>\s*>"
 )
 
-RAW_TOOL_REGISTRY_OWNER = "crates/contract/awaken-runtime-contract/src/tool.rs"
+RAW_TOOL_REGISTRY_OWNER = "crates/contract/awaken-tool-contract/src/tool.rs"
 RAW_TOOL_REGISTRY_CONSUMERS = (
     "crates/runtime/awaken-runtime/src/runtime.rs",
     "crates/server/awaken-session-executor/src/session_environment/environment.rs",
