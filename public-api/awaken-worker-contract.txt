@@ -28,8 +28,8 @@ pub awaken_worker_contract::Incompatibility::RuntimeVersion(u32)
 pub awaken_worker_contract::Incompatibility::SandboxBackend(alloc::string::String)
 pub awaken_worker_contract::Incompatibility::SandboxCapabilities
 pub awaken_worker_contract::Incompatibility::SandboxToolRecovery
-pub awaken_worker_contract::Incompatibility::SandboxToolRecovery::actual: awaken_runtime_contract::tool::ToolRecoveryCapability
-pub awaken_worker_contract::Incompatibility::SandboxToolRecovery::required: awaken_runtime_contract::tool::ToolRecoveryMode
+pub awaken_worker_contract::Incompatibility::SandboxToolRecovery::actual: awaken_tool_contract::tool::ToolRecoveryCapability
+pub awaken_worker_contract::Incompatibility::SandboxToolRecovery::required: awaken_tool_contract::tool::ToolRecoveryMode
 pub awaken_worker_contract::Incompatibility::ZeroCapacity
 pub awaken_worker_contract::Incompatibility::Zone
 pub awaken_worker_contract::Incompatibility::Zone::actual: core::option::Option<alloc::string::String>
@@ -106,7 +106,7 @@ pub awaken_worker_contract::PlacementRequirements::recovery: awaken_worker_contr
 pub awaken_worker_contract::PlacementRequirements::required_acp_capabilities: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerAcpCapabilityRequirement>
 pub awaken_worker_contract::PlacementRequirements::required_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::required_credentials: alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialRef>
-pub awaken_worker_contract::PlacementRequirements::required_sandbox_tool_recovery: alloc::collections::btree::set::BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode>
+pub awaken_worker_contract::PlacementRequirements::required_sandbox_tool_recovery: alloc::collections::btree::set::BTreeSet<awaken_tool_contract::tool::ToolRecoveryMode>
 pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::resources: awaken_provisioning_contract::vocab::ResourceRequests
 pub awaken_worker_contract::PlacementRequirements::runtime_protocol_version: u32
@@ -202,7 +202,7 @@ pub awaken_worker_contract::WorkerManifest::manifest_version: u32
 pub awaken_worker_contract::WorkerManifest::runtime_protocol: awaken_worker_contract::VersionRange
 pub awaken_worker_contract::WorkerManifest::sandbox: awaken_provisioning_contract::sandbox::runtime::SandboxCapabilities
 pub awaken_worker_contract::WorkerManifest::sandbox_backends: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub awaken_worker_contract::WorkerManifest::sandbox_tool_recovery: awaken_runtime_contract::tool::ToolRecoveryCapability
+pub awaken_worker_contract::WorkerManifest::sandbox_tool_recovery: awaken_tool_contract::tool::ToolRecoveryCapability
 pub awaken_worker_contract::WorkerManifest::trusted_host_sandbox: core::option::Option<awaken_provisioning_contract::sandbox::runtime::SandboxCapabilities>
 pub awaken_worker_contract::WorkerManifest::zone: core::option::Option<alloc::string::String>
 impl awaken_worker_contract::WorkerManifest
@@ -275,11 +275,11 @@ pub fn awaken_worker_contract::can_assign(&awaken_worker_contract::WorkerSnapsho
 pub fn awaken_worker_contract::can_claim(&awaken_worker_contract::WorkerManifest, &awaken_worker_contract::PlacementRequirements) -> core::result::Result<(), awaken_worker_contract::Incompatibility>
 pub fn awaken_worker_contract::can_claim_locally(&awaken_worker_contract::PlacementRequirements) -> bool
 pub const fn awaken_worker_contract::dynamic_evidence_admits(bool, bool, bool) -> bool
-pub fn awaken_worker_contract::manifest_recovery_matches_installed(awaken_runtime_contract::tool::ToolRecoveryCapability, awaken_runtime_contract::tool::ToolRecoveryCapability) -> bool
+pub fn awaken_worker_contract::manifest_recovery_matches_installed(awaken_tool_contract::tool::ToolRecoveryCapability, awaken_tool_contract::tool::ToolRecoveryCapability) -> bool
 pub fn awaken_worker_contract::place(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>
 pub fn awaken_worker_contract::place_assignment(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], core::option::Option<&awaken_worker_contract::WorkerAssignment>, bool, u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>
 pub const fn awaken_worker_contract::process_ready_after_startup(awaken_worker_contract::DynamicEvidenceProbeState) -> bool
-pub const fn awaken_worker_contract::sandbox_tool_recovery_is_compatible(awaken_runtime_contract::tool::ToolRecoveryMode, awaken_runtime_contract::tool::ToolRecoveryCapability) -> bool
+pub const fn awaken_worker_contract::sandbox_tool_recovery_is_compatible(awaken_tool_contract::tool::ToolRecoveryMode, awaken_tool_contract::tool::ToolRecoveryCapability) -> bool
 pub fn awaken_worker_contract::select_verified_acp_capability<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a awaken_worker_contract::RegisteredWorker>, &str, core::option::Option<&awaken_credential_contract::CredentialRef>, u64) -> awaken_worker_contract::VerifiedAcpCapabilitySelection
 pub const fn awaken_worker_contract::worker_expiry_admission(bool, bool, awaken_worker_contract::WorkerState, u64, u64) -> awaken_worker_contract::RegistryMutation
 pub const fn awaken_worker_contract::worker_heartbeat_admission(bool, bool, bool, bool, awaken_worker_contract::WorkerState) -> awaken_worker_contract::RegistryMutation
