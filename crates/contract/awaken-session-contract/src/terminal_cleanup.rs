@@ -6,7 +6,6 @@
 //! becomes a [`VerifiedSessionCleanupReceipt`] only after exact command binding.
 
 mod completion;
-mod driver;
 mod effects;
 mod progress;
 mod repository_publication;
@@ -14,7 +13,6 @@ mod state;
 
 use completion::SessionCleanupCompletion;
 use completion::VerifiedSessionCleanupReceipt;
-pub use driver::{SessionTerminalCleanupDriveOutcome, drive_session_terminal_cleanup};
 pub use effects::*;
 pub use progress::{
     SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt, SessionCleanupPreparation,

@@ -227,10 +227,9 @@ pub use terminal_cleanup::{
     SessionRepositoryPublicationCommand, SessionRepositoryPublicationEffect,
     SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
     SessionRepositoryPublicationRejection, SessionTerminalCleanupAction,
-    SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupDriveOutcome,
-    SessionTerminalCleanupEffect, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
-    drive_session_terminal_cleanup, terminal_memory_reconciliation_intent,
-    terminal_memory_reconciliation_intents,
+    SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupEffect,
+    SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
+    terminal_memory_reconciliation_intent, terminal_memory_reconciliation_intents,
     terminal_memory_reconciliation_intents_from_materializations,
     validate_continuation_memory_materializations, validate_continuation_memory_reconciliation,
 };

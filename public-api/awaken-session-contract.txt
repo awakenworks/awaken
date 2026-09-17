@@ -787,9 +787,6 @@ pub enum awaken_session_contract::SessionRealizationDriveError
 pub awaken_session_contract::SessionRealizationDriveError::Control(awaken_session_contract::SessionRealizationControlFailure)
 pub awaken_session_contract::SessionRealizationDriveError::DidNotConverge
 pub awaken_session_contract::SessionRealizationDriveError::Effect(awaken_session_contract::RunError)
-pub enum awaken_session_contract::SessionRealizationExclusionDecision
-pub awaken_session_contract::SessionRealizationExclusionDecision::Admit
-pub awaken_session_contract::SessionRealizationExclusionDecision::Retry
 pub enum awaken_session_contract::SessionRepositoryConflict
 pub awaken_session_contract::SessionRepositoryConflict::AlreadyExists
 pub awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch
@@ -864,9 +861,6 @@ pub awaken_session_contract::SessionTerminalCleanupAction::Dispose::command: awa
 pub awaken_session_contract::SessionTerminalCleanupAction::Prepare
 pub awaken_session_contract::SessionTerminalCleanupAction::Prepare::commands: alloc::vec::Vec<awaken_session_contract::SessionCleanupCommand>
 pub awaken_session_contract::SessionTerminalCleanupAction::Waiting
-pub enum awaken_session_contract::SessionTerminalCleanupDriveOutcome
-pub awaken_session_contract::SessionTerminalCleanupDriveOutcome::Completed
-pub awaken_session_contract::SessionTerminalCleanupDriveOutcome::Pending
 pub enum awaken_session_contract::SessionThreadTarget
 pub awaken_session_contract::SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id)
 pub awaken_session_contract::SessionThreadTarget::Primary
@@ -1861,12 +1855,6 @@ pub awaken_session_contract::SessionRealizationLeaseReceipt::remaining_ms: core:
 impl awaken_session_contract::SessionRealizationLeaseReceipt
 pub fn awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(awaken_session_contract::SessionRealizationLease, u64) -> core::result::Result<Self, awaken_session_contract::SessionRealizationControlFailure>
 pub fn awaken_session_contract::SessionRealizationLeaseReceipt::observed(self, awaken_runtime_contract::authority_lease::AuthorityProofStarted) -> awaken_session_contract::ObservedSessionRealizationLease
-pub struct awaken_session_contract::SessionRealizationPermit
-impl awaken_session_contract::SessionRealizationPermit
-pub async fn awaken_session_contract::SessionRealizationPermit::acquire<Identity, Owner, Enter, Entered, Admit, Admitted>(&str, Enter, Admit) -> (Self, Admitted) where Identity: core::marker::Send + core::marker::Sync + 'static, Owner: core::marker::Send + core::marker::Sync + 'static, Enter: core::ops::function::FnMut() -> Entered, Entered: core::future::future::Future<Output = (Identity, Owner)>, Admit: core::ops::function::FnMut(&Identity) -> core::option::Option<Admitted>
-pub fn awaken_session_contract::SessionRealizationPermit::session_id(&self) -> &str
-impl core::fmt::Debug for awaken_session_contract::SessionRealizationPermit
-pub fn awaken_session_contract::SessionRealizationPermit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_session_contract::SessionRealizationProgress
 pub awaken_session_contract::SessionRealizationProgress::attempts: u32
 pub awaken_session_contract::SessionRealizationProgress::failed_at_unix_ms: core::option::Option<u64>
@@ -2422,8 +2410,7 @@ pub const fn awaken_session_contract::classify_session_event_batch_admission(boo
 pub fn awaken_session_contract::coordinated_thread_failed(&awaken_agent_contract::agent::run::RunState) -> bool
 pub fn awaken_session_contract::coordinated_thread_id(&str, &awaken_agent_contract::agent::run::Id, &str) -> awaken_agent_contract::agent::thread::Id
 pub fn awaken_session_contract::decode_session_event_batch_operation(&str) -> core::option::Option<awaken_session_contract::SessionEventBatchOperation<'_>>
-pub async fn awaken_session_contract::drive_session_realization(&awaken_session_contract::SessionRealizationPermit, core::option::Option<awaken_agent_contract::agent::run::Id>, &dyn awaken_session_contract::SessionRealizationControl, &dyn awaken_session_contract::SessionProjectionSynchronizer, &dyn awaken_session_contract::McpAttachmentRealizer, awaken_session_contract::SessionRealizationDirective, awaken_runtime_contract::authority_lease::AuthorityProofStarted) -> core::result::Result<(), awaken_session_contract::SessionRealizationDriveError>
-pub async fn awaken_session_contract::drive_session_terminal_cleanup(&str, &awaken_session_contract::SessionRealizationLease, &dyn awaken_session_contract::SessionRealizationControl, &dyn awaken_session_contract::SessionRuntime) -> core::result::Result<awaken_session_contract::SessionTerminalCleanupDriveOutcome, awaken_session_contract::SessionRealizationDriveError>
+pub async fn awaken_session_contract::drive_session_realization(&str, core::option::Option<awaken_agent_contract::agent::run::Id>, &dyn awaken_session_contract::SessionRealizationControl, &dyn awaken_session_contract::SessionProjectionSynchronizer, &dyn awaken_session_contract::McpAttachmentRealizer, awaken_session_contract::SessionRealizationDirective, awaken_runtime_contract::authority_lease::AuthorityProofStarted) -> core::result::Result<(), awaken_session_contract::SessionRealizationDriveError>
 pub fn awaken_session_contract::ensure_typed_mcp_toolset_policies(&mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, &[awaken_runtime_contract::agent_bindings::AgentMcpServerBinding], bool) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_contract::epoch_millis_to_rfc3339(u64) -> alloc::string::String
 pub fn awaken_session_contract::event_admission_closed() -> awaken_session_contract::RunError
@@ -2461,7 +2448,6 @@ pub fn awaken_session_contract::session_event_user_run_id(&str, &str) -> awaken_
 pub fn awaken_session_contract::session_model_override_decision<T: core::cmp::PartialEq + ?core::marker::Sized>(&T, &T) -> awaken_session_contract::SessionModelOverrideDecision
 pub fn awaken_session_contract::session_outcome_convenience_id(&str, &str, &str, u32) -> alloc::string::String
 pub const fn awaken_session_contract::session_realization_assignment(core::option::Option<u64>, bool, bool, bool, bool) -> awaken_session_contract::SessionRealizationAssignment
-pub const fn awaken_session_contract::session_realization_exclusion_admits(bool, bool) -> awaken_session_contract::SessionRealizationExclusionDecision
 pub fn awaken_session_contract::session_run_activity_operation_id(&str, &awaken_agent_contract::agent::run::Id) -> alloc::string::String
 pub const fn awaken_session_contract::session_run_activity_receipt_plan(awaken_session_contract::SessionRunReservation, core::option::Option<u64>) -> awaken_session_contract::SessionRunActivityReceiptPlan
 pub fn awaken_session_contract::session_run_id(&str, &str) -> awaken_agent_contract::agent::run::Id
