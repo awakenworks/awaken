@@ -230,7 +230,7 @@ impl ToolGateHook for ConstGate {
         _ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(self.0.clone())
+        GateDecision::plugin_gate(self.0.clone())
     }
 }
 

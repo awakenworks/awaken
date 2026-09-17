@@ -10,7 +10,9 @@ use crate::agent::run::RunState;
 use crate::audit::draft::Draft;
 use crate::audit::kind::Kind;
 use crate::audit::model_request::ModelRequestObservation;
-use crate::audit::permission::{PermissionConfirmation, PermissionPolicy, PermissionReasonCode};
+use crate::audit::permission::{
+    PermissionConfirmation, PermissionDecider, PermissionPolicy, PermissionReasonCode,
+};
 
 /// A committed run fact, carrying its own typed data. Lowers to a [`Draft`] for
 /// the durable event log.
@@ -39,16 +41,18 @@ pub enum RunEvent {
     RunAwaiting { run_id: String },
     /// A protected tool call passed the permission gate (ADR-0030 audit).
     ///
-    /// `policy` names the authored policy that decided and `reason_code` the
-    /// grounds of an `auto` judgement; both are absent when no authored policy
-    /// decided (a per-Run narrowing, a plugin gate). Both are additive on the
-    /// wire so rows written before they existed still decode. A person's answer
-    /// to the wait an `ask` opened is not a decision of the gate; it is
-    /// [`RunEvent::PermissionConfirmed`].
+    /// `decided_by` names who decided: an authored policy, a per-Run
+    /// narrowing, or a plugin gate. `policy` names the authored policy that
+    /// decided and `reason_code` the grounds of an `auto` judgement; both are
+    /// absent when no authored policy decided. All three are additive on the
+    /// wire so rows written before they existed still decode; every row written
+    /// now carries `decided_by`. A person's answer to the wait an `ask` opened
+    /// is not a decision of the gate; it is [`RunEvent::PermissionConfirmed`].
     PermissionDecided {
         tool_id: String,
         call_id: String,
         decision: String,
+        decided_by: PermissionDecider,
         policy: Option<PermissionPolicy>,
         reason_code: Option<PermissionReasonCode>,
     },
@@ -111,10 +115,16 @@ impl From<RunEvent> for Draft {
                 tool_id,
                 call_id,
                 decision,
+                decided_by,
                 policy,
                 reason_code,
             } => {
-                let mut payload = serde_json::json!({ "tool_id": tool_id, "call_id": call_id, "decision": decision });
+                let mut payload = serde_json::json!({
+                    "tool_id": tool_id,
+                    "call_id": call_id,
+                    "decision": decision,
+                    "decided_by": decided_by.as_str(),
+                });
                 if let Some(policy) = policy {
                     payload["policy"] = serde_json::Value::String(policy.as_str().into());
                 }
@@ -172,6 +182,7 @@ mod tests {
             tool_id: "echo".into(),
             call_id: "c1".into(),
             decision: "allow".into(),
+            decided_by: PermissionDecider::PluginGate,
             policy: None,
             reason_code: None,
         }
@@ -179,7 +190,10 @@ mod tests {
         assert_eq!(d.kind, Kind::PermissionDecided);
         assert_eq!(
             d.payload,
-            serde_json::json!({ "tool_id": "echo", "call_id": "c1", "decision": "allow" })
+            serde_json::json!({
+                "tool_id": "echo", "call_id": "c1", "decision": "allow",
+                "decided_by": "plugin_gate"
+            })
         );
 
         let d: Draft = RunEvent::PermissionConfirmed {
@@ -331,85 +345,105 @@ mod tests {
     }
 
     #[test]
-    fn permission_decided_lowers_policy_and_reason_additively() {
-        // Cause/effect graph: C1 the gate decided under an authored policy; C2
-        // that policy was `auto` and did not allow, so it has grounds; C3 no
-        // authored policy decided (narrowing, plugin gate, human answer).
-        // Effects: E1 `policy` rides beside the decision; E2 `reason_code`
-        // rides only with it; E3 neither key is written at all, so the payload
-        // is byte-identical to the pre-vocabulary shape.
+    fn permission_decided_lowers_decider_policy_and_reason_additively() {
+        // Cause/effect graph: C1 an authored policy decided; C2 that policy was
+        // `auto` and did not allow, so it has grounds; C3 a per-Run narrowing
+        // decided; C4 a plugin gate decided. Effects: E1 `decided_by` is always
+        // written and names exactly the decider; E2 `policy` rides only with a
+        // policy decider; E3 `reason_code` rides only with an `auto` refusal or
+        // ask; E4 a non-policy decider writes neither `policy` nor
+        // `reason_code`, so the two sources stay distinguishable by
+        // `decided_by` alone.
         //
-        // | Rule | C1 | C2 | C3 | payload |
-        // |---|---|---|---|---|
-        // | L1 | T | F | F | decision + policy, no reason_code |
-        // | L2 | T | T | F | decision + policy + reason_code |
-        // | L3 | F | F | T | decision only (historical shape) |
-        let l1: Draft = RunEvent::PermissionDecided {
-            tool_id: "read".into(),
-            call_id: "c1".into(),
-            decision: "allow".into(),
-            policy: Some(PermissionPolicy::AlwaysAllow),
-            reason_code: None,
-        }
-        .into();
+        // | Rule | C1 | C2 | C3 | C4 | payload |
+        // |---|---|---|---|---|---|
+        // | L1 | T | F | F | F | decision + decided_by=policy + policy |
+        // | L2 | T | T | F | F | decision + decided_by=policy + policy + reason_code |
+        // | L3 | F | F | T | F | decision + decided_by=run_narrowing |
+        // | L4 | F | F | F | T | decision + decided_by=plugin_gate |
+        let lower = |decision: &str,
+                     decided_by: PermissionDecider,
+                     policy: Option<PermissionPolicy>,
+                     reason_code: Option<PermissionReasonCode>| {
+            Draft::from(RunEvent::PermissionDecided {
+                tool_id: "bash".into(),
+                call_id: "c".into(),
+                decision: decision.into(),
+                decided_by,
+                policy,
+                reason_code,
+            })
+            .payload
+        };
         assert_eq!(
-            l1.payload,
+            lower(
+                "allow",
+                PermissionDecider::Policy,
+                Some(PermissionPolicy::AlwaysAllow),
+                None
+            ),
             serde_json::json!({
-                "tool_id": "read", "call_id": "c1", "decision": "allow",
-                "policy": "always_allow"
+                "tool_id": "bash", "call_id": "c", "decision": "allow",
+                "decided_by": "policy", "policy": "always_allow"
             }),
             "L1"
         );
-        let l2: Draft = RunEvent::PermissionDecided {
-            tool_id: "write".into(),
-            call_id: "c2".into(),
-            decision: "ask".into(),
-            policy: Some(PermissionPolicy::Auto),
-            reason_code: Some(PermissionReasonCode::INDETERMINATE),
-        }
-        .into();
         assert_eq!(
-            l2.payload,
+            lower(
+                "ask",
+                PermissionDecider::Policy,
+                Some(PermissionPolicy::Auto),
+                Some(PermissionReasonCode::INDETERMINATE)
+            ),
             serde_json::json!({
-                "tool_id": "write", "call_id": "c2", "decision": "ask",
-                "policy": "auto", "reason_code": "indeterminate"
+                "tool_id": "bash", "call_id": "c", "decision": "ask",
+                "decided_by": "policy", "policy": "auto", "reason_code": "indeterminate"
             }),
             "L2"
         );
-        let l3: Draft = RunEvent::PermissionDecided {
-            tool_id: "bash".into(),
-            call_id: "c3".into(),
-            decision: "deny".into(),
-            policy: None,
-            reason_code: None,
-        }
-        .into();
         assert_eq!(
-            l3.payload,
-            serde_json::json!({ "tool_id": "bash", "call_id": "c3", "decision": "deny" }),
+            lower("deny", PermissionDecider::RunNarrowing, None, None),
+            serde_json::json!({
+                "tool_id": "bash", "call_id": "c", "decision": "deny",
+                "decided_by": "run_narrowing"
+            }),
             "L3"
+        );
+        assert_eq!(
+            lower("deny", PermissionDecider::PluginGate, None, None),
+            serde_json::json!({
+                "tool_id": "bash", "call_id": "c", "decision": "deny",
+                "decided_by": "plugin_gate"
+            }),
+            "L4"
         );
     }
 
     #[test]
     fn permission_decided_payloads_round_trip_old_and_new_rows() {
-        // The reader side of the additive contract: a historical row (no
-        // policy) and a current row (policy + reason) both decode through the
-        // same optional fields, an unknown policy label is rejected rather
-        // than silently read as another member of the closed vocabulary, and a
-        // reason code outside the named registry is kept as written.
+        // The reader side of the additive contract: historical rows (no
+        // decider, no policy) and current rows all decode through the same
+        // optional fields; an unknown decider or policy label is rejected
+        // rather than silently read as another member of its closed
+        // vocabulary; and a reason code outside the named registry is kept as
+        // written.
         //
-        // | Row | payload | policy | reason_code |
-        // |---|---|---|---|
-        // | R1 historical | {decision} | None | None |
-        // | R2 auto deny | {decision, policy: auto, reason_code: high_risk} | Auto | HIGH_RISK |
-        // | R3 auto allow | {decision, policy: auto} | Auto | None |
-        // | R4 rule | {decision, policy: rule} | Rule | None |
-        // | R5 unknown | {decision, policy: bypass} | decode error | - |
-        // | R6 open registry | {decision, policy: auto, reason_code: rate_limited} | Auto | rate_limited, kept |
+        // | Row | payload | decided_by | policy | reason_code |
+        // |---|---|---|---|---|
+        // | R1 historical, pre-policy | {decision} | None | None | None |
+        // | R2 auto deny | {decision, decided_by: policy, policy: auto, reason_code: high_risk} | Policy | Auto | HIGH_RISK |
+        // | R3 historical auto allow | {decision, policy: auto} | None | Auto | None |
+        // | R4 rule | {decision, decided_by: policy, policy: rule} | Policy | Rule | None |
+        // | R5 unknown policy | {decision, policy: bypass} | decode error | - | - |
+        // | R6 open registry | {decision, policy: auto, reason_code: rate_limited} | None | Auto | rate_limited, kept |
+        // | R7 run narrowing | {decision, decided_by: run_narrowing} | RunNarrowing | None | None |
+        // | R8 plugin gate | {decision, decided_by: plugin_gate} | PluginGate | None | None |
+        // | R9 unknown decider | {decision, decided_by: operator} | decode error | - | - |
         #[derive(serde::Deserialize)]
         struct Row {
             decision: String,
+            #[serde(default)]
+            decided_by: Option<PermissionDecider>,
             #[serde(default)]
             policy: Option<PermissionPolicy>,
             #[serde(default)]
@@ -420,8 +454,13 @@ mod tests {
         let r1 = read(serde_json::json!({ "tool_id": "t", "call_id": "c", "decision": "allow" }))
             .unwrap();
         assert_eq!(
-            (r1.decision.as_str(), r1.policy, r1.reason_code),
-            ("allow", None, None),
+            (
+                r1.decision.as_str(),
+                r1.decided_by,
+                r1.policy,
+                r1.reason_code
+            ),
+            ("allow", None, None, None),
             "R1"
         );
 
@@ -429,15 +468,22 @@ mod tests {
             tool_id: "t".into(),
             call_id: "c".into(),
             decision: "deny".into(),
+            decided_by: PermissionDecider::Policy,
             policy: Some(PermissionPolicy::Auto),
             reason_code: Some(PermissionReasonCode::HIGH_RISK),
         }
         .into();
         let r2 = read(r2.payload).unwrap();
         assert_eq!(
-            (r2.decision.as_str(), r2.policy, r2.reason_code),
+            (
+                r2.decision.as_str(),
+                r2.decided_by,
+                r2.policy,
+                r2.reason_code
+            ),
             (
                 "deny",
+                Some(PermissionDecider::Policy),
                 Some(PermissionPolicy::Auto),
                 Some(PermissionReasonCode::HIGH_RISK)
             ),
@@ -446,13 +492,23 @@ mod tests {
 
         let r3 = read(serde_json::json!({ "decision": "allow", "policy": "auto" })).unwrap();
         assert_eq!(
-            (r3.policy, r3.reason_code),
-            (Some(PermissionPolicy::Auto), None),
+            (r3.decided_by, r3.policy, r3.reason_code),
+            (None, Some(PermissionPolicy::Auto), None),
             "R3"
         );
 
-        let r4 = read(serde_json::json!({ "decision": "allow", "policy": "rule" })).unwrap();
-        assert_eq!(r4.policy, Some(PermissionPolicy::Rule), "R4");
+        let r4 = read(serde_json::json!({
+            "decision": "allow", "decided_by": "policy", "policy": "rule"
+        }))
+        .unwrap();
+        assert_eq!(
+            (r4.decided_by, r4.policy),
+            (
+                Some(PermissionDecider::Policy),
+                Some(PermissionPolicy::Rule)
+            ),
+            "R4"
+        );
 
         assert!(
             read(serde_json::json!({ "decision": "allow", "policy": "bypass" })).is_err(),
@@ -477,10 +533,37 @@ mod tests {
             tool_id: "t".into(),
             call_id: "c".into(),
             decision: r6.decision,
+            decided_by: PermissionDecider::Policy,
             policy: r6.policy,
             reason_code: r6.reason_code,
         }
         .into();
         assert_eq!(relowered.payload["reason_code"], "rate_limited", "R6");
+
+        for (rule, decider) in [
+            ("R7", PermissionDecider::RunNarrowing),
+            ("R8", PermissionDecider::PluginGate),
+        ] {
+            let written: Draft = RunEvent::PermissionDecided {
+                tool_id: "t".into(),
+                call_id: "c".into(),
+                decision: "deny".into(),
+                decided_by: decider,
+                policy: None,
+                reason_code: None,
+            }
+            .into();
+            let row = read(written.payload).unwrap();
+            assert_eq!(
+                (row.decided_by, row.policy, row.reason_code),
+                (Some(decider), None, None),
+                "{rule}"
+            );
+        }
+
+        assert!(
+            read(serde_json::json!({ "decision": "deny", "decided_by": "operator" })).is_err(),
+            "R9"
+        );
     }
 }

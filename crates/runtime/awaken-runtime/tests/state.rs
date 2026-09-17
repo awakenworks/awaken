@@ -78,7 +78,7 @@ impl ToolGateHook for AllowGate {
         _ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Allow)
+        GateDecision::plugin_gate(GateOutcome::Allow)
     }
 }
 

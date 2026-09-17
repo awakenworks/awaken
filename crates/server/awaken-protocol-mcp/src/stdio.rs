@@ -319,7 +319,7 @@ mod tests {
         #[async_trait]
         impl ToolGateHook for SuspendGate {
             async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateDecision {
-                GateDecision::without_basis(GateOutcome::RequireConfirmation {
+                GateDecision::plugin_gate(GateOutcome::RequireConfirmation {
                     correlation_id: "t".into(),
                 })
             }

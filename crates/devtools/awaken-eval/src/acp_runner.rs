@@ -28,7 +28,7 @@ struct DenyAllTools;
 #[async_trait]
 impl ToolPermissionPolicy for DenyAllTools {
     async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
-        ToolPermissionRuling::without_basis(ToolPermissionVerdict::Deny {
+        ToolPermissionRuling::run_narrowing(ToolPermissionVerdict::Deny {
             reason: "evaluation run is tool-free".into(),
         })
     }

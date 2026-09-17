@@ -507,9 +507,14 @@ mod tests {
     #[async_trait::async_trait]
     impl ToolPermissionPolicy for AskPolicy {
         async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
-            ToolPermissionRuling::without_basis(ToolPermissionVerdict::RequireConfirmation {
-                correlation_id: format!("approval:{}", call.call_id),
-            })
+            ToolPermissionRuling::policy(
+                ToolPermissionVerdict::RequireConfirmation {
+                    correlation_id: format!("approval:{}", call.call_id),
+                },
+                awaken_runtime_contract::permission::PermissionBasis::fixed(
+                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                ),
+            )
         }
     }
 

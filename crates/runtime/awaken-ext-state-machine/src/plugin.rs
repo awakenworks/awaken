@@ -230,7 +230,7 @@ impl ToolGateHook for StateMachineGate {
         let thread = ThreadInstances::load_or_default(state);
         let run = RunInstances::load_or_default(state);
         let evals = gate_evaluate(&self.machines, &thread, &run, &ctx.tool_id, &ctx.arguments);
-        GateDecision::without_basis(match gate_decision(&evals) {
+        GateDecision::plugin_gate(match gate_decision(&evals) {
             Some(v) if v.action == ViolationAction::Deny => GateOutcome::Block { reason: v.reason },
             Some(v) if v.action == ViolationAction::Ask => GateOutcome::RequireConfirmation {
                 correlation_id: format!("fsm-{}", ctx.call_id),

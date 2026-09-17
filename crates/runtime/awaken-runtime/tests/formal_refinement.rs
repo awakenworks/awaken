@@ -273,7 +273,7 @@ struct SuspendGate;
 #[async_trait::async_trait]
 impl ToolGateHook for SuspendGate {
     async fn gate(&self, _: &ToolCall, _: &Store) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::RequireConfirmation {
+        GateDecision::plugin_gate(GateOutcome::RequireConfirmation {
             correlation_id: "formal-approval".to_string(),
         })
     }
@@ -284,7 +284,7 @@ struct BlockGate;
 #[async_trait::async_trait]
 impl ToolGateHook for BlockGate {
     async fn gate(&self, _: &ToolCall, _: &Store) -> GateDecision {
-        GateDecision::without_basis(GateOutcome::Block {
+        GateDecision::plugin_gate(GateOutcome::Block {
             reason: "formal policy denial".to_string(),
         })
     }

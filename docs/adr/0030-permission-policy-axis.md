@@ -60,16 +60,38 @@ Keeping the enum minimal avoids redundant authorization paths.
 ### D4: Audit is a committed event, never a side write
 
 Each gate decision stages a `PermissionDecided` event (tool id, call id, decision,
-and — when an authored policy decided — the closed `policy` it came from:
-`always_allow` | `always_ask` | `auto` | `rule`, plus for `auto` the
-`reason_code`: `high_risk` on a refusal, `indeterminate` on an ask, none on
-an allow) into the attempt's checkpoint, committed through the one finish boundary
-with the run's other facts (G1). `reason_code` is an open registry, as the SDK
-declares it: a reader keeps a code it has no name for rather than failing or
-dropping it. `policy`/`reason_code` are additive: a row a narrowing or a plugin
-gate decided carries neither, and rows written before the vocabulary existed
-still decode. Managed projects them as the SDK's
-per-call `evaluation` beside the flat `evaluated_permission`. Authorization is therefore explainable from committed
+`decided_by` — who decided — and, when an authored policy decided, the closed
+`policy` it came from: `always_allow` | `always_ask` | `auto` | `rule`, plus for
+`auto` the `reason_code`: `high_risk` on a refusal, `indeterminate` on an ask,
+none on an allow) into the attempt's checkpoint, committed through the one finish
+boundary with the run's other facts (G1).
+
+`decided_by` is a closed vocabulary, one label per real decider, and every row
+written now carries it:
+
+| `decided_by` | who decided | `policy` / `reason_code` |
+|---|---|---|
+| `policy` | the authored permission policy (a disabled tool or a matched deny rule is still the authored `rule`) | present / `auto` grounds only |
+| `run_narrowing` | a per-Run narrowing of the configured authority (a tool-free Run, a per-Run `DenyAllTools`) | absent |
+| `plugin_gate` | a tool gate that is not an authored policy (a state-machine precondition, the skill `allowed_tools` intersection) | absent |
+
+The producer side is one closed `GateAuthority` (`Policy(PermissionBasis)` |
+`RunNarrowing` | `PluginGate`) on every `GateDecision`, and a
+`RulingAuthority` (`Policy` | `RunNarrowing`) on every `ToolPermissionRuling`;
+there is no unattributed constructor, and all three audit fields are lowered
+from that one value, so they cannot disagree. An allow a later gate merely
+passes through keeps the earlier authority. There is no "absent gate" label:
+with neither a host gate nor a per-Run policy installed nothing is audited.
+
+`reason_code` is an open registry, as the SDK declares it: a reader keeps a code
+it has no name for rather than failing or dropping it. `decided_by`, `policy` and
+`reason_code` are additive: rows written before they existed still decode (a row
+without `decided_by` is read as unattributed), and an unknown `decided_by` or
+`policy` label is refused by the typed decoder rather than read as another
+member. Managed projects `policy`/`reason_code` as the SDK's per-call
+`evaluation` beside the flat `evaluated_permission`; the SDK object has only
+policy vocabulary, so a row whose `decided_by` is not `policy` projects the flat
+decision alone and no wire field is invented for its decider. Authorization is therefore explainable from committed
 truth, not a durable write outside the commit path. No gate means no protected
 call and no audit.
 
