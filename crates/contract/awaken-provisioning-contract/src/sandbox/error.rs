@@ -1,6 +1,6 @@
 //! Typed provisioning failure shared by every Sandbox provider and consumer.
 
-use awaken_runtime_contract::resilience::{Classify, Disposition};
+use awaken_agent_contract::resilience::{Classify, Disposition};
 
 /// Provisioning failure, classified by what a caller may do next.
 ///

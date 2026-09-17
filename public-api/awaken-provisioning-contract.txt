@@ -182,8 +182,8 @@ pub fn awaken_provisioning_contract::SandboxError::timeout(impl core::convert::I
 pub fn awaken_provisioning_contract::SandboxError::transport(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_provisioning_contract::SandboxError::unauthorized(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_provisioning_contract::SandboxError::unsupported(impl core::convert::Into<alloc::string::String>) -> Self
-impl awaken_runtime_contract::resilience::Classify for awaken_provisioning_contract::SandboxError
-pub fn awaken_provisioning_contract::SandboxError::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
+impl awaken_agent_contract::resilience::Classify for awaken_provisioning_contract::SandboxError
+pub fn awaken_provisioning_contract::SandboxError::disposition(&self) -> awaken_agent_contract::resilience::Disposition
 impl core::convert::From<awaken_provisioning_contract::PrepareError> for awaken_provisioning_contract::SandboxError
 pub fn awaken_provisioning_contract::SandboxError::from(awaken_provisioning_contract::PrepareError) -> Self
 impl core::convert::From<awaken_resource_contract::MemErr> for awaken_provisioning_contract::SandboxError

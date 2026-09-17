@@ -15,7 +15,6 @@ test-support = []
 [dependencies]
 awaken-agent-contract.workspace = true
 # `resilience::Classify` is the one neutral retry/terminal projection; SandboxError opts in.
-awaken-runtime-contract.workspace = true
 awaken-sandbox-control.workspace = true
 # Typed File/Memory/Repository input identity. Dependency direction is one-way:
 # Resources names logical inputs; Provisioning owns their sandbox layout.

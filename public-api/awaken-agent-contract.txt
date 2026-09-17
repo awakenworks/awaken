@@ -801,6 +801,18 @@ pub const awaken_agent_contract::page::MAX_PAGE_LIMIT: usize
 pub fn awaken_agent_contract::page::normalize_history_page_request(core::option::Option<&str>, core::option::Option<usize>) -> (core::option::Option<&str>, usize)
 pub fn awaken_agent_contract::page::paginate_by_id<'a, T>(&'a [T], core::option::Option<&str>, core::option::Option<usize>, impl core::ops::function::Fn(&T) -> &str) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, T>, awaken_agent_contract::page::UnknownCursor>
 pub fn awaken_agent_contract::page::paginate_by_key<'a, T>(&'a [T], core::option::Option<&str>, core::option::Option<usize>, impl core::ops::function::Fn(&T) -> alloc::string::String) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, T>, awaken_agent_contract::page::UnknownCursor>
+pub mod awaken_agent_contract::resilience
+pub enum awaken_agent_contract::resilience::Disposition
+pub awaken_agent_contract::resilience::Disposition::Permanent
+pub awaken_agent_contract::resilience::Disposition::Quota
+pub awaken_agent_contract::resilience::Disposition::Quota::retry_after: core::option::Option<core::time::Duration>
+pub awaken_agent_contract::resilience::Disposition::Transient
+impl awaken_agent_contract::resilience::Disposition
+pub fn awaken_agent_contract::resilience::Disposition::is_retryable(self) -> bool
+pub fn awaken_agent_contract::resilience::Disposition::prefers_failover(self) -> bool
+pub fn awaken_agent_contract::resilience::Disposition::retry_after(self) -> core::option::Option<core::time::Duration>
+pub trait awaken_agent_contract::resilience::Classify
+pub fn awaken_agent_contract::resilience::Classify::disposition(&self) -> awaken_agent_contract::resilience::Disposition
 pub mod awaken_agent_contract::secret
 pub struct awaken_agent_contract::secret::RedactedString(_)
 impl awaken_agent_contract::secret::RedactedString

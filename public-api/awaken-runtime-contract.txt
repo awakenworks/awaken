@@ -651,8 +651,8 @@ pub fn awaken_runtime_contract::llm::Error::reset_hint(&self) -> core::option::O
 pub fn awaken_runtime_contract::llm::Error::retry_after(&self) -> core::option::Option<core::time::Duration>
 pub fn awaken_runtime_contract::llm::Error::retry_preserves_attempt_output(&self) -> bool
 pub fn awaken_runtime_contract::llm::Error::with_execution_evidence(self, awaken_runtime_contract::model_operation::ModelExecutionEvidence) -> Self
-impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::llm::Error
-pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
+impl awaken_agent_contract::resilience::Classify for awaken_runtime_contract::llm::Error
+pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_agent_contract::resilience::Disposition
 pub enum awaken_runtime_contract::llm::ModelRequestAdmission
 pub awaken_runtime_contract::llm::ModelRequestAdmission::Admit
 pub awaken_runtime_contract::llm::ModelRequestAdmission::Pause(awaken_agent_contract::agent::awaiting::PauseReason)
@@ -1136,24 +1136,13 @@ pub fn awaken_runtime_contract::plugin::enforce_bound(&awaken_runtime_contract::
 pub fn awaken_runtime_contract::plugin::exact_plugin_selection(&[alloc::string::String], &str) -> awaken_runtime_contract::plugin::PluginActivationDecision
 pub const fn awaken_runtime_contract::plugin::plugin_activation_decision(bool, bool, bool, bool) -> awaken_runtime_contract::plugin::PluginActivationDecision
 pub mod awaken_runtime_contract::resilience
-pub enum awaken_runtime_contract::resilience::Disposition
-pub awaken_runtime_contract::resilience::Disposition::Permanent
-pub awaken_runtime_contract::resilience::Disposition::Quota
-pub awaken_runtime_contract::resilience::Disposition::Quota::retry_after: core::option::Option<core::time::Duration>
-pub awaken_runtime_contract::resilience::Disposition::Transient
-impl awaken_runtime_contract::resilience::Disposition
-pub fn awaken_runtime_contract::resilience::Disposition::is_retryable(self) -> bool
-pub fn awaken_runtime_contract::resilience::Disposition::prefers_failover(self) -> bool
-pub fn awaken_runtime_contract::resilience::Disposition::retry_after(self) -> core::option::Option<core::time::Duration>
+pub use awaken_runtime_contract::resilience::Classify
+pub use awaken_runtime_contract::resilience::Disposition
 pub enum awaken_runtime_contract::resilience::RetryDecision
 pub awaken_runtime_contract::resilience::RetryDecision::Retry
 pub awaken_runtime_contract::resilience::RetryDecision::Terminal
 pub const awaken_runtime_contract::resilience::RETRY_ACTIVE_STATE: u8
 pub const awaken_runtime_contract::resilience::RETRY_TERMINAL_STATE: u8
-pub trait awaken_runtime_contract::resilience::Classify
-pub fn awaken_runtime_contract::resilience::Classify::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
-impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::llm::Error
-pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
 pub const fn awaken_runtime_contract::resilience::bounded_retry_decision(u8, bool, u32, u32) -> awaken_runtime_contract::resilience::RetryDecision
 pub mod awaken_runtime_contract::resolution
 pub use awaken_runtime_contract::resolution::content_fingerprint
