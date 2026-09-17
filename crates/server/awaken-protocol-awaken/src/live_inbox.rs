@@ -150,7 +150,7 @@ async fn live_inbox_snapshot(
     Path(id): Path<String>,
 ) -> Result<Json<WireLiveInboxSnapshot>, ExtensionRejection> {
     state
-        .snapshot(&workspace_id, &id)
+        .snapshot(&workspace_id, &awaken_session_contract::SessionId::from(id))
         .await
         .map(|snapshot| Json(project_snapshot(snapshot)))
         .map_err(extension_error)
@@ -163,7 +163,11 @@ async fn live_inbox_queue(
     Json(body): Json<LiveInboxMessageBody>,
 ) -> Result<Json<LiveInboxQueuedResponse>, ExtensionRejection> {
     state
-        .queue(&workspace_id, &id, body.content)
+        .queue(
+            &workspace_id,
+            &awaken_session_contract::SessionId::from(id),
+            body.content,
+        )
         .await
         .map(|id| Json(LiveInboxQueuedResponse { id }))
         .map_err(extension_error)
@@ -175,7 +179,11 @@ async fn live_inbox_remove(
     Path((id, msg)): Path<(String, u64)>,
 ) -> Result<StatusCode, ExtensionRejection> {
     state
-        .remove(&workspace_id, &id, msg)
+        .remove(
+            &workspace_id,
+            &awaken_session_contract::SessionId::from(id),
+            msg,
+        )
         .await
         .map(|()| StatusCode::NO_CONTENT)
         .map_err(extension_error)
@@ -188,7 +196,12 @@ async fn live_inbox_replace(
     Json(body): Json<LiveInboxMessageBody>,
 ) -> Result<StatusCode, ExtensionRejection> {
     state
-        .replace(&workspace_id, &id, msg, body.content)
+        .replace(
+            &workspace_id,
+            &awaken_session_contract::SessionId::from(id),
+            msg,
+            body.content,
+        )
         .await
         .map(|()| StatusCode::NO_CONTENT)
         .map_err(extension_error)
@@ -201,7 +214,11 @@ async fn live_inbox_reorder(
     Json(body): Json<LiveInboxOrderBody>,
 ) -> Result<StatusCode, ExtensionRejection> {
     state
-        .reorder(&workspace_id, &id, body.order)
+        .reorder(
+            &workspace_id,
+            &awaken_session_contract::SessionId::from(id),
+            body.order,
+        )
         .await
         .map(|()| StatusCode::NO_CONTENT)
         .map_err(extension_error)

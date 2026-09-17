@@ -37,7 +37,12 @@ pub async fn close_event_admission(
         awaken_session_contract::stable_fingerprint(&(&req, &event_data_subject(&headers)?));
     let admission = state
         .session_application()
-        .close_session_event_admission(&owner_scope, &id, key.clone(), fingerprint)
+        .close_session_event_admission(
+            &owner_scope,
+            &awaken_session_contract::SessionId::from(&id),
+            key.clone(),
+            fingerprint,
+        )
         .await
         .map_err(|error| {
             error_response(if error.code == "idempotency_conflict" {

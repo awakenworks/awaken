@@ -941,7 +941,7 @@ impl crate::SharedHost {
         generation: &awaken_session_contract::McpGenerationRef,
     ) -> Option<bool> {
         self.session_slots
-            .read(&generation.session_id, |slot| {
+            .read(generation.session_id.as_str(), |slot| {
                 if slot.realization_authority.is_closed() {
                     return Some(false);
                 }
@@ -962,7 +962,7 @@ impl crate::SharedHost {
     pub(crate) async fn reconcile_terminal_cleanup_for_lease(
         &self,
         control: &dyn awaken_session_contract::SessionRealizationControl,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<bool, crate::HostError> {
         match control.terminal_cleanup_work(session_id, lease).await {
@@ -980,12 +980,12 @@ impl crate::SharedHost {
                     session_id, lease, control, &runtime,
                 )
                 .await
-                .map_err(|error| terminal_cleanup_drive_error(session_id, error))?;
+                .map_err(|error| terminal_cleanup_drive_error(session_id.as_str(), error))?;
                 Ok(true)
             }
             Ok(None) => {
                 if self
-                    .retire_completed_terminal_cleanup_projection(session_id, lease)
+                    .retire_completed_terminal_cleanup_projection(session_id.as_str(), lease)
                     .await
                 {
                     Ok(true)
@@ -994,12 +994,13 @@ impl crate::SharedHost {
                 }
             }
             Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
-                let _ = self.interrupt(session_id).await;
+                let _ = self.interrupt(session_id.as_str()).await;
                 if !self
-                    .retire_completed_terminal_cleanup_projection(session_id, lease)
+                    .retire_completed_terminal_cleanup_projection(session_id.as_str(), lease)
                     .await
                 {
-                    self.revoke_session_realization(session_id, None).await?;
+                    self.revoke_session_realization(session_id.as_str(), None)
+                        .await?;
                 }
                 Ok(true)
             }
@@ -1057,7 +1058,7 @@ impl crate::SharedHost {
                     // Another actor completed the operation between claim and
                     // poll. This projection has no ordinary Run authority.
                     if let Err(error) = self
-                        .revoke_session_realization(&assignment.session_id, None)
+                        .revoke_session_realization(assignment.session_id.as_str(), None)
                         .await
                     {
                         terminal_error.get_or_insert(error);
@@ -1571,19 +1572,20 @@ impl crate::SharedHost {
         }
         let _realization = self
             .session_slots
-            .acquire_realization(&assignment.session_id)
+            .acquire_realization(assignment.session_id.as_str())
             .await;
         self.install_frozen_session_projection_with_resource_authority(
-            &assignment.session_id,
+            assignment.session_id.as_str(),
             assignment.projection.clone(),
             None,
             FrozenResourceProjectionMode::Terminal,
             Some(proof),
         )
         .await?;
-        self.session_slots.update(&assignment.session_id, |slot| {
-            slot.terminal_environment_state = Some(assignment.projection.environment.clone());
-        });
+        self.session_slots
+            .update(assignment.session_id.as_str(), |slot| {
+                slot.terminal_environment_state = Some(assignment.projection.environment.clone());
+            });
         Ok(())
     }
 

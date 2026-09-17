@@ -114,7 +114,10 @@ impl SessionApplication {
     /// must never merge a stale snapshot after this many conflicts.
     pub const ROOT_CAS_ATTEMPTS: usize = 3;
 
-    pub async fn owner(&self, session_id: &str) -> Result<String, SessionMutationError> {
+    pub async fn owner(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<String, SessionMutationError> {
         self.sessions_repo
             .owner(session_id)
             .await
@@ -174,7 +177,7 @@ impl SessionApplication {
     pub async fn replay_session_create(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.replay_session_create_with_completion(
@@ -194,7 +197,7 @@ impl SessionApplication {
     pub async fn replay_accepted_session_create(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.replay_session_create_with_completion(
@@ -209,7 +212,7 @@ impl SessionApplication {
     async fn replay_session_create_with_completion(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         idempotency: &IdempotencyRecord,
         completion: SessionCreationCompletion,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {

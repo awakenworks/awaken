@@ -108,7 +108,7 @@ impl ResourcePurgeGuard for SessionResourcePurgeGuard {
             .into_iter()
             .map(|session_id| ResourceReference {
                 kind: ResourceReferenceKind::SessionBinding,
-                reference_id: session_id,
+                reference_id: String::from(session_id),
             })
             .collect())
     }

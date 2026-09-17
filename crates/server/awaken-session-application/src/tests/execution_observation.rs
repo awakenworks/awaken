@@ -5,6 +5,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as AuditKind;
 use awaken_agent_contract::audit::record::Record as AuditRecord;
 use awaken_runtime_contract::llm::{ModelRequestObservation, TokenUsage};
+use awaken_session_contract::SessionId;
 
 fn observed_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
@@ -39,7 +40,7 @@ fn observed_session(id: &str) -> PersistedSession {
 
 fn bind_user_command(session: &mut PersistedSession, idempotency_key: &str) -> RunId {
     let mut batch = awaken_session_contract::SessionEventBatch::compile(
-        &session.session_id,
+        session.session_id.as_str(),
         format!("batch:{idempotency_key}"),
         vec![awaken_session_contract::SessionEventInput::UserMessage {
             content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -119,7 +120,7 @@ fn user_run_retry_identity_has_one_aggregate_owner_and_fails_closed_on_ambiguity
 
     let mut initial = observed_session("session-initial");
     let batch = awaken_session_contract::SessionEventBatch::compile(
-        &initial.session_id,
+        initial.session_id.as_str(),
         "initial-batch",
         vec![awaken_session_contract::SessionEventInput::UserMessage {
             content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -236,12 +237,12 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let before = repository
-        .get("session-observed")
+        .get(&SessionId::from("session-observed"))
         .await
         .expect("before projection");
 
     let observed = application
-        .session_execution_observation("workspace", "session-observed")
+        .session_execution_observation("workspace", &SessionId::from("session-observed"))
         .await
         .expect("R1-R4 projection");
     let first_tool_source = MessageId::assistant(&run_a, 0).0;
@@ -291,7 +292,7 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
     );
     assert_eq!(
         repository
-            .get("session-observed")
+            .get(&SessionId::from("session-observed"))
             .await
             .expect("after projection"),
         before,
@@ -380,7 +381,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     assert!(
         matches!(
             application
-                .session_execution_observation("foreign", "session-empty")
+                .session_execution_observation("foreign", &SessionId::from("session-empty"))
                 .await,
             Err(SessionProjectionRecoveryError::NotFound)
         ),
@@ -388,7 +389,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     );
     assert!(
         application
-            .session_execution_observation("workspace", "session-empty")
+            .session_execution_observation("workspace", &SessionId::from("session-empty"))
             .await
             .expect("R6")
             .runs
@@ -396,7 +397,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
         "R6"
     );
     let Err(SessionProjectionRecoveryError::Rejected(error)) = application
-        .session_execution_observation("workspace", "session-corrupt")
+        .session_execution_observation("workspace", &SessionId::from("session-corrupt"))
         .await
     else {
         panic!("R7 malformed audit must fail closed");
@@ -407,7 +408,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
         "R7"
     );
     let Err(SessionProjectionRecoveryError::Rejected(error)) = application
-        .session_execution_observation("workspace", "session-corrupt-tool")
+        .session_execution_observation("workspace", &SessionId::from("session-corrupt-tool"))
         .await
     else {
         panic!("R8 duplicate tool identity must fail closed");

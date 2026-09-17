@@ -1,3 +1,4 @@
+use awaken_session_contract::SessionId;
 mod cancelled_model;
 mod pagination;
 mod refresh_failure;
@@ -44,7 +45,11 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
         .await
         .unwrap();
     let run = RunId("unconfirmed-model".into());
-    let activity = warm.application.begin_activity(&session.id).await.unwrap();
+    let activity = warm
+        .application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     runtime.lifecycle.lock().unwrap().extend([
         lifecycle(
             1,
@@ -63,7 +68,7 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
     ]);
     warm.application
         .settle_activity_observed(
-            &session.id,
+            &SessionId::from(&session.id),
             activity.activity_epoch,
             Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                 activity_epoch: activity.activity_epoch,
@@ -221,7 +226,7 @@ async fn persist_batch_projection_anchors(
 ) {
     let mut session = state
         .application
-        .session(session_id)
+        .session(&SessionId::from(session_id))
         .await
         .expect("load Session root");
     let batch = session
@@ -240,7 +245,11 @@ async fn persist_batch_projection_anchors(
         });
         entry.processed = true;
     }
-    let owner = state.application.owner(session_id).await.expect("owner");
+    let owner = state
+        .application
+        .owner(&SessionId::from(session_id))
+        .await
+        .expect("owner");
     state
         .application
         .commit_session_snapshot(
@@ -556,7 +565,11 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         .await
         .unwrap();
     let prior_run = RunId("prior-runtime-history".into());
-    let activity = warm.application.begin_activity(&session.id).await.unwrap();
+    let activity = warm
+        .application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     runtime.lifecycle.lock().unwrap().extend([
         lifecycle(
             1,
@@ -575,7 +588,7 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
     ]);
     warm.application
         .settle_activity_observed(
-            &session.id,
+            &SessionId::from(&session.id),
             activity.activity_epoch,
             Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                 activity_epoch: activity.activity_epoch,
@@ -836,7 +849,11 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
             RunState::Ended(EndCause::NaturalEnd),
         ),
     ]);
-    let mut persisted = warm.application.session(&session.id).await.unwrap();
+    let mut persisted = warm
+        .application
+        .session(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     persisted.closed_runtime_intervals = vec![interval("below", 3, 9, 10, &session.id)];
     let awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor,
@@ -896,7 +913,11 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
             RunState::Ended(EndCause::NaturalEnd),
         ),
     ]);
-    let mut persisted = warm.application.session(&session.id).await.unwrap();
+    let mut persisted = warm
+        .application
+        .session(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     persisted
         .closed_runtime_intervals
         .push(interval("crossing", 5, 19, 20, &session.id));
@@ -1238,7 +1259,7 @@ impl LifecycleRuntime {
 impl SessionRuntime for LifecycleRuntime {
     async fn coordinated_threads(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
         if let Some(root) = observed_root {
@@ -1253,7 +1274,7 @@ impl SessionRuntime for LifecycleRuntime {
 
     async fn session_run_state(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
         Ok(self
@@ -1319,7 +1340,7 @@ impl SessionRuntime for LifecycleRuntime {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -1540,7 +1561,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
     let accepted = state
         .application
         .append_session_event_batch_idempotent(
-            &session.id,
+            &SessionId::from(&session.id),
             vec![SessionEventInput::UserMessage {
                 content: vec![ContentBlock::text("accepted before response loss")],
             }],
@@ -1552,7 +1573,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         .expect("IR1 durable root receipt");
     let revision = state
         .application
-        .session(&session.id)
+        .session(&SessionId::from(&session.id))
         .await
         .expect("IR1 root before retry")
         .revision;
@@ -1591,7 +1612,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
     );
     let unchanged = state
         .application
-        .session(&session.id)
+        .session(&SessionId::from(&session.id))
         .await
         .expect("IR1 root after retry");
     assert_eq!(unchanged.revision, revision, "IR1/E1 no root mutation");
@@ -1695,7 +1716,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
                 .application
                 .close_session_event_admission(
                     "default",
-                    &session.id,
+                    &SessionId::from(&session.id),
                     "race-key".into(),
                     fingerprint,
                 )
@@ -1709,7 +1730,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
                 state
                     .application
                     .append_session_event_batch_idempotent(
-                        &session.id,
+                        &SessionId::from(&session.id),
                         vec![SessionEventInput::UserMessage {
                             content: vec![ContentBlock::text(if winner == "changed-body" {
                                 "different intent"
@@ -1725,7 +1746,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
                     .unwrap(),
             )
         };
-        let root_before = repository.get(&session.id).await.unwrap();
+        let root_before = repository.get(&SessionId::from(&session.id)).await.unwrap();
         let outbox_before = repository.pending_lifecycle().await.unwrap();
         let cache_before = state.sessions.lock().unwrap().get(&session.id).cloned();
         let reads_before = runtime.reads.count("recovery");
@@ -1787,7 +1808,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             _ => unreachable!(),
         }
         assert_eq!(
-            repository.get(&session.id).await.unwrap(),
+            repository.get(&SessionId::from(&session.id)).await.unwrap(),
             root_before,
             "IR3-IR7 full root frame"
         );
@@ -1835,7 +1856,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             "expected_receipt": serde_json::to_string(&expected_receipt).unwrap(),
             "error": error, "failure": "Unavailable:unavailable:scripted cold recovery snapshot failure",
             "before": frame(&root_before, &outbox_before, reads_before),
-            "after": frame(&repository.get(&session.id).await.unwrap(), &repository.pending_lifecycle().await.unwrap(), runtime.reads.count("recovery")),
+            "after": frame(&repository.get(&SessionId::from(session.id)).await.unwrap(), &repository.pending_lifecycle().await.unwrap(), runtime.reads.count("recovery")),
             "cache_unchanged": cache_unchanged,
         }}));
     }
@@ -2019,7 +2040,7 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
     ));
 
     let empty = runtime
-        .session_thread_recovery_snapshot("sesn-single-ticket", thread_id)
+        .session_thread_recovery_snapshot(&SessionId::from("sesn-single-ticket"), thread_id)
         .await
         .unwrap()
         .unwrap();
@@ -2039,7 +2060,7 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         client_executed: true,
     });
     let mut one = runtime
-        .session_thread_recovery_snapshot("sesn-single-ticket", thread_id)
+        .session_thread_recovery_snapshot(&SessionId::from("sesn-single-ticket"), thread_id)
         .await
         .unwrap()
         .unwrap();
@@ -2201,7 +2222,7 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
     ));
 
     let no_target = runtime
-        .session_thread_recovery_snapshot(&session.id, &session.id)
+        .session_thread_recovery_snapshot(&SessionId::from(&session.id), &session.id)
         .await
         .unwrap()
         .unwrap();
@@ -2295,7 +2316,7 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
         });
 
     let snapshot = runtime
-        .session_thread_recovery_snapshot(&session.id, &session.id)
+        .session_thread_recovery_snapshot(&SessionId::from(&session.id), &session.id)
         .await
         .unwrap()
         .unwrap();
@@ -3005,7 +3026,7 @@ async fn pending_child_reply_fixture(
         0,
         &call_id,
         CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.clone()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -3214,7 +3235,7 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
             let retained = state
                 .application
                 .append_session_event_batch_idempotent(
-                    &session_id,
+                    &SessionId::from(&session_id),
                     validated.inputs,
                     None,
                     None,
@@ -3243,9 +3264,14 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
             if !residual {
                 runtime.pending_by_thread.lock().unwrap().remove(&child_id);
             }
-            let before =
-                serde_json::to_value(state.application.session(&session_id).await.unwrap())
-                    .unwrap();
+            let before = serde_json::to_value(
+                state
+                    .application
+                    .session(&SessionId::from(&session_id))
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
             let transcript = runtime.committed_by_thread.lock().unwrap().clone();
             let deliveries = runtime.thread_tool_replies.lock().unwrap().clone();
             assert!(
@@ -3261,8 +3287,14 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                 "R2 new late result must be rejected"
             );
             assert_eq!(
-                serde_json::to_value(state.application.session(&session_id).await.unwrap())
-                    .unwrap(),
+                serde_json::to_value(
+                    state
+                        .application
+                        .session(&SessionId::from(&session_id))
+                        .await
+                        .unwrap()
+                )
+                .unwrap(),
                 before,
                 "R2 no root mutation"
             );
@@ -3282,8 +3314,14 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                 "R3 no recovery read"
             );
             assert_eq!(
-                serde_json::to_value(state.application.session(&session_id).await.unwrap())
-                    .unwrap(),
+                serde_json::to_value(
+                    state
+                        .application
+                        .session(&SessionId::from(session_id))
+                        .await
+                        .unwrap()
+                )
+                .unwrap(),
                 before,
                 "R3 no root mutation"
             );
@@ -3368,7 +3406,7 @@ async fn retained_unprocessed_tool_reply_queues_a_followup_user_message() {
     );
     let retained = state
         .application
-        .session(&session_id)
+        .session(&SessionId::from(&session_id))
         .await
         .expect("AR3 retained Session root");
     let reply_batch = retained
@@ -3956,7 +3994,7 @@ async fn running_dto_and_aggregate_event_publish_as_one_candidate() {
 
     state
         .application
-        .begin_activity(&session.id)
+        .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("O1/C1 commits aggregate Running");
     assert_eq!(
@@ -4555,10 +4593,14 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         )
         .await
         .unwrap();
-    let stale = state.application.session(&session.id).await.unwrap();
+    let stale = state
+        .application
+        .session(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     let current = state
         .application
-        .begin_activity(&session.id)
+        .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("commit newer root");
     let projection_candidate = |persisted: &PersistedSession| {
@@ -4679,7 +4721,7 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
         .unwrap();
     state
         .application
-        .begin_activity(&session.id)
+        .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("commit running Session activity");
     runtime.lifecycle.lock().unwrap().push(lifecycle(
@@ -4782,7 +4824,7 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
     }
     let observed_revision = state
         .application
-        .session(&session.id)
+        .session(&SessionId::from(&session.id))
         .await
         .expect("A2 observed Session root")
         .revision;
@@ -4858,7 +4900,7 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
         .unwrap();
     let active = state
         .application
-        .begin_activity(&session.id)
+        .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("R1/C2 opens the authoritative Session activity");
     runtime.lifecycle.lock().unwrap().push(lifecycle(
@@ -4948,7 +4990,7 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
         .unwrap();
     let active = state
         .application
-        .begin_activity(&session.id)
+        .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("S1 opens the authoritative Session activity");
     let run_id = RunId("run-scheduled-autonomous".into());
@@ -5118,7 +5160,7 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
         .unwrap();
     let active = warm
         .application
-        .begin_activity(&session.id)
+        .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("C2 opens the durable aggregate interval");
     let retained = warm
@@ -5169,7 +5211,7 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
     ));
     warm.application
         .settle_activity_observed(
-            &session.id,
+            &SessionId::from(&session.id),
             active.activity_epoch,
             Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                 activity_epoch: active.activity_epoch,
@@ -5432,7 +5474,11 @@ async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
         .map(|event| event.id.clone())
         .collect::<Vec<_>>();
 
-    let active = state.application.begin_activity(&session.id).await.unwrap();
+    let active = state
+        .application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     state.refresh_committed_events(&session.id).await.unwrap();
     let begun_without_opening = state
         .list_events(&session.id, None, None, false)
@@ -5476,7 +5522,7 @@ async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
     state
         .application
         .settle_activity_observed(
-            &session.id,
+            &SessionId::from(&session.id),
             active.activity_epoch,
             Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                 activity_epoch: active.activity_epoch,
@@ -5575,7 +5621,11 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 )
                 .await
                 .unwrap();
-            let first_activity = warm.application.begin_activity(&session.id).await.unwrap();
+            let first_activity = warm
+                .application
+                .begin_activity(&SessionId::from(&session.id))
+                .await
+                .unwrap();
             let SessionEventCommand::UserMessage {
                 run_id: first_run, ..
             } = &first_batch.events[0].event
@@ -5595,7 +5645,11 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 )
                 .await
                 .unwrap();
-            let overlapping_activity = warm.application.begin_activity(&session.id).await.unwrap();
+            let overlapping_activity = warm
+                .application
+                .begin_activity(&SessionId::from(&session.id))
+                .await
+                .unwrap();
             let SessionEventCommand::UserMessage {
                 run_id: overlapping_run,
                 ..
@@ -5673,7 +5727,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
             .await;
             warm.application
                 .settle_activity_observed(
-                    &session.id,
+                    &SessionId::from(&session.id),
                     first_activity.activity_epoch,
                     Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                         activity_epoch: first_activity.activity_epoch,
@@ -5687,7 +5741,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 .unwrap();
             warm.application
                 .settle_activity_observed(
-                    &session.id,
+                    &SessionId::from(&session.id),
                     overlapping_activity.activity_epoch,
                     Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                         activity_epoch: overlapping_activity.activity_epoch,
@@ -5733,7 +5787,11 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
             )
             .await
             .unwrap();
-        let second_activity = warm.application.begin_activity(&session_id).await.unwrap();
+        let second_activity = warm
+            .application
+            .begin_activity(&SessionId::from(&session_id))
+            .await
+            .unwrap();
         let SessionEventCommand::UserMessage {
             run_id: second_run, ..
         } = &second_batch.events[0].event
@@ -5776,7 +5834,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
         persist_batch_projection_anchors(&warm, &session_id, &second_batch.batch_id, &[19]).await;
         warm.application
             .settle_activity_observed(
-                &session_id,
+                &SessionId::from(&session_id),
                 second_activity.activity_epoch,
                 Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                     activity_epoch: second_activity.activity_epoch,
@@ -6256,7 +6314,10 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         )
         .await
         .unwrap();
-    warm.application.begin_activity(&session.id).await.unwrap();
+    warm.application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     let run_id = match &batch.events[0].event {
         awaken_session_contract::SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
         _ => unreachable!(),
@@ -6304,7 +6365,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         .id
         .clone();
     warm.application
-        .drive_session_event_batches(&session.id, None)
+        .drive_session_event_batches(&SessionId::from(&session.id), None)
         .await
         .unwrap();
     warm.refresh_committed_events(&session.id).await.unwrap();
@@ -6358,7 +6419,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         "V3"
     );
     cold.application
-        .drive_session_event_batches(&session.id, None)
+        .drive_session_event_batches(&SessionId::from(&session.id), None)
         .await
         .unwrap();
     cold.refresh_committed_events(&session.id).await.unwrap();
@@ -6529,7 +6590,11 @@ async fn primary_reschedule_projects_one_complete_sequence_warm_and_after_restar
         )
         .await
         .unwrap();
-    let active = warm.application.begin_activity(&session.id).await.unwrap();
+    let active = warm
+        .application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     let run_id = RunId("root-rescheduled-run".into());
     runtime.lifecycle.lock().unwrap().push(lifecycle(
         1,
@@ -6810,7 +6875,7 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
         0,
         "rescheduled-child",
         CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -7051,7 +7116,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
             ordinal,
             &coordination_call_id,
             CoordinatedThreadLink {
-                session_id: session.id.clone(),
+                session_id: SessionId::from(&session.id),
                 thread_id: ThreadId((*thread_id).into()),
                 target: CoordinatedThreadTarget::Agent {
                     agent_id: (*agent_id).into(),
@@ -7133,7 +7198,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
 
     let mut persisted = state
         .application
-        .session(&session.id)
+        .session(&SessionId::from(&session.id))
         .await
         .expect("B1-B3 persisted Session");
     let awaken_session_contract::SessionBudgetState::Active {
@@ -7323,7 +7388,7 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
         0,
         "failed-child",
         awaken_session_contract::CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: awaken_session_contract::CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -7575,7 +7640,7 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
             0,
             "call-child",
             CoordinatedThreadLink {
-                session_id: session.id.clone(),
+                session_id: SessionId::from(&session.id),
                 thread_id: ThreadId(child_id.into()),
                 target: CoordinatedThreadTarget::Agent {
                     agent_id: "researcher".into(),
@@ -7890,7 +7955,7 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         0,
         "tool-only-terminal",
         CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -8227,7 +8292,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
             ordinal,
             &format!("spawn-{thread_id}"),
             CoordinatedThreadLink {
-                session_id: session.id.clone(),
+                session_id: SessionId::from(&session.id),
                 thread_id: ThreadId(thread_id.into()),
                 target: CoordinatedThreadTarget::Agent {
                     agent_id: agent_id.into(),
@@ -8584,7 +8649,11 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
     let child_run = RunId("late-accepted-child".into());
     let child_id = "late-accepted-thread";
     let call_id = "late-accepted-call";
-    let root_activity = warm.application.begin_activity(&session.id).await.unwrap();
+    let root_activity = warm
+        .application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     let tool_use = Message::new(
         MessageId::assistant(&root_run, 0),
         Role::Assistant,
@@ -8646,7 +8715,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         .lock()
         .unwrap()
         .push(CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -8654,7 +8723,11 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
             created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, call_id),
             latest_run_id: Some(child_run.clone()),
         });
-    let child_activity = warm.application.begin_activity(&session.id).await.unwrap();
+    let child_activity = warm
+        .application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .unwrap();
     runtime.lifecycle.lock().unwrap().extend([
         lifecycle(
             31,
@@ -8680,7 +8753,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
     ]);
     warm.application
         .settle_activity_observed(
-            &session.id,
+            &SessionId::from(&session.id),
             child_activity.activity_epoch,
             Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                 activity_epoch: child_activity.activity_epoch,
@@ -8694,7 +8767,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         .unwrap();
     warm.application
         .settle_activity_observed(
-            &session.id,
+            &SessionId::from(&session.id),
             root_activity.activity_epoch,
             Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                 activity_epoch: root_activity.activity_epoch,
@@ -8822,7 +8895,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
         0,
         parent_call_id,
         CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -9221,7 +9294,7 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
         0,
         "preview",
         CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -9591,7 +9664,7 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
         .lock()
         .unwrap()
         .push(CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: CoordinatedThreadTarget::Advisor {
                 model: "claude-opus-5".into(),
@@ -9947,7 +10020,7 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
         .insert(session.id.clone(), vec![1, 2]);
     runtime.coordinated.lock().unwrap().extend([
         CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(failed_thread.into()),
             target: CoordinatedThreadTarget::Advisor {
                 model: "claude-opus-5".into(),
@@ -9960,7 +10033,7 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
             latest_run_id: Some(failed_run.clone()),
         },
         CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(cancelled_thread.into()),
             target: CoordinatedThreadTarget::Advisor {
                 model: "claude-opus-5".into(),
@@ -10190,7 +10263,7 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
         .lock()
         .unwrap()
         .push(CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(advisor_thread_id.into()),
             target: CoordinatedThreadTarget::Advisor {
                 model: "claude-opus-5".into(),
@@ -10390,7 +10463,7 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
         .lock()
         .unwrap()
         .push(CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -10407,7 +10480,7 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
         .lock()
         .unwrap()
         .push(CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId("thread-terminal-skew-b".into()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -10609,7 +10682,7 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
         0,
         "historical-await",
         CoordinatedThreadLink {
-            session_id: session.id.clone(),
+            session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
             target: CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
@@ -12480,7 +12553,11 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 };
                 persist_batch_projection_anchors(&state, &session.id, &retained.batch_id, &[1])
                     .await;
-                let first = state.application.begin_activity(&session.id).await.unwrap();
+                let first = state
+                    .application
+                    .begin_activity(&SessionId::from(&session.id))
+                    .await
+                    .unwrap();
                 if first_has_running {
                     runtime.lifecycle.lock().unwrap().push(lifecycle(
                         1,
@@ -12524,7 +12601,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 state
                     .application
                     .settle_activity_observed(
-                        &session.id,
+                        &SessionId::from(&session.id),
                         first.activity_epoch,
                         Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                             activity_epoch: first.activity_epoch,
@@ -12559,7 +12636,11 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                         reply: awaken_session_contract::SessionEventToolReplyKind::Confirmation { allow: true, deny_message: None },
                     })], None, None).await.unwrap();
                 persist_batch_projection_anchors(&state, &session.id, &reply.batch_id, &[3]).await;
-                let second = state.application.begin_activity(&session.id).await.unwrap();
+                let second = state
+                    .application
+                    .begin_activity(&SessionId::from(&session.id))
+                    .await
+                    .unwrap();
                 state.refresh_committed_events(&session.id).await.unwrap();
                 *runtime.pending.lock().unwrap() = None;
                 runtime.push_committed_message(
@@ -12603,7 +12684,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 assert!(
                     state
                         .application
-                        .session(&session.id)
+                        .session(&SessionId::from(&session.id))
                         .await
                         .unwrap()
                         .running_interval
@@ -12650,7 +12731,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                         state
                             .application
                             .settle_activity_observed(
-                                &session.id,
+                                &SessionId::from(&session.id),
                                 second.activity_epoch,
                                 Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                                     activity_epoch: second.activity_epoch,
@@ -12822,7 +12903,7 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
             assert_eq!(observe(&cold), original);
             assert_eq!(
                 cold.application
-                    .session(session_id)
+                    .session(&SessionId::from(session_id))
                     .await
                     .unwrap()
                     .execution,

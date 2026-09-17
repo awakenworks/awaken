@@ -13,13 +13,16 @@ impl HostWorkerResolver {
     pub(crate) async fn realize_session(
         host: &SharedHost,
         control: &dyn awaken_session_contract::SessionRealizationControl,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         directive: awaken_session_contract::SessionRealizationDirective,
         claim: Option<&awaken_dispatch::RunClaim>,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
     ) -> Result<(), awaken_dispatch::Error> {
-        let realization = host.session_slots.acquire_realization(session_id).await;
+        let realization = host
+            .session_slots
+            .acquire_realization(session_id.as_str())
+            .await;
         let synchronizer = WorkerProjectionSynchronizer::for_directive(
             host,
             &directive,
@@ -45,7 +48,7 @@ impl HostWorkerResolver {
     pub(crate) async fn drive_session_realization(
         host: &SharedHost,
         control: &dyn awaken_session_contract::SessionRealizationControl,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         directive: awaken_session_contract::SessionRealizationDirective,
         claimed: Option<&awaken_dispatch::Claimed>,
         request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
@@ -54,7 +57,7 @@ impl HostWorkerResolver {
         let claim = claimed.map(|claimed| awaken_dispatch::RunClaim::from(&claimed.lease));
         let synchronizer = WorkerProjectionSynchronizer::for_claimed(
             host,
-            session_id,
+            session_id.as_str(),
             &directive,
             claimed,
             claim.as_ref(),
@@ -711,10 +714,13 @@ mod tests {
     async fn drive_test_session_realization(
         host: &SharedHost,
         control: &dyn awaken_session_contract::SessionRealizationControl,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         directive: awaken_session_contract::SessionRealizationDirective,
     ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
-        let realization = host.session_slots.acquire_realization(session_id).await;
+        let realization = host
+            .session_slots
+            .acquire_realization(session_id.as_str())
+            .await;
         let synchronizer =
             WorkerProjectionSynchronizer::for_directive(host, &directive, None, None, false, None);
         HostWorkerResolver::drive_session_realization_with_synchronizer(
@@ -912,7 +918,7 @@ mod tests {
         };
         synchronizer
             .synchronize_session_projection(
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 &remote,
                 &crate::session_slot::test_observed_lease(lease.clone()),
                 false,
@@ -937,7 +943,7 @@ mod tests {
             claimed_environment_binding: None,
         }
         .synchronize_session_projection(
-            "cold-renewal-resources",
+            &awaken_session_contract::SessionId::from("cold-renewal-resources"),
             &remote,
             &crate::session_slot::test_observed_lease(lease.clone()),
             false,
@@ -948,7 +954,7 @@ mod tests {
 
         let preparing = synchronizer
             .synchronize_session_projection(
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 &remote,
                 &crate::session_slot::test_observed_lease(lease.clone()),
                 true,
@@ -997,7 +1003,7 @@ mod tests {
             claimed_environment_binding: None,
         }
         .synchronize_session_projection(
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             &projection,
             &crate::session_slot::test_observed_lease(lease.clone()),
             true,
@@ -1016,7 +1022,7 @@ mod tests {
             claimed_environment_binding: None,
         }
         .synchronize_session_projection(
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             &compatibility_renewal,
             &crate::session_slot::test_observed_lease(lease.clone()),
             false,
@@ -1051,7 +1057,7 @@ mod tests {
             claimed_environment_binding: None,
         }
         .synchronize_session_projection(
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             &projection,
             &crate::session_slot::test_observed_lease(lease.clone()),
             false,
@@ -1078,7 +1084,7 @@ mod tests {
             claimed_environment_binding: None,
         }
         .synchronize_session_projection(
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             &projection,
             &crate::session_slot::test_observed_lease(lease.clone()),
             false,
@@ -1098,7 +1104,7 @@ mod tests {
             claimed_environment_binding: None,
         }
         .synchronize_session_projection(
-            "publication-missing",
+            &awaken_session_contract::SessionId::from("publication-missing"),
             &missing,
             &crate::session_slot::test_observed_lease(lease.clone()),
             true,
@@ -1136,7 +1142,7 @@ mod tests {
                 claimed_environment_binding: None,
             }
             .synchronize_session_projection(
-                session_id,
+                &awaken_session_contract::SessionId::from(session_id),
                 &conflicting,
                 &crate::session_slot::test_observed_lease(lease.clone()),
                 true,
@@ -1203,7 +1209,7 @@ mod tests {
             HostWorkerResolver::realize_session(
                 &initial_host,
                 initial_control.as_ref(),
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 directive,
                 None,
                 None,
@@ -1298,7 +1304,7 @@ mod tests {
         drive_test_session_realization(
             &host,
             control.as_ref(),
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             awaken_session_contract::SessionRealizationDirective {
                 projection,
                 authority: crate::session_slot::test_lease_receipt(lease),
@@ -1341,7 +1347,7 @@ mod tests {
         let error = drive_test_session_realization(
             &host,
             control.as_ref(),
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             awaken_session_contract::SessionRealizationDirective {
                 projection,
                 authority: crate::session_slot::test_lease_receipt(lease),
@@ -1512,7 +1518,7 @@ mod tests {
         HostWorkerResolver::realize_session(
             &host,
             &control,
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             directive.clone(),
             None,
             Some(&activation.snapshot),
@@ -1553,7 +1559,7 @@ mod tests {
         HostWorkerResolver::realize_session(
             &host,
             &control,
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             resident_directive,
             None,
             None,
@@ -1613,7 +1619,7 @@ mod tests {
             let error = HostWorkerResolver::realize_session(
                 &host,
                 &control,
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 missing_directive.clone(),
                 None,
                 Some(&activation.snapshot),
@@ -1645,7 +1651,7 @@ mod tests {
             let rejected_replay = HostWorkerResolver::realize_session(
                 &host,
                 &control,
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 missing_directive.clone(),
                 None,
                 Some(&activation.snapshot),
@@ -1676,7 +1682,7 @@ mod tests {
             HostWorkerResolver::realize_session(
                 &host,
                 &control,
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 missing_directive,
                 None,
                 Some(&activation.snapshot),
@@ -1701,7 +1707,7 @@ mod tests {
             HostWorkerResolver::realize_session(
                 &host,
                 &control,
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 replay,
                 None,
                 Some(&activation.snapshot),
@@ -1761,7 +1767,7 @@ mod tests {
         HostWorkerResolver::realize_session(
             &first_use_host,
             &first_use_control,
-            first_use_thread,
+            &awaken_session_contract::SessionId::from(first_use_thread),
             first_use_directive.clone(),
             None,
             Some(&first_use_activation.snapshot),
@@ -1803,7 +1809,7 @@ mod tests {
         let error = HostWorkerResolver::realize_session(
             &unpinned_host,
             &RecoveryControl::fixed(frozen_projection()),
-            first_use_thread,
+            &awaken_session_contract::SessionId::from(first_use_thread),
             first_use_directive,
             None,
             None,
@@ -1829,7 +1835,13 @@ mod tests {
 
         let cold = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         let error = HostWorkerResolver::realize_session(
-            &cold, &control, thread, directive, None, None, false,
+            &cold,
+            &control,
+            &awaken_session_contract::SessionId::from(thread),
+            directive,
+            None,
+            None,
+            false,
         )
         .await
         .expect_err("R3 cold lease-only recovery must fail closed");
@@ -1883,7 +1895,7 @@ mod tests {
         HostWorkerResolver::realize_session(
             &rebuild_host,
             &rebuild_control,
-            rebuild_thread,
+            &awaken_session_contract::SessionId::from(rebuild_thread),
             rebuild_directive,
             None,
             Some(&rebuild_activation.snapshot),
@@ -1944,7 +1956,7 @@ mod tests {
         let error = HostWorkerResolver::realize_session(
             &continuity_host,
             &continuity_control,
-            continuity_thread,
+            &awaken_session_contract::SessionId::from(continuity_thread),
             continuity_directive,
             None,
             Some(&continuity_activation.snapshot),

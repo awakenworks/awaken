@@ -187,7 +187,7 @@ impl PostgresManagedSessionRepository {
         session: &PersistedSession,
     ) -> Result<(), SessionRepositoryError> {
         sqlx::query("DELETE FROM managed_session_vault_reference WHERE session_id = $1")
-            .bind(&session.session_id)
+            .bind(session.session_id.as_str())
             .execute(&mut **tx)
             .await
             .map_err(storage)?;
@@ -196,7 +196,7 @@ impl PostgresManagedSessionRepository {
                 "INSERT INTO managed_session_vault_reference (session_id, vault_id) \
                  VALUES ($1, $2)",
             )
-            .bind(&session.session_id)
+            .bind(session.session_id.as_str())
             .bind(vault_id)
             .execute(&mut **tx)
             .await
@@ -210,14 +210,14 @@ impl PostgresManagedSessionRepository {
                  ON CONFLICT (session_id) DO UPDATE SET \
                     observed_revision = excluded.observed_revision",
             )
-            .bind(&session.session_id)
+            .bind(session.session_id.as_str())
             .bind(db_revision(session.revision)?)
             .execute(&mut **tx)
             .await
             .map_err(storage)?;
         } else {
             sqlx::query("DELETE FROM managed_session_reconciliation_work WHERE session_id = $1")
-                .bind(&session.session_id)
+                .bind(session.session_id.as_str())
                 .execute(&mut **tx)
                 .await
                 .map_err(storage)?;
@@ -232,7 +232,7 @@ impl PostgresManagedSessionRepository {
         sqlx::query(
             "DELETE FROM managed_session_credential_source_reference WHERE session_id = $1",
         )
-        .bind(&session.session_id)
+        .bind(session.session_id.as_str())
         .execute(&mut **tx)
         .await
         .map_err(storage)?;
@@ -241,7 +241,7 @@ impl PostgresManagedSessionRepository {
                 "INSERT INTO managed_session_credential_source_reference \
                     (session_id, credential_source_id) VALUES ($1, $2)",
             )
-            .bind(&session.session_id)
+            .bind(session.session_id.as_str())
             .bind(source_id)
             .execute(&mut **tx)
             .await
@@ -495,7 +495,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         if let Some(replayed) = Self::create_replay(
             &mut tx,
             owner_scope,
-            &session.session_id,
+            session.session_id.as_str(),
             &idempotency,
             MissingCreateReceipt::AllowInsertFence,
         )
@@ -511,7 +511,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
              VALUES ($1, $2, $3, $4)
              ON CONFLICT (session_id) DO NOTHING"#,
         )
-        .bind(&session.session_id)
+        .bind(session.session_id.as_str())
         .bind(owner_scope)
         .bind(db_revision(new_revision)?)
         .bind(aggregate_str(&session)?)
@@ -523,7 +523,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             if let Some(replayed) = Self::create_replay(
                 &mut tx,
                 owner_scope,
-                &session.session_id,
+                session.session_id.as_str(),
                 &idempotency,
                 MissingCreateReceipt::RejectOccupied,
             )
@@ -538,7 +538,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         // PostgreSQL's ON CONFLICT wait can outlive a concurrent delete. A
         // second tombstone fence in the same transaction prevents committing a
         // resurrected live row beside the winner's tombstone.
-        if Self::is_tombstoned(&mut tx, &session.session_id).await? {
+        if Self::is_tombstoned(&mut tx, session.session_id.as_str()).await? {
             return Err(SessionRepositoryError::Conflict(
                 SessionRepositoryConflict::Tombstoned,
             ));
@@ -549,7 +549,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 (session_id, idempotency_key, payload_hash, committed_revision)
              VALUES ($1, $2, $3, $4)",
         )
-        .bind(&session.session_id)
+        .bind(session.session_id.as_str())
         .bind(&idempotency.key)
         .bind(&idempotency.payload_hash)
         .bind(db_revision(new_revision)?)
@@ -574,11 +574,11 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     async fn replay_create(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         if owner_scope.trim().is_empty()
-            || session_id.trim().is_empty()
+            || session_id.as_str().trim().is_empty()
             || idempotency.key.trim().is_empty()
             || idempotency.payload_hash.trim().is_empty()
         {
@@ -590,7 +590,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         let replay = Self::create_replay(
             &mut tx,
             owner_scope,
-            session_id,
+            session_id.as_str(),
             idempotency,
             MissingCreateReceipt::RejectOccupied,
         )
@@ -681,7 +681,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                         aggregate_json = $2, revision = $3
                      WHERE session_id = $1 AND scope_id = $4 AND revision = $5",
                 )
-                .bind(&replacement.session_id)
+                .bind(replacement.session_id.as_str())
                 .bind(aggregate_str(&replacement)?)
                 .bind(db_revision(next)?)
                 .bind(owner_scope)
@@ -715,7 +715,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                         (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json)
                      VALUES ($1, $2, $3, $4, $5)",
                 )
-                .bind(&tombstone.session_id)
+                .bind(tombstone.session_id.as_str())
                 .bind(owner_scope)
                 .bind(db_revision(tombstone.deleted_revision)?)
                 .bind(&tombstone.deleted_at)
@@ -792,12 +792,15 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         Ok(())
     }
 
-    async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError> {
+    async fn get(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<PersistedSession, SessionRepositoryError> {
         let row = sqlx::query(
             "SELECT aggregate_json, revision \
              FROM managed_session WHERE session_id = $1",
         )
-        .bind(session_id)
+        .bind(session_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(storage)?;
@@ -923,7 +926,9 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .map_err(storage)?
         {
             scan.quarantined.push(SessionRecoveryQuarantine {
-                session_id: row.try_get("session_id").map_err(storage)?,
+                session_id: awaken_session_contract::SessionId::from(
+                    row.try_get::<String, _>("session_id").map_err(storage)?,
+                ),
                 reason: row.try_get("reason").map_err(storage)?,
             });
         }
@@ -1021,7 +1026,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn idempotency_receipt(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         key: &str,
     ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
     {
@@ -1029,7 +1034,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             "SELECT payload_hash, committed_revision FROM managed_session_idempotency
              WHERE session_id = $1 AND idempotency_key = $2",
         )
-        .bind(session_id)
+        .bind(session_id.as_str())
         .bind(key)
         .fetch_optional(&self.pool)
         .await
@@ -1050,13 +1055,13 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     async fn deleted_event_admissions(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<
         Option<awaken_session_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         let row = sqlx::query("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=$1 AND scope_id=$2")
-            .bind(session_id).bind(owner_scope).fetch_optional(&self.pool).await.map_err(storage)?;
+            .bind(session_id.as_str()).bind(owner_scope).fetch_optional(&self.pool).await.map_err(storage)?;
         row.map(|row| {
             super::event_admissions::decode(
                 row.try_get("deleted_revision").map_err(storage)?,
@@ -1066,9 +1071,12 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .transpose()
     }
 
-    async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError> {
+    async fn owner(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<String, SessionRepositoryError> {
         let row = sqlx::query("SELECT scope_id FROM managed_session WHERE session_id = $1")
-            .bind(session_id)
+            .bind(session_id.as_str())
             .fetch_optional(&self.pool)
             .await
             .map_err(storage)?

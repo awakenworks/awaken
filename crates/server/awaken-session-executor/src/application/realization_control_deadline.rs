@@ -288,7 +288,7 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
 
     async fn terminal_cleanup_work(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionTerminalCleanupWork>,
@@ -328,7 +328,7 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
 
     async fn authorize_checkpoint_release_artifact_effect(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
     ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
         self.call(
@@ -355,7 +355,7 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
 
     async fn terminal_repository_publication_command(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
@@ -371,7 +371,7 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
 
     async fn record_terminal_repository_publication_receipt(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
@@ -385,7 +385,7 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
 
     async fn record_terminal_repository_publication_rejection(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {

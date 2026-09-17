@@ -14,7 +14,7 @@ use crate::{ResolvedInput, ResolvedInputSource, ResolvedSessionResources};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionResourceActivation {
     pub activation_id: String,
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub revision: u64,
     pub binding_id: awaken_resource_contract::BindingId,
     pub resource_id: InputResourceId,
@@ -819,7 +819,7 @@ fn prepared_activation(
     };
     SessionResourceActivation {
         activation_id: format!("{session_id}:{revision}:{}", input.binding_id),
-        session_id: session_id.to_string(),
+        session_id: crate::SessionId::from(session_id),
         revision,
         binding_id: input.binding_id.clone(),
         resource_id,

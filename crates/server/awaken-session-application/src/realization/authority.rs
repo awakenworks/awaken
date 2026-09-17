@@ -96,12 +96,12 @@ pub(crate) fn terminal_cleanup_worker_requirements(
         .compatibility_facts();
     let publication_outcome_is_durable = session
         .terminal_cleanup
-        .repository_publication_receipt(&session.session_id)
+        .repository_publication_receipt(session.session_id.as_str())
         .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
         .is_some()
         || session
             .terminal_cleanup
-            .repository_publication_rejection(&session.session_id)
+            .repository_publication_rejection(session.session_id.as_str())
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
             .is_some();
     let pending_publication = (!publication_outcome_is_durable)
@@ -137,7 +137,7 @@ pub(crate) fn terminal_cleanup_worker_requirements(
             .environment
             .checkpoint_request(
                 owner_scope,
-                &session.session_id,
+                session.session_id.as_str(),
                 &baseline.environment.idle_retention,
             )
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?

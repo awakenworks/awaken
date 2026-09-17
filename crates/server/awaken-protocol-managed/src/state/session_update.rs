@@ -78,9 +78,12 @@ impl ManagedState {
             .flat_map(|batch| batch.events.iter().rev())
             .next()
             .map(|entry| {
-                durable_inbound_event_id(&outcome.session.session_id, entry.event.operation_id())
+                durable_inbound_event_id(
+                    outcome.session.session_id.as_str(),
+                    entry.event.operation_id(),
+                )
             });
-        self.publish_projection_update(&outcome.session.session_id, |record| {
+        self.publish_projection_update(outcome.session.session_id.as_str(), |record| {
             let event = Event {
                 id: event_id.clone(),
                 kind: OutboundKind::SessionUpdated {
@@ -135,7 +138,11 @@ impl ManagedState {
         id: &str,
         command: awaken_session_application::SessionUpdateCommand,
     ) -> Result<(Session, awaken_session_contract::SessionRevision), StateError> {
-        let outcome = match self.application.update_session(id, command).await {
+        let outcome = match self
+            .application
+            .update_session(&awaken_session_contract::SessionId::from(id), command)
+            .await
+        {
             Ok(outcome) => outcome,
             Err(awaken_session_application::SessionUpdateError::ProjectionAfterCommit {
                 outcome,

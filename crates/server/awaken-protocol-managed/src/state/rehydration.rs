@@ -26,7 +26,11 @@ impl ManagedState {
         idempotency: &awaken_session_contract::IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, StateError> {
         self.application
-            .replay_accepted_session_create(workspace_id, session_id, idempotency)
+            .replay_accepted_session_create(
+                workspace_id,
+                &awaken_session_contract::SessionId::from(session_id),
+                idempotency,
+            )
             .await
             .map_err(Self::map_create_replay_error)
     }
@@ -175,7 +179,10 @@ mod tests {
         repo.create("workspace-a", live, receipt.clone(), Vec::new())
             .await
             .expect("persist exact receipt");
-        let durable_before = repo.get(id).await.unwrap();
+        let durable_before = repo
+            .get(&awaken_session_contract::SessionId::from(id))
+            .await
+            .unwrap();
         let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
 
         assert!(
@@ -230,7 +237,9 @@ mod tests {
         assert_eq!(replayed.session_id, id, "R3/E3");
         assert!(restarted.list_sessions().is_empty(), "R3/E3 no wire cache");
         assert_eq!(
-            repo.get(id).await.unwrap(),
+            repo.get(&awaken_session_contract::SessionId::from(id))
+                .await
+                .unwrap(),
             durable_before,
             "R1-R3 no mutation"
         );
@@ -396,7 +405,7 @@ mod tests {
             assert_eq!(
                 restarted
                     .application
-                    .session(id)
+                    .session(&awaken_session_contract::SessionId::from(id))
                     .await
                     .unwrap()
                     .mcp
@@ -407,7 +416,7 @@ mod tests {
             assert_eq!(
                 restarted
                     .application
-                    .session(id)
+                    .session(&awaken_session_contract::SessionId::from(id))
                     .await
                     .unwrap()
                     .resources

@@ -22,7 +22,11 @@ impl TerminalCleanupWorkerRevalidation {
 
 impl SessionApplication {
     #[cfg(feature = "test-support")]
-    async fn observe_realization_root(&self, point: &'static str, id: &str) {
+    async fn observe_realization_root(
+        &self,
+        point: &'static str,
+        id: &awaken_session_contract::SessionId,
+    ) {
         use awaken_session_contract::realization_observation as observation;
         if observation::enabled() {
             let root = match self.sessions_repo.get(id).await {
@@ -30,7 +34,7 @@ impl SessionApplication {
                 Err(error) => {
                     observation::checkpoint(
                         point,
-                        id,
+                        id.as_str(),
                         serde_json::json!({"read_error": error.to_string()}),
                     )
                     .await;
@@ -51,7 +55,7 @@ impl SessionApplication {
                 .collect::<Vec<_>>();
             observation::checkpoint(
                 point,
-                id,
+                id.as_str(),
                 serde_json::json!({
                     "revision": root.revision.0, "created": root.created_at_unix_ms,
                     "updated": root.updated_at_unix_ms, "lease": root.realization,
@@ -135,7 +139,7 @@ impl SessionApplication {
         &self,
         command: RenewSessionRealization,
     ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
-        if command.session_id.trim().is_empty()
+        if command.session_id.as_str().trim().is_empty()
             || command.asserted_lease.owner.trim().is_empty()
             || command.asserted_lease.runtime_incarnation.trim().is_empty()
             || command.requested_expires_at_unix_ms < command.asserted_lease.expires_at_unix_ms
@@ -529,7 +533,9 @@ impl SessionApplication {
                 session.resources.commit().map_err(unavailable)?;
             }
             if prepared_legacy_resources {
-                session.resources.adopt_legacy_active(&command.session_id);
+                session
+                    .resources
+                    .adopt_legacy_active(command.session_id.as_str());
             }
             for request in expected {
                 let attachment = session
@@ -589,7 +595,7 @@ impl SessionApplication {
         // publication set, keeping their actual (possibly older) lease expiry.
         // Obsolete staged receipts belong exclusively to the drain below.
         let action = publication_action(
-            &session.session_id,
+            session.session_id.as_str(),
             &session.mcp.attachments,
             receipt_generations,
         )?;
@@ -711,7 +717,7 @@ impl SessionApplication {
                 .map_err(unavailable)?;
         }
         let ready_fact =
-            initial_ready.then(|| initial_idle_fact(&owner_scope, &command.session_id));
+            initial_ready.then(|| initial_idle_fact(&owner_scope, command.session_id.as_str()));
         let session = self
             .commit_session_snapshot(
                 &owner_scope,
@@ -846,7 +852,9 @@ impl SessionApplication {
         let lifecycle_facts = failed_running_activity
             .then(now_unix_ms)
             .and_then(|ended_at_unix_ms| session.close_runtime_interval(ended_at_unix_ms))
-            .map(|interval| runtime_interval_fact(&owner_scope, &command.session_id, interval))
+            .map(|interval| {
+                runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
+            })
             .into_iter()
             .collect::<Vec<_>>();
         let emitted_runtime_interval = !lifecycle_facts.is_empty();
@@ -971,7 +979,13 @@ impl SessionApplication {
     ) -> Result<(), SessionRealizationControlFailure> {
         let mut current = match initial {
             Some(session) => session,
-            None => match self.session_repository().get(&conflict.session_id).await {
+            None => match self
+                .session_repository()
+                .get(&awaken_session_contract::SessionId::from(
+                    &conflict.session_id,
+                ))
+                .await
+            {
                 Ok(session) => session,
                 Err(SessionRepositoryError::NotFound) => return Ok(()),
                 Err(error) => return Err(repository_control(error)),
@@ -995,7 +1009,13 @@ impl SessionApplication {
             {
                 Ok(_) => return Ok(()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
-                    current = match self.session_repository().get(&conflict.session_id).await {
+                    current = match self
+                        .session_repository()
+                        .get(&awaken_session_contract::SessionId::from(
+                            &conflict.session_id,
+                        ))
+                        .await
+                    {
                         Ok(session) => session,
                         Err(SessionRepositoryError::NotFound) => return Ok(()),
                         Err(error) => return Err(repository_control(error)),
@@ -1186,7 +1206,7 @@ impl SessionApplication {
         };
         let claim = TerminalCleanupClaimConflict {
             owner_scope: owner_scope.to_string(),
-            session_id: session.session_id.clone(),
+            session_id: session.session_id.to_string(),
             attempted_lease: SessionRealizationLease {
                 owner: target.owner.clone(),
                 runtime_incarnation: target.runtime_incarnation.clone(),
@@ -1357,7 +1377,7 @@ impl SessionApplication {
 
     pub(crate) async fn claim_local_terminal_cleanup_assignment(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
         let admission = self
             .refresh_executable_projections()
@@ -1392,7 +1412,7 @@ impl SessionApplication {
                     &owner_scope,
                     session,
                     &target,
-                    TerminalCleanupClaimScope::LocalSession(session_id),
+                    TerminalCleanupClaimScope::LocalSession(session_id.as_str()),
                     None,
                 )
                 .await
@@ -1414,7 +1434,7 @@ impl SessionApplication {
 
     async fn terminal_cleanup_work_after_refresh(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionTerminalCleanupWork>,
@@ -1444,7 +1464,7 @@ impl SessionApplication {
 
     async fn terminal_repository_publication_command_after_refresh(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
@@ -1460,8 +1480,12 @@ impl SessionApplication {
         lease: &SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_repository_publication_receipt_from_root(session_id, lease, receipt)
-            .await
+        self.record_terminal_repository_publication_receipt_from_root(
+            &awaken_session_contract::SessionId::from(session_id),
+            lease,
+            receipt,
+        )
+        .await
     }
 
     async fn record_terminal_repository_publication_rejection_after_refresh(
@@ -1471,7 +1495,9 @@ impl SessionApplication {
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_rejection_from_root(
-            session_id, lease, rejection,
+            &awaken_session_contract::SessionId::from(session_id),
+            lease,
+            rejection,
         )
         .await
     }
@@ -1622,7 +1648,7 @@ impl SessionRealizationControl for SessionApplication {
 
     async fn terminal_cleanup_work(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionTerminalCleanupWork>,
@@ -1653,7 +1679,7 @@ impl SessionRealizationControl for SessionApplication {
 
     async fn authorize_checkpoint_release_artifact_effect(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
     ) -> Result<String, SessionRealizationControlFailure> {
         self.authorize_checkpoint_release_artifact_effect_from_root(session_id, operation)
@@ -1691,7 +1717,7 @@ impl SessionRealizationControl for SessionApplication {
 
     async fn terminal_repository_publication_command(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
@@ -1703,24 +1729,28 @@ impl SessionRealizationControl for SessionApplication {
 
     async fn record_terminal_repository_publication_receipt(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_receipt_after_refresh(
-            session_id, lease, receipt,
+            session_id.as_str(),
+            lease,
+            receipt,
         )
         .await
     }
 
     async fn record_terminal_repository_publication_rejection(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_rejection_after_refresh(
-            session_id, lease, rejection,
+            session_id.as_str(),
+            lease,
+            rejection,
         )
         .await
     }

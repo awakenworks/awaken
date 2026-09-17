@@ -21,7 +21,7 @@ pub enum SessionRepositoryRecoveryAction {
 /// persisted configuration or credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRecoveryQuarantine {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub reason: String,
 }
 

@@ -40,7 +40,7 @@ fn workspace_matches(expected: &str, authorized: &str) -> Result<(), SessionReal
 async fn next_work(
     control: &dyn SessionRealizationControl,
     runtime: &dyn SessionRuntime,
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     lease: &awaken_session_contract::SessionRealizationLease,
 ) -> Result<
     Option<(
@@ -65,7 +65,7 @@ async fn next_work(
 /// every action is re-read through `control` after the preceding receipt is
 /// durable.
 pub async fn drive_session_terminal_cleanup(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     asserted_lease: &awaken_session_contract::SessionRealizationLease,
     control: &dyn SessionRealizationControl,
     runtime: &dyn SessionRuntime,
@@ -463,7 +463,7 @@ mod tests {
 
         async fn terminal_cleanup_work(
             &self,
-            _session_id: &str,
+            _session_id: &awaken_session_contract::SessionId,
             _lease: &awaken_session_contract::SessionRealizationLease,
         ) -> Result<Option<SessionTerminalCleanupWork>, SessionRealizationControlFailure> {
             self.events.lock().unwrap().push("poll".into());
@@ -472,7 +472,7 @@ mod tests {
 
         async fn terminal_repository_publication_command(
             &self,
-            _session_id: &str,
+            _session_id: &awaken_session_contract::SessionId,
             _lease: &awaken_session_contract::SessionRealizationLease,
         ) -> Result<
             Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
@@ -487,7 +487,7 @@ mod tests {
 
         async fn record_terminal_repository_publication_receipt(
             &self,
-            _session_id: &str,
+            _session_id: &awaken_session_contract::SessionId,
             lease: &awaken_session_contract::SessionRealizationLease,
             _receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
         ) -> Result<(), SessionRealizationControlFailure> {
@@ -500,7 +500,7 @@ mod tests {
 
         async fn record_terminal_repository_publication_rejection(
             &self,
-            _session_id: &str,
+            _session_id: &awaken_session_contract::SessionId,
             lease: &awaken_session_contract::SessionRealizationLease,
             _rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
         ) -> Result<(), SessionRealizationControlFailure> {
@@ -699,7 +699,7 @@ mod tests {
 
         async fn acknowledge_completed_terminal_cleanup(
             &self,
-            _session_id: &str,
+            _session_id: &awaken_session_contract::SessionId,
             _lease: &awaken_session_contract::SessionRealizationLease,
         ) {
             self.events.lock().unwrap().push("ack-completed".into());
@@ -770,9 +770,14 @@ mod tests {
             publication_effect: None,
         };
         assert_eq!(
-            drive_session_terminal_cleanup("session", &lease, &control, &runtime)
-                .await
-                .unwrap(),
+            drive_session_terminal_cleanup(
+                &awaken_session_contract::SessionId::from("session"),
+                &lease,
+                &control,
+                &runtime
+            )
+            .await
+            .unwrap(),
             SessionTerminalCleanupDriveOutcome::Completed
         );
         assert_eq!(
@@ -842,9 +847,14 @@ mod tests {
         };
 
         assert_eq!(
-            drive_session_terminal_cleanup("session", &lease, &control, &runtime)
-                .await
-                .unwrap(),
+            drive_session_terminal_cleanup(
+                &awaken_session_contract::SessionId::from("session"),
+                &lease,
+                &control,
+                &runtime
+            )
+            .await
+            .unwrap(),
             SessionTerminalCleanupDriveOutcome::Completed,
             "R2/E2+E3"
         );
@@ -895,7 +905,13 @@ mod tests {
             publication_effect: None,
         };
         assert!(matches!(
-            drive_session_terminal_cleanup("session", &lease, &control, &runtime).await,
+            drive_session_terminal_cleanup(
+                &awaken_session_contract::SessionId::from("session"),
+                &lease,
+                &control,
+                &runtime
+            )
+            .await,
             Err(SessionRealizationDriveError::Effect(_))
         ));
         let events = events.lock().unwrap();
@@ -972,9 +988,14 @@ mod tests {
             };
 
             assert_eq!(
-                drive_session_terminal_cleanup("session", &assigned_lease, &control, &runtime,)
-                    .await
-                    .unwrap(),
+                drive_session_terminal_cleanup(
+                    &awaken_session_contract::SessionId::from("session"),
+                    &assigned_lease,
+                    &control,
+                    &runtime,
+                )
+                .await
+                .unwrap(),
                 SessionTerminalCleanupDriveOutcome::Completed,
                 "{rule}/E3"
             );
@@ -1051,8 +1072,13 @@ mod tests {
 
             assert!(
                 matches!(
-                    drive_session_terminal_cleanup("session", &assigned_lease, &control, &runtime,)
-                        .await,
+                    drive_session_terminal_cleanup(
+                        &awaken_session_contract::SessionId::from("session"),
+                        &assigned_lease,
+                        &control,
+                        &runtime,
+                    )
+                    .await,
                     Err(SessionRealizationDriveError::Control(
                         SessionRealizationControlFailure::Invalid(_)
                     ))

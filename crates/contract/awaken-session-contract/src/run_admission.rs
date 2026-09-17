@@ -59,7 +59,7 @@ pub fn session_run_id(session_id: &str, operation_id: &str) -> RunId {
 /// Complete immutable input for one durable Session Run reservation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdmitSessionRun {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub agent_id: String,
     pub operation_id: String,
     pub run_id: RunId,
@@ -303,7 +303,7 @@ fn session_run_reservation_binds_exactly_one_nonzero_activity_receipt() {
 /// Bind one already-admitted Session activity to its exact reserved Run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRunDelivery {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub run_id: RunId,
     pub session_activity_epoch: u64,
 }
@@ -315,8 +315,14 @@ pub enum AdmittedSessionRun {
     Reserved(SessionRunDelivery),
     AlreadyReserved(SessionRunDelivery),
     AlreadyActivated(SessionRunDelivery),
-    RecoveryClaimed { session_id: String, run_id: RunId },
-    Completed { session_id: String, run_id: RunId },
+    RecoveryClaimed {
+        session_id: crate::SessionId,
+        run_id: RunId,
+    },
+    Completed {
+        session_id: crate::SessionId,
+        run_id: RunId,
+    },
 }
 
 impl AdmittedSessionRun {
@@ -325,9 +331,9 @@ impl AdmittedSessionRun {
         match self {
             Self::Reserved(delivery)
             | Self::AlreadyReserved(delivery)
-            | Self::AlreadyActivated(delivery) => &delivery.session_id,
+            | Self::AlreadyActivated(delivery) => delivery.session_id.as_str(),
             Self::RecoveryClaimed { session_id, .. } | Self::Completed { session_id, .. } => {
-                session_id
+                session_id.as_str()
             }
         }
     }

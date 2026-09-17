@@ -107,7 +107,7 @@ fn validate_realization_target(
 fn validate_target(
     command: &BeginSessionRealization,
 ) -> Result<(), SessionRealizationControlFailure> {
-    if command.session_id.trim().is_empty() {
+    if command.session_id.as_str().trim().is_empty() {
         return Err(SessionRealizationControlFailure::Invalid(
             "Session id is required".into(),
         ));
@@ -156,14 +156,14 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
 
     async fn synchronize_session_projection(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         projection: &awaken_session_contract::FrozenSessionProjection,
         lease: &awaken_session_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), RunError> {
         self.runtime
             .install_session_projection(
-                session_id,
+                session_id.as_str(),
                 projection.clone(),
                 awaken_session_contract::SessionProjectionInstallMode::Realization {
                     lease: lease.clone(),
@@ -175,11 +175,11 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
 
     async fn invalidate_session_realization_lease(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<(), RunError> {
         self.runtime
-            .invalidate_session_realization_lease(session_id, lease)
+            .invalidate_session_realization_lease(session_id.as_str(), lease)
             .await
     }
 }
@@ -567,7 +567,7 @@ impl SessionApplication {
             })?;
         self.runtime()
             .install_session_projection(
-                &session.session_id,
+                session.session_id.as_str(),
                 projection,
                 awaken_session_contract::SessionProjectionInstallMode::Dispatch,
             )
@@ -580,7 +580,7 @@ impl SessionApplication {
     /// perform or reorder these effects.
     pub async fn realize_session(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<PersistedSession, SessionRealizationError> {
         let admission = self
             .refresh_executable_projections()
@@ -595,13 +595,16 @@ impl SessionApplication {
     /// every executable projection before its first catalog read or mutation.
     pub(super) async fn realize_session_after_refresh(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<PersistedSession, SessionRealizationError> {
         // One co-located phase driver per Session. The request path and the
         // recovery sweep share this process; letting both drive interleaves
         // their phases and repeats the same external MCP effect. The permit is
         // the only way to reach `drive_session_realization` below.
-        let permit = self.local_realization_locks().acquire(session_id).await;
+        let permit = self
+            .local_realization_locks()
+            .acquire(session_id.as_str())
+            .await;
         let request_started = self
             .runtime()
             .observe_realization_request()
@@ -614,7 +617,7 @@ impl SessionApplication {
         let directive = self
             .begin_session_realization_after_refresh(BeginSessionRealization {
                 expected_resources: None,
-                session_id: session_id.to_string(),
+                session_id: session_id.clone(),
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: self.local_realization_owner().to_string(),
                     runtime_incarnation: self.runtime_incarnation().to_string(),
@@ -736,7 +739,7 @@ impl SessionApplication {
                     Ok(root) => root,
                     Err(message) => {
                         report.failures.push(SessionReconciliationFailure {
-                            session_id: candidate.session_id.clone(),
+                            session_id: candidate.session_id.to_string(),
                             message: message.into(),
                         });
                         continue;
@@ -745,7 +748,7 @@ impl SessionApplication {
                 Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
                 Err(error) => {
                     report.failures.push(SessionReconciliationFailure {
-                        session_id: candidate.session_id.clone(),
+                        session_id: candidate.session_id.to_string(),
                         message: error.to_string(),
                     });
                     continue;
@@ -786,7 +789,7 @@ impl SessionApplication {
             match self.realize_session_after_refresh(&session_id).await {
                 Ok(session) => report.settled.push(session),
                 Err(error) => report.failures.push(SessionReconciliationFailure {
-                    session_id,
+                    session_id: session_id.into_string(),
                     message: error.to_string(),
                 }),
             }
@@ -887,7 +890,7 @@ impl SessionApplication {
 
     async fn session_for_realization_without_credential_migration(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<(String, PersistedSession), SessionRealizationControlFailure> {
         let owner_scope = self.owner(session_id).await.map_err(mutation_control)?;
         let session = self
@@ -912,7 +915,7 @@ impl SessionApplication {
 
     async fn session_for_realization(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<(String, PersistedSession), SessionRealizationControlFailure> {
         let (owner_scope, session) = self
             .session_for_realization_without_credential_migration(session_id)

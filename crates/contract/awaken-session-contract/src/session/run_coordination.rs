@@ -34,7 +34,7 @@ pub struct DelegatedRunSnapshot {
 /// implementations atomically rotate their existing row to this coordinate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionBudgetResumeDelivery {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub thread_id: awaken_agent_contract::agent::thread::Id,
     pub run_id: RunId,
     pub correlation_id: String,

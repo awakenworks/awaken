@@ -80,7 +80,7 @@ fn session_repository_error(error: awaken_session_contract::SessionRepositoryErr
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SessionRecoveryCandidate {
     workspace_id: String,
-    session_id: String,
+    session_id: awaken_session_contract::SessionId,
     interests: SessionRecoveryInterests,
 }
 

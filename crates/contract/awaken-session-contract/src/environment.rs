@@ -53,7 +53,7 @@ pub use awaken_provisioning_contract::{SandboxCheckpointRef, SandboxRestoreReque
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxCheckpointRequest {
     pub workspace_id: String,
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub operation: SessionEnvironmentOperation,
     /// Exact create/adopt/restore effect and binding that own the physical
     /// checkpoint source. The suspend operation is only the release cause.
@@ -266,7 +266,7 @@ impl SessionEnvironmentState {
         }
         Ok(Some(SandboxCheckpointRequest {
             workspace_id: workspace_id.to_owned(),
-            session_id: session_id.to_owned(),
+            session_id: crate::SessionId::from(session_id),
             operation: operation.clone(),
             source_effect_id: source_effect_id.as_ref().clone(),
             source_binding: source_binding.clone(),
@@ -532,7 +532,7 @@ impl SessionEnvironmentState {
 /// the aggregate's realization fence.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionEnvironmentReceipt {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub effect_id: String,
     pub kind: SessionEnvironmentEffectKind,
     /// Exact prior aggregate binding. It is absent only for first creation;
@@ -551,7 +551,7 @@ pub struct SessionEnvironmentReceipt {
 impl SessionEnvironmentReceipt {
     #[must_use]
     pub fn new(
-        session_id: impl Into<String>,
+        session_id: impl Into<crate::SessionId>,
         kind: SessionEnvironmentEffectKind,
         binding: impl Into<String>,
         realization: Option<crate::SessionRealizationLease>,
@@ -602,7 +602,7 @@ impl SessionEnvironmentReceipt {
 
     fn from_verified_intent(intent: &SessionEnvironmentEffectIntent, binding: String) -> Self {
         let mut receipt = Self {
-            session_id: intent.session_id().to_string(),
+            session_id: crate::SessionId::from(intent.session_id().to_string()),
             effect_id: intent.effect_id().to_string(),
             kind: intent.kind().clone(),
             source_binding: intent.source_binding().map(str::to_string),
@@ -635,7 +635,7 @@ impl SessionEnvironmentReceipt {
         &self,
     ) -> Result<SessionEnvironmentEffectIntent, SessionEnvironmentReceiptError> {
         SessionEnvironmentEffectIntent::from_persisted_receipt(
-            self.session_id.clone(),
+            self.session_id.to_string(),
             self.effect_id.clone(),
             self.kind.clone(),
             self.source_binding.clone(),

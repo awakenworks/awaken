@@ -357,7 +357,10 @@ mod tests {
             staged.action,
             SessionRealizationAction::Stage { .. }
         ));
-        let after_begin = repo.get("session-phase").await.unwrap();
+        let after_begin = repo
+            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .await
+            .unwrap();
         assert_eq!(
             after_begin.mcp.attachments[0].state,
             McpAttachmentState::Realizing,
@@ -378,7 +381,10 @@ mod tests {
             "Q2 response age is not phase progress"
         );
         assert_eq!(
-            repo.get("session-phase").await.unwrap().revision,
+            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+                .await
+                .unwrap()
+                .revision,
             after_begin.revision,
             "Q2"
         );
@@ -400,7 +406,10 @@ mod tests {
             "Q3"
         );
         assert_eq!(
-            repo.get("session-phase").await.unwrap().revision,
+            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+                .await
+                .unwrap()
+                .revision,
             after_begin.revision,
             "Q3"
         );
@@ -419,7 +428,10 @@ mod tests {
             "Q4"
         );
         assert_eq!(
-            repo.get("session-phase").await.unwrap().revision,
+            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+                .await
+                .unwrap()
+                .revision,
             after_begin.revision,
             "Q4"
         );
@@ -459,7 +471,10 @@ mod tests {
         };
         assert_eq!(publish.len(), 1, "Q6");
         assert!(drain.is_empty(), "Q6");
-        let after_activate = repo.get("session-phase").await.unwrap();
+        let after_activate = repo
+            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .await
+            .unwrap();
         assert_eq!(
             after_activate.mcp.attachments[0].state,
             McpAttachmentState::Active,
@@ -480,7 +495,10 @@ mod tests {
         // Q7 compares durable progress, not response-relative horizon age.
         assert!(activate_replay.same_progress_as(&activated), "Q7");
         assert_eq!(
-            repo.get("session-phase").await.unwrap().revision,
+            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+                .await
+                .unwrap()
+                .revision,
             after_activate.revision,
             "Q7"
         );
@@ -499,7 +517,10 @@ mod tests {
             "Q8"
         );
         assert_eq!(
-            repo.get("session-phase").await.unwrap().revision,
+            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+                .await
+                .unwrap()
+                .revision,
             after_activate.revision,
             "Q8"
         );
@@ -521,7 +542,10 @@ mod tests {
             "Q9"
         );
         assert_eq!(
-            repo.get("session-phase").await.unwrap().revision,
+            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+                .await
+                .unwrap()
+                .revision,
             after_activate.revision,
             "Q9"
         );
@@ -538,7 +562,10 @@ mod tests {
             .await
             .expect("Q10");
         assert_eq!(complete.action, SessionRealizationAction::Complete, "Q10");
-        let after_ack = repo.get("session-phase").await.unwrap();
+        let after_ack = repo
+            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .await
+            .unwrap();
         assert_eq!(after_ack.execution, SessionExecutionState::Idle, "Q10");
         assert!(after_ack.mcp.attachments[0].publication_acknowledged, "Q10");
 
@@ -549,7 +576,10 @@ mod tests {
             .expect("Q11");
         assert_eq!(ack_replay.action, SessionRealizationAction::Complete, "Q11");
         assert_eq!(
-            repo.get("session-phase").await.unwrap().revision,
+            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+                .await
+                .unwrap()
+                .revision,
             after_ack.revision,
             "Q11"
         );
@@ -557,7 +587,10 @@ mod tests {
         // Simulate an attachment accepted while this Worker-owned Session is
         // idle. It is durable pending work, but only a claimed Run may read the
         // remote custom Skill bytes and acknowledge that Resource generation.
-        let mut pending = repo.get("session-phase").await.unwrap();
+        let mut pending = repo
+            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .await
+            .unwrap();
         let active_resource_revision = pending.resources.active_revision();
         let desired = pending
             .resources
@@ -591,7 +624,10 @@ mod tests {
             awaken_session_contract::SessionMutationResult::Applied { .. }
         ));
 
-        let before_renewal = repo.get("session-phase").await.unwrap();
+        let before_renewal = repo
+            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .await
+            .unwrap();
         let renewal = state
             .application
             .renew_session_realization(RenewSessionRealization {
@@ -604,7 +640,10 @@ mod tests {
             })
             .await
             .expect("Q12");
-        let renewed = repo.get("session-phase").await.unwrap();
+        let renewed = repo
+            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .await
+            .unwrap();
         assert_eq!(renewal.lease.expires_at_unix_ms, u64::MAX - 1, "Q12");
         assert_eq!(renewed.realization.as_ref(), Some(&renewal.lease), "Q12");
         assert_eq!(renewed.resources.pending, Some(desired.clone()), "Q12");
@@ -659,7 +698,10 @@ mod tests {
             "Q13 durable lease, not response age"
         );
         assert_eq!(
-            repo.get("session-phase").await.unwrap().revision,
+            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+                .await
+                .unwrap()
+                .revision,
             renewed_revision,
             "Q13"
         );
@@ -676,10 +718,17 @@ mod tests {
         let (state, repo) = harness("session-supervised").await;
         state
             .application
-            .realize_session("session-supervised")
+            .realize_session(&awaken_session_contract::SessionId::from(
+                "session-supervised",
+            ))
             .await
             .expect("L1 setup");
-        let before = repo.get("session-supervised").await.unwrap();
+        let before = repo
+            .get(&awaken_session_contract::SessionId::from(
+                "session-supervised",
+            ))
+            .await
+            .unwrap();
         assert!(
             state
                 .application
@@ -689,7 +738,11 @@ mod tests {
             "L1/E1"
         );
         assert_eq!(
-            repo.get("session-supervised").await.unwrap(),
+            repo.get(&awaken_session_contract::SessionId::from(
+                "session-supervised"
+            ))
+            .await
+            .unwrap(),
             before,
             "L1/E2"
         );
@@ -754,7 +807,12 @@ mod tests {
             restarted.authority.lease.runtime_incarnation, "worker-a/incarnation-2",
             "O2"
         );
-        let persisted = repo.get("session-owner-restart").await.unwrap();
+        let persisted = repo
+            .get(&awaken_session_contract::SessionId::from(
+                "session-owner-restart",
+            ))
+            .await
+            .unwrap();
         assert_eq!(
             persisted.mcp.attachments[0]
                 .realization
@@ -878,7 +936,11 @@ mod tests {
             .await
             .expect("F2 acknowledge");
         assert_eq!(
-            empty_repo.get("session-empty").await.unwrap().execution,
+            empty_repo
+                .get(&awaken_session_contract::SessionId::from("session-empty"))
+                .await
+                .unwrap()
+                .execution,
             SessionExecutionState::Idle,
             "F2"
         );
@@ -906,7 +968,10 @@ mod tests {
             .fail_session_realization(failure.clone())
             .await
             .expect("F3");
-        let after_failure = failed_repo.get("session-failed").await.unwrap();
+        let after_failure = failed_repo
+            .get(&awaken_session_contract::SessionId::from("session-failed"))
+            .await
+            .unwrap();
         assert_eq!(
             after_failure.execution,
             SessionExecutionState::ActivationFailed,
@@ -923,7 +988,11 @@ mod tests {
             .await
             .expect("F4");
         assert_eq!(
-            failed_repo.get("session-failed").await.unwrap().revision,
+            failed_repo
+                .get(&awaken_session_contract::SessionId::from("session-failed"))
+                .await
+                .unwrap()
+                .revision,
             after_failure.revision,
             "F4"
         );

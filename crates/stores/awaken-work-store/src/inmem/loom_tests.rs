@@ -1,5 +1,6 @@
 //! Whole reference-queue authority interleavings, using the actual public port.
 use super::*;
+use awaken_session_contract::SessionId;
 use loom::{sync::Arc, thread};
 use std::{
     future::Future,
@@ -51,15 +52,16 @@ fn release_and_reacquire_preserve_one_complete_authority() {
     // nor may the old release clear a successor installed after its check.
     check_interleavings(|| {
         let queue = Arc::new(InMemoryWorkQueue::new());
-        let lease = complete(queue.acquire_session("env", "session", "owner", 0))
+        let lease = complete(queue.acquire_session("env", &SessionId::from("session"), "owner", 0))
             .unwrap()
             .unwrap();
         let releasing = Arc::clone(&queue);
         let release = thread::spawn(move || complete(releasing.release_session(&lease)).unwrap());
         let waking = Arc::clone(&queue);
         let wake = thread::spawn(move || {
-            complete(waking.wake_session("env", "session")).unwrap();
-            complete(waking.acquire_session("env", "session", "owner", 1)).unwrap();
+            complete(waking.wake_session("env", &SessionId::from("session"))).unwrap();
+            complete(waking.acquire_session("env", &SessionId::from("session"), "owner", 1))
+                .unwrap();
         });
         assert!(release.join().unwrap());
         wake.join().unwrap();
@@ -70,7 +72,7 @@ fn release_and_reacquire_preserve_one_complete_authority() {
                     .authority
                     .lock()
                     .unwrap()
-                    .current_session_lease("env", "session", 1)
+                    .current_session_lease("env", &SessionId::from("session"), 1)
                     .is_some(),
                 "an old release cannot clear the successor authority"
             );
@@ -85,7 +87,7 @@ fn token_authentication_never_borrows_a_replacement_epoch() {
     // R2 auth after reclaim -> None. Mixed T1 + B/2 is never a valid snapshot.
     check_interleavings(|| {
         let queue = Arc::new(InMemoryWorkQueue::new());
-        complete(queue.enqueue_session("env", "session")).unwrap();
+        complete(queue.enqueue_session("env", &SessionId::from("session"))).unwrap();
         let claim = complete(queue.claim_with_session_access("env", "owner-a", "poller", 0, None))
             .unwrap()
             .unwrap();
@@ -128,7 +130,7 @@ fn owner_teardown_cannot_clear_an_intervening_reclaim() {
     // affects zero rows. Both orders leave B/2 active with its fresh token.
     check_interleavings(|| {
         let queue = Arc::new(InMemoryWorkQueue::new());
-        complete(queue.enqueue_session("env", "session")).unwrap();
+        complete(queue.enqueue_session("env", &SessionId::from("session"))).unwrap();
         complete(queue.claim_with_session_access("env", "owner-a", "poller", 0, None))
             .unwrap()
             .unwrap();
@@ -166,12 +168,13 @@ fn renewal_and_reclaim_return_complete_lease_snapshots() {
     // A stale snapshot must not overwrite B's expiry with the shorter A lease.
     check_interleavings(|| {
         let queue = Arc::new(InMemoryWorkQueue::new());
-        complete(queue.acquire_session("env", "session", "owner-a", 0))
+        complete(queue.acquire_session("env", &SessionId::from("session"), "owner-a", 0))
             .unwrap()
             .unwrap();
         let renewing = Arc::clone(&queue);
         let renewal = thread::spawn(move || {
-            complete(renewing.acquire_session("env", "session", "owner-a", 1)).unwrap()
+            complete(renewing.acquire_session("env", &SessionId::from("session"), "owner-a", 1))
+                .unwrap()
         });
         let claiming = Arc::clone(&queue);
         let replacement = thread::spawn(move || {
@@ -184,7 +187,7 @@ fn renewal_and_reclaim_return_complete_lease_snapshots() {
         let replaced = replacement.join().unwrap().is_some();
         let authority = queue.authority.lock().unwrap();
         let current = authority
-            .current_session_lease("env", "session", 1)
+            .current_session_lease("env", &SessionId::from("session"), 1)
             .unwrap();
         let expected = if replaced {
             ("owner-b", 2, LEASE_TTL_MS * 2)

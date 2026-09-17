@@ -167,7 +167,7 @@ impl SessionApplication {
 }
 
 pub(crate) fn mcp_generation_ref(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     attachment: &SessionMcpAttachment,
 ) -> Result<McpGenerationRef, RunError> {
     let claim = attachment
@@ -175,7 +175,7 @@ pub(crate) fn mcp_generation_ref(
         .as_ref()
         .ok_or_else(|| RunError::internal("MCP generation has no durable realization claim"))?;
     Ok(McpGenerationRef {
-        session_id: session_id.to_string(),
+        session_id: session_id.clone(),
         generation: attachment.generation.clone(),
         runtime_incarnation: claim.runtime_incarnation.clone(),
         lease_epoch: claim.lease_epoch,
@@ -185,7 +185,7 @@ pub(crate) fn mcp_generation_ref(
 
 pub(crate) fn stage_mcp_request(
     workspace_id: &str,
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     attachment: &SessionMcpAttachment,
 ) -> Result<StageMcpAttachment, RunError> {
     let claim = attachment

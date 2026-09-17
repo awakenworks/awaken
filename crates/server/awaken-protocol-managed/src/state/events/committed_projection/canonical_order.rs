@@ -866,7 +866,7 @@ impl ManagedState {
                             && evaluation.completed_at.is_some()
                         {
                             evaluation.completed_at =
-                                time_for(&persisted.session_id, source_commit_cursor)
+                                time_for(persisted.session_id.as_str(), source_commit_cursor)
                                     .map(awaken_session_contract::epoch_millis_to_rfc3339);
                         }
                         for (role, phase) in [
@@ -887,7 +887,7 @@ impl ManagedState {
                                 ),
                                 CanonicalEventOrder {
                                     processed_at_unix_ms: time_for(
-                                        &persisted.session_id,
+                                        persisted.session_id.as_str(),
                                         source_commit_cursor,
                                     ),
                                     source_commit_cursor,
@@ -916,7 +916,7 @@ impl ManagedState {
                         ),
                         CanonicalEventOrder {
                             processed_at_unix_ms: time_for(
-                                &persisted.session_id,
+                                persisted.session_id.as_str(),
                                 projection.terminal_commit_cursor,
                             ),
                             source_commit_cursor: projection.terminal_commit_cursor,
@@ -949,7 +949,10 @@ impl ManagedState {
                         },
                     ),
                     CanonicalEventOrder {
-                        processed_at_unix_ms: time_for(&persisted.session_id, source_commit_cursor),
+                        processed_at_unix_ms: time_for(
+                            persisted.session_id.as_str(),
+                            source_commit_cursor,
+                        ),
                         source_commit_cursor,
                         phase,
                         ordinal: index,
@@ -1032,7 +1035,7 @@ impl ManagedState {
                     processed_at_unix_ms: persisted
                         .archived_at()
                         .and_then(awaken_session_contract::rfc3339_to_epoch_millis)
-                        .or_else(|| time_for(&persisted.session_id, terminal_source)),
+                        .or_else(|| time_for(persisted.session_id.as_str(), terminal_source)),
                     source_commit_cursor: terminal_source,
                     phase,
                     ordinal: 0,

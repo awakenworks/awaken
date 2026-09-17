@@ -19,7 +19,7 @@ impl ManagedHost {
         command: SessionRepositoryPublicationCommand,
         lease: &SessionRealizationLease,
     ) -> Result<SessionRepositoryPublicationEffect, RunError> {
-        let workspace = self.host.thread_workspace(&command.session_id);
+        let workspace = self.host.thread_workspace(command.session_id.as_str());
 
         // The canonical driver may install only the frozen aggregate after a
         // Worker restart. Hold the existing realization/lifecycle lock order
@@ -31,12 +31,12 @@ impl ManagedHost {
         let _realization = self
             .host
             .session_slots
-            .acquire_realization(&command.session_id)
+            .acquire_realization(command.session_id.as_str())
             .await;
         let lifecycle_lock = self
             .host
             .session_slots
-            .update(&command.session_id, |slot| slot.lifecycle.clone());
+            .update(command.session_id.as_str(), |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle_lock.lock().await;
         let mut current_lease = self
             .host
@@ -63,7 +63,7 @@ impl ManagedHost {
         let (state, resolved_resources) = self
             .host
             .session_slots
-            .read(&command.session_id, |slot| {
+            .read(command.session_id.as_str(), |slot| {
                 (
                     slot.terminal_environment_state.clone(),
                     slot.resource_transition
@@ -97,7 +97,7 @@ impl ManagedHost {
         let prepared = self
             .host
             .prepare_bound_environment_for_effect_under_lifecycle(
-                &command.session_id,
+                command.session_id.as_str(),
                 binding,
                 &effect_fence,
                 resolved_resources.as_ref(),
@@ -128,7 +128,7 @@ impl ManagedHost {
         let effect = self
             .host
             .publish_repository_activation(
-                &command.session_id,
+                command.session_id.as_str(),
                 staged.repositories.first().expect("checked"),
                 &staged.binding_checks,
                 environment.as_ref(),

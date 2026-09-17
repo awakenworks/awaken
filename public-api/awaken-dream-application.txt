@@ -43,7 +43,7 @@ pub awaken_dream_application::DreamRequest::job_id: alloc::string::String
 pub awaken_dream_application::DreamRequest::model: awaken_session_contract::dream::DreamModelConfig
 pub awaken_dream_application::DreamRequest::output_behavior: awaken_session_contract::dream::DreamOutputBehavior
 pub awaken_dream_application::DreamRequest::request_guidance: core::option::Option<alloc::string::String>
-pub awaken_dream_application::DreamRequest::session_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_dream_application::DreamRequest::session_ids: alloc::vec::Vec<awaken_session_contract::session_id::SessionId>
 pub awaken_dream_application::DreamRequest::source_memory_store_id: alloc::string::String
 pub awaken_dream_application::DreamRequest::workspace_id: alloc::string::String
 pub const awaken_dream_application::BUILT_IN_DREAM_AGENT_ID: &str
@@ -56,5 +56,5 @@ pub fn awaken_dream_application::DreamExecutor::validate_inputs<'life0, 'life1, 
 pub trait awaken_dream_application::DreamModelReadiness: core::marker::Send + core::marker::Sync
 pub fn awaken_dream_application::DreamModelReadiness::is_ready<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_dream_application::DreamSessionSource: core::marker::Send + core::marker::Sync
-pub fn awaken_dream_application::DreamSessionSource::eligible_sessions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dream_application::DreamSessionSource::eligible_sessions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_session_contract::session_id::SessionId>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dream_application::DreamSessionSource::session_usage<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::dream::DreamUsage>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait

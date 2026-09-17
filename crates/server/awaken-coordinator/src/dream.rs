@@ -122,7 +122,7 @@ impl BuiltInDreamAgent {
         for session_id in &request.session_ids {
             let messages = self
                 .sessions
-                .session_transcript(&request.workspace_id, session_id)
+                .session_transcript(&request.workspace_id, session_id.as_str())
                 .await
                 .map_err(|error| {
                     DreamFailure::new(
@@ -130,7 +130,7 @@ impl BuiltInDreamAgent {
                         format!("Session `{session_id}` is unavailable: {error}"),
                     )
                 })?;
-            let bytes = SessionTranscriptJsonlExporter::encode(session_id, &messages)
+            let bytes = SessionTranscriptJsonlExporter::encode(session_id.as_str(), &messages)
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             let filename = format!("{session_id}.jsonl");
             let file = self
@@ -330,7 +330,7 @@ impl DreamExecutor for BuiltInDreamAgent {
             })?;
         for session_id in &request.session_ids {
             self.sessions
-                .session_transcript(&request.workspace_id, session_id)
+                .session_transcript(&request.workspace_id, session_id.as_str())
                 .await
                 .map_err(|error| {
                     DreamFailure::new(
@@ -510,7 +510,7 @@ impl DreamExecutor for BuiltInDreamAgent {
             .run_admitted_session_for_owner(
                 &request.workspace_id,
                 AdmitSessionRun {
-                    session_id: preparation.session_id.clone(),
+                    session_id: awaken_session_contract::SessionId::from(&preparation.session_id),
                     agent_id: request.agent_id.clone(),
                     operation_id,
                     run_id,

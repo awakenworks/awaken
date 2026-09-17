@@ -1,3 +1,4 @@
+use awaken_session_contract::SessionId;
 use std::collections::BTreeMap;
 
 use awaken_credential_contract::{
@@ -73,7 +74,10 @@ async fn sqlite_normalization_and_index_repair_share_one_crash_boundary() {
         drop(conn);
         for _ in 0..2 {
             let repo = SqliteManagedSessionRepository::open(&path).expect("N2/N3 retry");
-            assert_eq!(repo.get("a-normalize").await.unwrap(), first);
+            assert_eq!(
+                repo.get(&SessionId::from("a-normalize")).await.unwrap(),
+                first
+            );
             if upgrade {
                 assert_pre_upgrade_writer_fenced(&repo, &first).await;
             }
@@ -480,7 +484,7 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
     assert!(matches!(
         repo.replay_create(
             "workspace",
-            "dangling-create",
+            &SessionId::from("dangling-create"),
             &IdempotencyRecord {
                 key: "create".into(),
                 payload_hash: "request".into(),
@@ -509,7 +513,8 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
         )
         .unwrap();
     assert!(matches!(
-        repo.replay_create("workspace", damaged_id, &record).await,
+        repo.replay_create("workspace", &SessionId::from(damaged_id), &record)
+            .await,
         Err(SessionRepositoryError::Corrupt(_))
     ));
 
@@ -533,7 +538,7 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
         )
         .unwrap();
     assert!(matches!(
-        repo.replay_create("workspace", non_create_id, &record)
+        repo.replay_create("workspace", &SessionId::from(non_create_id), &record)
             .await,
         Err(SessionRepositoryError::Corrupt(_))
     ));
@@ -559,7 +564,7 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
         )
         .unwrap();
     assert!(matches!(
-        repo.replay_create("workspace", dual_identity_id, &record)
+        repo.replay_create("workspace", &SessionId::from(dual_identity_id), &record)
             .await,
         Err(SessionRepositoryError::Corrupt(_))
     ));
@@ -738,7 +743,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
     PersistedSession {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
-        session_id: id.to_string(),
+        session_id: SessionId::from(id),
         revision: Default::default(),
         baseline: SessionBaselineState::Frozen(SessionBaseline::compile(
             awaken_session_contract::SessionBaselineInputs {
@@ -956,7 +961,7 @@ async fn postgres_normalization_and_index_repair_share_one_crash_boundary() {
             .await
             .unwrap();
         assert_eq!(
-            repo.get("a-normalize").await.unwrap(),
+            repo.get(&SessionId::from("a-normalize")).await.unwrap(),
             first,
             "N2 no business mutation"
         );
@@ -1387,12 +1392,12 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
         "INSERT INTO managed_session \
             (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
          VALUES (?1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,?2)",
-        params![legacy.session_id, serde_json::to_string(&legacy).unwrap()],
+        params![legacy.session_id.as_str(), serde_json::to_string(&legacy).unwrap()],
     )
     .unwrap();
     conn.execute(
         "INSERT INTO managed_session_quarantine(session_id,reason) VALUES(?1,'audit')",
-        params![legacy.session_id],
+        params![legacy.session_id.as_str()],
     )
     .unwrap();
     conn.execute(
@@ -1437,7 +1442,7 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
     let canonical: String = conn
         .query_row(
             "SELECT aggregate_json FROM managed_session WHERE session_id=?1",
-            params![legacy.session_id],
+            params![legacy.session_id.as_str()],
             |row| row.get(0),
         )
         .unwrap();
@@ -1447,7 +1452,7 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
             "SELECT \
                (SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id=?1 AND observed_revision=1), \
                (SELECT COUNT(*) FROM managed_deployment_claim WHERE claim_id='claim')",
-            params![legacy.session_id],
+            params![legacy.session_id.as_str()],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
@@ -1496,13 +1501,13 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
             (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
          VALUES ($1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,$2)",
     )
-    .bind(&legacy.session_id)
+    .bind(legacy.session_id.as_str())
     .bind(serde_json::to_string(&legacy).unwrap())
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query("INSERT INTO managed_session_quarantine(session_id,reason) VALUES($1,'audit')")
-        .bind(&legacy.session_id)
+        .bind(legacy.session_id.as_str())
         .execute(&pool)
         .await
         .unwrap();
@@ -1547,7 +1552,7 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
            (SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id=$1 AND observed_revision=1), \
            (SELECT COUNT(*) FROM managed_deployment_claim WHERE claim_id='claim')",
     )
-    .bind(&legacy.session_id)
+    .bind(legacy.session_id.as_str())
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -1652,7 +1657,7 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
                     (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
                  VALUES ($1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,$2)",
             )
-            .bind(&session.session_id)
+            .bind(session.session_id.as_str())
             .bind(serde_json::to_string(session).unwrap())
             .execute(&pool)
             .await
@@ -1756,7 +1761,7 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
 
             let session = seeded.as_ref().expect("PGV10 seeded Session");
             sqlx::query("UPDATE managed_session SET aggregate_json=$2 WHERE session_id=$1")
-                .bind(&session.session_id)
+                .bind(session.session_id.as_str())
                 .bind(serde_json::to_string(session).unwrap())
                 .execute(&pool)
                 .await
@@ -1939,7 +1944,7 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
         "INSERT INTO managed_session (session_id, scope_id, revision, aggregate_json) \
          VALUES (?1, ?2, ?3, ?4)",
         params![
-            healthy.session_id,
+            healthy.session_id.as_str(),
             "ws-source",
             db_revision(healthy.revision).unwrap(),
             aggregate_str(&healthy).unwrap(),
@@ -1990,7 +1995,10 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     repaired.revision = SessionRevision(1);
     conn.execute(
         "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
-        params![aggregate_str(&repaired).unwrap(), repaired.session_id],
+        params![
+            aggregate_str(&repaired).unwrap(),
+            repaired.session_id.as_str()
+        ],
     )
     .unwrap();
     drop(conn);
@@ -2074,7 +2082,7 @@ async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_roo
         "INSERT INTO managed_session (session_id, scope_id, revision, aggregate_json) \
          VALUES ($1, $2, $3, $4)",
     )
-    .bind(&session.session_id)
+    .bind(session.session_id.as_str())
     .bind("ws-source")
     .bind(db_revision(session.revision).unwrap())
     .bind(aggregate_str(&session).unwrap())
@@ -2201,7 +2209,7 @@ async fn delete_fixture<R: ManagedSessionRepository>(
     session_id: &str,
     fact: ManagedLifecycleFact,
 ) {
-    let current = repo.get(session_id).await.unwrap();
+    let current = repo.get(&SessionId::from(session_id)).await.unwrap();
     let payload = SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone {
         session_id: session_id.into(),
         deleted_revision: SessionRevision(current.revision.0 + 1),
@@ -2232,11 +2240,11 @@ fn make_deletable(session: &mut PersistedSession) {
     session.request_delete("workspace", 0).unwrap();
     session
         .terminal_cleanup
-        .freeze_targets(&session_id, [], 0, 0)
+        .freeze_targets(session_id.as_str(), [], 0, 0)
         .unwrap();
     let command = session
         .terminal_cleanup
-        .command_for(&session_id, &session_id)
+        .command_for(session_id.as_str(), session_id.as_str())
         .unwrap();
     install_legacy_completion_wire(session, &command);
     session
@@ -2474,7 +2482,11 @@ async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &
                 "R5 row {index}"
             );
             candidate.revision = SessionRevision(2);
-            assert_eq!(repo.get(&id).await.unwrap(), candidate, "R5 row {index}");
+            assert_eq!(
+                repo.get(&SessionId::from(&id)).await.unwrap(),
+                candidate,
+                "R5 row {index}"
+            );
             assert!(
                 repo.pending_lifecycle().await.unwrap().contains(&event),
                 "R5 outbox"
@@ -2494,7 +2506,7 @@ async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &
                 "R1"
             );
             assert_eq!(
-                repo.get(&id).await.unwrap(),
+                repo.get(&SessionId::from(id)).await.unwrap(),
                 candidate,
                 "R1 complete durable root"
             );
@@ -2504,9 +2516,15 @@ async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &
                 matches!(result, Err(SessionRepositoryError::InvalidMutation(_))),
                 "R3/R4 row {index}: {result:?}"
             );
-            assert_eq!(repo.get(&id).await.unwrap(), before, "R3/R4 complete root");
             assert_eq!(
-                repo.idempotency_receipt(&id, &key).await.unwrap(),
+                repo.get(&SessionId::from(&id)).await.unwrap(),
+                before,
+                "R3/R4 complete root"
+            );
+            assert_eq!(
+                repo.idempotency_receipt(&SessionId::from(id), &key)
+                    .await
+                    .unwrap(),
                 None,
                 "R3/R4 no receipt"
             );
@@ -2686,7 +2704,7 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
     drop(repo);
     let repo = SqliteManagedSessionRepository::open(path).unwrap();
     let legacy = repo
-        .deleted_event_admissions("ws_a", "legacy")
+        .deleted_event_admissions("ws_a", &SessionId::from("legacy"))
         .await
         .unwrap()
         .unwrap();
@@ -2696,7 +2714,7 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
         awaken_session_contract::RunErrorKind::Unavailable
     );
     let empty = repo
-        .deleted_event_admissions("ws_a", "empty")
+        .deleted_event_admissions("ws_a", &SessionId::from("empty"))
         .await
         .unwrap()
         .unwrap();
@@ -2708,12 +2726,15 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
     );
     for id in ["legacy", "empty", "corrupt"] {
         assert_eq!(
-            repo.deleted_event_admissions("foreign", id).await.unwrap(),
+            repo.deleted_event_admissions("foreign", &SessionId::from(id))
+                .await
+                .unwrap(),
             None
         );
     }
     assert!(matches!(
-        repo.deleted_event_admissions("ws_a", "corrupt").await,
+        repo.deleted_event_admissions("ws_a", &SessionId::from("corrupt"))
+            .await,
         Err(SessionRepositoryError::Corrupt(_))
     ));
 }
@@ -2988,7 +3009,10 @@ async fn lifecycle_fact_survives_the_commit_to_notification_crash_window() {
     }
 
     let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
-    assert_eq!(reopened.owner("sesn_tx").await.as_deref(), Ok("ws_a"));
+    assert_eq!(
+        reopened.owner(&SessionId::from("sesn_tx")).await.as_deref(),
+        Ok("ws_a")
+    );
     let pending = reopened.pending_lifecycle().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, "session:sesn_tx:created");
@@ -3006,14 +3030,14 @@ async fn environment_state_survives_sqlite_reopen() {
     {
         let repo = SqliteManagedSessionRepository::open(&path).unwrap();
         create_fixture(&repo, "ws_a", sample("sesn_bound"), Vec::new()).await;
-        let mut bound = repo.get("sesn_bound").await.unwrap();
+        let mut bound = repo.get(&SessionId::from("sesn_bound")).await.unwrap();
         bound.environment.set_resident("opaque-binding");
         replace_fixture(&repo, "ws_a", bound, "test:bind", Vec::new()).await;
     }
     let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
     assert_eq!(
         reopened
-            .get("sesn_bound")
+            .get(&SessionId::from("sesn_bound"))
             .await
             .unwrap()
             .environment
@@ -3021,7 +3045,13 @@ async fn environment_state_survives_sqlite_reopen() {
             .map(str::to_owned),
         Some("opaque-binding".to_string())
     );
-    assert_eq!(reopened.owner("sesn_bound").await.as_deref(), Ok("ws_a"));
+    assert_eq!(
+        reopened
+            .owner(&SessionId::from("sesn_bound"))
+            .await
+            .as_deref(),
+        Ok("ws_a")
+    );
     assert_eq!(
         reopened
             .count_environment_phase(SessionEnvironmentPhase::Resident)
@@ -3040,7 +3070,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
     {
         let repo = SqliteManagedSessionRepository::open(&path).unwrap();
         create_fixture(&repo, "ws_a", sample("sesn_cleanup"), Vec::new()).await;
-        let mut requested = repo.get("sesn_cleanup").await.unwrap();
+        let mut requested = repo.get(&SessionId::from("sesn_cleanup")).await.unwrap();
         requested.terminal_cleanup.request("sesn_cleanup");
         requested
             .terminal_cleanup
@@ -3051,7 +3081,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
     }
     {
         let repo = SqliteManagedSessionRepository::open(&path).unwrap();
-        let mut recovered = repo.get("sesn_cleanup").await.unwrap();
+        let mut recovered = repo.get(&SessionId::from("sesn_cleanup")).await.unwrap();
         assert!(recovered.terminal_cleanup.is_requested());
         let intent = recovered
             .terminal_cleanup
@@ -3076,7 +3106,10 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         .await;
     }
     let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
-    let completed = reopened.get("sesn_cleanup").await.unwrap();
+    let completed = reopened
+        .get(&SessionId::from("sesn_cleanup"))
+        .await
+        .unwrap();
     assert!(completed.terminal_cleanup.is_completed());
     assert!(matches!(
         completed.environment,
@@ -3135,7 +3168,10 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
     .unwrap();
     drop(conn);
     let repo = SqliteManagedSessionRepository::open(&path).unwrap();
-    let mut recovered = repo.get(session_id).await.expect("S2/E2 rehydrate");
+    let mut recovered = repo
+        .get(&SessionId::from(session_id))
+        .await
+        .expect("S2/E2 rehydrate");
     recovered.title = Some("compatibility rewrite".into());
     let mut recovered = replace_fixture(
         &repo,
@@ -3182,7 +3218,7 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
     let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
     assert!(
         reopened
-            .get(session_id)
+            .get(&SessionId::from(session_id))
             .await
             .expect("S4/E5 reopen")
             .terminal_cleanup
@@ -3203,7 +3239,7 @@ async fn terminal_state_and_its_fact_share_one_repository_commit() {
     .await;
     repo.complete_lifecycle("created").await.unwrap();
 
-    let mut terminal = repo.get("sesn_terminal").await.unwrap();
+    let mut terminal = repo.get(&SessionId::from("sesn_terminal")).await.unwrap();
     terminal.archive("2026-01-01T00:00:00Z").unwrap();
     replace_fixture(
         &repo,
@@ -3217,13 +3253,13 @@ async fn terminal_state_and_its_fact_share_one_repository_commit() {
         )],
     )
     .await;
-    let archived = repo.get("sesn_terminal").await.unwrap();
+    let archived = repo.get(&SessionId::from("sesn_terminal")).await.unwrap();
     assert_eq!(archived.execution, SessionExecutionState::Terminated);
     assert_eq!(archived.archived_at(), Some("2026-01-01T00:00:00Z"));
     assert_eq!(repo.pending_lifecycle().await.unwrap()[0].id, "terminated");
 
     repo.complete_lifecycle("terminated").await.unwrap();
-    let mut deleting = repo.get("sesn_terminal").await.unwrap();
+    let mut deleting = repo.get(&SessionId::from("sesn_terminal")).await.unwrap();
     make_deletable(&mut deleting);
     replace_fixture(
         &repo,
@@ -3241,7 +3277,7 @@ async fn terminal_state_and_its_fact_share_one_repository_commit() {
     )
     .await;
     assert_eq!(
-        repo.get("sesn_terminal").await,
+        repo.get(&SessionId::from("sesn_terminal")).await,
         Err(SessionRepositoryError::NotFound)
     );
     assert_eq!(repo.pending_lifecycle().await.unwrap()[0].id, "deleted");
@@ -3263,15 +3299,15 @@ async fn round_trips_and_survives_a_reopen() {
     {
         let repo = SqliteManagedSessionRepository::open(&path).unwrap();
         let expected = create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
-        assert_eq!(repo.get("sesn_1").await, Ok(expected));
+        assert_eq!(repo.get(&SessionId::from("sesn_1")).await, Ok(expected));
     }
     // Second process: a fresh repo over the same file restores the row.
     let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
     let mut expected = sample("sesn_1");
     expected.revision = SessionRevision(1);
-    assert_eq!(reopened.get("sesn_1").await, Ok(expected));
+    assert_eq!(reopened.get(&SessionId::from("sesn_1")).await, Ok(expected));
     assert_eq!(
-        reopened.get("sesn_missing").await,
+        reopened.get(&SessionId::from("sesn_missing")).await,
         Err(SessionRepositoryError::NotFound)
     );
 }
@@ -3293,7 +3329,7 @@ async fn malformed_canonical_aggregate_fails_closed() {
         .unwrap();
 
     assert!(matches!(
-        repo.get("malformed").await,
+        repo.get(&SessionId::from("malformed")).await,
         Err(SessionRepositoryError::Corrupt(_))
     ));
 }
@@ -3305,7 +3341,11 @@ async fn save_is_an_idempotent_upsert() {
     let mut updated = sample("sesn_1");
     updated.title = Some("Renamed".to_string());
     updated = replace_fixture(&repo, "default", updated, "test:rename", Vec::new()).await;
-    assert_eq!(repo.get("sesn_1").await, Ok(updated), "re-save overwrites");
+    assert_eq!(
+        repo.get(&SessionId::from("sesn_1")).await,
+        Ok(updated),
+        "re-save overwrites"
+    );
 }
 
 #[tokio::test]
@@ -3316,18 +3356,27 @@ async fn owner_scope_is_recorded_and_survives_a_reopen() {
     {
         let repo = SqliteManagedSessionRepository::open(&path).unwrap();
         create_fixture(&repo, "ws_a", sample("sesn_1"), Vec::new()).await;
-        assert_eq!(repo.owner("sesn_1").await, Ok("ws_a".to_string()));
+        assert_eq!(
+            repo.owner(&SessionId::from("sesn_1")).await,
+            Ok("ws_a".to_string())
+        );
     }
     // After a restart the owner is still readable — the cross-process fence input
     // for the edge ownership guard (ADR-0051).
     let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
-    assert_eq!(reopened.owner("sesn_1").await, Ok("ws_a".to_string()));
+    assert_eq!(
+        reopened.owner(&SessionId::from("sesn_1")).await,
+        Ok("ws_a".to_string())
+    );
     // A row saved but never owner-stamped defaults to the seeded scope.
     create_fixture(&reopened, "default", sample("sesn_2"), Vec::new()).await;
-    assert_eq!(reopened.owner("sesn_2").await, Ok("default".to_string()));
+    assert_eq!(
+        reopened.owner(&SessionId::from("sesn_2")).await,
+        Ok("default".to_string())
+    );
     // An unknown session has no owner.
     assert_eq!(
-        reopened.owner("sesn_missing").await,
+        reopened.owner(&SessionId::from("sesn_missing")).await,
         Err(SessionRepositoryError::NotFound)
     );
 }
@@ -3354,7 +3403,7 @@ async fn corrupt_canonical_aggregate_fails_closed() {
         .unwrap();
     }
     let error = repo
-        .get("sesn_1")
+        .get(&SessionId::from("sesn_1"))
         .await
         .expect_err("corrupt canonical authority must be distinguishable from absence");
     assert!(matches!(error, SessionRepositoryError::Corrupt(_)));
@@ -3406,7 +3455,7 @@ async fn noncanonical_aggregate_fields_fail_closed() {
         .unwrap();
 
     assert!(matches!(
-        repo.get("legacy-tools").await,
+        repo.get(&SessionId::from("legacy-tools")).await,
         Err(SessionRepositoryError::Corrupt(_))
     ));
 }
@@ -3441,16 +3490,16 @@ async fn postgres_round_trips_and_upserts() {
     root_mutation_decision_table(&repo, "sesn_pg_decisions").await;
 
     let created = create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
-    assert_eq!(repo.get("sesn_1").await, Ok(created));
+    assert_eq!(repo.get(&SessionId::from("sesn_1")).await, Ok(created));
     assert_eq!(
-        repo.get("sesn_missing").await,
+        repo.get(&SessionId::from("sesn_missing")).await,
         Err(SessionRepositoryError::NotFound)
     );
 
     let mut updated = sample("sesn_1");
     updated.title = None; // exercises the nullable title column
     updated = replace_fixture(&repo, "default", updated, "test:pg-update", Vec::new()).await;
-    assert_eq!(repo.get("sesn_1").await, Ok(updated));
+    assert_eq!(repo.get(&SessionId::from("sesn_1")).await, Ok(updated));
 
     create_fixture(
         &repo,
@@ -3463,7 +3512,10 @@ async fn postgres_round_trips_and_upserts() {
         )],
     )
     .await;
-    assert_eq!(repo.owner("sesn_pg_tx").await.as_deref(), Ok("ws_a"));
+    assert_eq!(
+        repo.owner(&SessionId::from("sesn_pg_tx")).await.as_deref(),
+        Ok("ws_a")
+    );
     assert_eq!(
         repo.pending_lifecycle().await.unwrap()[0].id,
         "session:sesn_pg_tx:created"
@@ -3471,7 +3523,7 @@ async fn postgres_round_trips_and_upserts() {
     repo.complete_lifecycle("session:sesn_pg_tx:created")
         .await
         .unwrap();
-    let mut terminal = repo.get("sesn_pg_tx").await.unwrap();
+    let mut terminal = repo.get(&SessionId::from("sesn_pg_tx")).await.unwrap();
     terminal.archive("2026-07-19T00:00:00Z").unwrap();
     replace_fixture(
         &repo,
@@ -3486,7 +3538,10 @@ async fn postgres_round_trips_and_upserts() {
     )
     .await;
     assert_eq!(
-        repo.get("sesn_pg_tx").await.unwrap().execution,
+        repo.get(&SessionId::from("sesn_pg_tx"))
+            .await
+            .unwrap()
+            .execution,
         SessionExecutionState::Terminated
     );
     assert_eq!(
@@ -3535,7 +3590,10 @@ async fn postgres_round_trips_and_upserts() {
     let restarted = PostgresManagedSessionRepository::with_pool(repo.pool.clone())
         .await
         .expect("S2 PostgreSQL restart");
-    let mut recovered = restarted.get(legacy_id).await.expect("S2/E2 PostgreSQL");
+    let mut recovered = restarted
+        .get(&SessionId::from(legacy_id))
+        .await
+        .expect("S2/E2 PostgreSQL");
     recovered.title = Some("compatibility rewrite".into());
     let mut recovered = replace_fixture(
         &restarted,
@@ -3633,20 +3691,29 @@ async fn postgres_owner_scope_is_recorded_and_survives_a_reopen() {
         .await
         .expect("store");
     create_fixture(&repo, "ws_a", sample("sesn_1"), Vec::new()).await;
-    assert_eq!(repo.owner("sesn_1").await, Ok("ws_a".to_string()));
+    assert_eq!(
+        repo.owner(&SessionId::from("sesn_1")).await,
+        Ok("ws_a".to_string())
+    );
 
     // Second "process": a fresh pool over the same schema still reads the owner.
     let reopened =
         PostgresManagedSessionRepository::with_pool(pool().await.expect("reopen schema pool"))
             .await
             .expect("store");
-    assert_eq!(reopened.owner("sesn_1").await, Ok("ws_a".to_string()));
+    assert_eq!(
+        reopened.owner(&SessionId::from("sesn_1")).await,
+        Ok("ws_a".to_string())
+    );
     // A row saved but never owner-stamped defaults to the seeded scope.
     create_fixture(&reopened, "default", sample("sesn_2"), Vec::new()).await;
-    assert_eq!(reopened.owner("sesn_2").await, Ok("default".to_string()));
+    assert_eq!(
+        reopened.owner(&SessionId::from("sesn_2")).await,
+        Ok("default".to_string())
+    );
     // An unknown session has no owner.
     assert_eq!(
-        reopened.owner("sesn_missing").await,
+        reopened.owner(&SessionId::from("sesn_missing")).await,
         Err(SessionRepositoryError::NotFound)
     );
 }

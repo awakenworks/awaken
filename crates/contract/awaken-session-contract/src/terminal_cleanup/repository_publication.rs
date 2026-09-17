@@ -30,7 +30,7 @@ pub struct SessionRepositoryPublicationIntent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRepositoryPublicationCommand {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub effect_id: String,
     pub intent: SessionRepositoryPublicationIntent,
 }
@@ -523,7 +523,7 @@ impl SessionRepositoryPublicationCommand {
     ) -> Result<Self, SessionCleanupError> {
         intent.validate()?;
         Ok(Self {
-            session_id: session_id.to_string(),
+            session_id: crate::SessionId::from(session_id),
             effect_id: crate::stable_fingerprint(&(
                 "session-repository-publication-effect-v1",
                 session_id,

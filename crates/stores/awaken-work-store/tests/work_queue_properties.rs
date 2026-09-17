@@ -4,6 +4,7 @@
 //! self-hosted environment hand a run to exactly one worker. These properties assert it
 //! over ALL enqueue/claim counts the generator produces, not just the pinned unit case.
 
+use awaken_session_contract::SessionId;
 use awaken_session_contract::work_queue::{WorkQueue, WorkState};
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS};
 use proptest::prelude::*;
@@ -23,7 +24,7 @@ proptest! {
     fn at_most_one_lease_is_handed_out_while_one_is_live(n in 1usize..12, claims in 2usize..8) {
         let q = InMemoryWorkQueue::new();
         for i in 0..n {
-            block(q.enqueue_session("env", &format!("s{i}"))).expect("enqueue");
+            block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue");
         }
         let handed: usize = (0..claims)
             .filter(|_| block(q.claim("env", "w", 0)).expect("claim").is_some())
@@ -40,7 +41,7 @@ proptest! {
     fn an_expired_lease_is_reclaimable(n in 1usize..8) {
         let q = InMemoryWorkQueue::new();
         for i in 0..n {
-            block(q.enqueue_session("env", &format!("s{i}"))).expect("enqueue");
+            block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue");
         }
         prop_assert!(block(q.claim("env", "a", 0)).expect("claim").is_some(), "first claim leases");
         prop_assert!(block(q.claim("env", "b", 1)).expect("claim").is_none(), "a live lease caps the env");
@@ -53,8 +54,8 @@ proptest! {
     #[test]
     fn environments_lease_independently(a in 1usize..5, b in 1usize..5) {
         let q = InMemoryWorkQueue::new();
-        for i in 0..a { block(q.enqueue_session("env_a", &format!("a{i}"))).expect("enqueue a"); }
-        for i in 0..b { block(q.enqueue_session("env_b", &format!("b{i}"))).expect("enqueue b"); }
+        for i in 0..a { block(q.enqueue_session("env_a", &SessionId::from(format!("a{i}")))).expect("enqueue a"); }
+        for i in 0..b { block(q.enqueue_session("env_b", &SessionId::from(format!("b{i}")))).expect("enqueue b"); }
         let la = block(q.claim("env_a", "w", 0)).expect("claim query").expect("env_a leases");
         let lb = block(q.claim("env_b", "w", 0)).expect("claim query").expect("env_b leases independently");
         prop_assert_eq!(block(q.get("env_a", &la.id)).expect("get").map(|w| w.environment_id), Some("env_a".to_string()));
@@ -66,7 +67,7 @@ proptest! {
     #[test]
     fn stopping_the_active_item_frees_the_next(n in 2usize..8) {
         let q = InMemoryWorkQueue::new();
-        for i in 0..n { block(q.enqueue_session("env", &format!("s{i}"))).expect("enqueue"); }
+        for i in 0..n { block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue"); }
         let first = block(q.claim("env", "w", 0)).expect("claim query").expect("first");
         prop_assert!(block(q.claim("env", "w", 0)).expect("claim").is_none(), "capped while active");
         block(q.stop("env", &first.id, "w")).expect("stop");
@@ -79,7 +80,7 @@ proptest! {
     #[test]
     fn remove_env_purges_everything(n in 1usize..8) {
         let q = InMemoryWorkQueue::new();
-        for i in 0..n { block(q.enqueue_session("env", &format!("s{i}"))).expect("enqueue"); }
+        for i in 0..n { block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue"); }
         block(q.remove_env("env")).unwrap();
         prop_assert!(block(q.list("env")).expect("list").is_empty());
         prop_assert!(block(q.claim("env", "w", 0)).expect("claim").is_none());

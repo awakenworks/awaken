@@ -72,7 +72,7 @@ impl ManagedState {
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
         let persisted_session = self
             .application
-            .session(session_id)
+            .session(&awaken_session_contract::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
         let interrupt_only = !events.is_empty()
@@ -480,7 +480,11 @@ impl ManagedState {
             };
             match self
                 .application
-                .session_event_batch_idempotency(session_id, key, fingerprint)
+                .session_event_batch_idempotency(
+                    &awaken_session_contract::SessionId::from(session_id),
+                    key,
+                    fingerprint,
+                )
                 .await
                 .map_err(StateError::Run)?
             {
@@ -586,7 +590,7 @@ impl ManagedState {
                 let append = if drive == ValidatedEventBatchDrive::PreferredBatch {
                     self.application
                         .append_and_drive_session_event_batch_idempotent(
-                            session_id,
+                            &awaken_session_contract::SessionId::from(session_id),
                             validated.inputs,
                             data_subject_id,
                             traceparent,
@@ -596,7 +600,7 @@ impl ManagedState {
                 } else {
                     self.application
                         .append_session_event_batch_idempotent(
-                            session_id,
+                            &awaken_session_contract::SessionId::from(session_id),
                             validated.inputs,
                             data_subject_id,
                             traceparent,
@@ -640,7 +644,7 @@ impl ManagedState {
         }
         let persisted = self
             .application
-            .session(session_id)
+            .session(&awaken_session_contract::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
         self.publish_persisted_session(&persisted)?;

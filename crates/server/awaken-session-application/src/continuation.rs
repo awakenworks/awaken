@@ -20,7 +20,7 @@ fn expected_mcp_generations(
 ) -> Result<Vec<awaken_session_contract::McpGenerationRef>, SessionContinuationError> {
     session
         .mcp
-        .active_generation_refs(&session.session_id)
+        .active_generation_refs(session.session_id.as_str())
         .map_err(|error| {
             SessionContinuationError::Runtime(RunError::internal(format!(
                 "durable MCP quiescence set is invalid: {error}"
@@ -99,7 +99,7 @@ impl SessionContinuationError {
 impl SessionApplication {
     pub(crate) async fn authorize_checkpoint_release_artifact_effect_from_root(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
     ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
         let session = self
@@ -172,7 +172,7 @@ impl SessionApplication {
     /// work is currently due; a caller may safely back off.
     async fn advance_environment_continuation(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         now_unix_ms: u64,
     ) -> Result<bool, SessionContinuationError> {
         let owner_scope = self
@@ -216,7 +216,7 @@ impl SessionApplication {
                 validate_suspend_memory_preflight(&session)?;
                 session.environment.begin_suspend_at(
                     &owner_scope,
-                    session_id,
+                    session_id.as_str(),
                     session.activity_epoch,
                     session.realization.clone(),
                     now_unix_ms,
@@ -237,7 +237,7 @@ impl SessionApplication {
                 let receipt = self
                     .runtime()
                     .quiesce_session_environment(
-                        session_id,
+                        session_id.as_str(),
                         &operation,
                         &source_effect_id,
                         &source_binding,
@@ -250,7 +250,10 @@ impl SessionApplication {
                     .record_quiescence(&receipt, &expected_mcp_generations)?;
                 session
                     .mcp
-                    .require_reprojection_after_quiescence(session_id, &receipt.mcp_generations)
+                    .require_reprojection_after_quiescence(
+                        session_id.as_str(),
+                        &receipt.mcp_generations,
+                    )
                     .map_err(|error| {
                         SessionContinuationError::Repository(format!(
                             "MCP quiescence transition failed: {error}"
@@ -276,12 +279,12 @@ impl SessionApplication {
                 let policy = &baseline.environment.idle_retention;
                 let request = session
                     .environment
-                    .checkpoint_request(&owner_scope, session_id, policy)?
+                    .checkpoint_request(&owner_scope, session_id.as_str(), policy)?
                     .ok_or(SessionEnvironmentTransitionError::WrongPhase)?;
                 let receipt = tokio::time::timeout(
                     std::time::Duration::from_secs(policy.max_checkpoint_duration_secs),
                     self.runtime()
-                        .checkpoint_session_environment(session_id, request),
+                        .checkpoint_session_environment(session_id.as_str(), request),
                 )
                 .await
                 .map_err(|_| {
@@ -314,7 +317,7 @@ impl SessionApplication {
                 let receipt = self
                     .runtime()
                     .prepare_checkpoint_source_disposal(
-                        session_id,
+                        session_id.as_str(),
                         &preparation,
                         &generation,
                         &source_binding,
@@ -350,7 +353,7 @@ impl SessionApplication {
                 })?;
                 let receipt = self
                     .runtime()
-                    .dispose_prepared_checkpoint_source(session_id, &disposal)
+                    .dispose_prepared_checkpoint_source(session_id.as_str(), &disposal)
                     .await?;
                 session.environment.complete_suspend(&receipt)?;
                 self.commit_continuation(&owner_scope, session, "environment-hibernated")
@@ -366,7 +369,7 @@ impl SessionApplication {
     /// supervisor to retry.
     pub async fn reconcile_environment_continuation(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         now_unix_ms: u64,
     ) -> Result<(), SessionContinuationError> {
         for _ in 0..8 {
@@ -384,7 +387,7 @@ impl SessionApplication {
     /// never creates a resume queue and never cancels an ambiguous upload.
     pub async fn ensure_environment_resident(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         now_unix_ms: u64,
     ) -> Result<PersistedSession, SessionContinuationError> {
         for _ in 0..12 {
@@ -428,7 +431,7 @@ impl SessionApplication {
                     // failed delete retains the reference for retry; a crash after
                     // delete replays the same delete before the CAS.
                     self.runtime()
-                        .delete_session_checkpoint(session_id, &checkpoint)
+                        .delete_session_checkpoint(session_id.as_str(), &checkpoint)
                         .await?;
                     session.environment = SessionEnvironmentState::Unmaterialized;
                     self.commit_continuation(
@@ -444,7 +447,7 @@ impl SessionApplication {
                     })?;
                     session.environment.begin_restore(
                         &owner_scope,
-                        session_id,
+                        session_id.as_str(),
                         next_epoch,
                         session.realization.clone(),
                         now_unix_ms,
@@ -455,7 +458,7 @@ impl SessionApplication {
                 SessionEnvironmentState::Restoring { .. } => {
                     let request = session
                         .environment
-                        .restoring_request(&owner_scope, session_id)
+                        .restoring_request(&owner_scope, session_id.as_str())
                         .ok_or(SessionEnvironmentTransitionError::NotRestoring)?;
                     let receipt = self
                         .runtime()

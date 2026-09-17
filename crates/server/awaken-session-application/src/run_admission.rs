@@ -222,7 +222,7 @@ impl SessionApplication {
             let session_id = command.session_id.clone();
             let agent_id = command.agent_id.clone();
             let run_id = command.run_id.clone();
-            let operation = session_run_activity_operation_id(&session_id, &run_id);
+            let operation = session_run_activity_operation_id(session_id.as_str(), &run_id);
             // Cause/effect decision table: an existing exact activity receipt is
             // response-loss truth and outranks current policy, but it says nothing
             // about this process's disposable Runtime projection. Every admission
@@ -253,7 +253,7 @@ impl SessionApplication {
                 .or(expected_owner)
                 .ok_or_else(|| RunError::bad_request("Session was not found"))?;
             let projected_revision = self
-                .admit_run_session(owner_scope, &session_id, &agent_id)
+                .admit_run_session(owner_scope, session_id.as_str(), &agent_id)
                 .await?;
             let reservation = self.runtime().reserve_session_run(command).await?;
             let delivery = |session_activity_epoch| SessionRunDelivery {
@@ -375,7 +375,10 @@ impl SessionApplication {
         thread_id: &str,
         expected_owner: Option<&str>,
     ) -> Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError> {
-        let session = match self.session(thread_id).await {
+        let session = match self
+            .session(&awaken_session_contract::SessionId::from(thread_id))
+            .await
+        {
             Ok(session) => session,
             Err(SessionRepositoryError::NotFound) => return Ok(None),
             Err(error) => {
@@ -387,15 +390,18 @@ impl SessionApplication {
         if !session.is_publicly_readable() {
             return Err(SessionProjectionRecoveryError::NotFound);
         }
-        let owner = self.owner(thread_id).await.map_err(|error| match error {
-            SessionMutationError::NotFound => SessionProjectionRecoveryError::NotFound,
-            SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
-                SessionProjectionRecoveryError::Unavailable(error.to_string())
-            }
-            SessionMutationError::Unavailable(message) => {
-                SessionProjectionRecoveryError::Unavailable(message)
-            }
-        })?;
+        let owner = self
+            .owner(&awaken_session_contract::SessionId::from(thread_id))
+            .await
+            .map_err(|error| match error {
+                SessionMutationError::NotFound => SessionProjectionRecoveryError::NotFound,
+                SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
+                    SessionProjectionRecoveryError::Unavailable(error.to_string())
+                }
+                SessionMutationError::Unavailable(message) => {
+                    SessionProjectionRecoveryError::Unavailable(message)
+                }
+            })?;
         if expected_owner.is_some_and(|expected| expected != owner) {
             return Err(SessionProjectionRecoveryError::NotFound);
         }
@@ -479,7 +485,7 @@ impl SessionApplication {
                 })?;
             session
         } else {
-            self.realize_session_after_refresh(thread_id)
+            self.realize_session_after_refresh(&awaken_session_contract::SessionId::from(thread_id))
                 .await
                 .map_err(|error| {
                     SessionProjectionRecoveryError::Rejected(realization_error(error))
@@ -520,7 +526,7 @@ impl SessionApplication {
             self.environments
                 .wake_session_work(
                     &baseline.environment.environment_id,
-                    &recovered.session.session_id,
+                    recovered.session.session_id.as_str(),
                 )
                 .await
                 .map_err(|error| {
@@ -997,7 +1003,10 @@ impl SessionApplication {
         thread_id: &str,
         agent_id: &str,
     ) -> Result<SessionRevision, RunApplicationError> {
-        match self.session(thread_id).await {
+        match self
+            .session(&awaken_session_contract::SessionId::from(thread_id))
+            .await
+        {
             Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
             Err(SessionRepositoryError::NotFound) => {
                 match self
@@ -1010,7 +1019,10 @@ impl SessionApplication {
                     Err(error)
                         if error.kind == awaken_session_contract::RunErrorKind::Unavailable =>
                     {
-                        match self.session(thread_id).await {
+                        match self
+                            .session(&awaken_session_contract::SessionId::from(thread_id))
+                            .await
+                        {
                             Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
                             Err(SessionRepositoryError::NotFound) => Err(error),
                             Err(error) => Err(session_repository_error(error)),
@@ -1079,7 +1091,7 @@ impl SessionRunApplication {
             ));
         }
         Ok(AdmitSessionRun {
-            session_id: thread.to_string(),
+            session_id: awaken_session_contract::SessionId::from(thread),
             agent_id: self.agent_for(thread, requested_agent),
             operation_id: operation_id.to_string(),
             run_id: awaken_session_contract::session_run_id(thread, operation_id),
@@ -1167,7 +1179,7 @@ impl RunApplication for SessionRunApplication {
             .resume_session_run_for_owner(
                 &(self.workspace)(thread),
                 operation_id,
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 tool_use_id,
                 resume,
             )

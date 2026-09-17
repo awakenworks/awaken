@@ -1,5 +1,6 @@
 use super::*;
 use awaken_runtime_contract::tool_batch::ToolBatch;
+use awaken_session_contract::SessionId;
 use awaken_session_contract::ToolPermissionDecision;
 
 fn test_thread_agent(id: &str) -> SessionThreadAgent {
@@ -10,7 +11,7 @@ async fn await_session_tombstone(repo: &dyn ManagedSessionRepository, id: &str) 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if matches!(
-                repo.get(id).await,
+                repo.get(&SessionId::from(id)).await,
                 Err(awaken_session_contract::SessionRepositoryError::NotFound)
             ) {
                 break;
@@ -507,7 +508,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     runtime.reject_interrupt(None);
     state
         .application
-        .drive_session_event_batches(&session.id, None)
+        .drive_session_event_batches(&SessionId::from(&session.id), None)
         .await
         .expect("I6 cold-safe retry completes the same retained command");
     assert_eq!(
@@ -532,7 +533,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     );
     state
         .application
-        .drive_session_event_batches(&session.id, None)
+        .drive_session_event_batches(&SessionId::from(&session.id), None)
         .await
         .expect("I6 processed replay is a no-op");
     assert!(
@@ -542,7 +543,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
 
     <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::archive_session_thread(
         &runtime,
-        &session.id,
+        &SessionId::from(&session.id),
         child_id,
     )
     .await
@@ -639,7 +640,7 @@ async fn delete_session_disposes_the_host_sandbox() {
     );
     assert!(
         matches!(
-            repo.get(&id).await,
+            repo.get(&SessionId::from(id)).await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "successful cleanup converges to a tombstone"
@@ -772,7 +773,7 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             0,
             &coordination_call_id,
             CoordinatedThreadLink {
-                session_id: session.id.clone(),
+                session_id: SessionId::from(&session.id),
                 thread_id: awaken_agent_contract::agent::thread::Id(child_id.clone()),
                 target: CoordinatedThreadTarget::Agent {
                     agent_id: "researcher".into(),
@@ -1082,7 +1083,7 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
         .id;
     state.archive_session(&id).await.expect("archive");
     assert!(matches!(
-        repo.get(&id).await.unwrap().disposition,
+        repo.get(&SessionId::from(&id)).await.unwrap().disposition,
         SessionDisposition::Archived { .. }
     ));
 
@@ -1095,7 +1096,7 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
     await_session_tombstone(repo.as_ref(), &id).await;
     assert!(
         matches!(
-            repo.get(&id).await,
+            repo.get(&SessionId::from(&id)).await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "delete converges to tombstone"
@@ -1118,7 +1119,10 @@ async fn activation_failure_remains_deletable_after_projection_cache_loss() {
         .delete_session("sesn_failed_delete")
         .await
         .expect("delete failed Session after restart");
-    let pending = repo.get("sesn_failed_delete").await.unwrap();
+    let pending = repo
+        .get(&SessionId::from("sesn_failed_delete"))
+        .await
+        .unwrap();
     assert_eq!(
         pending.execution,
         SessionExecutionState::ActivationFailed,
@@ -1237,7 +1241,7 @@ async fn archive_session_rehydrates_after_process_restart() {
     assert!(ended.lock().unwrap().is_empty(), "E3");
     assert!(prepared.lock().unwrap().is_empty(), "E2");
     assert_eq!(
-        repo.get(&id).await.unwrap().execution,
+        repo.get(&SessionId::from(id)).await.unwrap().execution,
         SessionExecutionState::Terminated
     );
 }
@@ -1300,7 +1304,7 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
         "E2 never prepares a Runtime"
     );
     assert_eq!(
-        repo.get("sesn_retired_agent_cleanup")
+        repo.get(&SessionId::from("sesn_retired_agent_cleanup"))
             .await
             .unwrap()
             .execution,
@@ -1339,12 +1343,17 @@ async fn archive_persists_release_before_and_after_sandbox_teardown() {
         .unwrap()
         .id;
     assert_eq!(
-        repo.get(&id).await.unwrap().resources.activations[0].state,
+        repo.get(&SessionId::from(&id))
+            .await
+            .unwrap()
+            .resources
+            .activations[0]
+            .state,
         awaken_session_contract::ActivationState::Active
     );
 
     state.archive_session(&id).await.unwrap();
-    let durable = repo.get(&id).await.unwrap();
+    let durable = repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(durable.execution, SessionExecutionState::Terminated);
     assert_eq!(
         durable.resources.activations[0].state,
@@ -1468,7 +1477,7 @@ impl SessionRuntime for EndSessionFailer {
     }
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -1537,7 +1546,7 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
     );
     let durable = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let durable = repo.get(&id).await.unwrap();
+            let durable = repo.get(&SessionId::from(&id)).await.unwrap();
             if durable.resources.activations[0].state
                 == awaken_session_contract::ActivationState::Releasing
             {
@@ -1592,7 +1601,7 @@ async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
         .expect("the durable archive fence is independent from cleanup availability");
     assert_eq!(archived.status, SessionStatus::Terminated);
 
-    let durable = repo.get(&id).await.unwrap();
+    let durable = repo.get(&SessionId::from(id)).await.unwrap();
     assert!(matches!(
         durable.disposition,
         SessionDisposition::Archived { .. }
@@ -1653,7 +1662,7 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
     PersistedSession {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
-        session_id: id.to_string(),
+        session_id: SessionId::from(id),
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(
             awaken_session_contract::SessionBaseline::compile(

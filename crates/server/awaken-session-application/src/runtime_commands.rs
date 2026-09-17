@@ -272,12 +272,12 @@ impl SessionApplication {
     pub async fn session_execution_observation(
         &self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<SessionExecutionObservation, crate::SessionProjectionRecoveryError> {
         use awaken_runtime_contract::llm::ModelRequestObservation as RuntimeModelRequestObservation;
 
         let recovered = self
-            .read_session_projection(session_id, Some(workspace_id))
+            .read_session_projection(session_id.as_str(), Some(workspace_id))
             .await?
             .ok_or(crate::SessionProjectionRecoveryError::NotFound)?;
         let baseline = recovered.session.frozen_baseline().ok_or_else(|| {
@@ -287,7 +287,7 @@ impl SessionApplication {
         })?;
         let snapshot = self
             .runtime
-            .session_thread_recovery_snapshot(session_id, session_id)
+            .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await
             .map_err(crate::SessionProjectionRecoveryError::Rejected)?;
         let runs = snapshot
@@ -370,7 +370,7 @@ impl SessionApplication {
             .transpose()?
             .unwrap_or_default();
         Ok(SessionExecutionObservation {
-            session_id: recovered.session.session_id.clone(),
+            session_id: recovered.session.session_id.to_string(),
             session_revision: recovered.session.revision.0,
             agent_id: baseline.agent_id.clone(),
             agent_revision: baseline.agent_revision,
@@ -384,7 +384,7 @@ impl SessionApplication {
 
     pub async fn session(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<PersistedSession, SessionRepositoryError> {
         self.sessions_repo.get(session_id).await
     }
@@ -825,7 +825,7 @@ impl SessionApplication {
     /// command membership and final-prefix validation still request a fresh read.
     pub async fn coordinated_threads(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         self.runtime
@@ -838,7 +838,7 @@ impl SessionApplication {
     /// Session totals; the application does not cache or re-aggregate it.
     pub async fn session_thread_usage(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<SessionUsage, RunError> {
         self.runtime
@@ -851,7 +851,7 @@ impl SessionApplication {
     /// server/runtime boundary for protocol adapters.
     pub async fn subscribe_session_thread_live(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<Option<Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>, RunError>
     {
@@ -865,7 +865,7 @@ impl SessionApplication {
     /// the application owns no snapshot cache or reconstructed projection.
     pub async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
@@ -876,7 +876,7 @@ impl SessionApplication {
 
     pub async fn session_thread_disposition(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
         self.runtime
@@ -886,7 +886,7 @@ impl SessionApplication {
 
     pub async fn archive_session_thread(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<(), RunError> {
         let child = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
@@ -1054,7 +1054,11 @@ impl SessionApplication {
         let mut usage = self.runtime.session_usage(thread).await?;
         let links = match observed_links {
             Some(links) => std::borrow::Cow::Borrowed(links),
-            None => std::borrow::Cow::Owned(self.runtime.coordinated_threads(thread, None).await?),
+            None => std::borrow::Cow::Owned(
+                self.runtime
+                    .coordinated_threads(&awaken_session_contract::SessionId::from(thread), None)
+                    .await?,
+            ),
         };
         if links.iter().any(|link| link.session_id != thread) {
             return Err(RunError::internal(
@@ -1068,7 +1072,10 @@ impl SessionApplication {
             }
             let child = self
                 .runtime
-                .session_thread_usage(thread, &link.thread_id.0)
+                .session_thread_usage(
+                    &awaken_session_contract::SessionId::from(thread),
+                    &link.thread_id.0,
+                )
                 .await?;
             merge_session_usage(&mut usage, child);
         }
@@ -1077,13 +1084,16 @@ impl SessionApplication {
         {
             let current = self
                 .runtime
-                .session_thread_usage(thread, additional_thread)
+                .session_thread_usage(
+                    &awaken_session_contract::SessionId::from(thread),
+                    additional_thread,
+                )
                 .await?;
             merge_session_usage(&mut usage, current);
         }
         let session = self
             .session_repository()
-            .get(thread)
+            .get(&awaken_session_contract::SessionId::from(thread))
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         usage.active_seconds =

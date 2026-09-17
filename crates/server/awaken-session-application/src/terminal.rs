@@ -37,7 +37,7 @@ pub struct SessionRepositoryPublicationSelector {
 #[derive(Clone, Debug)]
 pub struct SessionArchiveWithRepositoryPublicationCommand {
     pub owner_scope: String,
-    pub session_id: String,
+    pub session_id: awaken_session_contract::SessionId,
     pub archived_at: String,
     pub lifecycle_fact: ManagedLifecycleFact,
     pub repository: SessionRepositoryPublicationSelector,
@@ -90,13 +90,13 @@ fn pending_event_batch_error() -> SessionPreparationError {
 /// Application code, not an edge adapter, derives the canonical lifecycle fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionDeleteCommand {
-    session_id: String,
+    session_id: awaken_session_contract::SessionId,
     requested_at_unix_s: i64,
 }
 
 impl SessionDeleteCommand {
     #[must_use]
-    pub fn new(session_id: impl Into<String>) -> Self {
+    pub fn new(session_id: impl Into<awaken_session_contract::SessionId>) -> Self {
         let requested_at_unix_s = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
@@ -257,7 +257,9 @@ impl SessionApplication {
             }
             let mut facts = session
                 .close_runtime_interval(now_unix_ms())
-                .map(|interval| runtime_interval_fact(&owner_scope, &command.session_id, interval))
+                .map(|interval| {
+                    runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
+                })
                 .into_iter()
                 .collect::<Vec<_>>();
             facts.push(command.lifecycle_fact.clone());
@@ -304,7 +306,7 @@ impl SessionApplication {
         }
         self.wake_lifecycle_supervisor();
         let pending_reason = self
-            .release_terminal_resources(&transition.owner_scope, &command.session_id)
+            .release_terminal_resources(&transition.owner_scope, command.session_id.as_str())
             .await
             .err()
             .map(|error| error.to_string());
@@ -326,7 +328,7 @@ impl SessionApplication {
         transition.session = durable.clone();
         if let Some(rejection) = durable
             .terminal_cleanup
-            .repository_publication_rejection(&command.session_id)
+            .repository_publication_rejection(command.session_id.as_str())
             .map_err(|_| SessionArchiveWithRepositoryPublicationError::Conflict)?
         {
             return Err(SessionArchiveWithRepositoryPublicationError::Rejected(
@@ -338,7 +340,7 @@ impl SessionApplication {
         }
         let publication_receipt = durable
             .terminal_cleanup
-            .repository_publication_receipt(&command.session_id)
+            .repository_publication_receipt(command.session_id.as_str())
             .map_err(|_| SessionArchiveWithRepositoryPublicationError::Conflict)?
             .cloned()
             .ok_or_else(|| {
@@ -365,7 +367,10 @@ impl SessionApplication {
             return Ok(());
         };
         self.environments
-            .retire_session_work(&baseline.environment.environment_id, &session.session_id)
+            .retire_session_work(
+                &baseline.environment.environment_id,
+                session.session_id.as_str(),
+            )
             .await
             .map(|_| ())
             .map_err(|error| {
@@ -390,7 +395,7 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         self.terminate_session_with_admission(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             archived_at,
             fact,
             ArchiveAdmission::IdleOnly,
@@ -412,7 +417,7 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         self.terminate_session_with_admission(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             archived_at,
             fact,
             ArchiveAdmission::ForceTerminal,
@@ -433,7 +438,7 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         self.terminate_session_with_admission(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             archived_at,
             fact,
             ArchiveAdmission::TerminalOnly,
@@ -444,7 +449,7 @@ impl SessionApplication {
 
     async fn terminate_session_with_admission(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         archived_at: &str,
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
@@ -464,7 +469,7 @@ impl SessionApplication {
         // only shortens convergence when the current projector is available.
         self.wake_lifecycle_supervisor();
         let cleanup = self
-            .release_terminal_resources(&transition.owner_scope, session_id)
+            .release_terminal_resources(&transition.owner_scope, session_id.as_str())
             .await;
         match (cleanup_completion, cleanup) {
             (ArchiveCleanupCompletion::Required, Ok(Some(session))) => {
@@ -482,7 +487,7 @@ impl SessionApplication {
             (ArchiveCleanupCompletion::Required, Err(error)) => return Err(error),
             (ArchiveCleanupCompletion::Recoverable, Err(error)) => {
                 tracing::warn!(
-                    session = session_id,
+                    session = session_id.as_str(),
                     error = ?error,
                     "Session archive cleanup remains pending for lifecycle recovery"
                 );
@@ -508,11 +513,11 @@ impl SessionApplication {
         let session_id = transition.session.session_id.clone();
         tokio::spawn(async move {
             if let Err(error) = application
-                .release_terminal_resources(&owner_scope, &session_id)
+                .release_terminal_resources(&owner_scope, session_id.as_str())
                 .await
             {
                 tracing::warn!(
-                    session = session_id,
+                    session = session_id.as_str(),
                     error = ?error,
                     "Session delete cleanup remains pending for lifecycle recovery"
                 );
@@ -527,7 +532,7 @@ impl SessionApplication {
     /// An exact Archived replay is absorbing and precedes admission validation.
     async fn commit_archive(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         archived_at: &str,
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
@@ -613,7 +618,7 @@ impl SessionApplication {
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
             let mut facts = session
                 .close_runtime_interval(now_unix_ms())
-                .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
+                .map(|interval| runtime_interval_fact(&owner_scope, session_id.as_str(), interval))
                 .into_iter()
                 .collect::<Vec<_>>();
             facts.push(fact.clone());
@@ -649,10 +654,13 @@ impl SessionApplication {
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         let session_id = command.session_id.as_str();
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
+            let owner_scope = self
+                .owner(&awaken_session_contract::SessionId::from(session_id))
+                .await
+                .map_err(mutation_failure)?;
             let mut session = self
                 .session_repository()
-                .get(session_id)
+                .get(&awaken_session_contract::SessionId::from(session_id))
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_failure)?;

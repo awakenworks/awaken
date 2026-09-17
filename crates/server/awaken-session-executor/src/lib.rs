@@ -324,7 +324,7 @@ impl SessionRuntime for ManagedHost {
         use awaken_dispatch::DispatchQueue as _;
 
         let session_id = command.session_id.clone();
-        if command.session_id.trim().is_empty()
+        if command.session_id.as_str().trim().is_empty()
             || command.agent_id.trim().is_empty()
             || command.operation_id.trim().is_empty()
             || command.run_id.0.trim().is_empty()
@@ -340,11 +340,11 @@ impl SessionRuntime for ManagedHost {
         let command_fingerprint =
             awaken_session_contract::SessionRunCommandFingerprint::current(&command);
         let input = command.messages.clone();
-        self.validate_thread_resource_bindings(&command.session_id)
+        self.validate_thread_resource_bindings(command.session_id.as_str())
             .await?;
         let ctx = self
             .host
-            .ctx_for_session_coordination(&command.session_id, Some(&command.agent_id))
+            .ctx_for_session_coordination(command.session_id.as_str(), Some(&command.agent_id))
             .await
             .map_err(to_run_error)?;
         let reservation_context_is_ephemeral = ctx.is_coordination_envelope();
@@ -352,7 +352,7 @@ impl SessionRuntime for ManagedHost {
             let input = match &ctx.skill_registry {
                 Some(registry) => awaken_ext_skills::expand_slash_commands(
                     registry.as_ref(),
-                    &command.session_id,
+                    command.session_id.as_str(),
                     input,
                 )
                 .map_err(RunError::internal)?,
@@ -360,7 +360,7 @@ impl SessionRuntime for ManagedHost {
             };
             let (_, mut activation) =
                 ctx.runtime
-                    .prepare(&ctx.config, command.session_id.clone(), input);
+                    .prepare(&ctx.config, command.session_id.to_string(), input);
             activation.run_id = command.run_id;
             // Application requirements may only narrow the Session-owned tool
             // authority; they cannot restore a capability removed by the
@@ -371,7 +371,7 @@ impl SessionRuntime for ManagedHost {
             activation.model_ref_override = self
                 .host
                 .inference_routing
-                .override_for(&command.session_id);
+                .override_for(command.session_id.as_str());
             activation.data_subject_id = command
                 .data_subject_id
                 .map(awaken_runtime_contract::DataSubjectId);
@@ -436,7 +436,9 @@ impl SessionRuntime for ManagedHost {
         }
         .await;
         if reservation_context_is_ephemeral {
-            self.host.evict_session_for_rebuild(&session_id).await;
+            self.host
+                .evict_session_for_rebuild(session_id.as_str())
+                .await;
         }
         reservation
     }
@@ -467,12 +469,12 @@ impl SessionRuntime for ManagedHost {
 
     async fn session_run_state(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
         let commit = self
             .host
-            .commit_for_read(session_id)
+            .commit_for_read(session_id.as_str())
             .await
             .map_err(to_run_error)?;
         commit
@@ -498,18 +500,18 @@ impl SessionRuntime for ManagedHost {
 
     async fn coordinated_threads(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         self.host
-            .coordinated_threads(session_id, observed_root)
+            .coordinated_threads(session_id.as_str(), observed_root)
             .await
             .map_err(to_run_error)
     }
 
     async fn subscribe_session_thread_live(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<Option<Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>, RunError>
     {
@@ -518,7 +520,7 @@ impl SessionRuntime for ManagedHost {
         }
         let links = self
             .host
-            .coordinated_threads(session_id, None)
+            .coordinated_threads(session_id.as_str(), None)
             .await
             .map_err(to_run_error)?;
         if !links
@@ -534,12 +536,12 @@ impl SessionRuntime for ManagedHost {
 
     async fn session_thread_disposition(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
         self.host
             .session_thread_disposition(
-                session_id,
+                session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             )
             .await
@@ -548,12 +550,12 @@ impl SessionRuntime for ManagedHost {
 
     async fn archive_session_thread(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<(), RunError> {
         self.host
             .archive_session_thread(
-                session_id,
+                session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             )
             .await
@@ -572,11 +574,11 @@ impl SessionRuntime for ManagedHost {
 
     async fn interrupt_session_thread(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), RunError> {
         self.host
-            .interrupt_session_thread(session_id, child_thread_id)
+            .interrupt_session_thread(session_id.as_str(), child_thread_id)
             .await
             .map_err(to_run_error)
     }
@@ -625,10 +627,10 @@ impl SessionRuntime for ManagedHost {
 
     async fn session_budget_resume_tickets(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<Vec<awaken_session_contract::SessionBudgetResumeTicket>, RunError> {
         self.host
-            .session_budget_resume_tickets(session_id)
+            .session_budget_resume_tickets(session_id.as_str())
             .await
             .map_err(to_run_error)
     }
@@ -691,11 +693,11 @@ impl SessionRuntime for ManagedHost {
 
     async fn acknowledge_completed_terminal_cleanup(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) {
         self.host
-            .acknowledge_completed_terminal_cleanup(session_id, lease)
+            .acknowledge_completed_terminal_cleanup(session_id.as_str(), lease)
             .await;
     }
 
@@ -1140,13 +1142,13 @@ impl SessionRuntime for ManagedHost {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
         self.host
             .session_thread_recovery_snapshot(
-                session_id,
+                session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             )
             .await
@@ -1165,7 +1167,7 @@ impl SessionRuntime for ManagedHost {
 
     async fn session_thread_run_recovery_snapshot(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
@@ -1173,7 +1175,7 @@ impl SessionRuntime for ManagedHost {
         let snapshot = self
             .host
             .session_thread_run_recovery_snapshot(
-                session_id,
+                session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
                 run_id,
             )
@@ -1188,12 +1190,12 @@ impl SessionRuntime for ManagedHost {
 
     async fn session_thread_usage(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.host
             .session_thread_usage(
-                session_id,
+                session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             )
             .await
