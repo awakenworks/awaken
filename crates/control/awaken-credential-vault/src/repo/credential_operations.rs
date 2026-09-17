@@ -475,6 +475,8 @@ fn prepare_managed_credential_create(
         auth: command.auth,
         metadata: command.metadata,
         display_name: command.display_name,
+        updated_at: command.created_at.clone(),
+        created_at: command.created_at,
         revision: 1,
         lifecycle: ManagedCredentialLifecycle::Active,
     };
@@ -504,7 +506,7 @@ async fn published_managed_credential_replay(
         )
         .into());
     }
-    if credential != expected.after_credential {
+    if !credential.same_logical_content(&expected.after_credential) {
         return Err(CredentialError::MutationConflict(
             "Managed credential Idempotency-Key was reused with different child content".into(),
         )
@@ -900,14 +902,19 @@ fn prepare_managed_source_update(
 /// consistency transition. The caller supplies only the already-mapped
 /// secret-free projection; this service owns both revision fences and material
 /// recovery.
+///
+/// `at` is the RFC 3339 instant of this mutation and becomes the child's
+/// `updated_at`; `created_at` is carried from `before_credential` unchanged.
 pub async fn update_managed_credential(
     before_credential: ManagedVaultCredential,
     mut after_credential: ManagedVaultCredential,
     material_patch: CredentialMaterialPatch,
     advance_source_without_material: bool,
+    at: String,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
 ) -> Result<ManagedVaultCredential, ManagedCredentialMutationError> {
+    after_credential.updated_at = at;
     let before_source = repo.get(&before_credential.source_id).await?;
     let (after_source, materials) = prepare_managed_source_update(
         &before_source,
@@ -938,14 +945,18 @@ pub async fn update_managed_credential(
 /// Publish a caller-prepared hosted bearer rotation through the same Managed
 /// pair transaction. The preparation owns idempotency-specific material refs;
 /// this command still owns child revision, recovery, outbox, and cleanup.
+/// `at` becomes the child's `updated_at`, exactly as for
+/// [`update_managed_credential`].
 pub async fn update_managed_credential_prepared(
     before_credential: ManagedVaultCredential,
     mut after_credential: ManagedVaultCredential,
     before_source: CredentialSource,
     rotation: PreparedApplicationMcpBearerRotation,
+    at: String,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
 ) -> Result<(CredentialSource, ManagedVaultCredential), ManagedCredentialMutationError> {
+    after_credential.updated_at = at;
     if before_credential.source_id != before_source.id
         || rotation.after_source.id != before_source.id
         || rotation.after_source.version != before_source.version.saturating_add(1)
@@ -978,7 +989,8 @@ pub async fn update_managed_credential_prepared(
 
 /// Archive or tombstone a Managed child together with the exact Source. Delete
 /// is a logical absorbing transition; physical purge is intentionally outside
-/// the command so an older writer can never recreate the child.
+/// the command so an older writer can never recreate the child. `at` is the
+/// RFC 3339 transition instant and also becomes the child's `updated_at`.
 pub async fn retire_managed_credential(
     workspace_id: &str,
     vault_id: &str,
@@ -1032,6 +1044,7 @@ pub async fn retire_managed_credential(
         .revision
         .checked_add(1)
         .ok_or(ManagedCredentialMutationError::RevisionExhausted)?;
+    after_credential.updated_at.clone_from(&at);
     after_credential.lifecycle = match operation {
         ManagedCredentialOperation::Archive => ManagedCredentialLifecycle::Archived { at },
         ManagedCredentialOperation::Delete => ManagedCredentialLifecycle::Deleted { at },

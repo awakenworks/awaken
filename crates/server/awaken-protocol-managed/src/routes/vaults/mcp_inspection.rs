@@ -1,4 +1,5 @@
-//! Config-page credential choices and inspection over the existing Vault owner.
+//! Config-page credential choices, MCP inspection, and the
+//! `mcp_oauth_validate` route over the existing Vault owner.
 use super::*;
 use awaken_credential_vault::{CredentialError, CredentialStatus};
 use awaken_runtime_contract::CredentialRef;
@@ -107,6 +108,66 @@ impl VaultState {
         url: &str,
         credential_id: Option<&str>,
     ) -> Result<McpInspectionView, CredentialError> {
+        let (choice, inspection) = self
+            .run_mcp_inspection(workspace, url, credential_id)
+            .await?;
+        let (status, http_status) = match inspection.status {
+            McpProbeStatus::Valid => ("valid", None),
+            McpProbeStatus::Invalid { http_status } => ("invalid", Some(http_status)),
+            McpProbeStatus::Unknown => ("unknown", None),
+        };
+        let checked_at = self.now_rfc3339()?;
+        Ok(McpInspectionView {
+            status,
+            http_status,
+            tools: inspection.tools,
+            credential: choice,
+            location: "control",
+            checked_at,
+        })
+    }
+
+    /// The credential-validation view of one probe: verdict, discovered tools
+    /// and the failing step, all scrubbed of the credential's own material.
+    pub(crate) async fn inspect_mcp_evidence(
+        &self,
+        workspace: &str,
+        url: &str,
+        credential_id: &str,
+    ) -> Result<awaken_session_contract::McpInspection, CredentialError> {
+        Ok(self
+            .run_mcp_inspection(workspace, url, Some(credential_id))
+            .await?
+            .1)
+    }
+
+    /// Run one exact refresh-token exchange for the credential's current
+    /// revision. `None` when the persisted row cannot compile an exact
+    /// instruction, so no exchange was attempted.
+    pub(crate) async fn exchange_refresh(
+        &self,
+        exchange: &dyn awaken_session_contract::CredentialRefreshExchange,
+        source_id: &CredentialSourceId,
+        config: awaken_credential_vault::catalog::ManagedMcpOauthRefresh,
+    ) -> Option<awaken_session_contract::RefreshExchangeOutcome> {
+        let source = self.repository.get(source_id).await.ok()?;
+        let revision = u64::try_from(source.version).ok()?;
+        let access = oauth_refresh_access(&source, revision, config).ok()?;
+        Some(exchange.exchange(source.id.clone(), access).await)
+    }
+
+    async fn run_mcp_inspection(
+        &self,
+        workspace: &str,
+        url: &str,
+        credential_id: Option<&str>,
+    ) -> Result<
+        (
+            Option<McpCredentialChoice>,
+            awaken_session_contract::McpInspection,
+        ),
+        CredentialError,
+    > {
         awaken_session_contract::McpTarget::parse_http(url)
             .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
         let choice = if let Some(id) = credential_id {
@@ -164,6 +225,7 @@ impl VaultState {
             None => awaken_session_contract::McpInspection {
                 status: McpProbeStatus::Unknown,
                 tools: Vec::new(),
+                failure: None,
             },
         };
         if let Some(secret) = bearer.as_ref().map(RedactedString::expose_secret) {
@@ -175,26 +237,157 @@ impl VaultState {
                     .map(|text| text.replace(secret, "[REDACTED]"));
                 redact_probe_value(&mut tool.input_schema, secret);
             }
+            // The port already scrubs its own bearer; the owner of the
+            // material does not rely on that.
+            if let Some(response) = inspection
+                .failure
+                .as_mut()
+                .and_then(|failure| failure.http_response.as_mut())
+            {
+                response.body = response.body.replace(secret, "[REDACTED]");
+            }
         }
-        let (status, http_status) = match inspection.status {
-            McpProbeStatus::Valid => ("valid", None),
-            McpProbeStatus::Invalid { http_status } => ("invalid", Some(http_status)),
-            McpProbeStatus::Unknown => ("unknown", None),
-        };
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| CredentialError::Storage(e.to_string()))?
-            .as_millis();
-        let millis = u64::try_from(millis).map_err(|e| CredentialError::Storage(e.to_string()))?;
-        Ok(McpInspectionView {
-            status,
-            http_status,
-            tools: inspection.tools,
-            credential: choice,
-            location: "control",
-            checked_at: awaken_session_contract::epoch_millis_to_rfc3339(millis),
-        })
+        Ok((choice, inspection))
     }
+}
+
+/// Compile the exact OAuth refresh/reseal instruction for one credential
+/// revision from its persisted refresh configuration and sealed material refs.
+pub(super) fn oauth_refresh_access(
+    source: &awaken_credential_vault::CredentialSource,
+    revision: u64,
+    refresh: McpOauthRefreshRecord,
+) -> Result<
+    awaken_credential_contract::CredentialRefreshAccess,
+    awaken_credential_vault::CredentialError,
+> {
+    let source_id = &source.id;
+    let access_token_ref = source
+        .material_ref
+        .as_ref()
+        .ok_or_else(|| {
+            awaken_credential_vault::CredentialError::MissingMaterialRef(source_id.0.clone())
+        })?
+        .0
+        .clone();
+    let refresh_token_ref = source
+        .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
+        .ok_or_else(|| {
+            awaken_credential_vault::CredentialError::MissingMaterialRef(format!(
+                "{}:{OAUTH_REFRESH_TOKEN_SLOT}",
+                source_id.0
+            ))
+        })?
+        .0
+        .clone();
+    let client_secret_ref = match refresh.token_endpoint_auth {
+        awaken_credential_contract::TokenEndpointAuth::None => None,
+        awaken_credential_contract::TokenEndpointAuth::ClientSecretBasic
+        | awaken_credential_contract::TokenEndpointAuth::ClientSecretPost => Some(
+            source
+                .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
+                .ok_or_else(|| {
+                    awaken_credential_vault::CredentialError::MissingMaterialRef(format!(
+                        "{}:{OAUTH_CLIENT_SECRET_SLOT}",
+                        source_id.0
+                    ))
+                })?
+                .0
+                .clone(),
+        ),
+    };
+    Ok(awaken_credential_contract::CredentialRefreshAccess::new(
+        revision,
+        refresh.token_endpoint,
+        refresh.client_id,
+        refresh.token_endpoint_auth,
+        client_secret_ref,
+        refresh_token_ref,
+        access_token_ref,
+        refresh.scope,
+        refresh.resource,
+    ))
+}
+
+pub(super) async fn validate_credential(
+    State(state): State<Arc<VaultState>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
+    Path((vault_id, id)): Path<(String, String)>,
+) -> Result<Json<CredentialValidation>, WireError> {
+    let record = state
+        .repository
+        .get_vault_credential(&workspace_id, &id)
+        .await
+        .map_err(storage_error)?
+        .filter(|c| c.vault_id == vault_id && c.lifecycle.is_active())
+        .ok_or_else(|| not_found("credential"))?;
+    let (mcp_server_url, refresh_config) = match &record.auth {
+        AuthRecord::McpOauth {
+            mcp_server_url,
+            refresh,
+            ..
+        } => (Some(mcp_server_url.clone()), refresh.clone()),
+        _ => (None, None),
+    };
+    let has_refresh_token = refresh_config.is_some();
+    // Live probe: only an `mcp_oauth` credential (it names an MCP server to
+    // handshake with) and only when the process startup wired an `McpProbe`.
+    // The access token is materialized inside `inspect_mcp` and the port
+    // receives the resolved secret — never a vault ref. Any gap — no probe,
+    // env-var/static_bearer, a broken row, an inconclusive probe — keeps
+    // `status` `unknown`: never a false verdict. `mcp_probe` is the failing
+    // step with its scrubbed HTTP response, `null` when the probe completed.
+    let mut status = CredentialValidationStatus::Unknown;
+    let mut mcp_probe = None;
+    let mut refresh = None;
+    if let Some(url) = &mcp_server_url
+        && let Ok(mut evidence) = state.inspect_mcp_evidence(&workspace_id, url, &id).await
+    {
+        // An auth-refused access token is where a refresh token matters:
+        // without one the outcome is `no_refresh_token`; with one and a wired
+        // exchange, the exact exchange runs, reseals, and the probe repeats
+        // against the resealed token.
+        if matches!(evidence.status, McpProbeStatus::Invalid { .. }) {
+            match refresh_config {
+                None => refresh = Some(CredentialRefreshResult::no_refresh_token()),
+                Some(config) => {
+                    if let Some(exchange) = &state.refresh_exchange
+                        && let Some(outcome) = state
+                            .exchange_refresh(exchange.as_ref(), &record.source_id, config)
+                            .await
+                    {
+                        let succeeded = outcome.status
+                            == awaken_session_contract::RefreshExchangeStatus::Succeeded;
+                        refresh = Some(CredentialRefreshResult::from(outcome));
+                        if succeeded
+                            && let Ok(after) =
+                                state.inspect_mcp_evidence(&workspace_id, url, &id).await
+                        {
+                            evidence = after;
+                        }
+                    }
+                }
+            }
+        }
+        match evidence.status {
+            McpProbeStatus::Valid => status = CredentialValidationStatus::Valid,
+            McpProbeStatus::Invalid { .. } => status = CredentialValidationStatus::Invalid,
+            McpProbeStatus::Unknown => {}
+        }
+        mcp_probe = evidence.failure.map(CredentialMcpProbe::from);
+    }
+    // The validation is performed now: stamp the instant its verdict settled.
+    let validated_at = state.now_rfc3339().map_err(storage_error)?;
+    Ok(Json(CredentialValidation {
+        credential_id: id,
+        has_refresh_token,
+        mcp_probe,
+        refresh,
+        status,
+        object_type: "vault_credential_validation",
+        validated_at,
+        vault_id,
+    }))
 }
 
 fn redact_probe_value(value: &mut serde_json::Value, secret: &str) {

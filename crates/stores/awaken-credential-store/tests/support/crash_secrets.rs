@@ -101,6 +101,8 @@ pub async fn published_retirement(
                     workspace_id: source.workspace_id.clone(),
                     display_name: "Crash retirement".into(),
                     metadata: Default::default(),
+                    created_at: "2026-09-17T00:00:00Z".into(),
+                    updated_at: "2026-09-17T00:00:00Z".into(),
                     archived_at: None,
                     deletion: None,
                     revision: 1,

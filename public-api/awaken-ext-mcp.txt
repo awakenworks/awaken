@@ -86,8 +86,20 @@ pub fn awaken_ext_mcp::http::HttpTransportBuilder::credential(self, awaken_crede
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::header(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::refresher(self, alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::request_trace(self, alloc::sync::Arc<awaken_ext_mcp::http::McpRequestTrace>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::sampling(self, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::tool_call_timeout(self, core::time::Duration) -> Self
+pub struct awaken_ext_mcp::http::McpHttpFailure
+pub awaken_ext_mcp::http::McpHttpFailure::body: alloc::string::String
+pub awaken_ext_mcp::http::McpHttpFailure::body_truncated: bool
+pub awaken_ext_mcp::http::McpHttpFailure::content_type: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::http::McpHttpFailure::status: u16
+pub struct awaken_ext_mcp::http::McpRequestTrace
+impl awaken_ext_mcp::http::McpRequestTrace
+pub fn awaken_ext_mcp::http::McpRequestTrace::last_failure(&self) -> core::option::Option<awaken_ext_mcp::http::McpHttpFailure>
+pub fn awaken_ext_mcp::http::McpRequestTrace::last_method(&self) -> core::option::Option<alloc::string::String>
+pub fn awaken_ext_mcp::http::McpRequestTrace::new() -> Self
+pub const awaken_ext_mcp::http::HTTP_FAILURE_BODY_LIMIT: usize
 pub mod awaken_ext_mcp::id_mapping
 pub fn awaken_ext_mcp::id_mapping::to_tool_id(&str, &str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::id_mapping::tool_namespace(&str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
@@ -374,12 +386,18 @@ pub fn awaken_ext_mcp::http::HttpTransportBuilder::credential(self, awaken_crede
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::header(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::refresher(self, alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::request_trace(self, alloc::sync::Arc<awaken_ext_mcp::http::McpRequestTrace>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::sampling(self, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
 pub fn awaken_ext_mcp::http::HttpTransportBuilder::tool_call_timeout(self, core::time::Duration) -> Self
 pub struct awaken_ext_mcp::McpConnection
 pub awaken_ext_mcp::McpConnection::descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_ext_mcp::McpConnection::server_name: alloc::string::String
 pub awaken_ext_mcp::McpConnection::tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
+pub struct awaken_ext_mcp::McpHttpFailure
+pub awaken_ext_mcp::McpHttpFailure::body: alloc::string::String
+pub awaken_ext_mcp::McpHttpFailure::body_truncated: bool
+pub awaken_ext_mcp::McpHttpFailure::content_type: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::McpHttpFailure::status: u16
 pub struct awaken_ext_mcp::McpManager
 impl awaken_ext_mcp::manager::McpManager
 pub fn awaken_ext_mcp::manager::McpManager::add(&mut self, awaken_ext_mcp::plugin::McpServer) -> core::result::Result<(), awaken_ext_mcp::error::McpError>
@@ -420,6 +438,11 @@ pub fn awaken_ext_mcp::tool::McpRawTool::id(&self) -> &str
 pub fn awaken_ext_mcp::tool::McpRawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_mcp::tool::McpRawTool::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_mcp::tool::McpRawTool::start_task<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_ext_mcp::McpRequestTrace
+impl awaken_ext_mcp::http::McpRequestTrace
+pub fn awaken_ext_mcp::http::McpRequestTrace::last_failure(&self) -> core::option::Option<awaken_ext_mcp::http::McpHttpFailure>
+pub fn awaken_ext_mcp::http::McpRequestTrace::last_method(&self) -> core::option::Option<alloc::string::String>
+pub fn awaken_ext_mcp::http::McpRequestTrace::new() -> Self
 pub struct awaken_ext_mcp::McpResourceDefinition
 pub awaken_ext_mcp::McpResourceDefinition::description: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::McpResourceDefinition::mime_type: core::option::Option<alloc::string::String>
@@ -485,6 +508,7 @@ pub fn awaken_ext_mcp::stdio::StdioTransport::set_notification_handler(&self, al
 pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_cancel(&self) -> bool
 pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_tools_call(&self) -> bool
 pub const awaken_ext_mcp::DEFAULT_TIMEOUT: core::time::Duration
+pub const awaken_ext_mcp::HTTP_FAILURE_BODY_LIMIT: usize
 pub const awaken_ext_mcp::MCP_TASK_OWNER: &str
 pub const awaken_ext_mcp::REDACTED: &str
 pub trait awaken_ext_mcp::McpToolTransport: core::marker::Send + core::marker::Sync

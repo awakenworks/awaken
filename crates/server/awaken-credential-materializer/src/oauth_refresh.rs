@@ -14,6 +14,9 @@ use awaken_credential_vault::{
     CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
+use awaken_session_contract::{
+    CredentialRefreshExchange, ProbeHttpResponse, RefreshExchangeOutcome, RefreshExchangeStatus,
+};
 use base64::Engine as _;
 
 pub struct VaultRefreshFactory {
@@ -130,18 +133,55 @@ fn http_client_for(url: &str) -> reqwest::Client {
     builder.build().expect("build OAuth HTTP client")
 }
 
-#[async_trait::async_trait]
-impl CredentialRefresher for VaultRefresher {
-    async fn refresh(&self, _challenge: &AuthChallenge) -> Option<Credential> {
+/// What one exact exchange did: the reportable outcome plus, on success, the
+/// resealed bearer the transport retries with.
+struct ExchangeReport {
+    outcome: RefreshExchangeOutcome,
+    bearer: Option<String>,
+}
+
+impl ExchangeReport {
+    fn failed(http_response: Option<ProbeHttpResponse>) -> Self {
+        Self {
+            outcome: RefreshExchangeOutcome {
+                status: RefreshExchangeStatus::Failed,
+                http_response,
+            },
+            bearer: None,
+        }
+    }
+
+    fn connect_error() -> Self {
+        Self {
+            outcome: RefreshExchangeOutcome {
+                status: RefreshExchangeStatus::ConnectError,
+                http_response: None,
+            },
+            bearer: None,
+        }
+    }
+}
+
+impl VaultRefresher {
+    /// Run one exact refresh-token exchange for the pinned revision, reseal the
+    /// issued token on success, and report how it went. The token endpoint's
+    /// response is reported scrubbed of every token and client secret.
+    pub async fn exchange(&self) -> RefreshExchangeOutcome {
+        self.run_exchange().await.outcome
+    }
+
+    async fn run_exchange(&self) -> ExchangeReport {
         let mut access = self.access.lock().await;
         if !access.has_valid_client_authentication_binding()
             || !access.has_valid_configuration_fingerprint()
         {
-            return None;
+            return ExchangeReport::failed(None);
         }
-        let source = self.credentials.get(&self.credential_id).await.ok()?;
+        let Ok(source) = self.credentials.get(&self.credential_id).await else {
+            return ExchangeReport::failed(None);
+        };
         if source.status != CredentialStatus::Active
-            || u64::try_from(source.version).ok()? != access.credential_revision
+            || u64::try_from(source.version).ok() != Some(access.credential_revision)
             || source.material_ref.as_ref().map(|reference| &reference.0)
                 != Some(&access.access_token_ref)
             || source
@@ -153,20 +193,25 @@ impl CredentialRefresher for VaultRefresher {
                     .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
                     .map(|reference| &reference.0)
         {
-            return None;
+            return ExchangeReport::failed(None);
         }
-        let refresh_token = self
+        let Ok(refresh_token) = self
             .secrets
             .get(&SecretRef(access.refresh_token_ref.clone()))
             .await
-            .ok()?;
+        else {
+            return ExchangeReport::failed(None);
+        };
         let client_secret = match access.token_endpoint_auth {
-            TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost => Some(
-                self.secrets
-                    .get(&SecretRef(access.client_secret_ref.as_ref()?.clone()))
-                    .await
-                    .ok()?,
-            ),
+            TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost => {
+                let Some(reference) = access.client_secret_ref.as_ref() else {
+                    return ExchangeReport::failed(None);
+                };
+                let Ok(secret) = self.secrets.get(&SecretRef(reference.clone())).await else {
+                    return ExchangeReport::failed(None);
+                };
+                Some(secret)
+            }
             TokenEndpointAuth::None => None,
         };
         let mut form = vec![
@@ -174,17 +219,20 @@ impl CredentialRefresher for VaultRefresher {
             ("refresh_token", refresh_token.expose_secret()),
         ];
         let mut request = self.http.post(&access.token_endpoint);
-        match access.token_endpoint_auth {
-            TokenEndpointAuth::None => form.push(("client_id", access.client_id.as_str())),
-            TokenEndpointAuth::ClientSecretBasic => {
+        match (access.token_endpoint_auth, client_secret.as_ref()) {
+            (TokenEndpointAuth::None, _) => form.push(("client_id", access.client_id.as_str())),
+            (TokenEndpointAuth::ClientSecretBasic, Some(secret)) => {
                 request = request.header(
                     reqwest::header::AUTHORIZATION,
-                    basic_client_auth(&access.client_id, client_secret.as_ref()?.expose_secret()),
+                    basic_client_auth(&access.client_id, secret.expose_secret()),
                 );
             }
-            TokenEndpointAuth::ClientSecretPost => {
+            (TokenEndpointAuth::ClientSecretPost, Some(secret)) => {
                 form.push(("client_id", access.client_id.as_str()));
-                form.push(("client_secret", client_secret.as_ref()?.expose_secret()));
+                form.push(("client_secret", secret.expose_secret()));
+            }
+            (TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost, None) => {
+                return ExchangeReport::failed(None);
             }
         }
         if let Some(scope) = &access.scope {
@@ -193,22 +241,57 @@ impl CredentialRefresher for VaultRefresher {
         if let Some(resource) = &access.resource {
             form.push(("resource", resource.as_str()));
         }
-        let response = request.form(&form).send().await.ok()?;
-        if !response.status().is_success() {
-            return None;
+        let Ok(response) = request.form(&form).send().await else {
+            return ExchangeReport::connect_error();
+        };
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let Ok(bytes) = response.bytes().await else {
+            return ExchangeReport::connect_error();
+        };
+        let body: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
+        let issued = |field: &str| {
+            body.as_ref()
+                .and_then(|value| value.get(field))
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        };
+        let access_token = issued("access_token");
+        let rotated_refresh_token = issued("refresh_token");
+        let mut scrub: Vec<&str> = vec![refresh_token.expose_secret()];
+        scrub.extend(client_secret.as_ref().map(RedactedString::expose_secret));
+        scrub.extend(access_token.as_deref());
+        scrub.extend(rotated_refresh_token.as_deref());
+        let http_response = ProbeHttpResponse::scrubbed(
+            status.as_u16(),
+            content_type.as_deref(),
+            &String::from_utf8_lossy(&bytes),
+            false,
+            &scrub,
+        );
+        if !status.is_success() {
+            return ExchangeReport::failed(Some(http_response));
         }
-        let body: serde_json::Value = response.json().await.ok()?;
-        let access_token = body.get("access_token")?.as_str()?.to_owned();
+        let Some(access_token) = access_token else {
+            return ExchangeReport::failed(Some(http_response));
+        };
         let mut auxiliary = BTreeMap::new();
-        if let Some(rotated) = body.get("refresh_token").and_then(|value| value.as_str()) {
+        if let Some(rotated) = rotated_refresh_token {
             auxiliary.insert(
                 OAUTH_REFRESH_TOKEN_SLOT.to_owned(),
-                Some(RedactedString::new(rotated.to_owned())),
+                Some(RedactedString::new(rotated)),
             );
         }
-        let rotated = rotate_credential_materials_exact(
+        let Ok(expected_version) = i64::try_from(access.credential_revision) else {
+            return ExchangeReport::failed(Some(http_response));
+        };
+        let Ok(rotated) = rotate_credential_materials_exact(
             &self.credential_id,
-            i64::try_from(access.credential_revision).ok()?,
+            expected_version,
             CredentialMaterialPatch {
                 primary: Some(RedactedString::new(access_token.clone())),
                 auxiliary,
@@ -218,24 +301,61 @@ impl CredentialRefresher for VaultRefresher {
             self.credentials.as_ref(),
         )
         .await
-        .ok()?;
+        else {
+            return ExchangeReport::failed(Some(http_response));
+        };
+        let (Ok(revision), Some(refresh_ref), Some(access_ref)) = (
+            u64::try_from(rotated.version),
+            rotated.auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT),
+            rotated.material_ref.as_ref(),
+        ) else {
+            return ExchangeReport::failed(Some(http_response));
+        };
         *access = CredentialRefreshAccess::new(
-            u64::try_from(rotated.version).ok()?,
+            revision,
             access.token_endpoint.clone(),
             access.client_id.clone(),
             access.token_endpoint_auth,
             rotated
                 .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
                 .map(|reference| reference.0.clone()),
-            rotated
-                .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)?
-                .0
-                .clone(),
-            rotated.material_ref.as_ref()?.0.clone(),
+            refresh_ref.0.clone(),
+            access_ref.0.clone(),
             access.scope.clone(),
             access.resource.clone(),
         );
-        Some(Credential::Bearer(access_token))
+        ExchangeReport {
+            outcome: RefreshExchangeOutcome {
+                status: RefreshExchangeStatus::Succeeded,
+                http_response: Some(http_response),
+            },
+            bearer: Some(access_token),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialRefresher for VaultRefresher {
+    async fn refresh(&self, _challenge: &AuthChallenge) -> Option<Credential> {
+        self.run_exchange().await.bearer.map(Credential::Bearer)
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialRefreshExchange for VaultRefreshFactory {
+    async fn exchange(
+        &self,
+        credential_id: CredentialSourceId,
+        access: CredentialRefreshAccess,
+    ) -> RefreshExchangeOutcome {
+        VaultRefresher::new(
+            credential_id,
+            access,
+            self.credentials.clone(),
+            self.secrets.clone(),
+        )
+        .exchange()
+        .await
     }
 }
 

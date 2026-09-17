@@ -1274,6 +1274,11 @@ pub enum awaken_protocol_managed::types::vault::CredentialNetworking
 pub awaken_protocol_managed::types::vault::CredentialNetworking::Limited
 pub awaken_protocol_managed::types::vault::CredentialNetworking::Limited::allowed_hosts: alloc::vec::Vec<alloc::string::String>
 pub awaken_protocol_managed::types::vault::CredentialNetworking::Unrestricted
+pub enum awaken_protocol_managed::types::vault::CredentialRefreshStatus
+pub awaken_protocol_managed::types::vault::CredentialRefreshStatus::ConnectError
+pub awaken_protocol_managed::types::vault::CredentialRefreshStatus::Failed
+pub awaken_protocol_managed::types::vault::CredentialRefreshStatus::NoRefreshToken
+pub awaken_protocol_managed::types::vault::CredentialRefreshStatus::Succeeded
 pub enum awaken_protocol_managed::types::vault::CredentialUpdateAuth
 pub awaken_protocol_managed::types::vault::CredentialUpdateAuth::EnvironmentVariable
 pub awaken_protocol_managed::types::vault::CredentialUpdateAuth::EnvironmentVariable::injection_location: core::option::Option<awaken_protocol_managed::types::vault::CredentialInjectionLocationParams>
@@ -1321,6 +1326,25 @@ pub awaken_protocol_managed::types::vault::CredentialInjectionLocation::header: 
 pub struct awaken_protocol_managed::types::vault::CredentialInjectionLocationParams
 pub awaken_protocol_managed::types::vault::CredentialInjectionLocationParams::body: core::option::Option<bool>
 pub awaken_protocol_managed::types::vault::CredentialInjectionLocationParams::header: core::option::Option<bool>
+pub struct awaken_protocol_managed::types::vault::CredentialMcpProbe
+pub awaken_protocol_managed::types::vault::CredentialMcpProbe::http_response: core::option::Option<awaken_protocol_managed::types::vault::CredentialProbeHttpResponse>
+pub awaken_protocol_managed::types::vault::CredentialMcpProbe::method: alloc::string::String
+impl core::convert::From<awaken_session_contract::mcp_probe::McpProbeFailure> for awaken_protocol_managed::types::vault::CredentialMcpProbe
+pub fn awaken_protocol_managed::types::vault::CredentialMcpProbe::from(awaken_session_contract::mcp_probe::McpProbeFailure) -> Self
+pub struct awaken_protocol_managed::types::vault::CredentialProbeHttpResponse
+pub awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::body: alloc::string::String
+pub awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::body_truncated: bool
+pub awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::content_type: alloc::string::String
+pub awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::status_code: u16
+impl core::convert::From<awaken_session_contract::mcp_probe::ProbeHttpResponse> for awaken_protocol_managed::types::vault::CredentialProbeHttpResponse
+pub fn awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::from(awaken_session_contract::mcp_probe::ProbeHttpResponse) -> Self
+pub struct awaken_protocol_managed::types::vault::CredentialRefreshResult
+pub awaken_protocol_managed::types::vault::CredentialRefreshResult::http_response: core::option::Option<awaken_protocol_managed::types::vault::CredentialProbeHttpResponse>
+pub awaken_protocol_managed::types::vault::CredentialRefreshResult::status: awaken_protocol_managed::types::vault::CredentialRefreshStatus
+impl awaken_protocol_managed::types::vault::CredentialRefreshResult
+pub fn awaken_protocol_managed::types::vault::CredentialRefreshResult::no_refresh_token() -> Self
+impl core::convert::From<awaken_session_contract::mcp_probe::RefreshExchangeOutcome> for awaken_protocol_managed::types::vault::CredentialRefreshResult
+pub fn awaken_protocol_managed::types::vault::CredentialRefreshResult::from(awaken_session_contract::mcp_probe::RefreshExchangeOutcome) -> Self
 pub struct awaken_protocol_managed::types::vault::CredentialUpdateParams
 pub awaken_protocol_managed::types::vault::CredentialUpdateParams::auth: core::option::Option<awaken_protocol_managed::types::vault::CredentialUpdateAuth>
 pub awaken_protocol_managed::types::vault::CredentialUpdateParams::display_name: core::option::Option<core::option::Option<alloc::string::String>>
@@ -1328,9 +1352,9 @@ pub awaken_protocol_managed::types::vault::CredentialUpdateParams::metadata: cor
 pub struct awaken_protocol_managed::types::vault::CredentialValidation
 pub awaken_protocol_managed::types::vault::CredentialValidation::credential_id: alloc::string::String
 pub awaken_protocol_managed::types::vault::CredentialValidation::has_refresh_token: bool
-pub awaken_protocol_managed::types::vault::CredentialValidation::mcp_probe: core::option::Option<awaken_protocol_managed::types::vault::McpProbeResult>
+pub awaken_protocol_managed::types::vault::CredentialValidation::mcp_probe: core::option::Option<awaken_protocol_managed::types::vault::CredentialMcpProbe>
 pub awaken_protocol_managed::types::vault::CredentialValidation::object_type: &'static str
-pub awaken_protocol_managed::types::vault::CredentialValidation::refresh: core::option::Option<awaken_protocol_managed::types::vault::McpOauthRefreshResponse>
+pub awaken_protocol_managed::types::vault::CredentialValidation::refresh: core::option::Option<awaken_protocol_managed::types::vault::CredentialRefreshResult>
 pub awaken_protocol_managed::types::vault::CredentialValidation::status: awaken_protocol_managed::types::vault::CredentialValidationStatus
 pub awaken_protocol_managed::types::vault::CredentialValidation::validated_at: alloc::string::String
 pub awaken_protocol_managed::types::vault::CredentialValidation::vault_id: alloc::string::String
@@ -1359,12 +1383,6 @@ pub struct awaken_protocol_managed::types::vault::McpOauthRefreshUpdate
 pub awaken_protocol_managed::types::vault::McpOauthRefreshUpdate::refresh_token: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::vault::McpOauthRefreshUpdate::scope: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::vault::McpOauthRefreshUpdate::token_endpoint_auth: core::option::Option<awaken_protocol_managed::types::vault::TokenEndpointAuthUpdate>
-pub struct awaken_protocol_managed::types::vault::McpProbeResult
-pub awaken_protocol_managed::types::vault::McpProbeResult::handshake: core::option::Option<&'static str>
-pub awaken_protocol_managed::types::vault::McpProbeResult::http_status: core::option::Option<u16>
-impl awaken_protocol_managed::types::vault::McpProbeResult
-pub fn awaken_protocol_managed::types::vault::McpProbeResult::invalid(u16) -> Self
-pub fn awaken_protocol_managed::types::vault::McpProbeResult::ok() -> Self
 pub struct awaken_protocol_managed::types::vault::Vault
 pub awaken_protocol_managed::types::vault::Vault::archived_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::vault::Vault::created_at: alloc::string::String
@@ -2067,8 +2085,10 @@ pub async fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url(
 pub fn awaken_protocol_managed::VaultState::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>) -> Self
 pub async fn awaken_protocol_managed::VaultState::reconcile_rollouts(&self) -> core::result::Result<usize, awaken_credential_vault::CredentialError>
 pub fn awaken_protocol_managed::VaultState::set_rollout_target(&self, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>)
+pub fn awaken_protocol_managed::VaultState::with_clock(self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> Self
 pub fn awaken_protocol_managed::VaultState::with_material_delivery(self, awaken_credential_contract::custody::CredentialMaterialDelivery) -> Self
 pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>) -> Self
+pub fn awaken_protocol_managed::VaultState::with_refresh_exchange(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::CredentialRefreshExchange>) -> Self
 impl awaken_protocol_managed::VaultState
 pub async fn awaken_protocol_managed::VaultState::inspect_mcp(&self, &str, &str, core::option::Option<&str>) -> core::result::Result<awaken_protocol_managed::McpInspectionView, awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::mcp_credential_choices(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<awaken_protocol_managed::McpCredentialChoice>, awaken_credential_vault::CredentialError>

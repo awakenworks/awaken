@@ -824,6 +824,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
+ "awaken-session-contract",
  "awaken-worker-contract",
  "base64 0.22.1",
  "chacha20poly1305",
