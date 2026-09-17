@@ -512,7 +512,7 @@ mod tests {
 
         async fn write_back(
             &self,
-            _reference: &str,
+            _target: awaken_provisioning_contract::SecretWritebackTarget<'_>,
             _bytes: Vec<u8>,
         ) -> Result<(), awaken_provisioning_contract::SandboxError> {
             Err(awaken_provisioning_contract::SandboxError::unsupported(

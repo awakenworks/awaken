@@ -1222,6 +1222,16 @@ impl SandboxControlServicePublisher for BatchArtifactContainer {
 
 #[async_trait::async_trait]
 impl pc::Sandbox for BatchArtifactContainer {
+    async fn prepare_disposal_for_effect(
+        &self,
+        _effect_fence: &pc::SandboxEffectFence,
+        _authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
+        Err(pc::SandboxError::unsupported(
+            "test double does not prepare disposal",
+        ))
+    }
+
     async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
         self.dispose().await
     }

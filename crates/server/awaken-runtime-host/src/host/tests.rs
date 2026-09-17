@@ -18137,27 +18137,8 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         self.handle.clone()
     }
 
-    async fn cleanup_checkpoint_for_terminal(
-        &self,
-        _request: &pc::SandboxCheckpointRequest,
-        _store: &dyn pc::SandboxCheckpointStore,
-        _expected_effect_fence: &pc::SandboxEffectFence,
-        terminal_effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<(), pc::SandboxError> {
-        pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| {
-            self.events.lock().unwrap().push("checkpoint-live-io");
-            Ok(())
-        })?;
-        if let Some(probe) = &self.fence_refresh_probe {
-            probe.record("checkpoint", terminal_effect_fence);
-            probe.checkpoint_entered.notify_one();
-            probe.checkpoint_release.notified().await;
-            return pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()));
-        }
-        Err(pc::SandboxError::not_found(
-            "terminal recovery fixture has no pending checkpoint upload",
-        ))
+    fn checkpointing(&self) -> Option<&dyn pc::CheckpointingSandbox> {
+        Some(self)
     }
 
     async fn spawn(
@@ -18280,6 +18261,44 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
             self.events.lock().unwrap().push("dispose-physical");
             Ok(())
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl pc::CheckpointingSandbox for TerminalRecoveryEnvironment {
+    async fn checkpoint_for_effect(
+        &self,
+        _request: &pc::SandboxCheckpointRequest,
+        _store: &dyn pc::SandboxCheckpointStore,
+        _effect_fence: &pc::SandboxEffectFence,
+        _authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
+        Err(pc::SandboxError::unsupported(
+            "terminal recovery fixture never takes a new checkpoint",
+        ))
+    }
+
+    async fn cleanup_checkpoint_for_terminal(
+        &self,
+        _request: &pc::SandboxCheckpointRequest,
+        _store: &dyn pc::SandboxCheckpointStore,
+        _expected_effect_fence: &pc::SandboxEffectFence,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| {
+            self.events.lock().unwrap().push("checkpoint-live-io");
+            Ok(())
+        })?;
+        if let Some(probe) = &self.fence_refresh_probe {
+            probe.record("checkpoint", terminal_effect_fence);
+            probe.checkpoint_entered.notify_one();
+            probe.checkpoint_release.notified().await;
+            return pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()));
+        }
+        Err(pc::SandboxError::not_found(
+            "terminal recovery fixture has no pending checkpoint upload",
+        ))
     }
 }
 

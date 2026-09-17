@@ -1609,9 +1609,20 @@ impl ContainerCleanupState {
                             handle.container_physical_incarnation()?,
                             authorization.clone(),
                         )?;
-                        broker.write_back_for_effect(&writeback, bytes).await?
+                        broker
+                            .write_back(pc::SecretWritebackTarget::Effect(&writeback), bytes)
+                            .await?
                     }
-                    None => broker.write_back(&item.reference, bytes).await?,
+                    None => {
+                        broker
+                            .write_back(
+                                pc::SecretWritebackTarget::Unattached {
+                                    reference: &item.reference,
+                                },
+                                bytes,
+                            )
+                            .await?
+                    }
                 }
                 authorize()?;
             }

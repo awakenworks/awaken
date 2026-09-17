@@ -1334,22 +1334,19 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
     async fn observe(
         &self,
         handle: &pc::SandboxHandle,
+        basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_handle(handle).await
-    }
-
-    async fn observe_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-        effect_fence: &pc::SandboxEffectFence,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(
-            ContainerEnvironmentAdoption::new(spec, handle),
-            Some(effect_fence),
-            ContainerObservationPurpose::Recovery,
-        )
-        .await
+        match basis {
+            pc::SandboxObservationBasis::Unattached => self.observe_container_handle(handle).await,
+            pc::SandboxObservationBasis::Effect { spec, effect_fence } => {
+                self.observe_container_adoption(
+                    ContainerEnvironmentAdoption::new(spec, handle),
+                    Some(effect_fence),
+                    ContainerObservationPurpose::Recovery,
+                )
+                .await
+            }
+        }
     }
 
     async fn adopt_for_effect(
@@ -1388,6 +1385,13 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         .map(|sandbox| sandbox.map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
 
+    fn restore_targets(&self) -> Option<&dyn pc::RestoreTargetSandboxProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> pc::RestoreTargetSandboxProvider for ContainerProvider<R> {
     async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,

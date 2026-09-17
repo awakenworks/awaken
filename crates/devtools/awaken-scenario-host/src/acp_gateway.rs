@@ -39,7 +39,7 @@ impl awaken_run_executor_acp::SecretBroker for ScenarioEnvSecretBroker {
 
     async fn write_back(
         &self,
-        _reference: &str,
+        _target: awaken_run_executor_acp::SecretWritebackTarget<'_>,
         _bytes: Vec<u8>,
     ) -> Result<(), awaken_run_executor_acp::SandboxError> {
         Err(awaken_run_executor_acp::SandboxError::unsupported(

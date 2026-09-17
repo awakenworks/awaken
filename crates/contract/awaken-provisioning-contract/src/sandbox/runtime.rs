@@ -70,6 +70,25 @@ pub enum SandboxObservation {
     Incompatible { reason: String },
 }
 
+/// What one [`SandboxProvider::observe`] call is for. The two cases are
+/// named so a caller cannot degrade an effect revalidation into an unfenced
+/// inspection by omitting a value.
+#[derive(Debug, Clone, Copy)]
+pub enum SandboxObservationBasis<'a> {
+    /// Inspect a handle that no aggregate effect owns: a Session whose
+    /// Environment is unowned, or a retiring Candidate that was never
+    /// published. The recorded handle evidence is the whole expectation, and
+    /// the result never authorizes adoption or disposal of an owned Sandbox.
+    Unattached,
+    /// Revalidate at an aggregate-authorized physical-effect boundary: the
+    /// effective spec must match the handle's immutable realization evidence
+    /// and the recorded fence must not be newer than `effect_fence`.
+    Effect {
+        spec: &'a SandboxSpec,
+        effect_fence: &'a SandboxEffectFence,
+    },
+}
+
 /// Isolation strength, ordered `Workdir < Namespace < Container`. A provider
 /// admits a spec only when its class is `>=` the requested one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -628,29 +647,18 @@ pub trait SandboxProvider: Send + Sync {
     ) -> crate::ClaimedEffect<'a, Box<dyn Sandbox>>;
 
     /// Observe one exact durable handle without renewing, mounting, deleting,
-    /// or otherwise adopting it. Out-of-tree providers fail closed until they
-    /// can preserve backend `NotFound`/terminal evidence separately from
-    /// transport, authorization, and timeout errors.
-    async fn observe(&self, _handle: &SandboxHandle) -> Result<SandboxObservation, SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox provider does not implement effect-free adoption observation",
-        ))
-    }
-
-    /// Re-observe one exact handle at an aggregate-authorized physical-effect
-    /// boundary. Providers must validate the complete fence together with
-    /// their immutable realization evidence; the default cannot safely infer
-    /// that support from the legacy observation port.
-    async fn observe_for_effect(
+    /// or otherwise adopting it. `basis` says what the observation is for:
+    /// [`SandboxObservationBasis::Effect`] revalidates the complete fence and
+    /// the effective spec against immutable realization evidence at an
+    /// aggregate-authorized boundary; [`SandboxObservationBasis::Unattached`]
+    /// inspects a handle no aggregate effect owns and never becomes mutation
+    /// authority. Providers keep backend `NotFound`/terminal evidence separate
+    /// from transport, authorization, and timeout errors.
+    async fn observe(
         &self,
-        _spec: &SandboxSpec,
-        _handle: &SandboxHandle,
-        _effect_fence: &SandboxEffectFence,
-    ) -> Result<SandboxObservation, SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox provider does not implement fenced observation",
-        ))
-    }
+        handle: &SandboxHandle,
+        basis: SandboxObservationBasis<'_>,
+    ) -> Result<SandboxObservation, SandboxError>;
 
     /// Adopt only after revalidating the exact aggregate-owned effect fence.
     /// This is the provider's only adoption edge: reconnecting to an already
@@ -683,41 +691,39 @@ pub trait SandboxProvider: Send + Sync {
     /// Removed tombstone; the default is fail closed.
     async fn prepare_terminal_for_effect(
         &self,
-        _spec: &SandboxSpec,
-        _handle: Option<&SandboxHandle>,
-        _expected_effect_fence: Option<&SandboxEffectFence>,
-        _terminal_effect_fence: &SandboxEffectFence,
-        _authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<Option<Box<dyn Sandbox>>, SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox provider does not implement fenced terminal authorization",
-        ))
+        spec: &SandboxSpec,
+        handle: Option<&SandboxHandle>,
+        expected_effect_fence: Option<&SandboxEffectFence>,
+        terminal_effect_fence: &SandboxEffectFence,
+        authority: &dyn crate::CurrentExecutionAuthority,
+    ) -> Result<Option<Box<dyn Sandbox>>, SandboxError>;
+
+    /// Custody of exact restore targets, when this provider has it. A
+    /// composition root that needs it asks here instead of discovering an
+    /// `Unsupported` error after placement.
+    fn restore_targets(&self) -> Option<&dyn RestoreTargetSandboxProvider> {
+        None
     }
 
+    /// Complete checkpoint restore, when this provider has it.
+    fn restorable(&self) -> Option<&dyn RestorableSandboxProvider> {
+        None
+    }
+}
+
+/// A provider that owns the physical target of an exact restore: it can
+/// acquire the one target an aggregate-projected request names and dispose an
+/// unpublished target under disposal authorization. Checkpoint bytes are not
+/// read here; a composition may restore them through its own codec.
+#[async_trait]
+pub trait RestoreTargetSandboxProvider: SandboxProvider {
     /// Acquire the one physical target for an aggregate-projected exact restore
     /// without reading or interpreting checkpoint bytes.
     async fn acquire_restore(
         &self,
-        _spec: &SandboxSpec,
-        _request: &SandboxRestoreRequest,
-    ) -> Result<SandboxRestoreTarget<Box<dyn Sandbox>>, SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox provider does not implement exact restore target acquisition",
-        ))
-    }
-
-    /// Complete one exact restore and return canonical evidence only after the
-    /// checkpoint bytes have been materialized and verified.
-    async fn restore(
-        &self,
-        _spec: &SandboxSpec,
-        _request: &SandboxRestoreRequest,
-        _store: &dyn SandboxCheckpointStore,
-    ) -> Result<SandboxRestoreResult<Box<dyn Sandbox>>, SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox provider does not implement checkpoint restore",
-        ))
-    }
+        spec: &SandboxSpec,
+        request: &SandboxRestoreRequest,
+    ) -> Result<SandboxRestoreTarget<Box<dyn Sandbox>>, SandboxError>;
 
     /// Remove only the unpublished physical target named by one durable
     /// restoring tuple using the aggregate preparation/successor authorization.
@@ -727,15 +733,25 @@ pub trait SandboxProvider: Send + Sync {
     /// absence is an idempotent success only under that same current authority.
     async fn dispose_restored(
         &self,
-        _spec: &SandboxSpec,
-        _request: &SandboxRestoreRequest,
-        _authorization: &SandboxDisposalAuthorization,
-        _authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<(), SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox provider does not implement exact restored-target disposal",
-        ))
-    }
+        spec: &SandboxSpec,
+        request: &SandboxRestoreRequest,
+        authorization: &SandboxDisposalAuthorization,
+        authority: &dyn crate::CurrentExecutionAuthority,
+    ) -> Result<(), SandboxError>;
+}
+
+/// A provider that restores an exact filesystem checkpoint into its own
+/// restore target.
+#[async_trait]
+pub trait RestorableSandboxProvider: RestoreTargetSandboxProvider {
+    /// Complete one exact restore and return canonical evidence only after the
+    /// checkpoint bytes have been materialized and verified.
+    async fn restore(
+        &self,
+        spec: &SandboxSpec,
+        request: &SandboxRestoreRequest,
+        store: &dyn SandboxCheckpointStore,
+    ) -> Result<SandboxRestoreResult<Box<dyn Sandbox>>, SandboxError>;
 }
 
 /// A live sandbox environment. **Execute** (`spawn`), **mount/inject** (`attach`),
@@ -752,55 +768,10 @@ pub trait Sandbox: Send + Sync {
     /// A durable, serializable reference for reconnecting later (persist this).
     fn handle(&self) -> SandboxHandle;
 
-    /// Persist the complete mutable filesystem before disposal. Implementations
-    /// must omit independently governed mounts and credential material, enforce
-    /// `max_bytes`, and return only after the object adapter reports durability.
-    async fn checkpoint(
-        &self,
-        _request: &SandboxCheckpointRequest,
-        _store: &dyn SandboxCheckpointStore,
-    ) -> Result<SandboxCheckpointRef, SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox does not implement filesystem checkpointing",
-        ))
-    }
-
-    /// Persist a checkpoint only while the aggregate-owned realization fence
-    /// still authorizes this exact physical Sandbox. Durable Session
-    /// continuation must use this edge. `effect_fence` retains Control
-    /// coordinates; `authority` owns current liveness. Re-enter it before WAL
-    /// and store effects, after awaited responses and on cached receipt replay.
-    async fn checkpoint_for_effect(
-        &self,
-        _request: &SandboxCheckpointRequest,
-        _store: &dyn SandboxCheckpointStore,
-        _effect_fence: &SandboxEffectFence,
-        _authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<SandboxCheckpointRef, SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox does not implement fenced filesystem checkpointing",
-        ))
-    }
-
-    /// Finish and delete one checkpoint upload whose root receipt was lost to
-    /// a terminal takeover. `expected_effect_fence` identifies the immutable
-    /// suspend participant and may already be expired; it never authorizes a
-    /// mutation. Every write-ahead update, exact `put` replay, and idempotent
-    /// object deletion consumes the current operation-bound `authority`, not
-    /// the copied terminal expiry. Re-enter after participant/store waits and
-    /// before returning success, including cached-receipt replay. This is
-    /// the checkpoint port's terminal edge, not a second cleanup state machine.
-    async fn cleanup_checkpoint_for_terminal(
-        &self,
-        _request: &SandboxCheckpointRequest,
-        _store: &dyn SandboxCheckpointStore,
-        _expected_effect_fence: &SandboxEffectFence,
-        _terminal_effect_fence: &SandboxEffectFence,
-        _authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<(), SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox does not implement terminal checkpoint cleanup",
-        ))
+    /// The filesystem-checkpoint capability, when this Sandbox has it. A
+    /// Sandbox without it does not implement [`CheckpointingSandbox`].
+    fn checkpointing(&self) -> Option<&dyn CheckpointingSandbox> {
+        None
     }
 
     /// **EXECUTE** — launch any process under OS-enforced isolation. Isolation is
@@ -868,13 +839,16 @@ pub trait Sandbox: Send + Sync {
     /// cached success. It does not certify a remote backend's in-flight commit.
     async fn prepare_disposal_for_effect(
         &self,
-        _effect_fence: &SandboxEffectFence,
-        _authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<SandboxEffectFence, SandboxError> {
-        Err(SandboxError::unsupported(
-            "sandbox does not implement fenced disposal preparation",
-        ))
-    }
+        effect_fence: &SandboxEffectFence,
+        authority: &dyn crate::CurrentExecutionAuthority,
+    ) -> Result<SandboxEffectFence, SandboxError>;
+
+    /// Reclaim an environment that no aggregate effect owns: a capability
+    /// probe, warm-pool capacity, an unowned Session, or a candidate that never
+    /// reached publication. Required, so every implementation states how it is
+    /// reclaimed, and named so the call site declares which case it means.
+    /// Anything a committed Session owns must use [`Self::dispose_for_effect`].
+    async fn dispose_unattached(&self) -> Result<(), SandboxError>;
 
     /// Physically tear down the exact realization authorized by one aggregate
     /// effect fence after the aggregate durably accepted disposal preparation.
@@ -886,18 +860,50 @@ pub trait Sandbox: Send + Sync {
     /// Re-enter after waits and hold the guard through synchronous destructive
     /// effects; the preparation receipt is not a grant across later I/O.
     /// Backend commit fencing remains the resource adapter's responsibility.
-    /// Reclaim an environment that no aggregate effect owns: a capability
-    /// probe, warm-pool capacity, or a candidate that never reached
-    /// publication. Required, so every implementation states how it is
-    /// reclaimed, and named so the call site declares which case it means.
-    /// Anything a committed Session owns must use [`Self::dispose_for_effect`].
-    async fn dispose_unattached(&self) -> Result<(), SandboxError>;
-
     /// This is the Sandbox's destructive obligation and carries no default, so
     /// an environment that cannot fence teardown fails to compile.
     async fn dispose_for_effect(
         &self,
         authorization: &SandboxDisposalAuthorization,
+        authority: &dyn crate::CurrentExecutionAuthority,
+    ) -> Result<(), SandboxError>;
+}
+
+/// A Sandbox that persists its complete mutable filesystem as a portable
+/// checkpoint. There is no unfenced checkpoint: durable Session continuation
+/// is the only owner of a checkpoint, so every checkpoint write is an
+/// aggregate effect.
+#[async_trait]
+pub trait CheckpointingSandbox: Sandbox {
+    /// Persist the complete mutable filesystem while the aggregate-owned
+    /// realization fence still authorizes this exact physical Sandbox.
+    /// Implementations omit independently governed mounts and credential
+    /// material, enforce `max_bytes`, and return only after the object adapter
+    /// reports durability. `effect_fence` retains Control coordinates;
+    /// `authority` owns current liveness. Re-enter it before WAL and store
+    /// effects, after awaited responses and on cached receipt replay.
+    async fn checkpoint_for_effect(
+        &self,
+        request: &SandboxCheckpointRequest,
+        store: &dyn SandboxCheckpointStore,
+        effect_fence: &SandboxEffectFence,
+        authority: &dyn crate::CurrentExecutionAuthority,
+    ) -> Result<SandboxCheckpointRef, SandboxError>;
+
+    /// Finish and delete one checkpoint upload whose root receipt was lost to
+    /// a terminal takeover. `expected_effect_fence` identifies the immutable
+    /// suspend participant and may already be expired; it never authorizes a
+    /// mutation. Every write-ahead update, exact `put` replay, and idempotent
+    /// object deletion consumes the current operation-bound `authority`, not
+    /// the copied terminal expiry. Re-enter after participant/store waits and
+    /// before returning success, including cached-receipt replay. This is
+    /// the checkpoint port's terminal edge, not a second cleanup state machine.
+    async fn cleanup_checkpoint_for_terminal(
+        &self,
+        request: &SandboxCheckpointRequest,
+        store: &dyn SandboxCheckpointStore,
+        expected_effect_fence: &SandboxEffectFence,
+        terminal_effect_fence: &SandboxEffectFence,
         authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError>;
 }

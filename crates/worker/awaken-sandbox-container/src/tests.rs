@@ -4469,16 +4469,15 @@ impl pc::SecretBroker for RecordingSecretBroker {
         Ok(self.current.lock().unwrap().clone())
     }
 
-    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
-        self.record_writeback(bytes)
-    }
-
-    async fn write_back_for_effect(
+    async fn write_back(
         &self,
-        effect: &pc::SecretWritebackEffect,
+        target: pc::SecretWritebackTarget<'_>,
         bytes: Vec<u8>,
     ) -> Result<(), pc::SandboxError> {
         self.record_writeback(bytes)?;
+        let pc::SecretWritebackTarget::Effect(effect) = target else {
+            return Ok(());
+        };
         self.effect_operations
             .lock()
             .unwrap()
@@ -5577,7 +5576,7 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                     Box<dyn std::future::Future<Output = Result<(), pc::SandboxError>> + Send + '_>,
                 > {
                     if port == "sandbox" {
-                        pc::SandboxProvider::dispose_restored(
+                        pc::RestoreTargetSandboxProvider::dispose_restored(
                             &provider,
                             &spec,
                             &request,
@@ -5682,7 +5681,11 @@ impl pc::SecretBroker for RejectingSecretBroker {
         Err(pc::SandboxError::fence_rejected("claim expired"))
     }
 
-    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        _bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         Err(pc::SandboxError::unsupported("not supported"))
     }
 }

@@ -581,9 +581,21 @@ impl SessionEnvironmentProvider {
         retained: Option<&super::SessionEnvironment>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
-            Self::Workdir { provider, .. } => pc::SandboxProvider::observe(provider, handle).await,
+            Self::Workdir { provider, .. } => {
+                pc::SandboxProvider::observe(
+                    provider,
+                    handle,
+                    pc::SandboxObservationBasis::Unattached,
+                )
+                .await
+            }
             Self::Namespace { provider, .. } => {
-                pc::SandboxProvider::observe(provider, handle).await
+                pc::SandboxProvider::observe(
+                    provider,
+                    handle,
+                    pc::SandboxObservationBasis::Unattached,
+                )
+                .await
             }
             Self::Container { provider, .. } => {
                 provider
@@ -609,10 +621,20 @@ impl SessionEnvironmentProvider {
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                pc::SandboxProvider::observe_for_effect(provider, spec, handle, effect_fence).await
+                pc::SandboxProvider::observe(
+                    provider,
+                    handle,
+                    pc::SandboxObservationBasis::Effect { spec, effect_fence },
+                )
+                .await
             }
             Self::Namespace { provider, .. } => {
-                pc::SandboxProvider::observe_for_effect(provider, spec, handle, effect_fence).await
+                pc::SandboxProvider::observe(
+                    provider,
+                    handle,
+                    pc::SandboxObservationBasis::Effect { spec, effect_fence },
+                )
+                .await
             }
             Self::Container { provider, .. } => {
                 let mut adoption = Self::container_observation_adoption(spec, handle, retained)?;
@@ -900,7 +922,8 @@ impl SessionEnvironmentProvider {
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                let restored = pc::SandboxProvider::restore(provider, spec, request, store).await?;
+                let restored =
+                    pc::RestorableSandboxProvider::restore(provider, spec, request, store).await?;
                 let handle = restored.target().handle();
                 request.verify_handle(spec, &handle)?;
                 Ok(handle)
@@ -1021,7 +1044,7 @@ impl SessionEnvironmentProvider {
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                pc::SandboxProvider::dispose_restored(
+                pc::RestoreTargetSandboxProvider::dispose_restored(
                     provider,
                     spec,
                     request,

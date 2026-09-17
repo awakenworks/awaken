@@ -201,7 +201,11 @@ mod process_secret_tests {
             self.materialize(reference).await
         }
 
-        async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), SandboxError> {
+        async fn write_back(
+            &self,
+            _target: crate::SecretWritebackTarget<'_>,
+            _bytes: Vec<u8>,
+        ) -> Result<(), SandboxError> {
             Err(SandboxError::unsupported("not supported"))
         }
     }

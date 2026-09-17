@@ -17,7 +17,11 @@ impl pc::SecretBroker for Broker {
         ))
     }
 
-    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        _bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         unreachable!("the Namespace provider accepts only read-only brokered secrets")
     }
 }

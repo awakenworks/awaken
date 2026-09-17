@@ -64,7 +64,11 @@ impl pc::SecretBroker for CredentialBroker {
         ))
     }
 
-    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         if self.reject_writeback.load(Ordering::SeqCst) {
             return Err(pc::SandboxError::unauthorized(
                 "injected live broker rejection",
