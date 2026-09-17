@@ -46,7 +46,9 @@ pub use awaken_sandbox_control::SandboxControlServiceKind;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
 pub use claimed_effect::{ClaimedEffect, ClaimedEffectInFlight, EffectClaim};
-pub use execution_authority::{CurrentExecutionAuthority, with_current_sandbox_effect};
+pub use execution_authority::{
+    CurrentExecutionAuthority, SandboxEffectGuard, with_current_sandbox_effect,
+};
 pub use execution_policy::{
     SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyId,
     SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
@@ -62,24 +64,26 @@ pub use prepare::{
     validate_sandbox_control_services, validate_trusted_host_mount_requirements,
 };
 pub use sandbox::{
-    BlobSource, CheckpointObjectMetadata, ExitStatus, HandleEvidence, IsolationClass,
-    IsolationPolicy, MemoryMaterializationEvidence, MemoryMaterializationHead, MemoryMount,
-    MemoryMountOutcome, MemoryMounter, MemoryReconciliationAck, OnUnmet, PolicySelection,
-    ProcessHandle, RepositoryHttpBasicCredential, RepositoryPublicationError,
-    RepositoryPublicationExpectation, RepositoryPublicationReceipt, RepositoryPublicationRejection,
-    RepositoryRealizationPlan, RepositoryRealizer, ResourceInputDefaultMounts, Sandbox,
-    SandboxCapabilities, SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore,
-    SandboxCheckpointUpload, SandboxDisposalAuthorization, SandboxDisposalPreparation,
-    SandboxEffectFence, SandboxError, SandboxHandle, SandboxObservation, SandboxPayloadSchema,
+    BlobSource, CheckpointObjectMetadata, CheckpointingSandbox, ExitStatus, FenceSuccession,
+    FenceToken, HandleEvidence, IsolationClass, IsolationPolicy, MemoryMaterializationEvidence,
+    MemoryMaterializationHead, MemoryMount, MemoryMountOutcome, MemoryMounter,
+    MemoryReconciliationAck, OnUnmet, PolicySelection, ProcessHandle,
+    RepositoryHttpBasicCredential, RepositoryPublicationError, RepositoryPublicationExpectation,
+    RepositoryPublicationReceipt, RepositoryPublicationRejection, RepositoryRealizationPlan,
+    RepositoryRealizer, ResourceInputDefaultMounts, RestorableSandboxProvider,
+    RestoreTargetSandboxProvider, Sandbox, SandboxCapabilities, SandboxCheckpointRef,
+    SandboxCheckpointRequest, SandboxCheckpointStore, SandboxCheckpointUpload,
+    SandboxDisposalAuthorization, SandboxDisposalPreparation, SandboxEffectFence, SandboxError,
+    SandboxHandle, SandboxObservation, SandboxObservationBasis, SandboxPayloadSchema,
     SandboxProvider, SandboxRequirements, SandboxRestorationEvidence, SandboxRestoreRequest,
     SandboxRestoreResult, SandboxRestoreTarget, SandboxRestoreTargetDisposition, SandboxStatus,
-    SecretBroker, SecretWritebackEffect, SelectionError, Signal, StoredCheckpointObject,
-    WorkspaceLayout, capability_requirements_satisfied, checkpoint_exclusions_fingerprint,
-    memory_materialization_mount_path, resource_input_default_mounts,
-    sandbox_spec_security_fingerprint, select_provider, select_provider_with_policy,
-    validate_checkpoint_exclusions_for_spec, validate_repository_mount_path,
-    validate_repository_mount_paths, validate_repository_sandbox_adoption_layout,
-    validate_repository_sandbox_layout,
+    SecretBroker, SecretWritebackEffect, SecretWritebackTarget, SelectionError, Signal,
+    StoredCheckpointObject, WorkspaceLayout, capability_requirements_satisfied,
+    checkpoint_exclusions_fingerprint, fence_succession, memory_materialization_mount_path,
+    resource_input_default_mounts, sandbox_spec_security_fingerprint, select_provider,
+    select_provider_with_policy, validate_checkpoint_exclusions_for_spec,
+    validate_repository_mount_path, validate_repository_mount_paths,
+    validate_repository_sandbox_adoption_layout, validate_repository_sandbox_layout,
 };
 pub use spec::{
     Command, EnvironmentKind, FilesystemContinuity, HostAccessPolicy, MaterializedCommand,

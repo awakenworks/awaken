@@ -5,6 +5,7 @@
 
 mod checkpoint_upload;
 mod error;
+mod fence;
 mod foundation;
 mod handle;
 mod repository_publication;
@@ -13,6 +14,7 @@ mod restore_wire;
 mod runtime;
 
 pub use checkpoint_upload::SandboxCheckpointUpload;
+pub use fence::{FenceSuccession, FenceToken, SandboxEffectFence, fence_succession};
 pub use foundation::*;
 pub use handle::*;
 pub use repository_publication::{
@@ -80,6 +82,16 @@ mod tests {
 
     #[async_trait]
     impl Sandbox for FakeSandbox {
+        async fn prepare_disposal_for_effect(
+            &self,
+            _effect_fence: &crate::SandboxEffectFence,
+            _authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<crate::SandboxEffectFence, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not prepare disposal",
+            ))
+        }
+
         async fn dispose_unattached(&self) -> Result<(), SandboxError> {
             self.dispose().await
         }
@@ -125,7 +137,11 @@ mod tests {
             authorization: &crate::SandboxDisposalAuthorization,
             authority: &dyn crate::CurrentExecutionAuthority,
         ) -> Result<(), SandboxError> {
-            crate::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+            crate::with_current_sandbox_effect(
+                authorization.effect_fence(),
+                authority,
+                |_| Ok(()),
+            )?;
             self.dispose().await
         }
     }
@@ -145,6 +161,28 @@ mod tests {
 
     #[async_trait]
     impl SandboxProvider for FakeProvider {
+        async fn observe(
+            &self,
+            _handle: &crate::SandboxHandle,
+            _basis: crate::SandboxObservationBasis<'_>,
+        ) -> Result<crate::SandboxObservation, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not observe handles",
+            ))
+        }
+        async fn prepare_terminal_for_effect(
+            &self,
+            _spec: &crate::SandboxSpec,
+            _handle: Option<&crate::SandboxHandle>,
+            _expected_effect_fence: Option<&crate::SandboxEffectFence>,
+            _terminal_effect_fence: &crate::SandboxEffectFence,
+            _authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Option<Box<dyn crate::Sandbox>>, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not prepare terminal cleanup",
+            ))
+        }
+
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
                 process_tree_supervision: false,
@@ -172,7 +210,7 @@ mod tests {
                 crate::test_support::retain_abandoned_effect(spec.scope.clone()),
             );
             crate::ClaimedEffect::new(claim, async move {
-                crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+                crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
                 self.create(spec).await
             })
         }
@@ -183,7 +221,7 @@ mod tests {
             effect_fence: &crate::SandboxEffectFence,
             authority: &dyn crate::CurrentExecutionAuthority,
         ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
             self.adopt(handle).await
         }
     }
@@ -412,6 +450,28 @@ mod tests {
     }
     #[async_trait]
     impl SandboxProvider for ProbeProvider {
+        async fn observe(
+            &self,
+            _handle: &crate::SandboxHandle,
+            _basis: crate::SandboxObservationBasis<'_>,
+        ) -> Result<crate::SandboxObservation, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not observe handles",
+            ))
+        }
+        async fn prepare_terminal_for_effect(
+            &self,
+            _spec: &crate::SandboxSpec,
+            _handle: Option<&crate::SandboxHandle>,
+            _expected_effect_fence: Option<&crate::SandboxEffectFence>,
+            _terminal_effect_fence: &crate::SandboxEffectFence,
+            _authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Option<Box<dyn crate::Sandbox>>, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not prepare terminal cleanup",
+            ))
+        }
+
         fn capabilities(&self) -> SandboxCapabilities {
             self.caps.clone()
         }
@@ -433,7 +493,7 @@ mod tests {
                 crate::test_support::retain_abandoned_effect(spec.scope.clone()),
             );
             crate::ClaimedEffect::new(claim, async move {
-                crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+                crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
                 self.create(spec).await
             })
         }
@@ -444,7 +504,7 @@ mod tests {
             effect_fence: &crate::SandboxEffectFence,
             authority: &dyn crate::CurrentExecutionAuthority,
         ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
             self.adopt(handle).await
         }
     }

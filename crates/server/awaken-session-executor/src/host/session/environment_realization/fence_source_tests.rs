@@ -192,7 +192,7 @@ fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                 let ack = awaken_provisioning_contract::MemoryReconciliationAck::default();
                 let mut drained = 0;
                 for _ in 0..2 {
-                    let result = ack.acknowledge(&asserted, &source, materials, materials, || {
+                    let result = ack.acknowledge(&asserted, &source, materials, materials, |_| {
                         drained += 1;
                         if registered {
                             assert!(worker.0.try_lock().is_err());
@@ -407,17 +407,23 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
         Ok(())
     }
 
-    async fn create_environment(
+    async fn create_unattached_environment(
         &self,
         _: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
-        panic!("fenced creation must not fall back to legacy create")
+        // An unattached creation has no authority source to forward: the
+        // provider port cannot even be handed one.
+        self.boundary.pause().await;
+        Err(awaken_provisioning_contract::SandboxError::backend(
+            "create_unattached_environment",
+            "projection probe finished",
+        ))
     }
 
-    async fn adopt_environment(
+    async fn adopt_unattached_environment(
         &self,
         _: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<
@@ -427,14 +433,21 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
         panic!("creation must not adopt")
     }
 
-    async fn observe_environment_for_effect(
+    async fn observe_environment(
         &self,
         _: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        _: &SandboxEffectFence,
+        basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
     ) -> Result<
         awaken_provisioning_contract::SandboxObservation,
         awaken_provisioning_contract::SandboxError,
     > {
+        assert!(
+            matches!(
+                basis,
+                awaken_provisioning_contract::SandboxObservationBasis::Effect { .. }
+            ),
+            "fenced adoption observes under its effect fence"
+        );
         if let Some(boundary) = &self.observation_boundary {
             boundary.pause().await;
         }
@@ -444,8 +457,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
     async fn adopt_environment_for_effect(
         &self,
         adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        fence: Option<&SandboxEffectFence>,
-        source: Option<&dyn CurrentExecutionAuthority>,
+        fence: &SandboxEffectFence,
+        source: &dyn CurrentExecutionAuthority,
     ) -> Result<
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
@@ -463,29 +476,34 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
     async fn create_environment_for_effect(
         &self,
         _: &awaken_provisioning_contract::SandboxSpec,
-        fence: Option<&SandboxEffectFence>,
-        source: Option<&dyn CurrentExecutionAuthority>,
+        fence: &SandboxEffectFence,
+        source: &dyn CurrentExecutionAuthority,
         _: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         self.boundary.pause().await;
-        if let Some(fence) = fence {
-            let current = source
-                .expect("Host must forward the captured source")
-                .current_effect_fence(fence)?;
-            self.replies.lock().unwrap().push(current);
-        } else {
-            assert!(
-                source.is_none(),
-                "unfenced creation invents no authority source"
-            );
-        }
+        let current = source.current_effect_fence(fence)?;
+        self.replies.lock().unwrap().push(current);
         Err(awaken_provisioning_contract::SandboxError::backend(
             "create_environment_for_effect",
             "projection probe finished",
         ))
+    }
+
+    async fn prepare_terminal_environment_for_effect(
+        &self,
+        _: &awaken_provisioning_contract::SandboxSpec,
+        _: Option<&awaken_provisioning_contract::SandboxHandle>,
+        _: Option<&SandboxEffectFence>,
+        _: &SandboxEffectFence,
+        _: &dyn CurrentExecutionAuthority,
+    ) -> Result<
+        Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        panic!("creation must not prepare terminal cleanup")
     }
 }
 

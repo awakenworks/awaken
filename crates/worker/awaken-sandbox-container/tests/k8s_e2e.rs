@@ -64,7 +64,11 @@ impl pc::SecretBroker for CredentialBroker {
         ))
     }
 
-    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         if self.reject_writeback.load(Ordering::SeqCst) {
             return Err(pc::SandboxError::unauthorized(
                 "injected live broker rejection",
@@ -554,9 +558,10 @@ async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_se
 
     assert_eq!(pool.prewarm(&session_spec, 1).await.unwrap(), 1, "E1");
     assert_eq!(pool.ready_len(&session_spec), 1);
-    let environment = ContainerEnvironmentProvider::create_environment(&pool, &session_spec)
-        .await
-        .expect("E2 bind one Ready warm Pod to the Session");
+    let environment =
+        ContainerEnvironmentProvider::create_unattached_environment(&pool, &session_spec)
+            .await
+            .expect("E2 bind one Ready warm Pod to the Session");
     assert_eq!(pool.ready_len(&session_spec), 0, "E2 consumed capacity");
     assert_eq!(
         environment.status().await.unwrap(),
@@ -962,8 +967,8 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
     let first = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &first_spec,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -978,8 +983,8 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
     let recovered = ContainerEnvironmentProvider::adopt_environment_for_effect(
         &provider,
         ContainerEnvironmentAdoption::new(&first_spec, &handle),
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
     )
     .await
     .expect("recover the stable Pod from its frozen spec and exact V2 handle");
@@ -1174,8 +1179,8 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
     let sandbox = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &memory_spec,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1618,7 +1623,7 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
             ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
         );
     let adopted = provider_b
-        .adopt_environment(awaken_sandbox_container::ContainerEnvironmentAdoption::new(
+        .adopt_unattached_environment(awaken_sandbox_container::ContainerEnvironmentAdoption::new(
             &sandbox_spec,
             &handle,
         ))

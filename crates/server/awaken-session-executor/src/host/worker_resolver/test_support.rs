@@ -254,8 +254,12 @@ pub(crate) async fn available_local_environment_binding(
     let environment = provider
         .create_effective_for_effect(
             &spec,
-            Some(&create_fence),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &create_fence,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &create_fence,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )

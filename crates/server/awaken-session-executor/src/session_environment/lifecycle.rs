@@ -69,6 +69,14 @@ impl SessionEnvironment {
         }
     }
 
+    /// The concrete Sandbox's checkpoint capability, or a typed refusal when
+    /// the selected provider cannot checkpoint.
+    fn checkpointing(&self) -> Result<&dyn pc::CheckpointingSandbox, pc::SandboxError> {
+        self.sandbox().checkpointing().ok_or_else(|| {
+            pc::SandboxError::unsupported("the selected Sandbox does not checkpoint its filesystem")
+        })
+    }
+
     pub(crate) fn handle(&self) -> pc::SandboxHandle {
         self.sandbox().handle()
     }
@@ -195,7 +203,7 @@ impl SessionEnvironment {
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
-        self.sandbox()
+        self.checkpointing()?
             .checkpoint_for_effect(request, store, effect_fence, authority)
             .await
     }
@@ -208,7 +216,7 @@ impl SessionEnvironment {
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        self.sandbox()
+        self.checkpointing()?
             .cleanup_checkpoint_for_terminal(
                 request,
                 store,

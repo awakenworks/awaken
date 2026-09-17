@@ -1,4 +1,5 @@
 //! Exact restoration acquisition, materialization and terminal disposal share one test owner.
+use pc::CheckpointingSandbox as _;
 #[tokio::test]
 async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_disposal() {
     use pc::test_support::EffectAuthority;
@@ -24,7 +25,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
             let store = CheckpointStore::default();
             let checkpoint_request = checkpoint_request_for(&spec.scope);
             let checkpoint = source
-                .checkpoint(&checkpoint_request, &store)
+                .create_checkpoint(&checkpoint_request, &store)
                 .await
                 .unwrap();
             source.dispose_unattached().await.unwrap();
@@ -32,9 +33,10 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
             let evidence = request.evidence(&spec);
             let root = restoration_root(tmp.path(), &evidence).unwrap();
             if present {
-                let target = pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-                    .await
-                    .unwrap();
+                let target =
+                    pc::RestoreTargetSandboxProvider::acquire_restore(&provider, &spec, &request)
+                        .await
+                        .unwrap();
                 std::fs::write(root.join("retained"), b"original").unwrap();
                 assert!(
                     target.target().dispose_unattached().await.is_err(),
@@ -45,7 +47,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
             let authorization = restored_disposal_authorization();
             let authority = EffectAuthority::new(authorization.effect_fence());
             assert!(
-                pc::SandboxProvider::dispose_restored(
+                pc::RestoreTargetSandboxProvider::dispose_restored(
                     &provider,
                     &spec,
                     &request,
@@ -61,7 +63,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 binding
             );
             let held = lock_target(&root).await.unwrap();
-            let mut pending = Box::pin(pc::SandboxProvider::dispose_restored(
+            let mut pending = Box::pin(pc::RestoreTargetSandboxProvider::dispose_restored(
                 &provider,
                 &spec,
                 &request,
@@ -106,7 +108,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 if present {
                     assert_eq!(std::fs::read(root.join("retained")).unwrap(), b"original");
                 }
-                pc::SandboxProvider::dispose_restored(
+                pc::RestoreTargetSandboxProvider::dispose_restored(
                     &provider,
                     &spec,
                     &request,
@@ -123,7 +125,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 "one stable lock inode survives cleanup"
             );
             assert!(
-                pc::SandboxProvider::dispose_restored(
+                pc::RestoreTargetSandboxProvider::dispose_restored(
                     &provider,
                     &spec,
                     &request,
@@ -134,7 +136,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 .is_err(),
                 "R5 no unauthorized absent success"
             );
-            pc::SandboxProvider::dispose_restored(
+            pc::RestoreTargetSandboxProvider::dispose_restored(
                 &provider,
                 &spec,
                 &request,
@@ -223,14 +225,14 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
     let store = CheckpointStore::default();
     let checkpoint_request = checkpoint_request_for(&spec.scope);
     let receipt = sandbox
-        .checkpoint(&checkpoint_request, &store)
+        .create_checkpoint(&checkpoint_request, &store)
         .await
         .unwrap();
     sandbox.dispose_unattached().await.unwrap();
     assert!(!sandbox.workspace_path().exists(), "source terminated");
 
     let request = exact_restore_request(&spec, &checkpoint_request, &receipt, "fidelity");
-    let restored = pc::SandboxProvider::restore(&provider, &spec, &request, &store)
+    let restored = pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
         .await
         .unwrap();
     let expected_evidence = request.evidence(&spec);
@@ -265,7 +267,7 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
         "directory mode is applied after child extraction"
     );
     drop(restored);
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -274,7 +276,7 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
     )
     .await
     .expect("R2 exact disposal");
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -365,7 +367,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     let request = exact_restore_request(&spec, &checkpoint_request, &checkpoint, "recovery");
     let evidence = request.evidence(&spec);
     let exact_root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
-    let created = pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
+    let created = pc::RestoreTargetSandboxProvider::acquire_restore(&provider, &spec, &request)
         .await
         .expect("T1 exact target creation");
     assert_eq!(
@@ -382,9 +384,10 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     drop(created);
 
     let fresh_provider = LocalProvider::new(tmp.path());
-    let recovered = pc::SandboxProvider::acquire_restore(&fresh_provider, &spec, &request)
-        .await
-        .expect("T2 fresh provider recovery");
+    let recovered =
+        pc::RestoreTargetSandboxProvider::acquire_restore(&fresh_provider, &spec, &request)
+            .await
+            .expect("T2 fresh provider recovery");
     assert_eq!(
         recovered.disposition(),
         pc::SandboxRestoreTargetDisposition::Recovered,
@@ -402,7 +405,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     );
 
     let foreign = exact_restore_request(&spec, &checkpoint_request, &checkpoint, "foreign");
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &fresh_provider,
         &spec,
         &foreign,
@@ -416,7 +419,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     let mut drifted = request.clone();
     drifted.session_id = "different-session".into();
     assert!(
-        pc::SandboxProvider::acquire_restore(&fresh_provider, &spec, &drifted)
+        pc::RestoreTargetSandboxProvider::acquire_restore(&fresh_provider, &spec, &drifted)
             .await
             .is_err(),
         "T4 session drift fails admission"
@@ -429,7 +432,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     assert!(exact_root.is_dir(), "T4 exact target remains");
 
     drop(recovered);
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &fresh_provider,
         &spec,
         &request,
@@ -438,7 +441,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     )
     .await
     .expect("T5 exact disposal");
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &fresh_provider,
         &spec,
         &request,
@@ -473,14 +476,14 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     let store = CheckpointStore::default();
     let checkpoint_request = checkpoint_request_for(&spec.scope);
     let receipt = source
-        .checkpoint(&checkpoint_request, &store)
+        .create_checkpoint(&checkpoint_request, &store)
         .await
         .unwrap();
     source.dispose_unattached().await.unwrap();
     let request = exact_restore_request(&spec, &checkpoint_request, &receipt, "response-loss");
     let expected_evidence = request.evidence(&spec);
     let restored_root = restore_target::restoration_root(tmp.path(), &expected_evidence).unwrap();
-    let restored = pc::SandboxProvider::restore(&provider, &spec, &request, &store)
+    let restored = pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
         .await
         .expect("M1");
     assert_eq!(restored.evidence(), &expected_evidence, "M1 exact evidence");
@@ -489,7 +492,7 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     drop(restored);
 
     std::fs::write(restored_root.join("value"), b"unpublished-crash-residue").unwrap();
-    let replay = pc::SandboxProvider::restore(&provider, &spec, &request, &store)
+    let replay = pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
         .await
         .expect("M2");
     assert_eq!(
@@ -513,7 +516,7 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     malformed.effect_id = "blake3:00".into();
     let gets_before_reject = store.gets.load(std::sync::atomic::Ordering::Relaxed);
     assert!(
-        pc::SandboxProvider::restore(&provider, &spec, &malformed, &store)
+        pc::RestorableSandboxProvider::restore(&provider, &spec, &malformed, &store)
             .await
             .is_err(),
         "M3 malformed identity"
@@ -529,7 +532,7 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
         "M3 zero target write"
     );
     drop(replay);
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -538,7 +541,7 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     )
     .await
     .expect("M1/M2 exact cleanup");
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -569,7 +572,7 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
     let store = CheckpointStore::default();
     let checkpoint_request = checkpoint_request_for(&spec.scope);
     let receipt = sandbox
-        .checkpoint(&checkpoint_request, &store)
+        .create_checkpoint(&checkpoint_request, &store)
         .await
         .unwrap();
     sandbox.dispose_unattached().await.unwrap();
@@ -584,7 +587,7 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
     let evidence = request.evidence(&spec);
     let restored_root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
     assert!(
-        pc::SandboxProvider::restore(&provider, &spec, &request, &store)
+        pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
             .await
             .is_err(),
         "F1 corruption fails closed"
@@ -602,7 +605,7 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
         .get_mut(&receipt.id)
         .unwrap()
         .bytes = original;
-    let recovered = pc::SandboxProvider::restore(&provider, &spec, &request, &store)
+    let recovered = pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
         .await
         .expect("F2 exact retry");
     assert_eq!(recovered.evidence(), &evidence, "F2 exact evidence");
@@ -612,7 +615,7 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
         "F2 materialized bytes"
     );
     drop(recovered);
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -621,7 +624,7 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
     )
     .await
     .expect("F3 exact disposal");
-    pc::SandboxProvider::dispose_restored(
+    pc::RestoreTargetSandboxProvider::dispose_restored(
         &provider,
         &spec,
         &request,

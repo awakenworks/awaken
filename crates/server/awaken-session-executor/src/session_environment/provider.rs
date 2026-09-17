@@ -45,6 +45,62 @@ pub(crate) struct SessionEnvironmentAdoptionLayout {
     pub(crate) historical_owned_paths: Option<Vec<String>>,
 }
 
+/// Who owns one Session Environment provider effect. The Session aggregate
+/// decides this once (an unowned Environment has no realization lease); every
+/// provider projection then takes the matching named operation. A fence always
+/// travels with its current authority, so neither an omitted fence nor a fence
+/// without authority can select a weaker path.
+#[derive(Clone, Copy)]
+pub(crate) enum ProviderEffect<'a> {
+    /// No aggregate effect owns the Environment.
+    Unattached,
+    /// The aggregate-owned effect fence and the authority that admits it.
+    Fenced {
+        fence: &'a pc::SandboxEffectFence,
+        authority: &'a dyn pc::CurrentExecutionAuthority,
+    },
+}
+
+impl<'a> ProviderEffect<'a> {
+    /// Project an aggregate-derived optional fence and its captured authority.
+    /// A fence without authority is refused rather than degraded.
+    pub(crate) fn from_parts(
+        fence: Option<&'a pc::SandboxEffectFence>,
+        authority: Option<&'a dyn pc::CurrentExecutionAuthority>,
+    ) -> Result<Self, pc::SandboxError> {
+        match (fence, authority) {
+            (Some(fence), Some(authority)) => Ok(Self::Fenced { fence, authority }),
+            (None, _) => Ok(Self::Unattached),
+            (Some(_), None) => Err(pc::SandboxError::fence_rejected(
+                "a fenced Session Environment effect has no current authority",
+            )),
+        }
+    }
+
+    /// The observation basis this effect implies for `spec`.
+    pub(crate) const fn observation_basis(
+        self,
+        spec: &'a pc::SandboxSpec,
+    ) -> pc::SandboxObservationBasis<'a> {
+        match self {
+            Self::Unattached => pc::SandboxObservationBasis::Unattached,
+            Self::Fenced { fence, .. } => pc::SandboxObservationBasis::Effect {
+                spec,
+                effect_fence: fence,
+            },
+        }
+    }
+
+    fn admit(self) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Unattached => Ok(()),
+            Self::Fenced { fence, authority } => {
+                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
+            }
+        }
+    }
+}
+
 impl SessionEnvironmentProvider {
     /// Construct the in-process adapter for a non-container Deployment tier.
     /// Both initial Host construction and asynchronous provider selection use this one mapping;
@@ -381,8 +437,7 @@ impl SessionEnvironmentProvider {
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         self.create_effective_for_effect(
             spec,
-            None,
-            None,
+            ProviderEffect::Unattached,
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -392,35 +447,20 @@ impl SessionEnvironmentProvider {
     pub(crate) async fn create_effective_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
-        effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect: ProviderEffect<'_>,
         source_handle: Option<&pc::SandboxHandle>,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
-        let admit = || match (effect_fence, effect_fence_source) {
-            (Some(fence), Some(authority)) => {
-                pc::with_current_sandbox_effect(fence, authority, || Ok(()))
-            }
-            (Some(_), None) => Err(pc::SandboxError::fence_rejected(
-                "fenced creation has no current authority",
-            )),
-            (None, _) => Ok(()),
-        };
-        admit()?;
+        effect.admit()?;
         let environment = match self {
-            Self::Workdir { provider, hand } => match effect_fence {
-                Some(effect_fence) => provider
-                    .create_sandbox_for_effect(
-                        spec,
-                        effect_fence,
-                        source_handle,
-                        effect_fence_source.expect("fenced creation validated its authority"),
-                    )
+            Self::Workdir { provider, hand } => match effect {
+                ProviderEffect::Fenced { fence, authority } => provider
+                    .create_sandbox_for_effect(spec, fence, source_handle, authority)
                     .await
                     .map(|sandbox| {
                         SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                     }),
-                None => provider.create_sandbox(spec).await.map(|sandbox| {
+                ProviderEffect::Unattached => provider.create_sandbox(spec).await.map(|sandbox| {
                     SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                 }),
             },
@@ -429,18 +469,13 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
-            } => match effect_fence {
-                Some(effect_fence) => {
+            } => match effect {
+                ProviderEffect::Fenced { fence, authority } => {
                     provider
-                        .create_sandbox_for_effect(
-                            spec,
-                            effect_fence,
-                            source_handle,
-                            effect_fence_source.expect("fenced creation validated its authority"),
-                        )
+                        .create_sandbox_for_effect(spec, fence, source_handle, authority)
                         .await
                 }
-                None => provider.create_sandbox(spec).await,
+                ProviderEffect::Unattached => provider.create_sandbox(spec).await,
             }
             .map(|sandbox| {
                 SessionEnvironment::namespace(
@@ -459,9 +494,24 @@ impl SessionEnvironmentProvider {
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
-                let environment = provider
-                    .create_environment_for_effect(spec, effect_fence, effect_fence_source, intent)
-                    .await?;
+                let environment = match effect {
+                    ProviderEffect::Fenced { fence, authority } => {
+                        provider
+                            .create_environment_for_effect(spec, fence, authority, intent)
+                            .await?
+                    }
+                    ProviderEffect::Unattached => {
+                        if matches!(
+                            intent,
+                            awaken_sandbox_container::ContainerRealizationIntent::Rebuild { .. }
+                        ) {
+                            return Err(pc::SandboxError::fence_rejected(
+                                "a container rebuild requires an aggregate effect fence",
+                            ));
+                        }
+                        provider.create_unattached_environment(spec).await?
+                    }
+                };
                 SessionEnvironment::container(
                     environment,
                     hand_factory.clone(),
@@ -473,7 +523,7 @@ impl SessionEnvironmentProvider {
                 .await
             }
         }?;
-        admit()?;
+        effect.admit()?;
         Ok(environment)
     }
 
@@ -570,56 +620,32 @@ impl SessionEnvironmentProvider {
         Ok(adoption)
     }
 
-    /// Effect-free observation through the exact provider selected for this
-    /// Session. This is the only Runtime projection of the neutral observation
-    /// contract; backend errors remain indeterminate and are never translated
-    /// into replacement authority here.
+    /// Observe one exact durable handle through the exact provider selected
+    /// for this Session, without create/adopt/delete effects. This is the sole
+    /// Runtime projection of the neutral observation port: `basis` selects an
+    /// unattached inspection or a revalidation under the aggregate-owned effect
+    /// fence. Backend errors remain indeterminate and are never translated into
+    /// replacement authority here. `purpose` is container observation semantics
+    /// only and never authorizes a mutation.
     pub(crate) async fn observe_effective(
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         retained: Option<&super::SessionEnvironment>,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        match self {
-            Self::Workdir { provider, .. } => pc::SandboxProvider::observe(provider, handle).await,
-            Self::Namespace { provider, .. } => {
-                pc::SandboxProvider::observe(provider, handle).await
-            }
-            Self::Container { provider, .. } => {
-                provider
-                    .observe_environment(Self::container_observation_adoption(
-                        spec, handle, retained,
-                    )?)
-                    .await
-            }
-        }
-    }
-
-    /// Observe one exact durable handle under the aggregate-owned physical
-    /// effect fence. This is the sole Runtime projection of the neutral fenced
-    /// observation port; adapters must revalidate the fence and provider-
-    /// effective spec without producing create/adopt/delete effects.
-    pub(crate) async fn observe_effective_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-        retained: Option<&super::SessionEnvironment>,
-        effect_fence: &pc::SandboxEffectFence,
+        basis: pc::SandboxObservationBasis<'_>,
         purpose: awaken_sandbox_container::ContainerObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                pc::SandboxProvider::observe_for_effect(provider, spec, handle, effect_fence).await
+                pc::SandboxProvider::observe(provider, handle, basis).await
             }
             Self::Namespace { provider, .. } => {
-                pc::SandboxProvider::observe_for_effect(provider, spec, handle, effect_fence).await
+                pc::SandboxProvider::observe(provider, handle, basis).await
             }
             Self::Container { provider, .. } => {
                 let mut adoption = Self::container_observation_adoption(spec, handle, retained)?;
                 adoption.observation_purpose = purpose;
-                provider
-                    .observe_environment_for_effect(adoption, effect_fence)
-                    .await
+                provider.observe_environment(adoption, basis).await
             }
         }
     }
@@ -697,7 +723,7 @@ impl SessionEnvironmentProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
-        self.adopt_effective_for_effect(spec, handle, None, None)
+        self.adopt_effective_for_effect(spec, handle, ProviderEffect::Unattached)
             .await
     }
 
@@ -714,8 +740,7 @@ impl SessionEnvironmentProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         retained: &SessionEnvironment,
-        effect_fence: Option<&pc::SandboxEffectFence>,
-        authority: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect: ProviderEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         if &retained.handle() != handle {
             return Err(pc::SandboxError::conflict(
@@ -726,20 +751,17 @@ impl SessionEnvironmentProvider {
         if matches!(retained, SessionEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution())
         {
             if !matches!(self, Self::Workdir { provider, .. } if provider.execution_deployment().is_some())
-                || effect_fence.is_none()
-                || authority.is_none()
+                || matches!(effect, ProviderEffect::Unattached)
             {
                 return Err(pc::SandboxError::fence_rejected(
                     "scoped rebind requires its deployment and current adoption authority",
                 ));
             }
             retained.stop_bound_processes().await?;
-            return self
-                .adopt_effective_for_effect(spec, handle, effect_fence, authority)
-                .await;
+            return self.adopt_effective_for_effect(spec, handle, effect).await;
         }
         #[cfg(not(target_os = "linux"))]
-        let _ = (spec, effect_fence, authority);
+        let _ = (spec, effect);
         match (self, retained) {
             (Self::Workdir { hand, .. }, SessionEnvironment::Workdir { sandbox, .. }) => {
                 Ok(SessionEnvironment::Workdir {
@@ -800,28 +822,18 @@ impl SessionEnvironmentProvider {
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
-        effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
-        authority: Option<&dyn pc::CurrentExecutionAuthority>,
+        effect: ProviderEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
-        let required_authority = || {
-            authority.ok_or_else(|| {
-                pc::SandboxError::fence_rejected("adoption has no current authority")
-            })
-        };
-        let admit = || match effect_fence {
-            Some(fence) => pc::with_current_sandbox_effect(fence, required_authority()?, || Ok(())),
-            None => Ok(()),
-        };
-        admit()?;
+        effect.admit()?;
         let environment = match self {
-            Self::Workdir { provider, hand } => match effect_fence {
-                Some(effect_fence) => provider
-                    .adopt_sandbox_for_effect(spec, handle, effect_fence, required_authority()?)
+            Self::Workdir { provider, hand } => match effect {
+                ProviderEffect::Fenced { fence, authority } => provider
+                    .adopt_sandbox_for_effect(spec, handle, fence, authority)
                     .await
                     .map(|sandbox| {
                         SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                     }),
-                None => provider
+                ProviderEffect::Unattached => provider
                     .adopt_sandbox_with_spec(spec, handle)
                     .await
                     .map(|sandbox| {
@@ -833,13 +845,13 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
-            } => match effect_fence {
-                Some(effect_fence) => {
+            } => match effect {
+                ProviderEffect::Fenced { fence, authority } => {
                     provider
-                        .adopt_sandbox_for_effect(spec, handle, effect_fence, required_authority()?)
+                        .adopt_sandbox_for_effect(spec, handle, fence, authority)
                         .await
                 }
-                None => {
+                ProviderEffect::Unattached => {
                     provider
                         .adopt_sandbox_with_control_services(handle, &spec.control_services)
                         .await
@@ -862,16 +874,21 @@ impl SessionEnvironmentProvider {
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
-                let environment = provider
-                    .adopt_environment_for_effect(
-                        awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle),
-                        effect_fence,
-                        authority,
-                    )
-                    .await?;
-                admit()?;
+                let adoption =
+                    awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle);
+                let environment = match effect {
+                    ProviderEffect::Fenced { fence, authority } => {
+                        provider
+                            .adopt_environment_for_effect(adoption, fence, authority)
+                            .await?
+                    }
+                    ProviderEffect::Unattached => {
+                        provider.adopt_unattached_environment(adoption).await?
+                    }
+                };
+                effect.admit()?;
                 environment.renew_lease().await?;
-                admit()?;
+                effect.admit()?;
                 SessionEnvironment::container(
                     environment,
                     hand_factory.clone(),
@@ -883,7 +900,7 @@ impl SessionEnvironmentProvider {
                 .await
             }
         }?;
-        admit()?;
+        effect.admit()?;
         Ok(environment)
     }
 
@@ -898,7 +915,8 @@ impl SessionEnvironmentProvider {
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                let restored = pc::SandboxProvider::restore(provider, spec, request, store).await?;
+                let restored =
+                    pc::RestorableSandboxProvider::restore(provider, spec, request, store).await?;
                 let handle = restored.target().handle();
                 request.verify_handle(spec, &handle)?;
                 Ok(handle)
@@ -1019,7 +1037,7 @@ impl SessionEnvironmentProvider {
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                pc::SandboxProvider::dispose_restored(
+                pc::RestoreTargetSandboxProvider::dispose_restored(
                     provider,
                     spec,
                     request,
@@ -1058,6 +1076,50 @@ fn container_spec(
         }
     }
     Ok(spec)
+}
+
+#[cfg(test)]
+mod provider_effect_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn provider_effect_is_named_and_never_degrades() {
+        // Decision table for the Host's single ownership projection.
+        // | Rule | fence | authority | Effect                                  |
+        // | P1   | none  | any       | Unattached; unattached observation      |
+        // | P2   | some  | some      | Fenced; effect observation with spec    |
+        // | P3   | some  | none      | FenceRejected, never Unattached         |
+        let fence = pc::SandboxEffectFence::new("op", "owner", "boot", 1, u64::MAX).unwrap();
+        let authority = pc::test_support::EffectAuthority::new(&fence);
+        let spec = crate::session_environment::environment_test_spec();
+        for authority in [None, Some(&authority as &dyn pc::CurrentExecutionAuthority)] {
+            let effect = ProviderEffect::from_parts(None, authority).expect("P1");
+            assert!(matches!(effect, ProviderEffect::Unattached), "P1");
+            assert!(
+                matches!(
+                    effect.observation_basis(&spec),
+                    pc::SandboxObservationBasis::Unattached
+                ),
+                "P1 basis"
+            );
+        }
+        let effect = ProviderEffect::from_parts(Some(&fence), Some(&authority)).expect("P2");
+        assert!(
+            matches!(
+                effect.observation_basis(&spec),
+                pc::SandboxObservationBasis::Effect { spec: observed, effect_fence }
+                    if observed == &spec && effect_fence == &fence
+            ),
+            "P2 basis"
+        );
+        assert!(
+            matches!(
+                ProviderEffect::from_parts(Some(&fence), None),
+                Err(pc::SandboxError::FenceRejected(_))
+            ),
+            "P3"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

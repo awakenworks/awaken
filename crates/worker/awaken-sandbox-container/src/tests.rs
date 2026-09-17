@@ -1992,8 +1992,8 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         ContainerEnvironmentProvider::adopt_environment_for_effect(
             &pool,
             ContainerEnvironmentAdoption::new(&sandbox_spec, &handle),
-            Some(&terminal_fence),
-            Some(&pc::test_support::EffectAuthority::new(&terminal_fence)),
+            &terminal_fence,
+            &pc::test_support::EffectAuthority::new(&terminal_fence)
         )
         .await
         .is_err(),
@@ -2501,8 +2501,8 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
             provider
                 .adopt_environment_for_effect(
                     ContainerEnvironmentAdoption::new(spec, handle),
-                    Some(fence),
-                    Some(authority),
+                    fence,
+                    authority,
                 )
                 .await
                 .map(Some)
@@ -2992,8 +2992,10 @@ async fn container_checkpoint_projection_preserves_exact_handle_and_current_auth
         let mut sandbox = provider
             .create_container_for_effect(
                 &requested,
-                Some(&create),
-                Some(&pc::test_support::EffectAuthority::new(&create)),
+                crate::ContainerEffect::Fenced {
+                    fence: &create,
+                    authority: &pc::test_support::EffectAuthority::new(&create),
+                },
                 ContainerRealizationIntent::Create,
             )
             .await
@@ -3724,7 +3726,7 @@ impl ContainerRuntime for FakeRuntime {
             ));
         }
         let admit = || {
-            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
                 .map_err(|error| RuntimeError::Backend(error.to_string()))
         };
         admit()?;
@@ -3989,8 +3991,10 @@ async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() 
     let error = match provider
         .create_container_for_effect(
             &spec("expired-fence"),
-            Some(&expired),
-            None,
+            crate::ContainerEffect::Fenced {
+                fence: &expired,
+                authority: &pc::test_support::EffectAuthority::denied(),
+            },
             ContainerRealizationIntent::Create,
         )
         .await
@@ -4215,8 +4219,8 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                         };
                         port.create_environment_for_effect(
                             &requested,
-                            Some(&fence),
-                            Some(&authority),
+                            &fence,
+                            &authority,
                             ContainerRealizationIntent::Create,
                         )
                         .await
@@ -4364,8 +4368,10 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
     provider
         .create_container_for_effect(
             &renewable_spec,
-            Some(&initial),
-            Some(&source),
+            crate::ContainerEffect::Fenced {
+                fence: &initial,
+                authority: &source,
+            },
             ContainerRealizationIntent::Create,
         )
         .await
@@ -4406,14 +4412,20 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
         let mut rejected_spec = spec(&format!("rejected-provider-boundary-{rule}"));
         rejected_spec.mounts.clear();
         rejected_spec.env.clear();
-        let source = source.as_ref().map(pc::test_support::EffectAuthority::new);
+        // R2 (no current Session authority) is now unrepresentable as a
+        // fenced effect; the closest executable row is an authority that
+        // admits nothing.
+        let source = source.as_ref().map_or_else(
+            pc::test_support::EffectAuthority::denied,
+            pc::test_support::EffectAuthority::new,
+        );
         let error = match provider
             .create_container_for_effect(
                 &rejected_spec,
-                Some(&initial),
-                source
-                    .as_ref()
-                    .map(|source| source as &dyn pc::CurrentExecutionAuthority),
+                crate::ContainerEffect::Fenced {
+                    fence: &initial,
+                    authority: &source,
+                },
                 ContainerRealizationIntent::Create,
             )
             .await
@@ -4469,16 +4481,15 @@ impl pc::SecretBroker for RecordingSecretBroker {
         Ok(self.current.lock().unwrap().clone())
     }
 
-    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
-        self.record_writeback(bytes)
-    }
-
-    async fn write_back_for_effect(
+    async fn write_back(
         &self,
-        effect: &pc::SecretWritebackEffect,
+        target: pc::SecretWritebackTarget<'_>,
         bytes: Vec<u8>,
     ) -> Result<(), pc::SandboxError> {
         self.record_writeback(bytes)?;
+        let pc::SecretWritebackTarget::Effect(effect) = target else {
+            return Ok(());
+        };
         self.effect_operations
             .lock()
             .unwrap()
@@ -4791,7 +4802,7 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         Some("fake-control-incarnation"),
         "B2/E2 persisted"
     );
-    let exact = ContainerEnvironmentProvider::adopt_environment(
+    let exact = ContainerEnvironmentProvider::adopt_unattached_environment(
         &container_provider,
         ContainerEnvironmentAdoption::new(&demanded, &handle),
     )
@@ -4821,8 +4832,8 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
     ContainerEnvironmentProvider::adopt_environment_for_effect(
         &container_provider,
         ContainerEnvironmentAdoption::new(&demanded, &handle),
-        Some(&adoption_fence),
-        Some(&pc::test_support::EffectAuthority::new(&adoption_fence)),
+        &adoption_fence,
+        &pc::test_support::EffectAuthority::new(&adoption_fence),
     )
     .await
     .expect("B4/E3 fenced exact spec");
@@ -4844,9 +4855,9 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         },
     );
     assert!(
-        ContainerEnvironmentProvider::adopt_environment(
+        ContainerEnvironmentProvider::adopt_unattached_environment(
             &container_provider,
-            ContainerEnvironmentAdoption::new(&demanded, &missing_incarnation),
+            ContainerEnvironmentAdoption::new(&demanded, &missing_incarnation)
         )
         .await
         .is_err(),
@@ -4870,9 +4881,9 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
 
     let ordinary = spec("demanded-control");
     assert!(
-        ContainerEnvironmentProvider::adopt_environment(
+        ContainerEnvironmentProvider::adopt_unattached_environment(
             &container_provider,
-            ContainerEnvironmentAdoption::new(&ordinary, &handle),
+            ContainerEnvironmentAdoption::new(&ordinary, &handle)
         )
         .await
         .is_err(),
@@ -4887,9 +4898,9 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         },
     );
     assert!(
-        ContainerEnvironmentProvider::adopt_environment(
+        ContainerEnvironmentProvider::adopt_unattached_environment(
             &container_provider,
-            ContainerEnvironmentAdoption::new(&demanded, &legacy),
+            ContainerEnvironmentAdoption::new(&demanded, &legacy)
         )
         .await
         .is_err(),
@@ -4897,9 +4908,9 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
     );
     let unsupported_provider = provider(Arc::new(FakeRuntime::default()));
     assert!(
-        ContainerEnvironmentProvider::adopt_environment(
+        ContainerEnvironmentProvider::adopt_unattached_environment(
             &unsupported_provider,
-            ContainerEnvironmentAdoption::new(&demanded, &handle),
+            ContainerEnvironmentAdoption::new(&demanded, &handle)
         )
         .await
         .is_err(),
@@ -5119,6 +5130,7 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         ContainerEnvironmentProvider::observe_environment(
             &provider,
             ContainerEnvironmentAdoption::new(&exact, &handle),
+            awaken_provisioning_contract::SandboxObservationBasis::Unattached
         )
         .await
         .unwrap(),
@@ -5136,6 +5148,7 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         ContainerEnvironmentProvider::observe_environment(
             &provider,
             ContainerEnvironmentAdoption::new(&drifted, &handle),
+            awaken_provisioning_contract::SandboxObservationBasis::Unattached,
         )
         .await
         .unwrap()
@@ -5157,13 +5170,21 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         retained.retained_attempt.is_some(),
         "A3 creator retains proof"
     );
-    ContainerEnvironmentProvider::observe_environment(&provider, retained)
-        .await
-        .unwrap();
+    ContainerEnvironmentProvider::observe_environment(
+        &provider,
+        retained,
+        awaken_provisioning_contract::SandboxObservationBasis::Unattached,
+    )
+    .await
+    .unwrap();
     let fence = ContainerEffectFence::new("observe", "owner", "runtime", 1, u64::MAX).unwrap();
-    ContainerEnvironmentProvider::observe_environment_for_effect(&provider, retained, &fence)
-        .await
-        .unwrap();
+    ContainerEnvironmentProvider::observe_environment(
+        &provider,
+        retained,
+        retained.effect_basis(&fence),
+    )
+    .await
+    .unwrap();
     let attempts = runtime
         .st
         .lock()
@@ -5263,15 +5284,21 @@ async fn observation_purpose_reaches_runtime_without_granting_cleanup() {
             );
             adoption.observation_purpose = purpose;
             if fenced {
-                ContainerEnvironmentProvider::observe_environment_for_effect(
-                    &provider, adoption, &fence,
+                ContainerEnvironmentProvider::observe_environment(
+                    &provider,
+                    adoption,
+                    adoption.effect_basis(&fence),
                 )
                 .await
                 .unwrap();
             } else {
-                ContainerEnvironmentProvider::observe_environment(&provider, adoption)
-                    .await
-                    .unwrap();
+                ContainerEnvironmentProvider::observe_environment(
+                    &provider,
+                    adoption,
+                    awaken_provisioning_contract::SandboxObservationBasis::Unattached,
+                )
+                .await
+                .unwrap();
             }
             assert_eq!(
                 runtime.st.lock().unwrap().observation_purposes.last(),
@@ -5281,8 +5308,10 @@ async fn observation_purpose_reaches_runtime_without_granting_cleanup() {
             drifted.outputs_path = "/different".into();
             adoption.spec = &drifted;
             let before = runtime.st.lock().unwrap().observations;
-            let observation = ContainerEnvironmentProvider::observe_environment_for_effect(
-                &provider, adoption, &fence,
+            let observation = ContainerEnvironmentProvider::observe_environment(
+                &provider,
+                adoption,
+                adoption.effect_basis(&fence),
             )
             .await
             .unwrap();
@@ -5327,15 +5356,21 @@ async fn historical_configuration_is_only_an_exact_fenced_terminal_candidate() {
                     }
                     let before = runtime.st.lock().unwrap().observations;
                     let result = if fenced {
-                        ContainerEnvironmentProvider::observe_environment_for_effect(
-                            &provider, adoption, &fence,
+                        ContainerEnvironmentProvider::observe_environment(
+                            &provider,
+                            adoption,
+                            adoption.effect_basis(&fence),
                         )
                         .await
                         .unwrap()
                     } else {
-                        ContainerEnvironmentProvider::observe_environment(&provider, adoption)
-                            .await
-                            .unwrap()
+                        ContainerEnvironmentProvider::observe_environment(
+                            &provider,
+                            adoption,
+                            awaken_provisioning_contract::SandboxObservationBasis::Unattached,
+                        )
+                        .await
+                        .unwrap()
                     };
                     let admitted = candidate && terminal && fenced && !drift;
                     assert_eq!(matches!(result, pc::SandboxObservation::Ready), admitted);
@@ -5422,8 +5457,8 @@ async fn restored_adoption_rechecks_original_authority_after_each_query_response
                                 provider
                                     .adopt_environment_for_effect(
                                         ContainerEnvironmentAdoption::new(spec, handle),
-                                        Some(fence),
-                                        Some(authority),
+                                        fence,
+                                        authority,
                                     )
                                     .await
                                     .map(|environment| environment.handle())
@@ -5577,7 +5612,7 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                     Box<dyn std::future::Future<Output = Result<(), pc::SandboxError>> + Send + '_>,
                 > {
                     if port == "sandbox" {
-                        pc::SandboxProvider::dispose_restored(
+                        pc::RestoreTargetSandboxProvider::dispose_restored(
                             &provider,
                             &spec,
                             &request,
@@ -5682,7 +5717,11 @@ impl pc::SecretBroker for RejectingSecretBroker {
         Err(pc::SandboxError::fence_rejected("claim expired"))
     }
 
-    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        _bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         Err(pc::SandboxError::unsupported("not supported"))
     }
 }
@@ -5908,7 +5947,7 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
     assert_eq!(recovered.provider_kind(), "container");
     let node_b = provider(rt.clone());
-    let sandbox_b = ContainerEnvironmentProvider::adopt_environment(
+    let sandbox_b = ContainerEnvironmentProvider::adopt_unattached_environment(
         &node_b,
         ContainerEnvironmentAdoption::new(&sandbox_spec, &recovered),
     )
@@ -5974,7 +6013,7 @@ async fn handle_round_trips_and_adopt_reconnects() {
         p.adopt(&recovered).await.is_err(),
         "current handle-only adoption cannot invent terminal participant policy"
     );
-    let adopted = ContainerEnvironmentProvider::adopt_environment(
+    let adopted = ContainerEnvironmentProvider::adopt_unattached_environment(
         &p,
         ContainerEnvironmentAdoption::new(&sandbox_spec, &recovered),
     )
@@ -6128,7 +6167,7 @@ async fn a_capable_runtime_replaces_only_read_only_files_below_the_live_input_ro
     );
 
     let handle = pc::Sandbox::handle(&sandbox);
-    let adopted = ContainerEnvironmentProvider::adopt_environment(
+    let adopted = ContainerEnvironmentProvider::adopt_unattached_environment(
         &provider,
         ContainerEnvironmentAdoption::new(&sandbox_spec, &handle),
     )
@@ -6164,9 +6203,9 @@ async fn adopt_rejects_a_handle_whose_runtime_is_gone() {
     let handle = sandbox.handle();
     sandbox.dispose_unattached().await.unwrap();
     assert!(
-        ContainerEnvironmentProvider::adopt_environment(
+        ContainerEnvironmentProvider::adopt_unattached_environment(
             &p,
-            ContainerEnvironmentAdoption::new(&sandbox_spec, &handle),
+            ContainerEnvironmentAdoption::new(&sandbox_spec, &handle)
         )
         .await
         .is_err(),
@@ -6476,9 +6515,10 @@ async fn canonical_environment_spawns_agent_without_process_owning_terminal_clea
     let provider = provider_without_broker(rt.clone()).with_secret_broker(broker.clone());
     let mut requested = spec("run-oa");
     requested.mounts.push(writable_credential_mount());
-    let environment = ContainerEnvironmentProvider::create_environment(&provider, &requested)
-        .await
-        .expect("L1 canonical Environment creation");
+    let environment =
+        ContainerEnvironmentProvider::create_unattached_environment(&provider, &requested)
+            .await
+            .expect("L1 canonical Environment creation");
     let handle = environment.handle();
     let RuntimeAgentProcess { process, channel } = environment
         .spawn_agent_process(pc::Command {
@@ -6792,7 +6832,7 @@ async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
         control_services: Default::default(),
     };
 
-    let environment = ContainerEnvironmentProvider::create_environment(&provider, &spec)
+    let environment = ContainerEnvironmentProvider::create_unattached_environment(&provider, &spec)
         .await
         .expect("W1 canonical Environment creation");
     let RuntimeAgentProcess {
@@ -6892,9 +6932,10 @@ async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() 
     let provider =
         ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
     let requested = writable_credential_spec("remote-credential-refresh");
-    let environment = ContainerEnvironmentProvider::create_environment(&provider, &requested)
-        .await
-        .expect("S1 canonical Environment creation");
+    let environment =
+        ContainerEnvironmentProvider::create_unattached_environment(&provider, &requested)
+            .await
+            .expect("S1 canonical Environment creation");
     let RuntimeAgentProcess {
         process,
         channel: _channel,

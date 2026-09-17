@@ -417,7 +417,13 @@ async fn terminal_cleanup_uses_current_proof_not_provider_wall_time() {
                             assert_eq!(std::fs::read(&secret).unwrap(), b"unchanged-by-denial");
                             assert_eq!(
                                 provider
-                                    .observe_for_effect(&spec, handle.as_ref().unwrap(), &create)
+                                    .observe(
+                                        handle.as_ref().unwrap(),
+                                        pc::SandboxObservationBasis::Effect {
+                                            spec: &spec,
+                                            effect_fence: &create,
+                                        },
+                                    )
                                     .await
                                     .unwrap(),
                                 pc::SandboxObservation::Ready,

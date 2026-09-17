@@ -267,7 +267,7 @@ pub(super) async fn dispose(
 ) -> Result<(), RuntimeError> {
     authorization.validate().map_err(backend)?;
     let admit = || {
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
             .map_err(backend)
     };
     admit()?;

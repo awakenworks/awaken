@@ -29,7 +29,11 @@ impl pc::SecretBroker for FixedBroker {
         self.materialize(reference).await
     }
 
-    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        _bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         Err(pc::SandboxError::unsupported("not supported"))
     }
 }

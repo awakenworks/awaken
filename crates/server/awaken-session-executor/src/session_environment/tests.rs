@@ -166,6 +166,49 @@ impl pc::ProcessHandle for SlowReapProcess {
 
 #[async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerProvider {
+    async fn create_environment_for_effect(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        _intent: awaken_sandbox_container::ContainerRealizationIntent,
+    ) -> Result<
+        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced Environment creation",
+        ))
+    }
+    async fn adopt_environment_for_effect(
+        &self,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<
+        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced Environment adoption",
+        ))
+    }
+    async fn prepare_terminal_environment_for_effect(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
+        _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
+        _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<
+        Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced terminal preparation",
+        ))
+    }
+
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         // Synthetic provider admission for lifecycle tests. Actual containment
         // is validated by the separate Namespace/Docker/Podman service journeys.
@@ -185,10 +228,21 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
         }
     }
 
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        Ok(())
+    }
+
     async fn observe_environment(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        if let pc::SandboxObservationBasis::Effect { effect_fence, .. } = basis {
+            self.observations
+                .lock()
+                .unwrap()
+                .push((adoption.observation_purpose, effect_fence.clone()));
+        }
         if self
             .shared
             .lock()
@@ -203,23 +257,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
         }
     }
 
-    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        Ok(())
-    }
-
-    async fn observe_environment_for_effect(
-        &self,
-        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        fence: &pc::SandboxEffectFence,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observations
-            .lock()
-            .unwrap()
-            .push((adoption.observation_purpose, fence.clone()));
-        self.observe_environment(adoption).await
-    }
-
-    async fn create_environment(
+    async fn create_unattached_environment(
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
@@ -237,7 +275,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
         }))
     }
 
-    async fn adopt_environment(
+    async fn adopt_unattached_environment(
         &self,
         adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
@@ -252,6 +290,48 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
             shared: self.shared.clone(),
         }))
     }
+}
+
+#[tokio::test]
+async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
+    // U1 an unattached (unowned) Session asks for a container Rebuild: the Host
+    // refuses with FenceRejected and the provider sees zero creations, rather
+    // than silently degrading the rebuild into an ordinary unfenced create.
+    // U2 the same unattached Create reaches the unattached provider entrance.
+    let fake = Arc::new(FakeContainerProvider::default());
+    let provider = SessionEnvironmentProvider::container(
+        fake.clone(),
+        Vec::new(),
+        Arc::new(FakeHandExecutorFactory),
+        "/usr/local/bin/awaken-sandbox",
+    );
+    let spec = provider.effective_spec(&spec()).unwrap();
+    let rebuilt = provider
+        .create_effective_for_effect(
+            &spec,
+            crate::session_environment::ProviderEffect::Unattached,
+            None,
+            awaken_sandbox_container::ContainerRealizationIntent::Rebuild {
+                source_incarnation: "source".into(),
+                source_runtime_handle: None,
+            },
+        )
+        .await;
+    assert!(
+        matches!(rebuilt, Err(pc::SandboxError::FenceRejected(_))),
+        "U1"
+    );
+    assert_eq!(fake.creates.load(Ordering::SeqCst), 0, "U1 zero creations");
+    provider
+        .create_effective_for_effect(
+            &spec,
+            crate::session_environment::ProviderEffect::Unattached,
+            None,
+            awaken_sandbox_container::ContainerRealizationIntent::Create,
+        )
+        .await
+        .expect("U2");
+    assert_eq!(fake.creates.load(Ordering::SeqCst), 1, "U2");
 }
 
 #[tokio::test]
@@ -279,7 +359,16 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
     ] {
         assert_eq!(
             provider
-                .observe_effective_for_effect(&spec, &handle, None, &fence, purpose)
+                .observe_effective(
+                    &spec,
+                    &handle,
+                    None,
+                    pc::SandboxObservationBasis::Effect {
+                        spec: &spec,
+                        effect_fence: &fence
+                    },
+                    purpose,
+                )
                 .await
                 .unwrap(),
             pc::SandboxObservation::Ready
@@ -292,11 +381,14 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
     fake.shared.lock().unwrap().remove("__ready_observation");
     assert!(
         provider
-            .observe_effective_for_effect(
+            .observe_effective(
                 &spec,
                 &handle,
                 None,
-                &fence,
+                pc::SandboxObservationBasis::Effect {
+                    spec: &spec,
+                    effect_fence: &fence,
+                },
                 awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup
             )
             .await
@@ -458,6 +550,16 @@ impl SandboxControlServicePublisher for FakeContainer {
 
 #[async_trait]
 impl pc::Sandbox for FakeContainer {
+    async fn prepare_disposal_for_effect(
+        &self,
+        _effect_fence: &pc::SandboxEffectFence,
+        _authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
+        Err(pc::SandboxError::unsupported(
+            "test double does not prepare disposal",
+        ))
+    }
+
     async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
         self.dispose().await
     }
@@ -533,7 +635,7 @@ impl pc::Sandbox for FakeContainer {
         authorization: &pc::SandboxDisposalAuthorization,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))?;
         self.dispose().await
     }
 }
@@ -622,26 +724,35 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     // two must reject before provider filesystem effects; only current proceeds
     // to the existing lazy-Hand checks. An immutable fence is not a grant.
     let denied = pc::test_support::EffectAuthority::denied();
-    for source in [None, Some(&denied as &dyn pc::CurrentExecutionAuthority)] {
-        assert!(
-            provider
-                .create_effective_for_effect(
-                    &spec(),
-                    Some(&create_fence),
-                    source,
-                    None,
-                    awaken_sandbox_container::ContainerRealizationIntent::Create,
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(std::fs::read_dir(base.path()).unwrap().count(), 0);
-    }
+    // A fence without a source cannot even be projected into a provider
+    // effect; the denied source reaches the provider and is refused there.
+    assert!(
+        crate::session_environment::ProviderEffect::from_parts(Some(&create_fence), None).is_err()
+    );
+    assert!(
+        provider
+            .create_effective_for_effect(
+                &spec(),
+                crate::session_environment::ProviderEffect::Fenced {
+                    fence: &create_fence,
+                    authority: &denied,
+                },
+                None,
+                awaken_sandbox_container::ContainerRealizationIntent::Create
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read_dir(base.path()).unwrap().count(), 0);
     let environment = provider
         .create_effective_for_effect(
             &spec(),
-            Some(&create_fence),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &create_fence,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &create_fence,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -684,7 +795,12 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     // H5 shares H2's missing executable so no platform-specific helper is needed.
     environment.stop_bound_processes().await.unwrap();
     let rebound = provider
-        .rebind_retained(&spec(), &handle, &environment, None, None)
+        .rebind_retained(
+            &spec(),
+            &handle,
+            &environment,
+            crate::session_environment::ProviderEffect::Unattached,
+        )
         .await
         .unwrap();
     let (
@@ -717,8 +833,10 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         .adopt_effective_for_effect(
             &spec(),
             &handle,
-            Some(&create_fence),
-            Some(&pc::test_support::EffectAuthority::new(&create_fence)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &create_fence,
+                authority: &pc::test_support::EffectAuthority::new(&create_fence),
+            },
         )
         .await
         .unwrap();
@@ -973,7 +1091,12 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
         // W4 retained Workdir + either cwd -> same physical owner and exact
         // ACP-written bytes; rebind must not adopt or replace the workspace.
         let rebound = provider
-            .rebind_retained(&spec(), &environment.handle(), &environment, None, None)
+            .rebind_retained(
+                &spec(),
+                &environment.handle(),
+                &environment,
+                crate::session_environment::ProviderEffect::Unattached,
+            )
             .await
             .unwrap();
         let (
@@ -1146,8 +1269,7 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
             &crate::session_environment::environment_test_spec(),
             &environment.handle(),
             &environment,
-            None,
-            None,
+            crate::session_environment::ProviderEffect::Unattached,
         )
         .await
         .unwrap();
@@ -3051,10 +3173,12 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         let created = fuse_provider
             .create_effective_for_effect(
                 &fuse_spec,
-                Some(&fuse_effect),
-                Some(
-                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&fuse_effect),
-                ),
+                crate::session_environment::ProviderEffect::Fenced {
+                    fence: &fuse_effect,
+                    authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        &fuse_effect,
+                    ),
+                },
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -3084,10 +3208,12 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         let ready_replay = fuse_provider
             .create_effective_for_effect(
                 &fuse_spec,
-                Some(&fuse_effect),
-                Some(
-                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&fuse_effect),
-                ),
+                crate::session_environment::ProviderEffect::Fenced {
+                    fence: &fuse_effect,
+                    authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        &fuse_effect,
+                    ),
+                },
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -3099,8 +3225,10 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .adopt_effective_for_effect(
                 &fuse_spec,
                 &fuse_handle,
-                Some(&fuse_effect),
-                Some(&pc::test_support::EffectAuthority::new(&fuse_effect)),
+                crate::session_environment::ProviderEffect::Fenced {
+                    fence: &fuse_effect,
+                    authority: &pc::test_support::EffectAuthority::new(&fuse_effect),
+                },
             )
             .await
             .expect("M1 adoption reuses Fuse");
@@ -3170,8 +3298,12 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
     let created = copy_provider
         .create_effective_for_effect(
             &copy_spec,
-            Some(&copy_effect),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&copy_effect)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &copy_effect,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &copy_effect,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3199,8 +3331,12 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
     let copy_replay = copy_provider
         .create_effective_for_effect(
             &copy_spec,
-            Some(&copy_effect),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&copy_effect)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &copy_effect,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &copy_effect,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3211,8 +3347,10 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .adopt_effective_for_effect(
             &copy_spec,
             &copy_handle,
-            Some(&copy_effect),
-            Some(&pc::test_support::EffectAuthority::new(&copy_effect)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &copy_effect,
+                authority: &pc::test_support::EffectAuthority::new(&copy_effect),
+            },
         )
         .await
         .expect("M2 adoption retains Copy");
@@ -3246,8 +3384,12 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
     let created = drift_provider
         .create_effective_for_effect(
             &drift_spec,
-            Some(&drift_effect),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&drift_effect)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &drift_effect,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &drift_effect,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3266,8 +3408,12 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
     let error = match drift_provider
         .create_effective_for_effect(
             &drift_spec,
-            Some(&drift_effect),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&drift_effect)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &drift_effect,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &drift_effect,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3321,8 +3467,12 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
     let hot = hot_provider
         .create_effective_for_effect(
             &hot_spec,
-            Some(&hot_create),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_create)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &hot_create,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &hot_create,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3398,8 +3548,12 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         let created = provider
             .create_effective_for_effect(
                 &spec,
-                Some(&create),
-                Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&create)),
+                crate::session_environment::ProviderEffect::Fenced {
+                    fence: &create,
+                    authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        &create,
+                    ),
+                },
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -3595,12 +3749,13 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 let created = provider
                     .create_effective_for_effect(
                         &spec,
-                        Some(&create),
-                        Some(
-                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                                &create,
-                            ),
-                        ),
+                        crate::session_environment::ProviderEffect::Fenced {
+                            fence: &create,
+                            authority:
+                                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                    &create,
+                                ),
+                        },
                         None,
                         awaken_sandbox_container::ContainerRealizationIntent::Create,
                     )
@@ -3772,8 +3927,12 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     let created = namespace
         .create_effective_for_effect(
             &namespace_spec,
-            Some(&create_fence),
-            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &create_fence,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &create_fence,
+                ),
+            },
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3785,8 +3944,10 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         .adopt_effective_for_effect(
             &namespace_spec,
             &handle,
-            Some(&create_fence),
-            Some(&pc::test_support::EffectAuthority::new(&create_fence)),
+            crate::session_environment::ProviderEffect::Fenced {
+                fence: &create_fence,
+                authority: &pc::test_support::EffectAuthority::new(&create_fence),
+            },
         )
         .await
         .unwrap();
@@ -3801,11 +3962,14 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         .await
         .unwrap();
     let terminal_observation = namespace
-        .observe_effective_for_effect(
+        .observe_effective(
             &namespace_spec,
             &handle,
             None,
-            &terminal_fence,
+            pc::SandboxObservationBasis::Effect {
+                spec: &namespace_spec,
+                effect_fence: &terminal_fence,
+            },
             awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup,
         )
         .await
@@ -4250,7 +4414,12 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         foreign.sandbox_id.push_str("-foreign");
         assert!(
             provider
-                .rebind_retained(&spec, &foreign, &previous, None, None)
+                .rebind_retained(
+                    &spec,
+                    &foreign,
+                    &previous,
+                    crate::session_environment::ProviderEffect::Unattached
+                )
                 .await
                 .is_err(),
             "W3 foreign handle"
@@ -4258,7 +4427,12 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let directory = tempfile::tempdir().unwrap();
         assert!(
             SessionEnvironmentProvider::workdir(directory.path())
-                .rebind_retained(&spec, &handle, &previous, None, None)
+                .rebind_retained(
+                    &spec,
+                    &handle,
+                    &previous,
+                    crate::session_environment::ProviderEffect::Unattached
+                )
                 .await
                 .is_err(),
             "W3 foreign provider"

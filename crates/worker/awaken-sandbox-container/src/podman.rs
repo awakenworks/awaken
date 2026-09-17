@@ -1078,7 +1078,7 @@ impl ContainerRuntime for PodmanRuntime {
             return Err(backend("Podman restore cleanup plan fingerprint mismatch"));
         }
         let admit = || {
-            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
                 .map_err(backend)
         };
         admit()?;
@@ -1098,7 +1098,7 @@ impl ContainerRuntime for PodmanRuntime {
         let staging_root = live_inputs
             .parent()
             .ok_or_else(|| backend("Podman restored live-input root has no staging parent"))?;
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| {
             crate::remove_host_staging_path(staging_root).map_err(pc::SandboxError::from)
         })
         .map_err(backend)?;
@@ -1370,10 +1370,10 @@ impl ContainerRuntime for PodmanRuntime {
                 "Podman exact removal received foreign continuation evidence",
             ));
         }
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
             .map_err(backend)?;
         self.remove(container_id).await?;
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
             .map_err(backend)
     }
 }

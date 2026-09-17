@@ -669,38 +669,30 @@ impl pc::SandboxProvider for NamespaceProvider {
     async fn observe(
         &self,
         handle: &pc::SandboxHandle,
+        basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         handle.namespace_payload(Self::provider_kind())?;
+        let expected_effect_fence = match basis {
+            pc::SandboxObservationBasis::Unattached => None,
+            pc::SandboxObservationBasis::Effect { spec, effect_fence } => {
+                if handle.realization_fingerprint()
+                    != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
+                {
+                    return Ok(pc::SandboxObservation::Incompatible {
+                        reason:
+                            "Namespace sandbox handle does not match the effective observation spec"
+                                .into(),
+                    });
+                }
+                Some(effect_fence)
+            }
+        };
         crate::realization_marker::observe_adoption(
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
             handle.filesystem_physical_incarnation()?.as_deref(),
-            None,
-        )
-    }
-
-    async fn observe_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-        effect_fence: &pc::SandboxEffectFence,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        handle.namespace_payload(Self::provider_kind())?;
-        if handle.realization_fingerprint()
-            != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
-        {
-            return Ok(pc::SandboxObservation::Incompatible {
-                reason: "Namespace sandbox handle does not match the effective observation spec"
-                    .into(),
-            });
-        }
-        crate::realization_marker::observe_adoption(
-            &crate::sandbox_dir(&self.base, &handle.sandbox_id),
-            handle.realization_fingerprint(),
-            handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?.as_deref(),
-            Some(effect_fence),
+            expected_effect_fence,
         )
     }
 
@@ -1273,7 +1265,7 @@ impl NamespaceProvider {
         let effect_fence = effect.map(|(fence, _)| fence);
         let admit = || {
             effect.map_or(Ok(()), |(fence, authority)| {
-                pc::with_current_sandbox_effect(fence, authority, || Ok(()))
+                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
             })
         };
         admit()?;

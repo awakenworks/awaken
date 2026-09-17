@@ -621,7 +621,7 @@ mod memory_mount_release_tests {
                 &authority,
                 &evidence,
                 || Ok(evidence.clone()),
-                || {
+                |_| {
                     assert!(authority.current.try_lock().is_err(), "W1 held authority");
                     Ok(())
                 },
@@ -674,7 +674,7 @@ mod memory_mount_release_tests {
                         &authority,
                         &evidence,
                         || Ok(evidence.clone()),
-                        || panic!("W4 cached acknowledgement cannot bypass revocation"),
+                        |_| panic!("W4 cached acknowledgement cannot bypass revocation"),
                     )
                     .await
                     .is_err(),
@@ -763,7 +763,7 @@ mod memory_mount_release_tests {
                 &pc::test_support::EffectAuthority::new(&live),
                 &reversed,
                 || Ok(expected.clone()),
-                || {
+                |_| {
                     authorization_calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 },
@@ -780,7 +780,7 @@ mod memory_mount_release_tests {
                 &pc::test_support::EffectAuthority::denied(),
                 &expected,
                 || Ok(expected.clone()),
-                || {
+                |_| {
                     authorization_calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 },
@@ -800,7 +800,7 @@ mod memory_mount_release_tests {
             &pc::test_support::EffectAuthority::new(&live),
             &expected,
             || Ok(expected.clone()),
-            || {
+            |_| {
                 authorization_calls.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             },
@@ -819,7 +819,7 @@ mod memory_mount_release_tests {
             &pc::test_support::EffectAuthority::new(&live),
             &expected,
             || Ok(expected.clone()),
-            || {
+            |_| {
                 authorization_calls.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             },
@@ -833,7 +833,7 @@ mod memory_mount_release_tests {
             &pc::test_support::EffectAuthority::new(&takeover),
             &expected,
             || Ok(expected.clone()),
-            || {
+            |_| {
                 authorization_calls.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             },
@@ -848,7 +848,7 @@ mod memory_mount_release_tests {
                 &expected,
                 &live,
                 &pc::test_support::EffectAuthority::new(&live),
-                || Ok(())
+                |_| Ok(())
             )
             .is_err(),
             "A4 supersedes prior effect"
@@ -857,7 +857,7 @@ mod memory_mount_release_tests {
             &expected,
             &takeover,
             &pc::test_support::EffectAuthority::new(&takeover),
-            || Ok(()),
+            |_| Ok(()),
         )
         .expect("A4 disposal gate");
         assert!(
@@ -868,7 +868,7 @@ mod memory_mount_release_tests {
                 &pc::test_support::EffectAuthority::new(&foreign),
                 &expected,
                 || Ok(expected.clone()),
-                || {
+                |_| {
                     authorization_calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 },
@@ -956,7 +956,9 @@ pub(crate) async fn acknowledge_memory_reconciliation(
         Vec<awaken_provisioning_contract::MemoryMaterializationEvidence>,
         awaken_provisioning_contract::SandboxError,
     >,
-    authorize: impl FnOnce() -> Result<(), awaken_provisioning_contract::SandboxError>,
+    authorize: impl FnOnce(
+        &awaken_provisioning_contract::SandboxEffectGuard<'_>,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError>,
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
     let mut retained = mounts.lock().await;
     let expected_materializations = expected_materializations()?;
@@ -965,8 +967,8 @@ pub(crate) async fn acknowledge_memory_reconciliation(
         authority,
         &expected_materializations,
         supplied_materializations,
-        || {
-            authorize()?;
+        |admitted| {
+            authorize(admitted)?;
             retained.acknowledge_copy_reconciliation()
         },
     )

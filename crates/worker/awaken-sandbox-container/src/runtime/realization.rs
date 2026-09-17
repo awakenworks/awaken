@@ -6,6 +6,7 @@ use super::{
     ExistingRealizationRecovery, RebuildContinuityEvidence, RuntimeError,
 };
 use awaken_provisioning_contract as pc;
+use pc::FenceToken as _;
 
 const fn observation_admitted(
     exact_continuation: bool,
@@ -110,7 +111,7 @@ pub(crate) fn existing_realization_decision(
             observed.locator
         )));
     }
-    if observed_fence.epoch < expected_fence.epoch {
+    if observed_fence.succession(expected_fence) == Some(pc::FenceSuccession::Reassignment) {
         if observed.phase == ExistingRealizationPhase::Indeterminate {
             return Err(RuntimeError::Backend(format!(
                 "existing Sandbox realization `{}` cannot be replaced by this effect",

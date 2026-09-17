@@ -320,15 +320,33 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
 
     async fn write_back(
         &self,
+        target: awaken_provisioning_contract::SecretWritebackTarget<'_>,
+        bytes: Vec<u8>,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        match target {
+            awaken_provisioning_contract::SecretWritebackTarget::Unattached { reference } => {
+                self.write_back_unattached(reference, bytes).await
+            }
+            awaken_provisioning_contract::SecretWritebackTarget::Effect(effect) => {
+                self.write_back_effect(effect, bytes).await
+            }
+        }
+    }
+}
+
+impl PinnedCredentialMaterializer {
+    /// Targetless write-back for a Sandbox no aggregate effect owns.
+    async fn write_back_unattached(
+        &self,
         reference: &str,
         bytes: Vec<u8>,
     ) -> Result<(), awaken_provisioning_contract::SandboxError> {
         #[cfg(not(feature = "authority"))]
         {
             let _ = (reference, bytes);
-            return Err(awaken_provisioning_contract::SandboxError::unsupported(
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
                 "database-less Worker cannot write a local Vault reference",
-            ));
+            ))
         }
         #[cfg(feature = "authority")]
         {
@@ -372,7 +390,9 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         }
     }
 
-    async fn write_back_for_effect(
+    /// Idempotent write-back under one typed physical write-back identity and
+    /// the current aggregate authorization.
+    async fn write_back_effect(
         &self,
         effect: &awaken_provisioning_contract::SecretWritebackEffect,
         bytes: Vec<u8>,
@@ -380,9 +400,9 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         #[cfg(not(feature = "authority"))]
         {
             let _ = (effect, bytes);
-            return Err(awaken_provisioning_contract::SandboxError::unsupported(
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
                 "database-less Worker cannot write a local Vault reference",
-            ));
+            ))
         }
         #[cfg(feature = "authority")]
         {
@@ -581,7 +601,12 @@ mod tests {
         );
         assert!(
             broker
-                .write_back(&described_reference, b"must-not-write".to_vec())
+                .write_back(
+                    awaken_provisioning_contract::SecretWritebackTarget::Unattached {
+                        reference: &described_reference
+                    },
+                    b"must-not-write".to_vec()
+                )
                 .await
                 .is_err(),
             "M3/E3 write-back"
@@ -630,7 +655,12 @@ mod tests {
             "durable file ids are never process capabilities"
         );
         broker
-            .write_back(&reference, b"after".to_vec())
+            .write_back(
+                awaken_provisioning_contract::SecretWritebackTarget::Unattached {
+                    reference: &reference,
+                },
+                b"after".to_vec(),
+            )
             .await
             .expect("W1/E1");
         assert_eq!(
@@ -643,7 +673,12 @@ mod tests {
         let inventory = secrets.inventory().await.expect("W2 inventory");
         assert!(
             broker
-                .write_back(&reference, b"stale-write".to_vec())
+                .write_back(
+                    awaken_provisioning_contract::SecretWritebackTarget::Unattached {
+                        reference: &reference
+                    },
+                    b"stale-write".to_vec()
+                )
                 .await
                 .is_err(),
             "W2/E2"
@@ -715,11 +750,17 @@ mod tests {
             SecretWritebackEffect::new(reference.clone(), "pod-uid-a", successor.clone()).unwrap();
 
         broker
-            .write_back_for_effect(&first_effect, b"after".to_vec())
+            .write_back(
+                awaken_provisioning_contract::SecretWritebackTarget::Effect(&first_effect),
+                b"after".to_vec(),
+            )
             .await
             .expect("F1/E1");
         broker
-            .write_back_for_effect(&successor_effect, b"after".to_vec())
+            .write_back(
+                awaken_provisioning_contract::SecretWritebackTarget::Effect(&successor_effect),
+                b"after".to_vec(),
+            )
             .await
             .expect("F2/E2 cross-operation replay");
         let published = credentials.get(&source.id).await.unwrap();
@@ -731,7 +772,10 @@ mod tests {
                 .unwrap();
         assert!(
             broker
-                .write_back_for_effect(&unpinned, b"after".to_vec())
+                .write_back(
+                    awaken_provisioning_contract::SecretWritebackTarget::Effect(&unpinned),
+                    b"after".to_vec()
+                )
                 .await
                 .is_err(),
             "F3/E3"
@@ -748,7 +792,10 @@ mod tests {
             SecretWritebackEffect::new(reference.clone(), "pod-uid-a", expired).unwrap();
         assert!(
             broker
-                .write_back_for_effect(&expired_effect, b"after".to_vec())
+                .write_back(
+                    awaken_provisioning_contract::SecretWritebackTarget::Effect(&expired_effect),
+                    b"after".to_vec()
+                )
                 .await
                 .is_err(),
             "F4/E3"
@@ -757,14 +804,22 @@ mod tests {
             SecretWritebackEffect::new(reference, "pod-uid-b", successor).unwrap();
         assert!(
             broker
-                .write_back_for_effect(&different_physical, b"after".to_vec())
+                .write_back(
+                    awaken_provisioning_contract::SecretWritebackTarget::Effect(
+                        &different_physical
+                    ),
+                    b"after".to_vec()
+                )
                 .await
                 .is_err(),
             "F5/E3 physical incarnation"
         );
         assert!(
             broker
-                .write_back_for_effect(&successor_effect, b"different".to_vec())
+                .write_back(
+                    awaken_provisioning_contract::SecretWritebackTarget::Effect(&successor_effect),
+                    b"different".to_vec()
+                )
                 .await
                 .is_err(),
             "F6/E3 material"

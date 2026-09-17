@@ -111,8 +111,8 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     let first = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &desired,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -125,8 +125,8 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     let retried = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &desired,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -142,8 +142,8 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     let mismatch = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &changed,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -176,7 +176,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     assert!(
         matches!(
             replacement
-                .observe_environment_for_effect(observation, &terminal_fence)
+                .observe_environment(observation, observation.effect_basis(&terminal_fence))
                 .await
                 .unwrap(),
             pc::SandboxObservation::Incompatible { .. }
@@ -199,7 +199,10 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     assert!(
         matches!(
             replacement
-                .observe_environment_for_effect(foreign_observation, &terminal_fence)
+                .observe_environment(
+                    foreign_observation,
+                    foreign_observation.effect_basis(&terminal_fence)
+                )
                 .await
                 .unwrap(),
             pc::SandboxObservation::Incompatible { .. }
@@ -210,7 +213,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     assert!(
         matches!(
             replacement
-                .observe_environment_for_effect(observation, &foreign_fence)
+                .observe_environment(observation, observation.effect_basis(&foreign_fence))
                 .await
                 .unwrap(),
             pc::SandboxObservation::Incompatible { .. }
@@ -225,7 +228,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     assert!(
         matches!(
             replacement
-                .observe_environment_for_effect(observation, &terminal_fence)
+                .observe_environment(observation, observation.effect_basis(&terminal_fence))
                 .await
                 .unwrap(),
             pc::SandboxObservation::Ready | pc::SandboxObservation::Terminal { .. }
@@ -575,8 +578,8 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     let first_environment = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -660,8 +663,8 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     let replacement_environment = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&rebuild_fence),
-        Some(&EffectAuthority::new(&rebuild_fence)),
+        &rebuild_fence,
+        &EffectAuthority::new(&rebuild_fence),
         ContainerRealizationIntent::Rebuild {
             source_incarnation,
             source_runtime_handle,
@@ -741,8 +744,8 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
     let first_environment = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&first_fence),
-        Some(&EffectAuthority::new(&first_fence)),
+        &first_fence,
+        &EffectAuthority::new(&first_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -777,8 +780,8 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
     let second_environment = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&second_fence),
-        Some(&EffectAuthority::new(&second_fence)),
+        &second_fence,
+        &EffectAuthority::new(&second_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -849,8 +852,8 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     let first = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -907,8 +910,8 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     let foreign = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&foreign_fence),
-        Some(&EffectAuthority::new(&foreign_fence)),
+        &foreign_fence,
+        &EffectAuthority::new(&foreign_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -934,8 +937,8 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     let recovered = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1013,8 +1016,8 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
     let source = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1096,10 +1099,15 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
             awaken_sandbox_container::ContainerEnvironmentAdoption::new(&frozen, &source_handle);
         let observed = if fenced {
             provider
-                .observe_environment_for_effect(adoption, &create_fence)
+                .observe_environment(adoption, adoption.effect_basis(&create_fence))
                 .await
         } else {
-            provider.observe_environment(adoption).await
+            provider
+                .observe_environment(
+                    adoption,
+                    awaken_provisioning_contract::SandboxObservationBasis::Unattached,
+                )
+                .await
         }
         .expect("KPV5r read-only observation preserves recovery admission");
         assert!(
@@ -1183,8 +1191,8 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
     let replacement = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&rebuild_fence),
-        Some(&EffectAuthority::new(&rebuild_fence)),
+        &rebuild_fence,
+        &EffectAuthority::new(&rebuild_fence),
         ContainerRealizationIntent::Rebuild {
             source_incarnation: pod_uid,
             source_runtime_handle,
@@ -1288,8 +1296,8 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
     let source = ContainerEnvironmentProvider::create_environment_for_effect(
         provider.as_ref(),
         &frozen,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1402,8 +1410,8 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         ContainerEnvironmentProvider::create_environment_for_effect(
             rebuild_provider.as_ref(),
             &rebuild_spec,
-            Some(&fence),
-            Some(&EffectAuthority::new(&fence)),
+            &fence,
+            &EffectAuthority::new(&fence),
             ContainerRealizationIntent::Rebuild {
                 source_incarnation: rebuild_source_uid,
                 source_runtime_handle: runtime_handle,
@@ -1550,8 +1558,8 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
     let source = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&create_fence),
-        Some(&EffectAuthority::new(&create_fence)),
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1650,10 +1658,11 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
 
-    let observed_disposing = ContainerEnvironmentProvider::observe_environment_for_effect(
+    let observed_disposing = ContainerEnvironmentProvider::observe_environment(
         &provider,
         awaken_sandbox_container::ContainerEnvironmentAdoption::new(&frozen, &source_handle),
-        &terminal_fence,
+        awaken_sandbox_container::ContainerEnvironmentAdoption::new(&frozen, &source_handle)
+            .effect_basis(&terminal_fence),
     )
     .await
     .expect("KPV4d observe the exact gated cleanup cut");
@@ -1704,8 +1713,8 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
     let rebuild = ContainerEnvironmentProvider::create_environment_for_effect(
         &provider,
         &frozen,
-        Some(&rebuild_fence),
-        Some(&EffectAuthority::new(&rebuild_fence)),
+        &rebuild_fence,
+        &EffectAuthority::new(&rebuild_fence),
         ContainerRealizationIntent::Rebuild {
             source_incarnation: pod_uid,
             source_runtime_handle: runtime_handle,
@@ -1762,8 +1771,8 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
     let owner_environment = ContainerEnvironmentProvider::create_environment_for_effect(
         &plain_provider,
         &frozen,
-        Some(&owner_fence),
-        Some(&EffectAuthority::new(&owner_fence)),
+        &owner_fence,
+        &EffectAuthority::new(&owner_fence),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1816,8 +1825,8 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
     let error = ContainerEnvironmentProvider::create_environment_for_effect(
         &retained_provider,
         &frozen,
-        Some(&foreign_fence),
-        Some(&authority),
+        &foreign_fence,
+        &authority,
         ContainerRealizationIntent::Create,
     );
     let error = error.await.err().expect("KPV2 foreign effect rejects");

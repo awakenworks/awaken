@@ -271,7 +271,7 @@ impl LocalProvider {
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         authorization.validate()?;
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))?;
         request.validate_for_spec(spec)?;
         let evidence = request.evidence(spec);
         let root = restoration_root(&self.base, &evidence)?;
@@ -285,12 +285,12 @@ pub(super) async fn dispose_bound_target(
     fence: &pc::SandboxEffectFence,
     authority: &dyn pc::CurrentExecutionAuthority,
 ) -> Result<(), pc::SandboxError> {
-    pc::with_current_sandbox_effect(fence, authority, || Ok(()))?;
+    pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))?;
     let _lock = lock_target(root).await?;
     // The exact target lock and current owner guard jointly cover the whole
     // synchronous deletion. Waiting for the former cannot preserve stale
     // authority, and even exact absence is not an unfenced success receipt.
-    pc::with_current_sandbox_effect(fence, authority, || {
+    pc::with_current_sandbox_effect(fence, authority, |_| {
         match read_binding(root)? {
             Some(binding) if binding.evidence != *expected => {
                 return Err(pc::SandboxError::conflict(

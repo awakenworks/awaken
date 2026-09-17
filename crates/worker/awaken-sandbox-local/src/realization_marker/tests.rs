@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "tests/creation_compensation.rs"]
 mod creation_compensation;
+#[path = "tests/guard_admission.rs"]
+mod guard_admission;
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -274,12 +276,16 @@ fn fenced_marker_phase_root_fence_and_incarnation_table_is_total() {
     let mut first = begin(&root, &fingerprint, &create, None, None).expect("M1 begin");
     let identity = required_root_identity(&first.marker).unwrap();
     std::fs::write(root.join("partial"), b"partial").unwrap();
-    first.prepare_root().unwrap();
+    first
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
     assert_eq!(
         awaken_sandbox_fs::directory_identity_nofollow(&root).unwrap(),
         identity
     );
-    let first_evidence = first.complete(&empty_receipt()).unwrap();
+    let first_evidence = first
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let handle_incarnation = first_evidence.physical_incarnation().to_string();
 
     std::fs::write(root.join("preserved"), b"ready").unwrap();
@@ -316,8 +322,12 @@ fn fenced_marker_phase_root_fence_and_incarnation_table_is_total() {
         pc::SandboxObservation::Provisioning,
         "M4"
     );
-    recreating.prepare_root().unwrap();
-    let rebuilt = recreating.complete(&empty_receipt()).unwrap();
+    recreating
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let rebuilt = recreating
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
 
     let replacement = base.path().join("foreign");
     std::fs::create_dir(&replacement).unwrap();
@@ -341,8 +351,12 @@ fn fenced_marker_phase_root_fence_and_incarnation_table_is_total() {
         Some("checkpoint-a"),
     )
     .unwrap();
-    restore.prepare_root().unwrap();
-    restore.complete(&empty_receipt()).unwrap();
+    restore
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    restore
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     std::fs::write(restore_root.join("preserved"), b"checkpoint-a").unwrap();
     assert!(
         begin(
@@ -390,8 +404,12 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("terminal"));
     let create = fence("create", 1);
     let mut guard = begin(&root, &fingerprint, &create, None, None).unwrap();
-    guard.prepare_root().unwrap();
-    let evidence = guard.complete(&empty_receipt()).unwrap();
+    guard
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = guard
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let terminal = fence("terminal", 1);
 
     assert!(
@@ -429,19 +447,30 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     .expect("T6 restart takeover")
     .expect("T6 participant");
     let final_effect = fence("terminal-final", 1);
-    removal
-        .refresh_authorization(&final_effect)
-        .expect("T6 retained-guard takeover");
-    removal
-        .authorize_disposal(&disposal_authorization(
+    pc::with_current_sandbox_effect(
+        &final_effect,
+        &pc::test_support::EffectAuthority::new(&final_effect),
+        |admitted| removal.refresh_authorization(&final_effect, admitted),
+    )
+    .expect("T6 retained-guard takeover");
+    {
+        let authorization = &disposal_authorization(
             &final_effect,
             "terminal-final-preparation",
             "owner",
             "runtime",
             1,
-        ))
-        .expect("T6 aggregate-authorized physical authorization");
-    removal.remove_root().unwrap();
+        );
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| removal.authorize_disposal(authorization, admitted),
+        )
+    }
+    .expect("T6 aggregate-authorized physical authorization");
+    removal
+        .recorded_admission(|held, admitted| held.remove_root(admitted))
+        .unwrap();
     drop(removal); // crash before Removed publication
     assert!(
         matches!(
@@ -467,7 +496,9 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     )
     .expect("T2 exact terminal reconstruction")
     .expect("T2 participant");
-    replay.finish().unwrap();
+    replay
+        .recorded_admission(|held, admitted| held.finish(admitted))
+        .unwrap();
     drop(replay);
     assert!(
         begin_terminal_takeover(
@@ -543,17 +574,27 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     .unwrap()
     .expect("T5 exact stage participant");
     assert_eq!(partial.owned_root().unwrap().unwrap().0, stage, "T5");
-    partial
-        .authorize_disposal(&disposal_authorization(
+    {
+        let authorization = &disposal_authorization(
             &partial_preparation,
             "partial-restore-preparation",
             "owner",
             "runtime",
             3,
-        ))
-        .expect("T5 aggregate-authorized physical authorization");
-    partial.remove_root().unwrap();
-    partial.finish().unwrap();
+        );
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| partial.authorize_disposal(authorization, admitted),
+        )
+    }
+    .expect("T5 aggregate-authorized physical authorization");
+    partial
+        .recorded_admission(|held, admitted| held.remove_root(admitted))
+        .unwrap();
+    partial
+        .recorded_admission(|held, admitted| held.finish(admitted))
+        .unwrap();
     drop(partial);
 }
 
@@ -582,15 +623,19 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
     let terminal =
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 7, u64::MAX).unwrap();
 
-    let first = begin(&root, &fingerprint, &expected, None, None).unwrap();
-    first.prepare_root().unwrap();
+    let mut first = begin(&root, &fingerprint, &expected, None, None).unwrap();
+    first
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
     drop(first);
     let incomplete =
         observe_terminal_receipt(&root, &fingerprint, None, Some(&expected), &terminal).unwrap();
     assert_eq!(incomplete, TerminalReceiptObservation::Incomplete, "P1");
 
     let mut renewed_guard = begin(&root, &fingerprint, &renewed, None, None).unwrap();
-    let evidence = renewed_guard.complete(&empty_receipt()).unwrap();
+    let evidence = renewed_guard
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     // P8 cause/effect table: phase={Ready,Removing,root-removed,Removed}
     // x handle={absent,exact,foreign incarnation} x expected={absent,exact,
     // foreign operation}. A matching handle can replace a formerly handle-free
@@ -723,8 +768,18 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
         "runtime",
         7,
     );
-    removal.authorize_disposal(&authorization).unwrap();
-    removal.remove_root().unwrap();
+    {
+        let authorization = &authorization;
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| removal.authorize_disposal(authorization, admitted),
+        )
+    }
+    .unwrap();
+    removal
+        .recorded_admission(|held, admitted| held.remove_root(admitted))
+        .unwrap();
     drop(removal);
     check_handle_upgrade("root-removed", authorization.effect_fence());
     assert_eq!(
@@ -754,7 +809,9 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
         replay.owned_root().unwrap().is_none(),
         "P3 no remount owner"
     );
-    replay.finish().unwrap();
+    replay
+        .recorded_admission(|held, admitted| held.finish(admitted))
+        .unwrap();
     drop(replay);
     check_handle_upgrade("Removed", authorization.effect_fence());
     assert_eq!(
@@ -852,14 +909,18 @@ fn exhausted_current_proof_is_zero_write_for_absent_and_ready() {
         pc::SandboxRealizationFingerprint::from_spec(&spec("terminal-expiry-ready"));
     let source = fence("create", 1);
     let mut ready_creation = begin(&ready_root, &ready_fingerprint, &source, None, None).unwrap();
-    ready_creation.prepare_root().unwrap();
-    ready_creation.complete(&empty_receipt()).unwrap();
+    ready_creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    ready_creation
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let terminal =
         pc::SandboxEffectFence::new("terminal-expired", "owner", "runtime", 2, u64::MAX).unwrap();
     let authority = pc::test_support::EffectAuthority::new(&terminal);
     authority.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO;
     assert!(
-        pc::with_current_sandbox_effect(&terminal, &authority, || begin_terminal_takeover(
+        pc::with_current_sandbox_effect(&terminal, &authority, |_| begin_terminal_takeover(
             &absent_root,
             &absent_fingerprint,
             None,
@@ -871,7 +932,7 @@ fn exhausted_current_proof_is_zero_write_for_absent_and_ready() {
         "R1 marker-free"
     );
     assert!(
-        pc::with_current_sandbox_effect(&terminal, &authority, || begin_terminal_takeover(
+        pc::with_current_sandbox_effect(&terminal, &authority, |_| begin_terminal_takeover(
             &ready_root,
             &ready_fingerprint,
             None,
@@ -927,8 +988,12 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
     let create =
         pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 30).unwrap();
     let mut creation = begin(&root, &fingerprint, &create, None, None).unwrap();
-    creation.prepare_root().unwrap();
-    let evidence = creation.complete(&empty_receipt()).unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = creation
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let prepared_a = pc::SandboxEffectFence::new(
         "continuation-preparation-a",
         "owner",
@@ -1020,9 +1085,15 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         "successor-runtime",
         2,
     );
-    reconstructed
-        .authorize_disposal(&authorization_c)
-        .expect("T7b exact inherited A/fpA->C");
+    {
+        let authorization = &authorization_c;
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| reconstructed.authorize_disposal(authorization, admitted),
+        )
+    }
+    .expect("T7b exact inherited A/fpA->C");
     let admitted = reconstructed.marker.clone();
     assert_eq!(admitted.effect_fence, prepared_a, "T7b immutable A");
     assert_eq!(
@@ -1042,9 +1113,15 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         3,
     );
     assert!(
-        reconstructed
-            .authorize_disposal(&different_fingerprint)
-            .is_err(),
+        {
+            let authorization = &different_fingerprint;
+            pc::with_current_sandbox_effect(
+                authorization.effect_fence(),
+                &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+                |admitted| reconstructed.authorize_disposal(authorization, admitted),
+            )
+        }
+        .is_err(),
         "T7d different fingerprint"
     );
     assert_eq!(reconstructed.marker, admitted, "T7d zero marker mutation");
@@ -1056,8 +1133,12 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         pc::SandboxRealizationFingerprint::from_spec(&spec("ordinary-terminal-preparation"));
     let mut ordinary_creation =
         begin(&ordinary_root, &ordinary_fingerprint, &create, None, None).unwrap();
-    ordinary_creation.prepare_root().unwrap();
-    let ordinary_evidence = ordinary_creation.complete(&empty_receipt()).unwrap();
+    ordinary_creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let ordinary_evidence = ordinary_creation
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let ordinary_t =
         pc::SandboxEffectFence::new("ordinary-terminal-t", "owner", "runtime", 1, u64::MAX - 20)
             .unwrap();
@@ -1090,9 +1171,12 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         ordinary_reconstruction.marker.effect_fence, ordinary_t,
         "T7e reconstruction retains the last durable preparation"
     );
-    ordinary_reconstruction
-        .refresh_authorization(&ordinary_t2)
-        .expect("T7e canonical provider preparation advances T");
+    pc::with_current_sandbox_effect(
+        &ordinary_t2,
+        &pc::test_support::EffectAuthority::new(&ordinary_t2),
+        |admitted| ordinary_reconstruction.refresh_authorization(&ordinary_t2, admitted),
+    )
+    .expect("T7e canonical provider preparation advances T");
     assert_eq!(
         ordinary_reconstruction.marker.effect_fence, ordinary_t2,
         "T7e only the preparation owner advances T"
@@ -1125,8 +1209,12 @@ fn terminal_successor_admission_is_expiry_monotonic() {
     let create =
         pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 20).unwrap();
     let mut create_guard = begin(&root, &fingerprint, &create, None, None).unwrap();
-    create_guard.prepare_root().unwrap();
-    let evidence = create_guard.complete(&empty_receipt()).unwrap();
+    create_guard
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = create_guard
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let prepared =
         pc::SandboxEffectFence::new("prepare-a", "owner", "runtime", 1, u64::MAX - 10).unwrap();
     let shorter =
@@ -1168,11 +1256,22 @@ fn terminal_successor_admission_is_expiry_monotonic() {
     )
     .unwrap()
     .expect("S1c retained participant");
-    assert!(removal.refresh_authorization(&shorter).is_err(), "S1c/E2");
+    assert!(
+        pc::with_current_sandbox_effect(
+            &shorter,
+            &pc::test_support::EffectAuthority::new(&shorter),
+            |admitted| removal.refresh_authorization(&shorter, admitted)
+        )
+        .is_err(),
+        "S1c/E2"
+    );
     assert_eq!(removal.marker.effect_fence, prepared, "S1c zero mutation");
-    removal
-        .refresh_authorization(&longer)
-        .expect("S1d/E1 nondecreasing renewal");
+    pc::with_current_sandbox_effect(
+        &longer,
+        &pc::test_support::EffectAuthority::new(&longer),
+        |admitted| removal.refresh_authorization(&longer, admitted),
+    )
+    .expect("S1d/E1 nondecreasing renewal");
     drop(removal);
 
     let higher = pc::SandboxEffectFence::new(
@@ -1197,9 +1296,12 @@ fn terminal_successor_admission_is_expiry_monotonic() {
         removal.marker.effect_fence, longer,
         "S1e effect-free reopen does not reserve the higher epoch"
     );
-    removal
-        .refresh_authorization(&higher)
-        .expect("S1e canonical preparation reserves the higher epoch");
+    pc::with_current_sandbox_effect(
+        &higher,
+        &pc::test_support::EffectAuthority::new(&higher),
+        |admitted| removal.refresh_authorization(&higher, admitted),
+    )
+    .expect("S1e canonical preparation reserves the higher epoch");
     drop(removal);
     let foreign = pc::SandboxEffectFence::new(
         "prepare-foreign",
@@ -1239,8 +1341,12 @@ fn provider_preparation_returns_one_immutable_same_generation_predecessor() {
     let create =
         pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 100).unwrap();
     let mut creation = begin(&root, &fingerprint, &create, None, None).unwrap();
-    creation.prepare_root().unwrap();
-    let evidence = creation.complete(&empty_receipt()).unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = creation
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let prepared_c =
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX - 30).unwrap();
     let (_, mut removal) = begin_terminal_takeover(
@@ -1256,12 +1362,22 @@ fn provider_preparation_returns_one_immutable_same_generation_predecessor() {
     let renewal_d =
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX - 20).unwrap();
     assert_eq!(
-        removal.prepare_disposal_effect(&prepared_c).unwrap(),
+        pc::with_current_sandbox_effect(
+            &prepared_c,
+            &pc::test_support::EffectAuthority::new(&prepared_c),
+            |admitted| removal.prepare_disposal_effect(&prepared_c, admitted)
+        )
+        .unwrap(),
         prepared_c,
         "P1 exact replay/E1",
     );
     assert_eq!(
-        removal.prepare_disposal_effect(&renewal_d).unwrap(),
+        pc::with_current_sandbox_effect(
+            &renewal_d,
+            &pc::test_support::EffectAuthority::new(&renewal_d),
+            |admitted| removal.prepare_disposal_effect(&renewal_d, admitted)
+        )
+        .unwrap(),
         prepared_c,
         "P1 C/D replay/E1",
     );
@@ -1276,10 +1392,23 @@ fn provider_preparation_returns_one_immutable_same_generation_predecessor() {
         pc::SandboxEffectFence::new("foreign-terminal", "owner", "runtime", 1, u64::MAX - 10)
             .unwrap();
     assert!(
-        removal.prepare_disposal_effect(&shorter_b).is_err(),
+        pc::with_current_sandbox_effect(
+            &shorter_b,
+            &pc::test_support::EffectAuthority::new(&shorter_b),
+            |admitted| removal.prepare_disposal_effect(&shorter_b, admitted)
+        )
+        .is_err(),
         "P1/E2"
     );
-    assert!(removal.prepare_disposal_effect(&foreign).is_err(), "P1/E2");
+    assert!(
+        pc::with_current_sandbox_effect(
+            &foreign,
+            &pc::test_support::EffectAuthority::new(&foreign),
+            |admitted| removal.prepare_disposal_effect(&foreign, admitted)
+        )
+        .is_err(),
+        "P1/E2"
+    );
     assert_eq!(
         removal.marker.effect_fence, prepared_c,
         "P1/E2 zero mutation"
@@ -1294,13 +1423,23 @@ fn provider_preparation_returns_one_immutable_same_generation_predecessor() {
     )
     .unwrap();
     assert_eq!(
-        removal.prepare_disposal_effect(&higher_e).unwrap(),
+        pc::with_current_sandbox_effect(
+            &higher_e,
+            &pc::test_support::EffectAuthority::new(&higher_e),
+            |admitted| removal.prepare_disposal_effect(&higher_e, admitted)
+        )
+        .unwrap(),
         higher_e,
         "P1/E3",
     );
     assert_eq!(removal.marker.effect_fence, higher_e, "P1/E3 persisted");
     assert!(
-        removal.prepare_disposal_effect(&prepared_c).is_err(),
+        pc::with_current_sandbox_effect(
+            &prepared_c,
+            &pc::test_support::EffectAuthority::new(&prepared_c),
+            |admitted| removal.prepare_disposal_effect(&prepared_c, admitted)
+        )
+        .is_err(),
         "P1/E4"
     );
     assert_eq!(removal.marker.effect_fence, higher_e, "P1/E4 zero mutation");
@@ -1321,8 +1460,12 @@ fn removed_marker_retry_retains_the_guard_and_reconciles_only_the_exact_tombston
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("retained-finish"));
     let create = fence("create", 1);
     let mut creation = begin(&root, &fingerprint, &create, None, None).unwrap();
-    creation.prepare_root().unwrap();
-    let evidence = creation.complete(&empty_receipt()).unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = creation
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let prepared = fence("terminal", 1);
     let (_, mut removal) = begin_terminal_takeover(
         &root,
@@ -1334,22 +1477,30 @@ fn removed_marker_retry_retains_the_guard_and_reconciles_only_the_exact_tombston
     )
     .unwrap()
     .unwrap();
-    removal
-        .authorize_disposal(&disposal_authorization(
-            &prepared,
-            "finish-test",
-            "owner",
-            "runtime",
-            1,
-        ))
-        .unwrap();
+    {
+        let authorization =
+            &disposal_authorization(&prepared, "finish-test", "owner", "runtime", 1);
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| removal.authorize_disposal(authorization, admitted),
+        )
+    }
+    .unwrap();
     let previous = removal.marker.clone();
-    assert!(removal.finish().is_err(), "F2a root still present");
+    assert!(
+        removal
+            .recorded_admission(|held, admitted| held.finish(admitted))
+            .is_err(),
+        "F2a root still present"
+    );
     assert_eq!(
         removal.marker, previous,
         "F2a no premature Removed projection"
     );
-    removal.remove_root().unwrap();
+    removal
+        .recorded_admission(|held, admitted| held.remove_root(admitted))
+        .unwrap();
     let mut intended = previous.clone();
     intended.phase = RealizationPhase::Removed;
     let mut foreign = intended.clone();
@@ -1361,7 +1512,9 @@ fn removed_marker_retry_retains_the_guard_and_reconciles_only_the_exact_tombston
         .replace_sibling_regular_file_atomic(&leaf, &foreign_bytes)
         .unwrap();
     assert!(
-        removal.finish().is_err(),
+        removal
+            .recorded_admission(|held, admitted| held.finish(admitted))
+            .is_err(),
         "F2b foreign is not a response-loss receipt"
     );
     assert_eq!(
@@ -1379,12 +1532,16 @@ fn removed_marker_retry_retains_the_guard_and_reconciles_only_the_exact_tombston
         .replace_sibling_regular_file_atomic(&leaf, &encode_marker(&previous).unwrap())
         .unwrap();
     replace_marker_locked(&root, &removal.lock, &previous, &intended).unwrap();
-    removal.finish().unwrap();
+    removal
+        .recorded_admission(|held, admitted| held.finish(admitted))
+        .unwrap();
     assert_eq!(
         removal.marker, intended,
         "F2c update only after durable success"
     );
-    removal.finish().unwrap();
+    removal
+        .recorded_admission(|held, admitted| held.finish(admitted))
+        .unwrap();
     drop(removal);
     assert!(
         begin_terminal_takeover(
@@ -1426,8 +1583,12 @@ fn physical_authorization_preserves_original_preparation_across_failover() {
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("authorization-failover"));
     let create = fence("create", 1);
     let mut create_guard = begin(&root, &fingerprint, &create, None, None).unwrap();
-    create_guard.prepare_root().unwrap();
-    let evidence = create_guard.complete(&empty_receipt()).unwrap();
+    create_guard
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = create_guard
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let prepared = fence("prepare-a", 1);
     let preparation_fingerprint = "preparation-fingerprint-a";
     let (_, mut first) = begin_terminal_takeover(
@@ -1442,10 +1603,24 @@ fn physical_authorization_preserves_original_preparation_across_failover() {
     .expect("F1a exact Removing participant");
     let authorization_b =
         disposal_authorization(&prepared, preparation_fingerprint, "owner", "runtime", 1);
-    first.authorize_disposal(&authorization_b).expect("F1a");
-    first
-        .authorize_disposal(&authorization_b)
-        .expect("F1b exact response-loss replay");
+    {
+        let authorization = &authorization_b;
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| first.authorize_disposal(authorization, admitted),
+        )
+    }
+    .expect("F1a");
+    {
+        let authorization = &authorization_b;
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| first.authorize_disposal(authorization, admitted),
+        )
+    }
+    .expect("F1b exact response-loss replay");
     drop(first);
 
     let authorization_c = disposal_authorization(
@@ -1465,9 +1640,15 @@ fn physical_authorization_preserves_original_preparation_across_failover() {
     )
     .unwrap()
     .expect("F1c reopen exact participant after B response loss");
-    replay
-        .authorize_disposal(&authorization_c)
-        .expect("F1c aggregate-authorized failover");
+    {
+        let authorization = &authorization_c;
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| replay.authorize_disposal(authorization, admitted),
+        )
+    }
+    .expect("F1c aggregate-authorized failover");
     let persisted = replay
         .marker
         .disposal_authorization
@@ -1489,7 +1670,15 @@ fn physical_authorization_preserves_original_preparation_across_failover() {
         "F1c latest C"
     );
     assert!(
-        replay.authorize_disposal(&authorization_b).is_err(),
+        {
+            let authorization = &authorization_b;
+            pc::with_current_sandbox_effect(
+                authorization.effect_fence(),
+                &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+                |admitted| replay.authorize_disposal(authorization, admitted),
+            )
+        }
+        .is_err(),
         "F1d late B"
     );
 
@@ -1509,7 +1698,15 @@ fn physical_authorization_preserves_original_preparation_across_failover() {
         1,
     );
     assert!(
-        replay.authorize_disposal(&foreign).is_err(),
+        {
+            let authorization = &foreign;
+            pc::with_current_sandbox_effect(
+                authorization.effect_fence(),
+                &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+                |admitted| replay.authorize_disposal(authorization, admitted),
+            )
+        }
+        .is_err(),
         "F1e foreign preparation"
     );
     assert!(root.is_dir(), "F1d/F1e zero physical effect");
@@ -1539,8 +1736,12 @@ fn disposal_authorization_projection_is_canonical_and_phase_bound() {
         pc::SandboxRealizationFingerprint::from_spec(&spec("authorization-projection"));
     let create = fence("create", 1);
     let mut create_guard = begin(&root, &fingerprint, &create, None, None).unwrap();
-    create_guard.prepare_root().unwrap();
-    let evidence = create_guard.complete(&empty_receipt()).unwrap();
+    create_guard
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = create_guard
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let prepared = fence("prepare-a", 1);
     let (_, removal) = begin_terminal_takeover(
         &root,
@@ -1585,7 +1786,15 @@ fn disposal_authorization_projection_is_canonical_and_phase_bound() {
     )
     .unwrap()
     .expect("F2b exact Removing participant");
-    removal.authorize_disposal(&authorization).unwrap();
+    {
+        let authorization = &authorization;
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| removal.authorize_disposal(authorization, admitted),
+        )
+    }
+    .unwrap();
     drop(removal);
     assert!(
         matches!(
@@ -1655,8 +1864,12 @@ fn ready_operation_admission_holds_one_exact_effect_boundary() {
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("operation"));
     let create = fence("create", 2);
     let mut create_guard = begin(&root, &fingerprint, &create, None, None).unwrap();
-    create_guard.prepare_root().unwrap();
-    let evidence = create_guard.complete(&empty_receipt()).unwrap();
+    create_guard
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = create_guard
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
 
     let suspend = fence("suspend", 2);
     let operation = begin_ready_operation(&root, &evidence, &suspend).expect("R1");
@@ -1709,8 +1922,12 @@ fn checkpoint_participant_wal_closes_every_upload_crash_cut() {
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("checkpoint"));
     let create = fence("create", 1);
     let mut creation = begin(&root, &fingerprint, &create, None, None).unwrap();
-    creation.prepare_root().unwrap();
-    let evidence = creation.complete(&empty_receipt()).unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    let evidence = creation
+        .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+        .unwrap();
     let suspend = fence("suspend", 1);
 
     let mut upload = begin_ready_operation(&root, &evidence, &suspend).unwrap();
@@ -1802,17 +2019,27 @@ fn checkpoint_participant_wal_closes_every_upload_crash_cut() {
         replay.completed_checkpoint("request-b").is_err(),
         "U2 metadata"
     );
-    replay
-        .authorize_disposal(&disposal_authorization(
+    {
+        let authorization = &disposal_authorization(
             &terminal,
             "checkpoint-terminal-preparation",
             "owner",
             "runtime",
             1,
-        ))
-        .expect("U3 aggregate-authorized physical authorization");
-    replay.remove_root().unwrap();
-    replay.finish().unwrap();
+        );
+        pc::with_current_sandbox_effect(
+            authorization.effect_fence(),
+            &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+            |admitted| replay.authorize_disposal(authorization, admitted),
+        )
+    }
+    .expect("U3 aggregate-authorized physical authorization");
+    replay
+        .recorded_admission(|held, admitted| held.remove_root(admitted))
+        .unwrap();
+    replay
+        .recorded_admission(|held, admitted| held.finish(admitted))
+        .unwrap();
 }
 
 #[test]

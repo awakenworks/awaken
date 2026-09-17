@@ -308,14 +308,14 @@ impl ManagedHost {
         awaken_provisioning_contract::with_current_sandbox_effect(
             &effect_fence,
             &authority,
-            || Ok(()),
+            |_| Ok(()),
         )
         .map_err(|error| RunError::unavailable(error.to_string()))?;
         let checkpoint = environment
             .checkpoint_for_effect(&provider_request, store.as_ref(), &effect_fence, &authority)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
-        awaken_provisioning_contract::with_current_sandbox_effect(&effect_fence, &authority, || {
+        awaken_provisioning_contract::with_current_sandbox_effect(&effect_fence, &authority, |_| {
             Ok(awaken_session_contract::CheckpointReceipt {
                 effect_id: provider_request.effect_id,
                 generation_id: provider_request.generation_id,
