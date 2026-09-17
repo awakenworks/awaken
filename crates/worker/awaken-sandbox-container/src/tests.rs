@@ -3238,8 +3238,9 @@ impl ContainerRuntime for FakeRuntime {
                 .checkpoint_expected
                 .as_ref()
                 .expect("checkpoint fixture configured");
+            let decoded = crate::DecodedContainerHandle::decode(handle).unwrap();
             let expected =
-                ContainerObservationExpectation::from_handle_for_effect(handle, active).unwrap();
+                ContainerObservationExpectation::from_decoded_for_effect(&decoded, active);
             assert_eq!(expectation.container_id, expected.container_id);
             assert_eq!(
                 expectation.adoption_fingerprint,
@@ -6041,12 +6042,8 @@ async fn default_runtime_rejects_future_handle_before_remove() {
     // an unaware runtime. C1 => E1 reject and E2 never call remove/delete.
     let runtime = FakeRuntime::default();
     let handle = future_host_bind_handle();
-    let runtime_handle = handle
-        .container_payload()
-        .unwrap()
-        .runtime_handle
-        .as_ref()
-        .unwrap();
+    let payload = handle.container_payload().unwrap();
+    let runtime_handle = payload.runtime_handle.as_ref().unwrap();
     assert!(
         runtime
             .remove_with_handle("future-container", Some(runtime_handle))

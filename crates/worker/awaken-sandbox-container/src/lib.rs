@@ -68,7 +68,7 @@ pub use provider_contract::{
     ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
     ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
-    ContainerRealizationNamespace, EnvironmentFile, PreparedContainer,
+    ContainerRealizationNamespace, DecodedContainerHandle, EnvironmentFile, PreparedContainer,
     PreparedContainerDisposition,
 };
 pub use resident_hand::ResidentHandConfig;
@@ -1372,8 +1372,9 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
         access.admit()?;
         let handle = pc::Sandbox::handle(self);
         handle.container_physical_incarnation()?;
+        let decoded = DecodedContainerHandle::decode(&handle)?;
         let mut expectation =
-            ContainerObservationExpectation::from_handle_for_effect(&handle, access.effect_fence)?;
+            ContainerObservationExpectation::from_decoded_for_effect(&decoded, access.effect_fence);
         expectation.retained_attempt = self.retained_attempt.as_ref();
         let result = self
             .runtime
@@ -1913,10 +1914,11 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         // and Hand I/O must not be repeated after that persistence boundary.
         let handle = self.handle();
         handle.container_physical_incarnation()?;
-        let mut expectation = ContainerObservationExpectation::from_handle_for_effect(
-            &handle,
+        let decoded = DecodedContainerHandle::decode(&handle)?;
+        let mut expectation = ContainerObservationExpectation::from_decoded_for_effect(
+            &decoded,
             authorization.effect_fence(),
-        )?;
+        );
         // The same retained participant ownership used for warm observation
         // remains available at physical disposal. Authorization and immutable
         // fingerprints still gate deletion; cold wrappers retain no proof.

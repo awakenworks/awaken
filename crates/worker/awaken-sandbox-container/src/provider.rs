@@ -962,7 +962,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             live_input_projection: payload.live_input_projection,
             runtime_handle: payload.runtime_handle,
             continuation_excluded_paths: payload.continuation_excluded_paths,
-            adoption_fingerprint: handle.container_adoption_fingerprint()?.cloned(),
+            adoption_fingerprint: handle.container_adoption_fingerprint()?,
             realization_fingerprint: handle.realization_fingerprint().cloned(),
             memory_materializations: handle
                 .memory_materializations()?
@@ -981,8 +981,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        let decoded = crate::DecodedContainerHandle::decode(handle)?;
         self.runtime
-            .observe(ContainerObservationExpectation::from_handle(handle)?)
+            .observe(ContainerObservationExpectation::from_decoded(&decoded))
             .await
             .map_err(pc::SandboxError::from)
     }
@@ -998,7 +999,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         }
         if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
             let (plan, expected) = self.adoption_plan(adoption.spec)?;
-            let historical_match = if stored != &expected
+            let historical_match = if stored != expected
                 && purpose == ContainerObservationPurpose::TerminalCleanup
                 && effect_fence.is_some()
             {
@@ -1013,12 +1014,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                             &plan,
                             self.resident_hand.as_ref(),
                             &configuration,
-                        ) == *stored
+                        ) == stored
                     })
             } else {
                 false
             };
-            if stored != &expected && !historical_match {
+            if stored != expected && !historical_match {
                 return Ok(pc::SandboxObservation::Incompatible {
                     reason: format!(
                         "container provider-effective adoption configuration differs from its durable handle (expected={expected}, stored={stored})"
@@ -1026,7 +1027,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 });
             }
         }
-        let mut expectation = ContainerObservationExpectation::from_handle(adoption.handle)?;
+        let decoded = crate::DecodedContainerHandle::decode(adoption.handle)?;
+        let mut expectation = ContainerObservationExpectation::from_decoded(&decoded);
         expectation.effect_fence = effect_fence;
         expectation.retained_attempt = adoption.retained_attempt;
         expectation.purpose = purpose;

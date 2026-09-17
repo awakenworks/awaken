@@ -63,8 +63,8 @@ pub use prepare::{
 };
 pub use sandbox::{
     BlobSource, CheckpointObjectMetadata, ContainerContinuationHandle, ContainerSandboxHandleV1,
-    ContainerSandboxHandleV2, ExitStatus, HostBindRestorationHandle, IsolationClass,
-    IsolationPolicy, KubernetesPodUid, LocalSandboxHandleV1, LocalSandboxHandleV2,
+    ContainerSandboxHandleV2, ExitStatus, HandleEvidence, HostBindRestorationHandle,
+    IsolationClass, IsolationPolicy, KubernetesPodUid, LocalSandboxHandleV1, LocalSandboxHandleV2,
     MemoryMaterializationEvidence, MemoryMaterializationHead, MemoryMount, MemoryMountOutcome,
     MemoryMounter, MemoryReconciliationAck, NamespaceProviderKind, NamespaceSandboxHandleV1,
     NamespaceSandboxHandleV2, OnUnmet, PolicySelection, ProcessHandle,
@@ -74,8 +74,8 @@ pub use sandbox::{
     SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore,
     SandboxCheckpointUpload, SandboxControlIncarnation, SandboxDisposalAuthorization,
     SandboxDisposalPreparation, SandboxEffectFence, SandboxError, SandboxHandle,
-    SandboxObservation, SandboxProvider, SandboxRequirements, SandboxRestorationEvidence,
-    SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget,
+    SandboxObservation, SandboxPayloadSchema, SandboxProvider, SandboxRequirements,
+    SandboxRestorationEvidence, SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget,
     SandboxRestoreTargetDisposition, SandboxStatus, SecretBroker, SecretWritebackEffect,
     SelectionError, Signal, StoredCheckpointObject, WorkspaceLayout,
     capability_requirements_satisfied, checkpoint_exclusions_fingerprint,

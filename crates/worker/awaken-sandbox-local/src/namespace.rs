@@ -674,7 +674,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             None,
         )
     }
@@ -698,7 +698,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             Some(effect_fence),
         )
     }
@@ -1164,7 +1164,7 @@ impl NamespaceProvider {
             }
             (
                 handle.sandbox_id.as_str(),
-                payload.outputs_path.as_str(),
+                payload.outputs_path.clone(),
                 payload.base_env.clone(),
                 payload.network.clone(),
                 handle.owned_paths().unwrap_or_default().to_vec(),
@@ -1172,7 +1172,7 @@ impl NamespaceProvider {
         } else {
             (
                 spec.scope.as_str(),
-                spec.outputs_path.as_str(),
+                spec.outputs_path.clone(),
                 spec.env.clone(),
                 spec.network.clone(),
                 spec.mounts
@@ -1186,7 +1186,9 @@ impl NamespaceProvider {
         let host_workspace = root
             .resolve(pc::WorkspaceLayout::ROOT)
             .map_err(pc::SandboxError::from)?;
-        let host_outputs = root.resolve(outputs_path).map_err(pc::SandboxError::from)?;
+        let host_outputs = root
+            .resolve(&outputs_path)
+            .map_err(pc::SandboxError::from)?;
         let secret_paths = spec
             .mounts
             .iter()
@@ -1236,7 +1238,7 @@ impl NamespaceProvider {
             id: id.to_owned(),
             realization_root: raw_root,
             root,
-            outputs_path: outputs_path.to_owned(),
+            outputs_path: outputs_path.clone(),
             host_workspace,
             host_outputs,
             base_env,
@@ -1301,7 +1303,7 @@ impl NamespaceProvider {
             &raw_root,
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             effect_fence,
         )?;
         let completion = verified.as_ref().map(|(_, receipt)| receipt.clone());

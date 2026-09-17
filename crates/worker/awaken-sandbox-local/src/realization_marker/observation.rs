@@ -301,7 +301,7 @@ pub(super) fn validate_terminal_source(
                         marker,
                         source.fingerprint,
                         source.effect_fence,
-                        source.physical_incarnation,
+                        &source.physical_incarnation,
                     )?;
                     if !recorded
                         .realization_effect_fence
@@ -366,7 +366,7 @@ pub(super) fn validate_terminal_source(
                         marker,
                         source.fingerprint,
                         source.effect_fence,
-                        source.physical_incarnation,
+                        &source.physical_incarnation,
                     )?;
                     source.effect_fence.clone()
                 }

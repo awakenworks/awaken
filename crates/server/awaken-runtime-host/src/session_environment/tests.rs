@@ -1084,7 +1084,7 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     #[cfg(target_os = "macos")]
     assert_eq!(environment.handle().provider_kind(), "seatbelt");
     #[cfg(not(target_os = "macos"))]
-    assert_eq!(environment.handle().provider_kind(), "bwrap");
+    assert_eq!(environment.handle().provider_kind(), "bubblewrap");
 
     let mut native_command = pc::Command::new([
         "/bin/sh",
@@ -3834,10 +3834,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
             .validate_closed_observation(
                 &handle,
                 &pc::SandboxObservation::DefinitivelyUnavailable {
-                    physical_incarnation: handle
-                        .filesystem_physical_incarnation()
-                        .unwrap()
-                        .map(str::to_owned),
+                    physical_incarnation: handle.filesystem_physical_incarnation().unwrap(),
                 },
             )
             .is_err(),

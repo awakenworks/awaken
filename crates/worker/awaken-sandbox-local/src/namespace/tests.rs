@@ -737,7 +737,16 @@ async fn adoption_preserves_network_policy_and_rejects_corrupt_handles() {
         .as_object_mut()
         .unwrap()
         .remove("network");
-    assert!(serde_json::from_value::<pc::SandboxHandle>(corrupt).is_err());
+    // The neutral envelope stays opaque; the owning codec rejects the corrupt
+    // payload before any adoption effect.
+    let corrupt = serde_json::from_value::<pc::SandboxHandle>(corrupt)
+        .expect("the contract envelope does not interpret provider members");
+    assert!(
+        corrupt
+            .namespace_payload(NamespaceProvider::provider_kind())
+            .is_err()
+    );
+    assert!(provider.adopt_sandbox(&corrupt).await.is_err());
 
     let legacy = pc::SandboxHandle::namespace(
         NamespaceProvider::provider_kind(),
@@ -758,7 +767,9 @@ async fn adoption_preserves_network_policy_and_rejects_corrupt_handles() {
 
     let mut unknown_schema = serde_json::to_value(&handle).unwrap();
     unknown_schema["payload"]["schema"] = serde_json::json!("namespace_v3");
-    assert!(serde_json::from_value::<pc::SandboxHandle>(unknown_schema).is_err());
+    let unknown_schema = serde_json::from_value::<pc::SandboxHandle>(unknown_schema)
+        .expect("an open provider schema is decodable by the neutral envelope");
+    assert!(provider.adopt_sandbox(&unknown_schema).await.is_err());
 }
 
 /// Live attach cause/effect decision table:

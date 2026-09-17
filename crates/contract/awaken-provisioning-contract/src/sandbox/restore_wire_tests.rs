@@ -297,9 +297,8 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
         .container_payload()
         .unwrap()
         .runtime_handle
-        .as_ref()
         .expect("R10/E3 runtime locator");
-    match runtime_handle {
+    match &runtime_handle {
         ContainerContinuationHandle::HostBindRestoration(locator) => {
             assert_eq!(locator.staging_root(), "/provider/staging/a", "R10/E3")
         }

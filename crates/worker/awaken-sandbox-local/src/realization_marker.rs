@@ -146,7 +146,7 @@ struct TerminalSourceRecord {
 pub(crate) struct RebuildSource<'a> {
     pub(crate) fingerprint: &'a pc::SandboxRealizationFingerprint,
     pub(crate) effect_fence: &'a pc::SandboxEffectFence,
-    pub(crate) physical_incarnation: &'a str,
+    pub(crate) physical_incarnation: String,
 }
 
 pub(crate) fn rebuild_source(

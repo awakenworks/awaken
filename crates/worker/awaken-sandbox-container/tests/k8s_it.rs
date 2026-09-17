@@ -938,20 +938,16 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     .await
     .expect("KPV3b exact response-loss replay");
     let recovered_handle = recovered.handle();
-    let (recovered_pod_uid, recovered_claim_uid) = match recovered_handle
-        .container_payload()
-        .unwrap()
-        .runtime_handle
-        .as_ref()
-    {
-        Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
-            pod_uid,
-            claim_uid: Some(claim_uid),
-        }) => (pod_uid, claim_uid),
-        other => panic!("KPV3b expected Pod+claim V2 handle, got {other:?}"),
-    };
-    assert_ne!(recovered_pod_uid, &first_pod_uid, "KPV3b new Pod UID");
-    assert_eq!(recovered_claim_uid, &claim_uid, "KPV3b exact claim UID");
+    let (recovered_pod_uid, recovered_claim_uid) =
+        match recovered_handle.container_payload().unwrap().runtime_handle {
+            Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+                pod_uid,
+                claim_uid: Some(claim_uid),
+            }) => (pod_uid, claim_uid),
+            other => panic!("KPV3b expected Pod+claim V2 handle, got {other:?}"),
+        };
+    assert_ne!(recovered_pod_uid, first_pod_uid, "KPV3b new Pod UID");
+    assert_eq!(recovered_claim_uid, claim_uid, "KPV3b exact claim UID");
     let terminal_fence = effect_fence(&scope, "terminal", "orphan-owner-a", 2);
     recovered
         .prepare_disposal_for_effect(
@@ -1111,12 +1107,13 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
 
     let terminal_fence = effect_fence(&scope, "terminal", "claim-only-owner", 2);
     let disposal = disposal_authorization(&terminal_fence);
+    let decoded_source =
+        awaken_sandbox_container::DecodedContainerHandle::decode(&source_handle).unwrap();
     let expectation =
-        awaken_sandbox_container::ContainerObservationExpectation::from_handle_for_effect(
-            &source_handle,
+        awaken_sandbox_container::ContainerObservationExpectation::from_decoded_for_effect(
+            &decoded_source,
             disposal.effect_fence(),
-        )
-        .unwrap();
+        );
     let rejected = runtime
         .dispose_authorized(
             expectation,

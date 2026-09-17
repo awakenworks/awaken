@@ -766,7 +766,7 @@ async fn create_realizes_env_and_lifecycle_without_executing() {
         if cfg!(target_os = "macos") {
             "seatbelt"
         } else {
-            "bwrap"
+            "bubblewrap"
         }
     );
     assert!(matches!(

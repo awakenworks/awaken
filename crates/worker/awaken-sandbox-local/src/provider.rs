@@ -640,7 +640,7 @@ impl LocalProvider {
             root,
             Some(handle.clone()),
         );
-        Self::project_durable_handle_fields(&mut sandbox, payload)?;
+        Self::project_durable_handle_fields(&mut sandbox, &payload)?;
         Ok(sandbox)
     }
 
@@ -795,7 +795,7 @@ impl LocalProvider {
             sandbox.root.root(),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             effect_fence,
         )?;
         let completion = verified.as_ref().map(|(_, receipt)| receipt.clone());
@@ -805,7 +805,7 @@ impl LocalProvider {
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
         };
         self.select_execution_boundary(&sandbox)?;
-        Self::project_durable_handle_fields(&mut sandbox, payload)?;
+        Self::project_durable_handle_fields(&mut sandbox, &payload)?;
         if let Some(spec) = spec {
             sandbox.secret_paths = spec
                 .mounts
@@ -1073,7 +1073,7 @@ impl pc::SandboxProvider for LocalProvider {
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             None,
         )
     }
@@ -1096,7 +1096,7 @@ impl pc::SandboxProvider for LocalProvider {
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?,
+            handle.filesystem_physical_incarnation()?.as_deref(),
             Some(effect_fence),
         )
     }

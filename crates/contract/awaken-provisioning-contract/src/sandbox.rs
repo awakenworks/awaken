@@ -7,6 +7,7 @@ mod checkpoint_upload;
 mod control_incarnation;
 mod error;
 mod foundation;
+mod handle;
 mod repository_publication;
 mod restore_contract;
 mod restore_wire;
@@ -15,6 +16,7 @@ mod runtime;
 pub use checkpoint_upload::SandboxCheckpointUpload;
 pub use control_incarnation::{KubernetesPodUid, SandboxControlIncarnation};
 pub use foundation::*;
+pub use handle::*;
 pub use repository_publication::{
     RepositoryPublicationError, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
     RepositoryPublicationRejection,
@@ -1303,8 +1305,11 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("adoption_fingerprint");
+        let missing_adoption = serde_json::from_value::<SandboxHandle>(missing_adoption)
+            .expect("the neutral envelope does not interpret the container locator");
         assert!(
-            serde_json::from_value::<SandboxHandle>(missing_adoption).is_err(),
+            missing_adoption.container_adoption_fingerprint().is_err()
+                && missing_adoption.container_payload().is_err(),
             "H1 current container V2 never accepts missing adoption evidence"
         );
         for handle in cases {

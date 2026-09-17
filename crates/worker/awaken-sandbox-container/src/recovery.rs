@@ -7,7 +7,7 @@ pub(crate) type ContainerHandleV1 = pc::ContainerSandboxHandleV1;
 pub(crate) fn decode_handle(
     handle: &pc::SandboxHandle,
 ) -> Result<ContainerHandleV1, pc::SandboxError> {
-    let payload = handle.container_payload().cloned()?;
+    let payload = handle.container_payload()?;
     if payload
         .runtime_handle
         .as_ref()

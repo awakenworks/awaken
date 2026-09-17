@@ -645,7 +645,7 @@ impl SessionEnvironmentProvider {
                 )),
                 Self::Container { .. } => {
                     let expected = handle.container_physical_incarnation()?;
-                    if physical_incarnation.as_deref() == Some(expected) {
+                    if physical_incarnation.as_deref() == Some(expected.as_str()) {
                         Ok(())
                     } else {
                         Err(pc::SandboxError::conflict(
@@ -670,7 +670,7 @@ impl SessionEnvironmentProvider {
                     }
                     Self::Container { .. } => handle.container_physical_incarnation()?,
                 };
-                if physical_incarnation == expected {
+                if *physical_incarnation == expected {
                     Ok(())
                 } else {
                     Err(pc::SandboxError::conflict(
