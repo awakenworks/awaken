@@ -236,8 +236,8 @@ mod tests {
 
     async fn harness_for(
         session: PersistedSession,
-    ) -> (ManagedState, Arc<dyn ManagedSessionRepository>) {
-        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    ) -> (ManagedState, Arc<dyn awaken_session_contract::SessionStore>) {
+        let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
         );
         let id = session.session_id.clone();
@@ -260,7 +260,7 @@ mod tests {
         )
     }
 
-    async fn harness(id: &str) -> (ManagedState, Arc<dyn ManagedSessionRepository>) {
+    async fn harness(id: &str) -> (ManagedState, Arc<dyn awaken_session_contract::SessionStore>) {
         harness_for(persisted_session(id)).await
     }
 
@@ -620,7 +620,7 @@ mod tests {
             lifecycle_facts: Vec::new(),
         };
         assert!(matches!(
-            repo.commit_mutation("workspace-a", mutation).await.unwrap(),
+            repo.commit("workspace-a", mutation).await.unwrap(),
             awaken_session_contract::SessionMutationResult::Applied { .. }
         ));
 

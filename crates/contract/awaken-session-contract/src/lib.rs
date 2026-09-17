@@ -209,14 +209,15 @@ pub use session_realization::{
     session_realization_exclusion_admits,
 };
 pub use session_repo::{
-    IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
+    IdempotencyRecord, LifecycleOutbox, PersistedSession, ScopedPersistedSession,
     SessionArchiveWithRepositoryPublicationError, SessionCreateResult, SessionDisposition,
     SessionDispositionTransitionError, SessionEventDispatchSettlementEffect, SessionExecutionState,
     SessionExecutionStateError, SessionExecutionTransitionError, SessionIdempotencyReceipt,
     SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
-    SessionRealizationLease, SessionRecoveryCursor, SessionRecoveryQuarantine, SessionRecoveryScan,
+    SessionRealizationLease, SessionRecoveryQuarantine, SessionRepository,
     SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
-    SessionRevision, SessionTombstone, VisibleMcpServer,
+    SessionRevision, SessionScan, SessionScanCursor, SessionScanQuery, SessionStore,
+    SessionTombstone, VisibleMcpServer,
 };
 pub use skill_execution::{
     SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin,

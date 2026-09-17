@@ -462,7 +462,7 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
     // | T2 | Worker | Resident | existing external creation |
     // | T3 | Local | CheckpointAndRelease | existing local continuation |
     // | T4 | Local | Resident | existing local creation |
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -595,7 +595,7 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
 
 #[tokio::test]
 async fn model_override_decision_reuses_only_an_equal_id_and_resolves_every_mismatch() {
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),
     );
@@ -677,7 +677,7 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
     // creates a false-ready fact if realization later fails, severity 9,
     // occurrence 4, detection 7; the acknowledgement boundary removes that
     // failure mode. This proves protocols cannot reorder the shared sequence.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),
     );
@@ -723,7 +723,7 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
     // | Rule | Batch | Insert | Reconciled | Effect |
     // | I1 | nonempty | succeeds | no | E1+E2+E3+E4 |
     // | I2 | exact replay | existing equal root | no | same durable payload |
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),
     );
@@ -796,7 +796,7 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
     //
     // | Rule | C1 | C2 | C3 | C4 | Effect |
     // | W1   | T  | T  | T  | F  | E1+E2+E3 |
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),
     );
@@ -893,7 +893,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 command
             };
             let accepted = {
-                let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+                let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
                     awaken_session_store::SqliteManagedSessionRepository::open(path)
                         .expect("open original authority"),
                 );
@@ -958,7 +958,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 );
                 accepted
             };
-            let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
                 awaken_session_store::SqliteManagedSessionRepository::open(path)
                     .expect("reopen fresh authority connection"),
             );
@@ -1112,7 +1112,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     // | R2 | exact | changed | activated | E2+E3 |
     // | R3 | exact | same | ActivationFailed | E3+E4 |
     // | R4 | exact accept | same | ActivationFailed | E3+E5 |
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("create replay repository"),
     );
@@ -1183,7 +1183,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     let payload_hash = payload.stable_hash();
     assert!(matches!(
         repository
-            .commit_mutation(
+            .commit(
                 "workspace",
                 awaken_session_contract::SessionMutation {
                     expected_revision,
@@ -1307,7 +1307,7 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
             0,
         ),
     ] {
-        let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+        let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("post-create conflict repository"),
         );
@@ -1406,7 +1406,7 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
     // | F1 | unavailable | nonterminal | E1+E2 |
     // | F2 | internal | ActivationFailed | E1+E3 |
     for (rule, failure, terminal) in [("F1", 1, false), ("F2", 2, true)] {
-        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("cleanup admission repository"),
         );
@@ -1455,7 +1455,7 @@ async fn creation_persists_only_a_complete_frozen_root_before_later_cas_failure(
      * |---|---|---|---|---|
      * | A1 | pass | pass | fail | E1 + E2 + E3 |
      */
-    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),
     );
@@ -1495,7 +1495,7 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     // Decision table: A1 absent+C3+C4 => E1+E4; A2 present+C2 => E2; A3
     // present+!C2 => E3. The canonical full Rust gate owns C4; this test is the
     // concrete application gate shared by AI SDK, AG-UI, and A2A.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),
     );
@@ -1568,7 +1568,7 @@ fn profiled_session_command(session_id: &str, model: Option<&str>) -> CreateProf
 }
 
 async fn assert_profiled_realization_and_environment_rules(
-    repository: Arc<dyn ManagedSessionRepository>,
+    repository: Arc<dyn awaken_session_contract::SessionStore>,
 ) {
     let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
     available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
@@ -1678,7 +1678,9 @@ async fn assert_profiled_realization_and_environment_rules(
     );
 }
 
-async fn assert_profiled_publication_revision_rules(repository: Arc<dyn ManagedSessionRepository>) {
+async fn assert_profiled_publication_revision_rules(
+    repository: Arc<dyn awaken_session_contract::SessionStore>,
+) {
     let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
     available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
 
@@ -1767,7 +1769,9 @@ async fn assert_profiled_publication_revision_rules(repository: Arc<dyn ManagedS
     );
 }
 
-async fn assert_profiled_override_projection(repository: Arc<dyn ManagedSessionRepository>) {
+async fn assert_profiled_override_projection(
+    repository: Arc<dyn awaken_session_contract::SessionStore>,
+) {
     // Override-projection cause/effect table:
     // | Rule | Agent snapshot | Override publication | Effect |
     // | O1 | exact revision | complete | replace the whole candidate roster and identity |
@@ -1834,7 +1838,9 @@ async fn assert_profiled_override_projection(repository: Arc<dyn ManagedSessionR
     );
 }
 
-async fn assert_profiled_rejection_rules(repository: Arc<dyn ManagedSessionRepository>) {
+async fn assert_profiled_rejection_rules(
+    repository: Arc<dyn awaken_session_contract::SessionStore>,
+) {
     let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
     available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
 
@@ -1901,7 +1907,7 @@ async fn assert_profiled_rejection_rules(repository: Arc<dyn ManagedSessionRepos
 }
 
 async fn assert_profiled_direct_resource_rules() {
-    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let durable: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("direct resource repository"),
     );
@@ -1942,7 +1948,7 @@ async fn assert_profiled_direct_resource_rules() {
         "D2 direct File desired intent freezes in original root before realization"
     );
 
-    let agent_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let agent_repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Agent collision repository"),
     );
@@ -1987,7 +1993,7 @@ async fn assert_profiled_direct_resource_rules() {
     // preparing physical state once. D5 gives two Repository trees a
     // parent/child overlap; because both paths are already final, admission
     // rejects the whole set before Registry or Runtime effects.
-    let repository_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository_repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Repository path Session store"),
     );
@@ -2145,7 +2151,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     // Each cause/effect partition owns a separate boxed future. This keeps the
     // test's large, deeply composed Session values out of one aggregate async
     // frame without changing production stack limits or the decision oracles.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("profiled Session repository"),
     );
@@ -2168,7 +2174,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     // T2 identical command + later clock -> exact root, no repeated effects;
     // T3 genuine mutation -> update only; T4 response loss + same receipt ->
     // first mutation time; T5 clock rollback -> updated time never regresses.
-    let repository: Arc<dyn ManagedSessionRepository> =
+    let repository: Arc<dyn awaken_session_contract::SessionStore> =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     let runtime = Arc::new(RecordingCreateRuntime::default());
     let clock = Arc::new(awaken_agent_contract::clock::ManualClock::new(

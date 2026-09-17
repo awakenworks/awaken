@@ -25,9 +25,9 @@ use crate::types::{
     SessionThreadAgent, SessionThreadStatus, StopReason, Usage,
 };
 #[cfg(test)]
-use awaken_session_contract::ManagedSessionRepository;
-#[cfg(test)]
 use awaken_session_contract::SessionDisposition;
+#[cfg(test)]
+use awaken_session_contract::SessionRepository;
 use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionExecutionState};
 
 mod application;

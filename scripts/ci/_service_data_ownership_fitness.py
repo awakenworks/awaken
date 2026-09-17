@@ -710,8 +710,9 @@ def domain_component_violations(
         errors.append("awaken-worker lost its canonical WorkerNodeBuilder component boundary")
     if "build_worker_component" in worker_source:
         errors.append("awaken-worker added a second component builder beside WorkerNodeBuilder")
-    if "ManagedSessionRepository" in control_source:
-        errors.append("awaken-control still acquires Coordinator's Session repository")
+    for session_port in ("SessionRepository", "SessionStore", "LifecycleOutbox"):
+        if re.search(rf"\b{session_port}\b", control_source):
+            errors.append("awaken-control still acquires Coordinator's Session repository")
     return errors
 
 
@@ -836,7 +837,9 @@ def process_store_ownership_violations(
         if required not in process_body:
             errors.append(f"ProcessStores is missing role-owned group `{required}`")
     for forbidden in (
-        "ManagedSessionRepository",
+        "SessionRepository",
+        "SessionStore",
+        "LifecycleOutbox",
         "DeploymentRepository",
         "DreamRepository",
         "MemoryExtractionRepository",
@@ -1286,7 +1289,7 @@ def selftest() -> None:
     ) == []  # O10 R1 four canonical application/authority owners
     assert domain_component_violations(
         "DeploymentApplication::from_repository(",
-        "ManagedSessionRepository",
+        "Arc<dyn SessionRepository>",
         "",
         "",
         "pub use component::ResourceComponent;",
@@ -1351,7 +1354,7 @@ def selftest() -> None:
         "struct ProcessStores { control: Option<ControlStores>, "
         "coordinator: Option<CoordinatorStores>\n}\n"
         "struct ControlStores { catalog: CatalogRepo\n}\n"
-        "struct CoordinatorStores { sessions: ManagedSessionRepository\n}\n"
+        "struct CoordinatorStores { sessions: SessionStore\n}\n"
     )
     role_aware = (
         "let opens_control = role_owns_control_component(role); "
@@ -1367,7 +1370,7 @@ def selftest() -> None:
         process_stores, role_aware, resource_owner
     ) == []  # O13
     assert process_store_ownership_violations(
-        process_stores.replace("catalog: CatalogRepo", "sessions: ManagedSessionRepository"),
+        process_stores.replace("catalog: CatalogRepo", "sessions: SessionStore"),
         role_aware.replace(
             "let resources = if manifest.contains(&MigrationComponent::Resources)", ""
         ),

@@ -101,7 +101,7 @@ pub(super) struct CoordinatorStores {
     /// opens or receives Control's Resource-authoring/admin store.
     pub(super) resources: awaken_resource_application::ResourcesApplication,
     /// Durable home for the Managed Session aggregate and lifecycle outbox.
-    pub(super) sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    pub(super) sessions: Arc<dyn awaken_session_contract::SessionStore>,
     /// Coordinator-owned short-lived application capabilities. It shares the
     /// selected Session database but has its own aggregate table and ledger.
     pub(super) application_access:
@@ -125,7 +125,7 @@ pub(super) struct CoordinatorStores {
 /// Every typed port backed by the one canonical Managed Session repository.
 /// Process assembly retains these views and never opens the shared store twice.
 pub(super) struct SessionStoreViews {
-    pub(super) sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    pub(super) sessions: Arc<dyn awaken_session_contract::SessionStore>,
     pub(super) deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>,
     pub(super) memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
     pub(super) dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,

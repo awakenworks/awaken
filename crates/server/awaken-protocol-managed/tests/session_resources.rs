@@ -33,7 +33,7 @@ use awaken_resource_contract::{
     ResourceState, RetentionPolicy,
 };
 use awaken_session_contract::{
-    ManagedSessionRepository, OutcomeDrive, RunError, SessionEnvironmentBindingSink, SessionInit,
+    OutcomeDrive, RunError, SessionEnvironmentBindingSink, SessionInit, SessionRepository,
     SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -1492,7 +1492,10 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
                 "{}: {error}",
                 rule.id
             );
-            let recovery = repo.reconcilable_sessions().await.unwrap();
+            let recovery = repo
+                .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+                .await
+                .unwrap();
             assert!(recovery.sessions.is_empty(), "{} Session write", rule.id);
             assert!(
                 recovery.quarantined.is_empty(),
@@ -3612,7 +3615,14 @@ async fn invalid_repository_path_preflights_the_whole_create_before_resource_eff
         "R1/E2 no compensation is needed"
     );
     assert!(
-        sessions.list_by_owner("default").await.unwrap().is_empty(),
+        sessions
+            .scan(awaken_session_contract::SessionScanQuery::Workspace {
+                workspace_id: "default"
+            })
+            .await
+            .map(awaken_session_contract::SessionScan::into_sessions)
+            .unwrap()
+            .is_empty(),
         "R1/E3"
     );
     assert!(runtime.prepared.lock().unwrap().is_empty(), "R1/E4");

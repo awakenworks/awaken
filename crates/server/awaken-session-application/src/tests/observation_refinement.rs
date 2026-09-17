@@ -23,7 +23,7 @@ pub(super) fn root_step(name: &str, before: &PersistedSession, after: &Persisted
 /// Cleanup's private progress wrappers serialize around the same `cleanup`
 /// member; this projects their existing effect id, never derives a second one.
 pub(super) async fn deletion_observation(
-    repo: &dyn ManagedSessionRepository,
+    repo: &dyn awaken_session_contract::SessionStore,
     session_id: &str,
     owner_scope: &str,
 ) -> serde_json::Value {

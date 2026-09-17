@@ -2,9 +2,9 @@
 use crate::mutation::commit_observed_snapshot;
 use awaken_session_contract::SessionId;
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
-    SessionCreateResult, SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload,
-    SessionMutationResult, SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,
+    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionRepository, SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -18,8 +18,8 @@ struct ObservedCommitPort {
 }
 
 #[async_trait::async_trait]
-impl ManagedSessionRepository for ObservedCommitPort {
-    async fn commit_mutation(
+impl SessionRepository for ObservedCommitPort {
+    async fn commit(
         &self,
         owner_scope: &str,
         mutation: SessionMutation,
@@ -54,29 +54,32 @@ impl ManagedSessionRepository for ObservedCommitPort {
     ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
-    async fn append_lifecycle(
-        &self,
-        _fact: ManagedLifecycleFact,
-    ) -> Result<(), SessionRepositoryError> {
-        panic!("unexpected repository operation")
-    }
-    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
-        panic!("unexpected repository operation")
-    }
-    async fn complete_lifecycle(&self, _fact_id: &str) -> Result<(), SessionRepositoryError> {
-        panic!("unexpected repository operation")
-    }
     async fn get(
         &self,
         _session_id: &SessionId,
     ) -> Result<PersistedSession, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
-    async fn sessions_referencing_credential_source(
+    async fn scan(
         &self,
-        _workspace_id: &str,
-        _source_id: &awaken_credential_contract::CredentialSourceId,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        _query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, SessionRepositoryError> {
+        panic!("unexpected repository operation")
+    }
+    async fn deleted_event_admissions(
+        &self,
+        _owner_scope: &str,
+        _session_id: &SessionId,
+    ) -> Result<
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        SessionRepositoryError,
+    > {
+        panic!("unexpected repository operation")
+    }
+    async fn count_environment_phase(
+        &self,
+        _phase: awaken_session_contract::SessionEnvironmentPhase,
+    ) -> Result<u64, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
     async fn idempotency_receipt(

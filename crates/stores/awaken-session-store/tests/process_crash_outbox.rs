@@ -1,10 +1,11 @@
+use awaken_session_contract::LifecycleOutbox as _;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use awaken_reliability_testkit::CrashProcess;
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
-    SessionExecutionState, SessionMutationPayload,
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionExecutionState,
+    SessionMutationPayload, SessionRepository,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 

@@ -1,5 +1,6 @@
 use super::*;
 use awaken_runtime_contract::tool_batch::ToolBatch;
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_contract::SessionId;
 use awaken_session_contract::ToolPermissionDecision;
 
@@ -7,7 +8,7 @@ fn test_thread_agent(id: &str) -> SessionThreadAgent {
     ManagedState::thread_agent_from_profile(id, Default::default())
 }
 
-async fn await_session_tombstone(repo: &dyn ManagedSessionRepository, id: &str) {
+async fn await_session_tombstone(repo: &dyn awaken_session_contract::SessionStore, id: &str) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if matches!(
@@ -71,7 +72,10 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
         .await
         .expect("R1/E1 durable demand is accepted");
     assert_eq!(created.status, SessionStatus::Rescheduling, "R1/E1");
-    let scan = repo.reconcilable_sessions().await.unwrap();
+    let scan = repo
+        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .await
+        .unwrap();
     assert_eq!(scan.sessions.len(), 1, "R1/E2");
     let persisted = &scan.sessions[0];
 
@@ -1109,7 +1113,7 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
 
 #[tokio::test]
 async fn activation_failure_remains_deletable_after_projection_cache_loss() {
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
     let mut failed = sample_persisted("sesn_failed_delete");
     failed.execution = SessionExecutionState::ActivationFailed;
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
@@ -1221,7 +1225,7 @@ async fn archive_session_rehydrates_after_process_restart() {
     // resident Environment binding exists. Effects: E1 the Session is terminal;
     // E2 cold control never prepares a Runtime; E3 it invents no teardown. Rule
     // R1=C1+C2+C3+C4=>E1+E2+E3.
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
     let original = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let id = original
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
@@ -1257,7 +1261,7 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
     // remains fail-closed elsewhere. Requiring mutable Control presentation for
     // C3 leaks every already-terminal Run and hot-loops its downstream inbox.
     // Decision rule R1=C1+C2+C3+C4=>E1+E2+E3.
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
     let mut persisted = sample_persisted("sesn_retired_agent_cleanup");
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &persisted.baseline
     else {
@@ -1360,7 +1364,7 @@ async fn archive_persists_release_before_and_after_sandbox_teardown() {
         awaken_session_contract::ActivationState::Released
     );
     assert!(
-        repo.reconcilable_sessions()
+        repo.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .unwrap()
             .sessions
@@ -1564,7 +1568,10 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
         "cleanup failure stays durable for ResourceReclaimer"
     );
     assert_eq!(
-        repo.reconcilable_sessions().await.unwrap().sessions,
+        repo.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+            .await
+            .unwrap()
+            .sessions,
         vec![awaken_session_contract::ScopedPersistedSession {
             workspace_id: DEFAULT_SCOPE.to_string(),
             session: durable,
@@ -1612,7 +1619,10 @@ async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
         "failed cleanup remains visible to lifecycle recovery"
     );
     assert_eq!(
-        repo.reconcilable_sessions().await.unwrap().sessions,
+        repo.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+            .await
+            .unwrap()
+            .sessions,
         vec![awaken_session_contract::ScopedPersistedSession {
             workspace_id: DEFAULT_SCOPE.to_string(),
             session: durable,

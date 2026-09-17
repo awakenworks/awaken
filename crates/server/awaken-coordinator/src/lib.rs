@@ -435,14 +435,13 @@ fn local_managed_state_over(
     if let Some(repo) = &durable_session_repo {
         host.install_memory_extraction_repository(repo.clone());
     }
-    let session_repo: Arc<dyn awaken_session_contract::ManagedSessionRepository> =
-        match durable_session_repo {
-            Some(repo) => repo,
-            None => Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                    .expect("open ephemeral managed Session repository"),
-            ),
-        };
+    let session_repo: Arc<dyn awaken_session_contract::SessionStore> = match durable_session_repo {
+        Some(repo) => repo,
+        None => Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("open ephemeral managed Session repository"),
+        ),
+    };
 
     // Test/scenario startup must freeze the same topology fact as product
     // startup. Deriving placement from the canonical Host value eliminates

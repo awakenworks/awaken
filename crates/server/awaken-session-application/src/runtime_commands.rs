@@ -393,7 +393,12 @@ impl SessionApplication {
         &self,
         owner_scope: &str,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        self.sessions_repo.list_by_owner(owner_scope).await
+        self.sessions_repo
+            .scan(awaken_session_contract::SessionScanQuery::Workspace {
+                workspace_id: owner_scope,
+            })
+            .await
+            .map(awaken_session_contract::SessionScan::into_sessions)
     }
 
     #[must_use]

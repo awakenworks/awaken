@@ -1,6 +1,7 @@
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_contract::ManagedLifecycleFact;
 use awaken_session_contract::SessionId;
 
@@ -58,7 +59,7 @@ fn session_with_unsettled_event(id: &str) -> PersistedSession {
 
 async fn anchor_unsettled_event(
     app: &SessionApplication,
-    repository: &dyn ManagedSessionRepository,
+    repository: &dyn awaken_session_contract::SessionStore,
     session_id: &str,
 ) {
     let mut session = repository
@@ -107,7 +108,7 @@ fn coordination_spawn_command(
 }
 
 fn configured_admission_application(
-    repo: Arc<dyn ManagedSessionRepository>,
+    repo: Arc<dyn awaken_session_contract::SessionStore>,
     runtime: Arc<RecordingAgentAdmissionRuntime>,
 ) -> SessionApplication {
     let mut app = application_with_runtime(
@@ -653,7 +654,7 @@ fn repository_saga_application(
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ingress: Arc<dyn CredentialMaterialIngress>,
 ) -> SessionApplication {
-    let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -664,7 +665,7 @@ fn repository_saga_application(
 }
 
 fn repository_retirement_application(
-    sessions: Arc<dyn ManagedSessionRepository>,
+    sessions: Arc<dyn awaken_session_contract::SessionStore>,
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ingress: Arc<dyn CredentialMaterialIngress>,
 ) -> SessionApplication {
@@ -690,7 +691,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let registry = resources.authorities().resource_registry();
     let repository_id = managed_repository_id("repo-replay");
-    let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -1145,7 +1146,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let registry = resources.authorities().resource_registry();
     let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
-    let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -1251,7 +1252,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     register_retirement_repository(registry.as_ref(), session_id, true, true).await;
 
     {
-        let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+        let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path)
                 .expect("open Session authority"),
         );
@@ -1311,7 +1312,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         );
     }
 
-    let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&path)
             .expect("reopen Session authority"),
     );
@@ -2194,7 +2195,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     // the only transition authority; replays cannot create another terminal fact.
     // Decision rule: execute L1-L9 and require every accepted, blocked, raced,
     // forced, and delete effect in the table above.
-    let durable_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let durable_repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -2463,7 +2464,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
     // `processed=false` intentionally covers both a merely queued command and
     // crash-after-effect/before-root-CAS: the effect owner may make replay a
     // no-op, but terminal admission cannot infer that fact or drop provenance.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -2565,12 +2566,12 @@ async fn deletion_fixture(
     initial: &str,
     session_id: &str,
 ) -> (
-    Arc<dyn ManagedSessionRepository>,
+    Arc<dyn awaken_session_contract::SessionStore>,
     Arc<FaultingSessionRepository>,
     Arc<RecordingCleanupRuntime>,
     Arc<SessionApplication>,
 ) {
-    let durable: Arc<dyn ManagedSessionRepository> =
+    let durable: Arc<dyn awaken_session_contract::SessionStore> =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
     let runtime = Arc::new(RecordingCleanupRuntime::default());
@@ -7219,7 +7220,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     let payload = awaken_session_contract::SessionMutationPayload::Replace(expired_session);
     let payload_hash = payload.stable_hash();
     assert!(matches!(
-        repo.commit_mutation(
+        repo.commit(
             "workspace",
             awaken_session_contract::SessionMutation {
                 expected_revision,
@@ -8059,7 +8060,7 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
         .expect("valid page-two MemoryStore binding"),
     );
     create(repo.as_ref(), blocker).await;
-    let repository: Arc<dyn ManagedSessionRepository> = repo.clone();
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = repo.clone();
 
     let failing_recovery = Arc::new(FaultingSessionRepository::new(repository.clone()));
     failing_recovery.fail_recovery_scan_on_call(2);

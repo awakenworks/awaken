@@ -3,7 +3,6 @@
 //! never an ownership disclosure), secret sealing (minted once, never echoed), and
 //! the seal-failure / missing-url faults.
 
-use awaken_session_contract::SessionId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,8 +15,7 @@ use awaken_config_resolver::{
 };
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_contract::{
-    LifecycleFactDelivery, LifecycleFactNotifier, ManagedLifecycleFact, ManagedSessionRepository,
-    PersistedSession,
+    LifecycleFactDelivery, LifecycleFactNotifier, LifecycleOutbox, ManagedLifecycleFact,
 };
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
@@ -54,52 +52,7 @@ impl SessionOutbox {
 }
 
 #[async_trait]
-impl ManagedSessionRepository for SessionOutbox {
-    async fn create(
-        &self,
-        _owner_scope: &str,
-        _session: PersistedSession,
-        _idempotency: awaken_session_contract::IdempotencyRecord,
-        _lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<
-        awaken_session_contract::SessionCreateResult,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        Err(
-            awaken_session_contract::SessionRepositoryError::Unavailable(
-                "SessionOutbox test double does not own aggregate creation".into(),
-            ),
-        )
-    }
-
-    async fn replay_create(
-        &self,
-        _owner_scope: &str,
-        _session_id: &SessionId,
-        _idempotency: &awaken_session_contract::IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
-        Err(
-            awaken_session_contract::SessionRepositoryError::Unavailable(
-                "SessionOutbox test double does not own aggregate creation".into(),
-            ),
-        )
-    }
-
-    async fn commit_mutation(
-        &self,
-        _owner_scope: &str,
-        _mutation: awaken_session_contract::SessionMutation,
-    ) -> Result<
-        awaken_session_contract::SessionMutationResult,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        Err(
-            awaken_session_contract::SessionRepositoryError::Unavailable(
-                "SessionOutbox test double does not own aggregate mutation".into(),
-            ),
-        )
-    }
-
+impl LifecycleOutbox for SessionOutbox {
     async fn append_lifecycle(
         &self,
         fact: ManagedLifecycleFact,
@@ -129,52 +82,6 @@ impl ManagedSessionRepository for SessionOutbox {
         }
         self.rows.lock().unwrap().remove(fact_id);
         Ok(())
-    }
-    async fn get(
-        &self,
-        _session_id: &SessionId,
-    ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
-        Err(awaken_session_contract::SessionRepositoryError::NotFound)
-    }
-
-    async fn reconcilable_sessions_page(
-        &self,
-        _after: Option<&awaken_session_contract::SessionRecoveryCursor>,
-    ) -> Result<
-        awaken_session_contract::SessionRecoveryScan,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        Ok(awaken_session_contract::SessionRecoveryScan::default())
-    }
-
-    async fn sessions_referencing_credential_source(
-        &self,
-        _workspace_id: &str,
-        _source_id: &awaken_credential_contract::CredentialSourceId,
-    ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
-        Err(
-            awaken_session_contract::SessionRepositoryError::Unavailable(
-                "SessionOutbox test double does not own credential dependency indexing".into(),
-            ),
-        )
-    }
-
-    async fn idempotency_receipt(
-        &self,
-        _session_id: &SessionId,
-        _key: &str,
-    ) -> Result<
-        Option<awaken_session_contract::SessionIdempotencyReceipt>,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        Ok(None)
-    }
-
-    async fn owner(
-        &self,
-        _session_id: &SessionId,
-    ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
-        Err(awaken_session_contract::SessionRepositoryError::NotFound)
     }
 }
 
@@ -1255,7 +1162,7 @@ async fn shutdown_lifecycle(lifecycle: &awaken_service_lifecycle::ServiceLifecyc
 fn outbox_notifier(
     dispatcher: Arc<WebhookDispatcher>,
     org_id: Option<String>,
-    outbox: Arc<dyn ManagedSessionRepository>,
+    outbox: Arc<dyn LifecycleOutbox>,
     lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> WebhookOutboxNotifier {
     WebhookOutboxNotifier::with_delivery(
@@ -1296,7 +1203,7 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
     let notifier = outbox_notifier(
         dispatcher,
         None,
-        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        outbox.clone() as Arc<dyn LifecycleOutbox>,
         &service_lifecycle,
     );
 
@@ -1367,7 +1274,7 @@ async fn slow_delivery_never_blocks_new_outbox_commits_and_both_facts_drain() {
     });
     let notifier = WebhookOutboxNotifier::with_delivery_interval(
         delivery.clone(),
-        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        outbox.clone() as Arc<dyn LifecycleOutbox>,
         std::time::Duration::from_millis(10),
         &service_lifecycle,
     );
@@ -1467,7 +1374,7 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
     let notifier = outbox_notifier(
         dispatcher,
         None,
-        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        outbox.clone() as Arc<dyn LifecycleOutbox>,
         &service_lifecycle,
     );
 
@@ -1518,7 +1425,7 @@ async fn completion_failure_replays_the_same_stable_fact_identity() {
     let delivery = Arc::new(RecordingDelivery::default());
     let notifier = WebhookOutboxNotifier::with_delivery(
         delivery.clone(),
-        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        outbox.clone() as Arc<dyn LifecycleOutbox>,
         &service_lifecycle,
     );
 
@@ -1595,7 +1502,7 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
     let _rebuilt = outbox_notifier(
         dispatcher,
         None,
-        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        outbox.clone() as Arc<dyn LifecycleOutbox>,
         &service_lifecycle,
     );
     wait_for_calls(&calls, 1).await;
@@ -1642,7 +1549,7 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
     let _restarted = outbox_notifier(
         dispatcher,
         None,
-        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        outbox.clone() as Arc<dyn LifecycleOutbox>,
         &service_lifecycle,
     );
 
@@ -1688,7 +1595,7 @@ async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
     ));
     let _notifier = WebhookOutboxNotifier::with_delivery_interval(
         Arc::new(ConfigPlaneLifecycleDelivery::new(dispatcher, None)),
-        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        outbox.clone() as Arc<dyn LifecycleOutbox>,
         std::time::Duration::from_millis(10),
         &service_lifecycle,
     );
@@ -1758,7 +1665,7 @@ async fn committed_fact_identity_and_scope_are_projected_unchanged() {
     let notifier = outbox_notifier(
         dispatcher,
         Some("org_root".into()),
-        outbox as Arc<dyn ManagedSessionRepository>,
+        outbox as Arc<dyn LifecycleOutbox>,
         &service_lifecycle,
     );
 

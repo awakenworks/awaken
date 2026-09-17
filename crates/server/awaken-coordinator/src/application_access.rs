@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awaken_authz_enforce::{ApplicationGrant, ApplicationThreadBinding};
-use awaken_session_contract::ManagedSessionRepository;
+use awaken_session_contract::SessionRepository;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -73,17 +73,14 @@ pub enum ApplicationAccessIssuanceError {
 #[derive(Clone)]
 struct ApplicationTokenState {
     store: Arc<ApplicationAccessStore>,
-    sessions: Arc<dyn ManagedSessionRepository>,
+    sessions: Arc<dyn SessionRepository>,
 }
 
 /// The application-token surface. It carries no Workspace of its own: the
 /// mount already installs `with_local_workspace_scope`, the one place the
 /// anonymous single-machine composition resolves its Workspace, so these
 /// handlers read a stamped scope and refuse an unstamped request.
-pub fn router(
-    store: Arc<ApplicationAccessStore>,
-    sessions: Arc<dyn ManagedSessionRepository>,
-) -> Router {
+pub fn router(store: Arc<ApplicationAccessStore>, sessions: Arc<dyn SessionRepository>) -> Router {
     Router::new()
         .route("/v1/application-access-tokens", post(create))
         .route("/v1/application-access-tokens/{id}", delete(revoke))
@@ -152,7 +149,7 @@ async fn create(
 /// typed result; they do not repeat this policy.
 pub async fn issue_application_access(
     store: &ApplicationAccessStore,
-    sessions: &dyn ManagedSessionRepository,
+    sessions: &dyn SessionRepository,
     workspace_id: &str,
     request: CreateApplicationToken,
 ) -> Result<IssuedApplicationToken, ApplicationAccessIssuanceError> {
@@ -396,7 +393,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ManagedSessionRepository for TestSessions {
+    impl SessionRepository for TestSessions {
         async fn create(
             &self,
             _owner_scope: &str,
@@ -428,7 +425,7 @@ mod tests {
             )
         }
 
-        async fn commit_mutation(
+        async fn commit(
             &self,
             _owner_scope: &str,
             _mutation: awaken_session_contract::SessionMutation,
@@ -441,27 +438,6 @@ mod tests {
                     "read-only TestSessions".into(),
                 ),
             )
-        }
-
-        async fn append_lifecycle(
-            &self,
-            _fact: ManagedLifecycleFact,
-        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
-            Ok(())
-        }
-
-        async fn pending_lifecycle(
-            &self,
-        ) -> Result<Vec<ManagedLifecycleFact>, awaken_session_contract::SessionRepositoryError>
-        {
-            Ok(Vec::new())
-        }
-
-        async fn complete_lifecycle(
-            &self,
-            _fact_id: &str,
-        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
-            Ok(())
         }
 
         async fn get(
@@ -479,25 +455,47 @@ mod tests {
                 .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
         }
 
-        async fn reconcilable_sessions_page(
+        async fn scan(
             &self,
-            _after: Option<&awaken_session_contract::SessionRecoveryCursor>,
+            query: awaken_session_contract::SessionScanQuery<'_>,
         ) -> Result<
-            awaken_session_contract::SessionRecoveryScan,
+            awaken_session_contract::SessionScan,
             awaken_session_contract::SessionRepositoryError,
         > {
-            Ok(awaken_session_contract::SessionRecoveryScan::default())
+            match query {
+                awaken_session_contract::SessionScanQuery::Reconcilable { .. } => {
+                    Ok(awaken_session_contract::SessionScan::default())
+                }
+                _ => Err(
+                    awaken_session_contract::SessionRepositoryError::Unavailable(
+                        "read-only TestSessions does not own Session indexing".into(),
+                    ),
+                ),
+            }
         }
 
-        async fn sessions_referencing_credential_source(
+        async fn deleted_event_admissions(
             &self,
-            _workspace_id: &str,
-            _source_id: &awaken_credential_contract::CredentialSourceId,
-        ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError>
-        {
+            _owner_scope: &str,
+            _session_id: &awaken_session_contract::SessionId,
+        ) -> Result<
+            Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+            awaken_session_contract::SessionRepositoryError,
+        > {
             Err(
                 awaken_session_contract::SessionRepositoryError::Unavailable(
-                    "read-only TestSessions does not own credential dependency indexing".into(),
+                    "read-only TestSessions does not retain deletion evidence".into(),
+                ),
+            )
+        }
+
+        async fn count_environment_phase(
+            &self,
+            _phase: awaken_session_contract::SessionEnvironmentPhase,
+        ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
+            Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "read-only TestSessions does not count Environment phases".into(),
                 ),
             )
         }
@@ -816,7 +814,7 @@ mod tests {
 
     async fn issue(
         store: Arc<ApplicationAccessStore>,
-        sessions: Arc<dyn ManagedSessionRepository>,
+        sessions: Arc<dyn SessionRepository>,
         body: Value,
     ) -> axum::response::Response {
         stamped(router(store, sessions), "workspace-a".to_string())

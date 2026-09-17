@@ -6,9 +6,7 @@ use awaken_resource_contract::{
     FileCatalog, ResourceKind, ResourcePurgeError, ResourcePurgeGuard, ResourceReference,
     ResourceReferenceKind, ResourceTarget,
 };
-use awaken_session_contract::{
-    ManagedSessionRepository, ResolvedInputSource, SessionResourceReferences,
-};
+use awaken_session_contract::{ResolvedInputSource, SessionRepository, SessionResourceReferences};
 
 pub(super) async fn resource_targets(
     files: &dyn FileCatalog,
@@ -59,13 +57,13 @@ pub(super) async fn resource_targets(
 /// reference index closes mutation races; this independent scan prevents a
 /// not-yet-realized pending manifest from being mistaken for unused data.
 pub struct SessionResourcePurgeGuard {
-    sessions: Arc<dyn ManagedSessionRepository>,
+    sessions: Arc<dyn SessionRepository>,
     files: Arc<dyn FileCatalog>,
 }
 
 impl SessionResourcePurgeGuard {
     #[must_use]
-    pub fn new(sessions: Arc<dyn ManagedSessionRepository>, files: Arc<dyn FileCatalog>) -> Self {
+    pub fn new(sessions: Arc<dyn SessionRepository>, files: Arc<dyn FileCatalog>) -> Self {
         Self { sessions, files }
     }
 }

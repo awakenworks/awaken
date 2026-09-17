@@ -806,7 +806,7 @@ impl SqliteManagedSessionRepository {
 }
 
 #[async_trait]
-impl ManagedSessionRepository for SqliteManagedSessionRepository {
+impl SessionRepository for SqliteManagedSessionRepository {
     async fn create(
         &self,
         owner_scope: &str,
@@ -929,7 +929,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .await
     }
 
-    async fn commit_mutation(
+    async fn commit(
         &self,
         owner_scope: &str,
         mutation: SessionMutation,
@@ -1082,52 +1082,6 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .await
     }
 
-    async fn append_lifecycle(
-        &self,
-        fact: ManagedLifecycleFact,
-    ) -> Result<(), SessionRepositoryError> {
-        let data = lifecycle_str(&fact);
-        self.with_connection(move |conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-                params![fact.id, data],
-            )
-            .map_err(storage)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
-        self.with_connection(|conn| {
-            let mut statement = conn
-                .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
-                .map_err(storage)?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(storage)?;
-            rows.map(|row| {
-                let encoded = row.map_err(storage)?;
-                decode_lifecycle(&encoded).map_err(corrupt)
-            })
-            .collect()
-        })
-        .await
-    }
-
-    async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
-        let fact_id = fact_id.to_string();
-        self.with_connection(move |conn| {
-            conn.execute(
-                "DELETE FROM managed_lifecycle_outbox WHERE fact_id = ?1",
-                params![fact_id],
-            )
-            .map_err(storage)?;
-            Ok(())
-        })
-        .await
-    }
-
     async fn get(
         &self,
         session_id: &awaken_session_contract::SessionId,
@@ -1156,39 +1110,151 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .await
     }
 
-    async fn list_by_owner(
+    async fn scan(
         &self,
-        owner_scope: &str,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        let owner_scope = owner_scope.to_string();
+        query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        use awaken_session_contract::SessionScanQuery;
+        match query {
+            SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after).await,
+            SessionScanQuery::Workspace { workspace_id } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_workspace(workspace_id).await?,
+            )),
+            SessionScanQuery::VaultReferences {
+                workspace_id,
+                vault_id,
+            } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_vault_references(workspace_id, vault_id).await?,
+            )),
+            SessionScanQuery::CredentialSourceReferences {
+                workspace_id,
+                source_id,
+            } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_credential_source_references(workspace_id, source_id)
+                    .await?,
+            )),
+        }
+    }
+
+    async fn count_environment_phase(
+        &self,
+        phase: SessionEnvironmentPhase,
+    ) -> Result<u64, SessionRepositoryError> {
         self.with_connection(move |conn| {
             let mut statement = conn
                 .prepare(
-                    "SELECT aggregate_json, revision FROM managed_session
-                     WHERE scope_id = ?1 ORDER BY session_id",
+                    "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
                 )
                 .map_err(storage)?;
-            statement
-                .query_map(params![owner_scope], |row| {
-                    Ok(EncodedSessionRow {
-                        aggregate_json: row.get(0)?,
-                        revision: row.get(1)?,
-                    })
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        EncodedSessionRow {
+                            aggregate_json: row.get(1)?,
+                            revision: row.get(2)?,
+                        },
+                    ))
                 })
                 .map_err(storage)?
-                .map(|row| {
-                    row.map_err(storage)
-                        .and_then(|row| decode(row).map_err(corrupt))
-                })
-                .collect()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?;
+            count_environment_phase(rows, phase)
         })
         .await
     }
 
-    async fn reconcilable_sessions_page(
+    async fn idempotency_receipt(
         &self,
-        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
-    ) -> Result<SessionRecoveryScan, SessionRepositoryError> {
+        session_id: &awaken_session_contract::SessionId,
+        key: &str,
+    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
+    {
+        let session_id = session_id.to_string();
+        let key = key.to_string();
+        self.with_connection(move |conn| {
+            let row = conn
+                .query_row(
+                    "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+                     WHERE session_id = ?1 AND idempotency_key = ?2",
+                    params![session_id, key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(storage)?;
+            row.map(|(payload_hash, revision)| {
+                u64::try_from(revision)
+                    .map(
+                        |revision| awaken_session_contract::SessionIdempotencyReceipt {
+                            payload_hash,
+                            committed_revision: SessionRevision(revision),
+                        },
+                    )
+                    .map_err(|_| corrupt("negative Session idempotency revision"))
+            })
+            .transpose()
+        })
+        .await
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        SessionRepositoryError,
+    > {
+        let owner_scope = owner_scope.to_string();
+        let session_id = session_id.to_string();
+        self.with_connection(move |conn| {
+            conn.query_row("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=?1 AND scope_id=?2",
+                params![session_id, owner_scope], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)))
+                .optional().map_err(storage)?.map(|(revision, data)| super::event_admissions::decode(revision, data)).transpose()
+        }).await
+    }
+
+    async fn owner(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<String, SessionRepositoryError> {
+        let session_id = session_id.to_string();
+        self.with_connection(move |conn| {
+            conn.query_row(
+                "SELECT scope_id FROM managed_session WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage)?
+            .ok_or(SessionRepositoryError::NotFound)
+        })
+        .await
+    }
+}
+
+impl SqliteManagedSessionRepository {
+    /// Unpaged, fail-closed wrapper for the Workspace-bound index queries.
+    fn scoped_scan(workspace_id: &str, sessions: Vec<PersistedSession>) -> SessionScan {
+        SessionScan {
+            sessions: sessions
+                .into_iter()
+                .map(|session| ScopedPersistedSession {
+                    workspace_id: workspace_id.to_string(),
+                    session,
+                })
+                .collect(),
+            ..SessionScan::default()
+        }
+    }
+
+    async fn scan_reconcilable(
+        &self,
+        after: Option<&awaken_session_contract::SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
         let after = after.map(|cursor| cursor.session_id().to_string());
         self.with_connection(move |conn| {
             let tx = conn
@@ -1196,7 +1262,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 .map_err(storage)?;
             let page_size = usize::try_from(RECOVERY_BATCH_SIZE)
                 .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
-            let mut scan = SessionRecoveryScan::default();
+            let mut scan = SessionScan::default();
             {
                 let mut statement = tx
                     .prepare(
@@ -1228,7 +1294,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 rows.truncate(page_size);
                 if has_more {
                     scan.next_cursor = rows.last().map(|(_, session_id, _, _)| {
-                        awaken_session_contract::SessionRecoveryCursor::after_session_id(session_id)
+                        awaken_session_contract::SessionScanCursor::after_session_id(session_id)
                     });
                 }
                 for (workspace_id, session_id, row, observed_revision) in rows {
@@ -1300,35 +1366,36 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .await
     }
 
-    async fn count_environment_phase(
+    async fn scan_workspace(
         &self,
-        phase: SessionEnvironmentPhase,
-    ) -> Result<u64, SessionRepositoryError> {
+        owner_scope: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        let owner_scope = owner_scope.to_string();
         self.with_connection(move |conn| {
             let mut statement = conn
                 .prepare(
-                    "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
+                    "SELECT aggregate_json, revision FROM managed_session
+                     WHERE scope_id = ?1 ORDER BY session_id",
                 )
                 .map_err(storage)?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get(0)?,
-                        EncodedSessionRow {
-                            aggregate_json: row.get(1)?,
-                            revision: row.get(2)?,
-                        },
-                    ))
+            statement
+                .query_map(params![owner_scope], |row| {
+                    Ok(EncodedSessionRow {
+                        aggregate_json: row.get(0)?,
+                        revision: row.get(1)?,
+                    })
                 })
                 .map_err(storage)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(storage)?;
-            count_environment_phase(rows, phase)
+                .map(|row| {
+                    row.map_err(storage)
+                        .and_then(|row| decode(row).map_err(corrupt))
+                })
+                .collect()
         })
         .await
     }
 
-    async fn sessions_referencing_vault(
+    async fn scan_vault_references(
         &self,
         workspace_id: &str,
         vault_id: &str,
@@ -1365,7 +1432,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .await
     }
 
-    async fn sessions_referencing_credential_source(
+    async fn scan_credential_source_references(
         &self,
         workspace_id: &str,
         source_id: &awaken_credential_contract::CredentialSourceId,
@@ -1403,71 +1470,52 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         })
         .await
     }
+}
 
-    async fn idempotency_receipt(
+#[async_trait]
+impl LifecycleOutbox for SqliteManagedSessionRepository {
+    async fn append_lifecycle(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-        key: &str,
-    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
-    {
-        let session_id = session_id.to_string();
-        let key = key.to_string();
+        fact: ManagedLifecycleFact,
+    ) -> Result<(), SessionRepositoryError> {
+        let data = lifecycle_str(&fact);
         self.with_connection(move |conn| {
-            let row = conn
-                .query_row(
-                    "SELECT payload_hash, committed_revision FROM managed_session_idempotency
-                     WHERE session_id = ?1 AND idempotency_key = ?2",
-                    params![session_id, key],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-                )
-                .optional()
-                .map_err(storage)?;
-            row.map(|(payload_hash, revision)| {
-                u64::try_from(revision)
-                    .map(
-                        |revision| awaken_session_contract::SessionIdempotencyReceipt {
-                            payload_hash,
-                            committed_revision: SessionRevision(revision),
-                        },
-                    )
-                    .map_err(|_| corrupt("negative Session idempotency revision"))
-            })
-            .transpose()
+            conn.execute(
+                "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+                params![fact.id, data],
+            )
+            .map_err(storage)?;
+            Ok(())
         })
         .await
     }
 
-    async fn deleted_event_admissions(
-        &self,
-        owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
-    ) -> Result<
-        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
-        SessionRepositoryError,
-    > {
-        let owner_scope = owner_scope.to_string();
-        let session_id = session_id.to_string();
-        self.with_connection(move |conn| {
-            conn.query_row("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=?1 AND scope_id=?2",
-                params![session_id, owner_scope], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)))
-                .optional().map_err(storage)?.map(|(revision, data)| super::event_admissions::decode(revision, data)).transpose()
-        }).await
+    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
+        self.with_connection(|conn| {
+            let mut statement = conn
+                .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            rows.map(|row| {
+                let encoded = row.map_err(storage)?;
+                decode_lifecycle(&encoded).map_err(corrupt)
+            })
+            .collect()
+        })
+        .await
     }
 
-    async fn owner(
-        &self,
-        session_id: &awaken_session_contract::SessionId,
-    ) -> Result<String, SessionRepositoryError> {
-        let session_id = session_id.to_string();
+    async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
+        let fact_id = fact_id.to_string();
         self.with_connection(move |conn| {
-            conn.query_row(
-                "SELECT scope_id FROM managed_session WHERE session_id = ?1",
-                params![session_id],
-                |row| row.get(0),
+            conn.execute(
+                "DELETE FROM managed_lifecycle_outbox WHERE fact_id = ?1",
+                params![fact_id],
             )
-            .optional()
-            .map_err(storage)?
-            .ok_or(SessionRepositoryError::NotFound)
+            .map_err(storage)?;
+            Ok(())
         })
         .await
     }

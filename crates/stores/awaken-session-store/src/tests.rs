@@ -1,3 +1,4 @@
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_contract::SessionId;
 use std::collections::BTreeMap;
 
@@ -114,7 +115,7 @@ fn normalization_fixture(first: &mut PersistedSession, upgrade: bool) -> (String
 }
 
 async fn assert_pre_upgrade_writer_fenced(
-    repo: &impl ManagedSessionRepository,
+    repo: &impl awaken_session_contract::SessionStore,
     current: &PersistedSession,
 ) {
     // N5: a cached pre-upgrade root with a fresh mutation key cannot restore
@@ -124,7 +125,7 @@ async fn assert_pre_upgrade_writer_fenced(
     let expected_revision = stale.revision;
     let payload = SessionMutationPayload::Replace(stale);
     let result = repo
-        .commit_mutation(
+        .commit(
             "ws",
             SessionMutation {
                 expected_revision,
@@ -235,7 +236,11 @@ async fn recovery_backlog_cannot_starve_session_authority_timers() {
     let scans = (0..40)
         .map(|_| {
             let repository = Arc::clone(&repository);
-            tokio::spawn(async move { repository.reconcilable_sessions().await })
+            tokio::spawn(async move {
+                repository
+                    .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+                    .await
+            })
         })
         .collect::<Vec<_>>();
     tokio::task::yield_now().await;
@@ -298,7 +303,10 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         "R1 typed outbox"
     );
     assert!(
-        postgres.reconcilable_sessions().await.is_err(),
+        postgres
+            .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+            .await
+            .is_err(),
         "R1 typed reconciliation"
     );
     assert!(
@@ -336,7 +344,10 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
             params!["{", "sesn_corrupt"],
         )
         .unwrap();
-    let scan = sqlite.reconcilable_sessions().await.unwrap();
+    let scan = sqlite
+        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .await
+        .unwrap();
     assert_eq!(scan.sessions.len(), 1, "R3/E4 healthy work continues");
     assert_eq!(scan.sessions[0].session.session_id, "sesn_healthy");
     assert!(
@@ -348,6 +359,17 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         ),
         "R3 a corrupt canonical root fails the global barrier closed"
     );
+    assert!(
+        matches!(
+            sqlite
+                .scan(awaken_session_contract::SessionScanQuery::Workspace {
+                    workspace_id: "workspace"
+                })
+                .await,
+            Err(SessionRepositoryError::Corrupt(_))
+        ),
+        "R3 only the reconciliation index quarantines; a Workspace listing fails closed"
+    );
     assert_eq!(
         scan.quarantined,
         vec![SessionRecoveryQuarantine {
@@ -356,7 +378,10 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         }],
         "R3/E3 exposes secret-free durable isolation evidence"
     );
-    let replay = sqlite.reconcilable_sessions().await.unwrap();
+    let replay = sqlite
+        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .await
+        .unwrap();
     assert_eq!(replay.sessions.len(), 1);
     assert_eq!(replay.quarantined, scan.quarantined, "R3 idempotent replay");
     let quarantined_rows: i64 = sqlite
@@ -389,7 +414,10 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
             params![recognized_legacy.to_string(), "sesn_corrupt"],
         )
         .unwrap();
-    let healed = sqlite.reconcilable_sessions().await.unwrap();
+    let healed = sqlite
+        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .await
+        .unwrap();
     assert!(healed.quarantined.is_empty(), "R4 stale quarantine cleared");
     assert!(
         healed
@@ -436,7 +464,10 @@ async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_onc
         create_fixture(&sqlite, "workspace", sample(session_id), Vec::new()).await;
     }
 
-    let first = sqlite.reconcilable_sessions_page(None).await.unwrap();
+    let first = sqlite
+        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .await
+        .unwrap();
     assert_eq!(
         first.sessions.len(),
         usize::try_from(RECOVERY_BATCH_SIZE).unwrap(),
@@ -446,7 +477,9 @@ async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_onc
     assert_eq!(cursor.session_id(), expected[total - 2], "R2/E2");
 
     let second = sqlite
-        .reconcilable_sessions_page(Some(&cursor))
+        .scan(awaken_session_contract::SessionScanQuery::Reconcilable {
+            after: Some(&cursor),
+        })
         .await
         .unwrap();
     assert_eq!(second.sessions.len(), 1, "R3/E1");
@@ -583,7 +616,7 @@ async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
         )
         .unwrap();
     assert!(matches!(
-        repo.commit_mutation(
+        repo.commit(
             "workspace",
             SessionMutation {
                 expected_revision: SessionRevision(0),
@@ -673,9 +706,9 @@ fn sqlite_recovery_scan_waits_before_reading_and_repairing_quarantine() {
         let repo = repo.clone();
         std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(repo.reconcilable_sessions())
+            tokio::runtime::Runtime::new().unwrap().block_on(
+                repo.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None }),
+            )
         })
     };
     started_rx.recv().unwrap();
@@ -2009,11 +2042,14 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
         ("source-repaired", "sesn_source_corrupt"),
     ] {
         assert_eq!(
-            repo.sessions_referencing_credential_source(
-                "ws-source",
-                &awaken_credential_contract::CredentialSourceId(source_id.into()),
+            repo.scan(
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                    workspace_id: "ws-source",
+                    source_id: &awaken_credential_contract::CredentialSourceId(source_id.into())
+                }
             )
             .await
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .unwrap()[0]
                 .session_id,
             session_id,
@@ -2033,11 +2069,14 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     let reopened = SqliteManagedSessionRepository::open(&path).expect("B3 restart repair");
     assert_eq!(
         reopened
-            .sessions_referencing_credential_source(
-                "ws-source",
-                &awaken_credential_contract::CredentialSourceId("source-v1".into()),
+            .scan(
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                    workspace_id: "ws-source",
+                    source_id: &awaken_credential_contract::CredentialSourceId("source-v1".into())
+                }
             )
             .await
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .unwrap()[0]
             .session_id,
         "sesn_source_v1",
@@ -2095,9 +2134,15 @@ async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_roo
         .expect("P1 migrate and backfill");
     let source_id = awaken_credential_contract::CredentialSourceId("source-pg-v1".into());
     assert_eq!(
-        repo.sessions_referencing_credential_source("ws-source", &source_id)
-            .await
-            .unwrap()[0]
+        repo.scan(
+            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                workspace_id: "ws-source",
+                source_id: &source_id
+            }
+        )
+        .await
+        .map(awaken_session_contract::SessionScan::into_sessions)
+        .unwrap()[0]
             .session_id,
         session.session_id,
         "P1"
@@ -2117,8 +2162,14 @@ async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_roo
         .expect("P2 restart rebuild");
     assert_eq!(
         restarted
-            .sessions_referencing_credential_source("ws-source", &source_id)
+            .scan(
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                    workspace_id: "ws-source",
+                    source_id: &source_id
+                }
+            )
             .await
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .unwrap()[0]
             .session_id,
         session.session_id,
@@ -2143,7 +2194,7 @@ fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {
     }
 }
 
-pub(crate) async fn create_fixture<R: ManagedSessionRepository>(
+pub(crate) async fn create_fixture<R: awaken_session_contract::SessionStore>(
     repo: &R,
     owner: &str,
     mut session: PersistedSession,
@@ -2170,7 +2221,7 @@ pub(crate) async fn create_fixture<R: ManagedSessionRepository>(
     }
 }
 
-async fn replace_fixture<R: ManagedSessionRepository>(
+async fn replace_fixture<R: awaken_session_contract::SessionStore>(
     repo: &R,
     owner: &str,
     mut session: PersistedSession,
@@ -2181,7 +2232,7 @@ async fn replace_fixture<R: ManagedSessionRepository>(
     let payload = SessionMutationPayload::Replace(session.clone());
     let payload_hash = payload.stable_hash();
     let result = repo
-        .commit_mutation(
+        .commit(
             owner,
             SessionMutation {
                 expected_revision: session.revision,
@@ -2203,7 +2254,7 @@ async fn replace_fixture<R: ManagedSessionRepository>(
     session
 }
 
-async fn delete_fixture<R: ManagedSessionRepository>(
+async fn delete_fixture<R: awaken_session_contract::SessionStore>(
     repo: &R,
     owner: &str,
     session_id: &str,
@@ -2217,7 +2268,7 @@ async fn delete_fixture<R: ManagedSessionRepository>(
     });
     let payload_hash = payload.stable_hash();
     assert!(matches!(
-        repo.commit_mutation(
+        repo.commit(
             owner,
             SessionMutation {
                 expected_revision: current.revision,
@@ -2404,7 +2455,10 @@ fn current_mutation_admission_rejects_unreadable_or_foreign_observation_authorit
 /// a first observation. Unknown creation must never be invented by an update.
 /// The same table is invoked by both real SQL adapters through the existing
 /// root-mutation conformance owner, without a second backend test framework.
-async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &R, prefix: &str) {
+async fn root_observation_replacement_table<R: awaken_session_contract::SessionStore>(
+    repo: &R,
+    prefix: &str,
+) {
     let rows = [
         (None, None, Some(0), None, false),
         (Some(10), Some(10), None, Some(11), false),
@@ -2465,14 +2519,12 @@ async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &
         // observation validation or partial row/receipt/outbox publication.
         assert!(
             matches!(
-                repo.commit_mutation("foreign", mutation.clone())
-                    .await
-                    .unwrap(),
+                repo.commit("foreign", mutation.clone()).await.unwrap(),
                 SessionMutationResult::Conflict { .. }
             ),
             "R2 row {index}"
         );
-        let result = repo.commit_mutation("ws_a", mutation.clone()).await;
+        let result = repo.commit("ws_a", mutation.clone()).await;
         if admitted {
             assert_eq!(
                 result,
@@ -2499,7 +2551,7 @@ async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &
                 root.updated_at_unix_ms = None;
             }
             assert_eq!(
-                repo.commit_mutation("ws_a", replay).await.unwrap(),
+                repo.commit("ws_a", replay).await.unwrap(),
                 SessionMutationResult::Replayed {
                     new_revision: SessionRevision(2)
                 },
@@ -2542,7 +2594,7 @@ async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &
             corrected.idempotency.payload_hash = corrected.payload.stable_hash();
             assert!(
                 matches!(
-                    repo.commit_mutation("ws_a", corrected).await.unwrap(),
+                    repo.commit("ws_a", corrected).await.unwrap(),
                     SessionMutationResult::Applied { .. }
                 ),
                 "R3/R4 correction"
@@ -2564,7 +2616,10 @@ async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &
 /// | R3 | T | F | - | F/T | idempotency mismatch |
 /// | R4 | F | - | F | F | revision conflict |
 /// | R5 | F | - | - | T | tombstone conflict |
-async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id: &str) {
+async fn root_mutation_decision_table<R: awaken_session_contract::SessionStore>(
+    repo: &R,
+    id: &str,
+) {
     root_observation_replacement_table(repo, id).await;
     let created = create_fixture(repo, "ws_a", sample(id), Vec::new()).await;
     let mut replacement = created.clone();
@@ -2583,7 +2638,7 @@ async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id:
     };
     assert!(
         matches!(
-            repo.commit_mutation("ws_a", replace()).await.unwrap(),
+            repo.commit("ws_a", replace()).await.unwrap(),
             SessionMutationResult::Applied {
                 new_revision: SessionRevision(2)
             }
@@ -2592,7 +2647,7 @@ async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id:
     );
     assert!(
         matches!(
-            repo.commit_mutation("ws_a", replace()).await.unwrap(),
+            repo.commit("ws_a", replace()).await.unwrap(),
             SessionMutationResult::Replayed {
                 new_revision: SessionRevision(2)
             }
@@ -2603,14 +2658,14 @@ async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id:
     let mut mismatched = replace();
     mismatched.idempotency.payload_hash = "another-hash".into();
     assert_eq!(
-        repo.commit_mutation("ws_a", mismatched).await.unwrap(),
+        repo.commit("ws_a", mismatched).await.unwrap(),
         SessionMutationResult::IdempotencyMismatch,
         "R3"
     );
     let mut stale = replace();
     stale.idempotency.key = format!("decision:{id}:stale");
     assert_eq!(
-        repo.commit_mutation("ws_a", stale).await.unwrap(),
+        repo.commit("ws_a", stale).await.unwrap(),
         SessionMutationResult::Conflict {
             current_revision: SessionRevision(2)
         },
@@ -2635,7 +2690,7 @@ async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id:
     };
     assert!(
         matches!(
-            repo.commit_mutation("ws_a", delete()).await.unwrap(),
+            repo.commit("ws_a", delete()).await.unwrap(),
             SessionMutationResult::Applied {
                 new_revision: SessionRevision(3)
             }
@@ -2644,7 +2699,7 @@ async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id:
     );
     assert!(
         matches!(
-            repo.commit_mutation("ws_a", delete()).await.unwrap(),
+            repo.commit("ws_a", delete()).await.unwrap(),
             SessionMutationResult::Replayed {
                 new_revision: SessionRevision(3)
             }
@@ -2659,7 +2714,7 @@ async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id:
     }
     after_delete.idempotency.payload_hash = after_delete.payload.stable_hash();
     assert_eq!(
-        repo.commit_mutation("ws_a", after_delete).await.unwrap(),
+        repo.commit("ws_a", after_delete).await.unwrap(),
         SessionMutationResult::Conflict {
             current_revision: SessionRevision(3)
         },
@@ -3644,7 +3699,10 @@ async fn postgres_round_trips_and_upserts() {
         .execute(&repo.pool)
         .await
         .unwrap();
-    let scan = repo.reconcilable_sessions().await.unwrap();
+    let scan = repo
+        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .await
+        .unwrap();
     assert!(
         scan.sessions
             .iter()
@@ -3657,7 +3715,10 @@ async fn postgres_round_trips_and_upserts() {
             .any(|row| row.session_id == "sesn_pg_corrupt"),
         "Q2"
     );
-    let replay = repo.reconcilable_sessions().await.unwrap();
+    let replay = repo
+        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .await
+        .unwrap();
     assert_eq!(replay.quarantined, scan.quarantined, "Q3");
 }
 
