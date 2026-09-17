@@ -10,10 +10,10 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4733,
+      "production_lines": 4761,
       "catch_all_errors": 5,
       "growth_reasons": {
-        "production_lines": "tool vocabulary moved out of awaken-runtime-contract into awaken-tool-contract (counts transferred, not added); agent-contract now owns the one SHA-256 content fingerprint that runtime and tool contracts previously each defined"
+        "production_lines": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)"
       }
     },
     "awaken-authorization-contract": {
@@ -44,10 +44,13 @@
     },
     "awaken-provisioning-contract": {
       "depth": 1,
-      "production_lines": 4003,
-      "backend_nouns": 10,
-      "catch_all_errors": 2,
-      "capability_defaults": 12
+      "production_lines": 4293,
+      "catch_all_errors": 3,
+      "capability_defaults": 12,
+      "growth_reasons": {
+        "production_lines": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)",
+        "catch_all_errors": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)"
+      }
     },
     "awaken-resource-contract": {
       "depth": 0,
@@ -66,9 +69,11 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7745,
+      "production_lines": 7725,
       "catch_all_errors": 7,
-      "capability_defaults": 2
+      "growth_reasons": {
+        "production_lines": "runtime-contract gains the two capability supertraits (CancellableRunDelegationService, AttachedChannelToolExporter) that replaced its unsupported-style default methods"
+      }
     },
     "awaken-sandbox-control": {
       "depth": 0
@@ -87,13 +92,7 @@
       "depth": 0
     },
     "awaken-tool-contract": {
-      "depth": 1,
-      "catch_all_errors": 2,
-      "capability_defaults": 4,
-      "growth_reasons": {
-        "catch_all_errors": "tool vocabulary moved out of awaken-runtime-contract into awaken-tool-contract (counts transferred, not added); agent-contract now owns the one SHA-256 content fingerprint that runtime and tool contracts previously each defined",
-        "capability_defaults": "tool vocabulary moved out of awaken-runtime-contract into awaken-tool-contract (counts transferred, not added); agent-contract now owns the one SHA-256 content fingerprint that runtime and tool contracts previously each defined"
-      }
+      "depth": 1
     },
     "awaken-worker-contract": {
       "depth": 3,

@@ -212,17 +212,20 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
         }
         match invoke(&exported, call, progress_token, notifications).await {
             Ok(output) => Ok(call_result(&output)),
-            Err(ToolError::Unknown(id)) => {
+            Err(ToolError::UnknownTool(id)) => {
                 Err(McpHostError::NotFound(format!("unknown tool: {id}")))
             }
             Err(ToolError::InvalidArguments(message)) => {
                 Err(McpHostError::InvalidArguments(message))
             }
+            Err(ToolError::AmbiguousTool(id)) => Err(McpHostError::Internal(format!(
+                "tool id `{id}` is ambiguous"
+            ))),
             Err(
                 ToolError::UnavailableBeforeDispatch(message)
                 | ToolError::StateInvalidatedAfterDispatch(message)
                 | ToolError::Indeterminate(message)
-                | ToolError::Execution(message),
+                | ToolError::DefinitiveFailure(message),
             ) => Err(McpHostError::Internal(message)),
         }
     }
@@ -374,7 +377,7 @@ mod tests {
             "broken"
         }
         async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
-            Err(ToolError::Execution("wire snapped".to_string()))
+            Err(ToolError::DefinitiveFailure("wire snapped".to_string()))
         }
     }
 
@@ -909,7 +912,7 @@ mod tests {
             "unk"
         }
         async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
-            Err(ToolError::Unknown("unk".to_string()))
+            Err(ToolError::UnknownTool("unk".to_string()))
         }
     }
 

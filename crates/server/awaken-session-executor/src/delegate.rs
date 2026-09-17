@@ -14,8 +14,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::AGENT_RUN;
 use awaken_runtime_contract::delegation::{
-    ChildRunCancellation, DelegationExecutionError, DelegationRequest, DelegationResume,
-    DelegationStep, DelegationToolInput, RunDelegationService,
+    CancellableRunDelegationService, ChildRunCancellation, DelegationExecutionError,
+    DelegationRequest, DelegationResume, DelegationStep, DelegationToolInput, RunDelegationService,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{
@@ -554,6 +554,13 @@ impl RunDelegationService for HostRunDelegationService {
         .await
     }
 
+    fn cancellation(&self) -> Option<&dyn CancellableRunDelegationService> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl CancellableRunDelegationService for HostRunDelegationService {
     async fn cancel(
         &self,
         cancellation: ChildRunCancellation,

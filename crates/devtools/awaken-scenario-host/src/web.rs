@@ -51,19 +51,19 @@ impl WebSearchProvider for ScenarioWebSearchProvider {
                     )
             });
         if !secret_matches {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "scenario web-search credential mismatch".into(),
             ));
         }
         let location = request.user_location.as_ref().ok_or_else(|| {
-            ToolError::Execution("scenario web-search location is missing".into())
+            ToolError::DefinitiveFailure("scenario web-search location is missing".into())
         })?;
         let location_matches = location.city.as_deref() == Some("Shanghai")
             && location.country.as_deref() == Some("CN")
             && location.region.as_deref() == Some("Shanghai")
             && location.timezone.as_deref() == Some("Asia/Shanghai");
         if !location_matches {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "scenario web-search location mismatch".into(),
             ));
         }

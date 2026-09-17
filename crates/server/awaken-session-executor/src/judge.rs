@@ -116,7 +116,7 @@ impl RawTool for AuxAgentTool {
                 .with_reader(self.execution.clone()),
         )
         .await
-        .map_err(|error| ToolError::Execution(error.to_string()))?;
+        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
         Ok(ToolOutput::ok(call.call_id, text))
     }
 }

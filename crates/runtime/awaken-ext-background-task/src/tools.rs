@@ -197,7 +197,7 @@ impl<'a> From<&'a BackgroundTask> for TaskView<'a> {
 
 fn state() -> Result<Arc<Store>, ToolError> {
     current_tool_state().ok_or_else(|| {
-        ToolError::Execution("background task tools require Runtime State context".into())
+        ToolError::DefinitiveFailure("background task tools require Runtime State context".into())
     })
 }
 
@@ -206,7 +206,7 @@ pub(crate) fn load_tasks(store: &Store) -> Result<Vec<BackgroundTask>, ToolError
         .scan_prefix(Scope::Thread, BACKGROUND_TASK_STATE_PREFIX)
         .map(|(key, value)| {
             BackgroundTask::deserialize(value).map_err(|error| {
-                ToolError::Execution(format!(
+                ToolError::DefinitiveFailure(format!(
                     "background task state at {:?} is malformed: {error}",
                     key.0
                 ))
@@ -218,7 +218,7 @@ pub(crate) fn load_tasks(store: &Store) -> Result<Vec<BackgroundTask>, ToolError
 fn render<T: Serialize>(call_id: &str, value: &T) -> Result<ToolOutput, ToolError> {
     serde_json::to_string(value)
         .map(|value| ToolOutput::ok(call_id, value))
-        .map_err(|error| ToolError::Execution(error.to_string()))
+        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))
 }
 
 #[async_trait]
@@ -241,16 +241,18 @@ impl RawTool for RunInBackground {
             )));
         }
         let context = current_tool_operation_context().ok_or_else(|| {
-            ToolError::Execution("run_in_background requires Runtime operation context".into())
+            ToolError::DefinitiveFailure(
+                "run_in_background requires Runtime operation context".into(),
+            )
         })?;
-        let run_id = context
-            .run_id
-            .ok_or_else(|| ToolError::Execution("background task origin has no Run".into()))?;
-        let thread_id = context
-            .thread_id
-            .ok_or_else(|| ToolError::Execution("background task origin has no Thread".into()))?;
+        let run_id = context.run_id.ok_or_else(|| {
+            ToolError::DefinitiveFailure("background task origin has no Run".into())
+        })?;
+        let thread_id = context.thread_id.ok_or_else(|| {
+            ToolError::DefinitiveFailure("background task origin has no Thread".into())
+        })?;
         if context.operation_id.trim().is_empty() {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "background task operation id is empty".into(),
             ));
         }
@@ -260,9 +262,9 @@ impl RawTool for RunInBackground {
             &run_id.0,
             &context.operation_id,
         ))
-        .map_err(|error| ToolError::Execution(error.to_string()))?;
+        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
         let id = BackgroundTaskId::new(format!("task-{fingerprint}"))
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
         let mut task = BackgroundTask::requested(
             id,
             BackgroundTaskOrigin {
@@ -288,7 +290,7 @@ impl RawTool for RunInBackground {
                 concurrency: execution.concurrency,
             },
         )
-        .map_err(|error| ToolError::Execution(error.to_string()))?;
+        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
         let store = state()?;
         let cell = task_state_cell(&task.id);
         let mut output = render(
@@ -297,16 +299,16 @@ impl RawTool for RunInBackground {
         )?;
         match cell
             .load(&store)
-            .map_err(|error| ToolError::Execution(error.to_string()))?
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
         {
             Some(existing) if existing.same_request_as(&task) => Ok(output),
-            Some(_) => Err(ToolError::Execution(
+            Some(_) => Err(ToolError::DefinitiveFailure(
                 "deterministic background task id collided with different state".into(),
             )),
             None => {
                 output.state.push(
                     cell.write(&task)
-                        .map_err(|error| ToolError::Execution(error.to_string()))?,
+                        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?,
                 );
                 Ok(output)
             }
@@ -346,9 +348,9 @@ impl RawTool for GetBackgroundTask {
         let state = state()?;
         let task = task_state_cell(&task_id)
             .load(&state)
-            .map_err(|error| ToolError::Execution(error.to_string()))?
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
             .ok_or_else(|| {
-                ToolError::Execution(format!(
+                ToolError::DefinitiveFailure(format!(
                     "background task {:?} was not found",
                     task_id.as_str()
                 ))
@@ -371,21 +373,21 @@ impl RawTool for CancelBackgroundTask {
         let cell = task_state_cell(&task_id);
         let mut task = cell
             .load(&store)
-            .map_err(|error| ToolError::Execution(error.to_string()))?
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
             .ok_or_else(|| {
-                ToolError::Execution(format!(
+                ToolError::DefinitiveFailure(format!(
                     "background task {:?} was not found",
                     task_id.as_str()
                 ))
             })?;
         let revision = task.revision;
         task.request_cancel()
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
         let mut output = render(&call.call_id, &TaskView::from(&task))?;
         if task.revision != revision {
             output.state.push(
                 cell.write(&task)
-                    .map_err(|error| ToolError::Execution(error.to_string()))?,
+                    .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?,
             );
         }
         Ok(output)

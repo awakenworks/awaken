@@ -392,7 +392,7 @@ impl ToolOutputSpiller for SpillProbe {
             .unwrap()
             .push((run_id.0.clone(), call_id.to_string(), content.clone()));
         if self.fail {
-            Err(ToolError::Execution("ACP spill unavailable".into()))
+            Err(ToolError::DefinitiveFailure("ACP spill unavailable".into()))
         } else {
             Ok(format!("preview: {content}"))
         }

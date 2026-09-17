@@ -584,7 +584,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(denied, ToolError::Execution(message) if message.contains("escapes workdir"))
+            matches!(denied, ToolError::DefinitiveFailure(message) if message.contains("escapes workdir"))
         );
     }
 

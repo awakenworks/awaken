@@ -14,7 +14,7 @@ impl Tool for ProviderServerWebFetchTool {
     const DESCRIPTION: &'static str = "Fetch a URL through the selected model provider";
 
     async fn call(&self, _args: WebFetchArgs) -> Result<String, ToolError> {
-        Err(ToolError::Execution(
+        Err(ToolError::DefinitiveFailure(
             "provider-server WebFetch reached host execution".into(),
         ))
     }
@@ -28,7 +28,7 @@ fn read_fetch_body(response: ureq::Response) -> Result<String, ToolError> {
         .into_reader()
         .take(MAX_BODY)
         .read_to_end(&mut bytes)
-        .map_err(|err| ToolError::Execution(format!("read body: {err}")))?;
+        .map_err(|err| ToolError::DefinitiveFailure(format!("read body: {err}")))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -63,14 +63,14 @@ impl WebFetchProvider for AwakenDirectFetchProvider {
             } else {
                 ureq::get(&request.url)
             };
-            let response = call
-                .call()
-                .map_err(|err| ToolError::Execution(format!("fetch {}: {err}", request.url)))?;
+            let response = call.call().map_err(|err| {
+                ToolError::DefinitiveFailure(format!("fetch {}: {err}", request.url))
+            })?;
             // The configured plugin matched the initial URL with the canonical
             // filter. Disabling redirects makes 3xx observable before any
             // unvalidated second request can escape.
             if filter_active && (300..400).contains(&response.status()) {
-                return Err(ToolError::Execution(
+                return Err(ToolError::DefinitiveFailure(
                     "web_fetch redirect is disabled while domain policy is active".into(),
                 ));
             }
@@ -144,5 +144,5 @@ where
 {
     tokio::task::spawn_blocking(work)
         .await
-        .map_err(|err| ToolError::Execution(format!("blocking task: {err}")))?
+        .map_err(|err| ToolError::DefinitiveFailure(format!("blocking task: {err}")))?
 }

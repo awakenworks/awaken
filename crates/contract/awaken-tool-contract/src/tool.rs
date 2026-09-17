@@ -189,7 +189,7 @@ pub fn current_tool_execution_facts(call: &ToolCall) -> Result<ToolExecutionFact
     TOOL_EXECUTION_FACTS
         .try_with(|resolver| resolver.resolve(call))
         .unwrap_or_else(|_| {
-            Err(ToolError::Execution(
+            Err(ToolError::DefinitiveFailure(
                 "tool execution catalog is unavailable outside Runtime".into(),
             ))
         })
@@ -434,7 +434,7 @@ impl ToolTaskHandle {
     /// wait boundary.
     pub fn validate(&self) -> Result<(), ToolError> {
         self.validate_coordinates()
-            .map_err(|message| ToolError::Execution(message.into()))
+            .map_err(|message| ToolError::DefinitiveFailure(message.into()))
     }
 
     // One shape authority; each caller allocates only its final error instead
@@ -552,16 +552,30 @@ impl ToolOutput {
     }
 }
 
+/// Why a tool call produced no [`ToolOutput`].
+///
+/// The variants carry exactly the distinctions an owner acts on: resolution
+/// (`UnknownTool`, `AmbiguousTool`), model input (`InvalidArguments`), whether
+/// the effect may be retried, must terminate the attempt or is indeterminate,
+/// and otherwise a definitive failure. The Runtime renders every variant it
+/// does not own as a model-visible error result through `Display`, and a
+/// remote Hand carries that same text, so each display string is part of the
+/// observable result.
 #[derive(Debug, Error)]
 pub enum ToolError {
+    /// No executable tool is registered under this tool id.
     #[error("unknown tool: {0}")]
-    Unknown(String),
+    UnknownTool(String),
+    /// More than one implementation claims this tool id, so resolution fails
+    /// closed instead of depending on registration order.
+    #[error("tool execution failed: tool id `{0}` is ambiguous")]
+    AmbiguousTool(String),
     #[error("invalid tool arguments: {0}")]
     InvalidArguments(String),
     /// The executor proved that the request never crossed its dispatch boundary.
     /// An owner may reacquire that executor and retry the same call without
     /// replaying an external effect. Definitive failures after dispatch remain
-    /// `Execution`; an unknown effect outcome must be `Indeterminate`.
+    /// `DefinitiveFailure`; an unknown effect outcome must be `Indeterminate`.
     #[error("tool executor unavailable before dispatch: {0}")]
     UnavailableBeforeDispatch(String),
     /// The external effect crossed its dispatch boundary, but a required
@@ -576,11 +590,13 @@ pub enum ToolError {
     #[error("tool execution indeterminate: {0}")]
     Indeterminate(String),
     /// A definitive returned failure, including non-retryable local executor
-    /// configuration rejection. An owner must not replace an executor merely
-    /// because this variant was returned. An adapter that cannot establish the
-    /// outcome or termination after dispatch must return `Indeterminate` instead.
+    /// configuration rejection. The message is the tool's own account of the
+    /// failure and is what the model reads; nothing classifies it further. An
+    /// owner must not replace an executor merely because this variant was
+    /// returned. An adapter that cannot establish the outcome or termination
+    /// after dispatch must return `Indeterminate` instead.
     #[error("tool execution failed: {0}")]
-    Execution(String),
+    DefinitiveFailure(String),
 }
 
 /// Materializes a model-visible tool result when the host needs to move a large
@@ -863,33 +879,94 @@ pub trait RawTool: Send + Sync {
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError>;
 
-    /// Start detached execution. Ordinary tools complete through `invoke`;
-    /// adapters with a negotiated durable-task protocol override this method
-    /// and return the remote handle immediately.
-    async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
-        self.invoke(call).await.map(ToolTaskStart::Completed)
+    /// The durable-task capability of this exact implementation, if it has one.
+    ///
+    /// Continuing a durable request is reachable only through the returned
+    /// [`DurableTaskTool`], so a caller cannot poll or cancel a tool that never
+    /// negotiated a task protocol. An implementation of [`DurableTaskTool`]
+    /// advertises itself here with `Some(self)`.
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskTool> {
+        None
     }
+}
+
+/// Optional capability of a [`RawTool`] whose adapter negotiated a durable-task
+/// protocol (ADR-0080 capability ladder).
+///
+/// Only a durable-task tool can return [`ToolTaskStart::Pending`], so every
+/// persisted [`ToolTaskHandle`] names a tool that can also poll and cancel it.
+/// Ordinary tools start detached work through [`start_tool_task`], which
+/// completes through `invoke`.
+#[async_trait]
+pub trait DurableTaskTool: RawTool {
+    /// Start detached execution and return the remote handle immediately, or
+    /// complete in the foreground when this call needs no durable request.
+    async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError>;
 
     /// Observe a handle previously returned by this exact resolved tool.
     async fn poll_task(
         &self,
-        _call: &ToolCall,
-        _task: &ToolTaskHandle,
-    ) -> Result<ToolTaskPoll, ToolError> {
-        Err(ToolError::Execution(
-            "tool does not support durable task polling".into(),
-        ))
-    }
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError>;
 
     /// Request cancellation of a handle previously returned by this tool.
     async fn cancel_task(
         &self,
-        _call: &ToolCall,
-        _task: &ToolTaskHandle,
-    ) -> Result<ToolTaskPoll, ToolError> {
-        Err(ToolError::Execution(
-            "tool does not support durable task cancellation".into(),
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError>;
+}
+
+/// Start detached execution of any tool: a durable-task tool creates its
+/// request, and every other tool completes through `invoke`.
+pub async fn start_tool_task(
+    tool: &dyn RawTool,
+    call: ToolCall,
+) -> Result<ToolTaskStart, ToolError> {
+    match tool.durable_tasks() {
+        Some(durable) => durable.start_task(call).await,
+        None => tool.invoke(call).await.map(ToolTaskStart::Completed),
+    }
+}
+
+/// Which continuation of an existing durable request a caller asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolTaskContinuation {
+    Poll,
+    Cancel,
+}
+
+impl ToolTaskContinuation {
+    /// The refusal returned when the addressed tool or executor has no
+    /// durable-task capability. No handle it created can exist, so this is a
+    /// definitive failure rather than a lost request.
+    #[must_use]
+    pub fn refused_by(self, subject: &str) -> ToolError {
+        let operation = match self {
+            Self::Poll => "polling",
+            Self::Cancel => "cancellation",
+        };
+        ToolError::DefinitiveFailure(format!(
+            "{subject} does not support durable task {operation}"
         ))
+    }
+
+    /// Continue `task` on a resolved tool, refusing a tool without the
+    /// durable-task capability.
+    pub async fn continue_on(
+        self,
+        tool: &dyn RawTool,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        let durable = tool
+            .durable_tasks()
+            .ok_or_else(|| self.refused_by("tool"))?;
+        match self {
+            Self::Poll => durable.poll_task(call, task).await,
+            Self::Cancel => durable.cancel_task(call, task).await,
+        }
     }
 }
 
@@ -905,7 +982,7 @@ pub async fn invoke_raw_tool(
         Some(token) => {
             tokio::select! {
                 result = tool.invoke(call) => result,
-                _ = token.cancelled() => Err(ToolError::Execution("tool invocation cancelled".into())),
+                _ = token.cancelled() => Err(ToolError::DefinitiveFailure("tool invocation cancelled".into())),
             }
         }
         None => tool.invoke(call).await,
@@ -976,11 +1053,12 @@ pub fn parse_tool_args_or_error_output<A: serde::de::DeserializeOwned>(
 
 /// Render typed tool output using the one model-visible representation rule.
 pub fn render_tool_output<O: Serialize>(output: &O) -> Result<String, ToolError> {
-    match serde_json::to_value(output).map_err(|error| ToolError::Execution(error.to_string()))? {
+    match serde_json::to_value(output)
+        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
+    {
         serde_json::Value::String(text) => Ok(text),
-        other => {
-            serde_json::to_string(&other).map_err(|error| ToolError::Execution(error.to_string()))
-        }
+        other => serde_json::to_string(&other)
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string())),
     }
 }
 
@@ -1003,28 +1081,63 @@ pub trait ToolExecutor: Send + Sync {
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;
 
-    async fn start_task(&self, call: &ToolCall) -> Result<ToolTaskStart, ToolError> {
-        self.invoke(call).await.map(ToolTaskStart::Completed)
+    /// The durable-task capability of this executor, if it routes one.
+    ///
+    /// An executor without it still starts detached work through
+    /// [`start_executor_task`], completing through `invoke`; it can never have
+    /// returned a pending handle to continue.
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskExecutor> {
+        None
     }
+}
+
+/// Optional capability of a [`ToolExecutor`] that routes durable-task requests
+/// to the [`DurableTaskTool`] which created them (ADR-0080 capability ladder).
+#[async_trait]
+pub trait DurableTaskExecutor: ToolExecutor {
+    async fn start_task(&self, call: &ToolCall) -> Result<ToolTaskStart, ToolError>;
 
     async fn poll_task(
         &self,
-        _call: &ToolCall,
-        _task: &ToolTaskHandle,
-    ) -> Result<ToolTaskPoll, ToolError> {
-        Err(ToolError::Execution(
-            "tool executor does not support durable task polling".into(),
-        ))
-    }
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError>;
 
     async fn cancel_task(
         &self,
-        _call: &ToolCall,
-        _task: &ToolTaskHandle,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError>;
+}
+
+/// Start detached execution through any executor: a durable-task executor
+/// routes the start, and every other executor completes through `invoke`.
+pub async fn start_executor_task(
+    executor: &dyn ToolExecutor,
+    call: &ToolCall,
+) -> Result<ToolTaskStart, ToolError> {
+    match executor.durable_tasks() {
+        Some(durable) => durable.start_task(call).await,
+        None => executor.invoke(call).await.map(ToolTaskStart::Completed),
+    }
+}
+
+impl ToolTaskContinuation {
+    /// Continue `task` through an executor, refusing an executor without the
+    /// durable-task capability.
+    pub async fn continue_through(
+        self,
+        executor: &dyn ToolExecutor,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
     ) -> Result<ToolTaskPoll, ToolError> {
-        Err(ToolError::Execution(
-            "tool executor does not support durable task cancellation".into(),
-        ))
+        let durable = executor
+            .durable_tasks()
+            .ok_or_else(|| self.refused_by("tool executor"))?;
+        match self {
+            Self::Poll => durable.poll_task(call, task).await,
+            Self::Cancel => durable.cancel_task(call, task).await,
+        }
     }
 }
 
@@ -1085,11 +1198,9 @@ impl RawToolRegistry {
 
     fn resolution_error(&self, tool_id: &str) -> ToolError {
         match self.tools.get(tool_id) {
-            Some(RawToolSlot::Ambiguous) => {
-                ToolError::Execution(format!("tool id `{tool_id}` is ambiguous"))
-            }
+            Some(RawToolSlot::Ambiguous) => ToolError::AmbiguousTool(tool_id.to_string()),
             Some(RawToolSlot::Unique(_)) => unreachable!("unique tools resolve before errors"),
-            None => ToolError::Unknown(tool_id.to_string()),
+            None => ToolError::UnknownTool(tool_id.to_string()),
         }
     }
 }
@@ -1115,11 +1226,18 @@ impl ToolExecutor for RawToolRegistry {
         tool.invoke(call.clone()).await
     }
 
+    fn durable_tasks(&self) -> Option<&dyn DurableTaskExecutor> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl DurableTaskExecutor for RawToolRegistry {
     async fn start_task(&self, call: &ToolCall) -> Result<ToolTaskStart, ToolError> {
         let tool = self
             .get(&call.tool_id)
             .ok_or_else(|| self.resolution_error(&call.tool_id))?;
-        tool.start_task(call.clone()).await
+        start_tool_task(tool.as_ref(), call.clone()).await
     }
 
     async fn poll_task(
@@ -1130,7 +1248,9 @@ impl ToolExecutor for RawToolRegistry {
         let tool = self
             .get(&call.tool_id)
             .ok_or_else(|| self.resolution_error(&call.tool_id))?;
-        tool.poll_task(call, task).await
+        ToolTaskContinuation::Poll
+            .continue_on(tool.as_ref(), call, task)
+            .await
     }
 
     async fn cancel_task(
@@ -1141,7 +1261,9 @@ impl ToolExecutor for RawToolRegistry {
         let tool = self
             .get(&call.tool_id)
             .ok_or_else(|| self.resolution_error(&call.tool_id))?;
-        tool.cancel_task(call, task).await
+        ToolTaskContinuation::Cancel
+            .continue_on(tool.as_ref(), call, task)
+            .await
     }
 }
 

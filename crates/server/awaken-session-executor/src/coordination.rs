@@ -75,12 +75,12 @@ impl CoordinationEndpoint {
             .read(session_id, |slot| slot.dispatch_claim.clone())
             .flatten()
             .ok_or_else(|| {
-                ToolError::Execution(
+                ToolError::DefinitiveFailure(
                     "Session coordination requires a current dispatch claim".to_string(),
                 )
             })?;
         if claim.run_id.0 != source_run_id {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "Session coordination source Run does not own the current dispatch claim"
                     .to_string(),
             ));
@@ -97,7 +97,9 @@ impl CoordinationEndpoint {
             Self::Local(application) => application
                 .upgrade()
                 .ok_or_else(|| {
-                    ToolError::Execution("Session coordination application is unavailable".into())
+                    ToolError::DefinitiveFailure(
+                        "Session coordination application is unavailable".into(),
+                    )
                 })?
                 .list_session_agents(session_id)
                 .await
@@ -107,7 +109,7 @@ impl CoordinationEndpoint {
                 control
                     .list_session_agents(&claim, session_id.as_str())
                     .await
-                    .map_err(|error| ToolError::Execution(error.to_string()))
+                    .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))
             }
         }
     }
@@ -174,7 +176,9 @@ impl CoordinationEndpoint {
         match self {
             Self::Local(application) => {
                 let application = application.upgrade().ok_or_else(|| {
-                    ToolError::Execution("Session coordination application is unavailable".into())
+                    ToolError::DefinitiveFailure(
+                        "Session coordination application is unavailable".into(),
+                    )
                 })?;
                 // Admission can realize another Agent's full Session projection
                 // before child execution starts. Break that nested poll stack at
@@ -185,7 +189,7 @@ impl CoordinationEndpoint {
                 })
                 .join()
                 .await
-                .map_err(|error| ToolError::Execution(error.to_string()))?
+                .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
                 .map_err(tool_error)
             }
             Self::Remote { control, slots } => {
@@ -193,7 +197,7 @@ impl CoordinationEndpoint {
                 control
                     .send_session_agent_message(&claim, command)
                     .await
-                    .map_err(|error| ToolError::Execution(error.to_string()))
+                    .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))
             }
         }
     }
@@ -301,7 +305,9 @@ fn tool_error(error: awaken_session_contract::RunError) -> ToolError {
             ToolError::InvalidArguments(error.message)
         }
         awaken_session_contract::RunErrorKind::Internal
-        | awaken_session_contract::RunErrorKind::Unavailable => ToolError::Execution(error.message),
+        | awaken_session_contract::RunErrorKind::Unavailable => {
+            ToolError::DefinitiveFailure(error.message)
+        }
     }
 }
 
@@ -312,7 +318,7 @@ impl AgentCoordinator for HostAgentCoordinator {
         request: AgentListRequest,
     ) -> Result<Vec<AgentRosterEntry>, ToolError> {
         if request.source_thread_id.trim().is_empty() || request.source_run_id.trim().is_empty() {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "Agent roster lookup requires Runtime-owned source coordinates".into(),
             ));
         }

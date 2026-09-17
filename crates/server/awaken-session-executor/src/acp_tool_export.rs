@@ -225,7 +225,7 @@ impl RawTool for ClientExecutedAcpTool {
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         self.sender.send(call).await.map_err(|_| {
-            ToolError::Execution(
+            ToolError::DefinitiveFailure(
                 "CLIENT_TOOL_ARRIVAL_CLOSED: the Session continuation is no longer available"
                     .into(),
             )
@@ -287,11 +287,11 @@ impl RawTool for PermissionGuardedAcpTool {
         // the audit fact, not to a tool error string.
         match self.policy.evaluate(&call).await.verdict {
             ToolPermissionVerdict::Allow => self.inner.invoke(call).await,
-            ToolPermissionVerdict::Deny { reason } => Err(ToolError::Execution(format!(
+            ToolPermissionVerdict::Deny { reason } => Err(ToolError::DefinitiveFailure(format!(
                 "TOOL_PERMISSION_BLOCKED: {reason}"
             ))),
             ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
-                Err(ToolError::Execution(format!(
+                Err(ToolError::DefinitiveFailure(format!(
                     "TOOL_APPROVAL_REQUIRED: ACP must request Awaken permission before invoking this tool ({correlation_id})"
                 )))
             }
@@ -333,7 +333,7 @@ impl RawTool for EnvironmentAcpTool {
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         if call.tool_id != self.id {
-            return Err(ToolError::Execution(
+            return Err(ToolError::DefinitiveFailure(
                 "ACP tool identity does not match the bound Environment tool".into(),
             ));
         }

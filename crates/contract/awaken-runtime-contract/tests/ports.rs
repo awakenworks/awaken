@@ -98,7 +98,7 @@ impl ToolExecutor for OneToolExecutor {
         if call.tool_id == self.0.id() {
             self.0.invoke(call.clone()).await
         } else {
-            Err(ToolError::Unknown(call.tool_id.clone()))
+            Err(ToolError::UnknownTool(call.tool_id.clone()))
         }
     }
 }
@@ -111,6 +111,6 @@ async fn tool_executor_runs_known_tool_and_rejects_unknown() {
     unknown.tool_id = "nope".to_string();
     assert!(matches!(
         exec.invoke(&unknown).await,
-        Err(ToolError::Unknown(_))
+        Err(ToolError::UnknownTool(_))
     ));
 }

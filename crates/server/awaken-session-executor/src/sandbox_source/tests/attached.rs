@@ -173,6 +173,16 @@ impl AcpToolExporter for Exporter {
     ) -> Result<AcpToolExport, String> {
         panic!("attached tools must never export a Worker loopback endpoint")
     }
+
+    fn attached_channels(
+        &self,
+    ) -> Option<&dyn awaken_runtime_contract::tool_export::AttachedChannelToolExporter> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::tool_export::AttachedChannelToolExporter for Exporter {
     async fn export_channel_set(
         &self,
         server: awaken_runtime_contract::resolved::AcpMcpServer,

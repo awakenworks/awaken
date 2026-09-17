@@ -36,7 +36,7 @@ impl Drop for SessionToolExportLease {
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExporter {
+impl awaken_runtime_contract::tool_export::AttachedChannelToolExporter for SessionToolExporter {
     async fn export_channel_set(
         &self,
         server: awaken_runtime_contract::resolved::AcpMcpServer,
@@ -81,6 +81,15 @@ impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExport
             },
         ))
     }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExporter {
+    fn attached_channels(
+        &self,
+    ) -> Option<&dyn awaken_runtime_contract::tool_export::AttachedChannelToolExporter> {
+        Some(self)
+    }
 
     async fn export_set(
         &self,
@@ -123,7 +132,7 @@ mod tests {
     use super::*;
     use awaken_ext_mcp::{Credential, HttpTransport, McpToolTransport};
     use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
-    use awaken_runtime_contract::tool_export::AcpToolExporter;
+    use awaken_runtime_contract::tool_export::{AcpToolExporter, AttachedChannelToolExporter};
 
     struct EchoTool(&'static str);
 

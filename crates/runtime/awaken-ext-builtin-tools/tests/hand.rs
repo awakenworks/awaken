@@ -111,7 +111,7 @@ async fn read_does_not_decode_non_utf8_files() {
         ))
         .await
         .expect_err("R3 binary decoding is unavailable");
-    assert!(matches!(err, ToolError::Execution(_)));
+    assert!(matches!(err, ToolError::DefinitiveFailure(_)));
     assert_eq!(std::fs::read(path).unwrap(), bytes);
 }
 
@@ -121,7 +121,7 @@ async fn read_missing_file_is_a_typed_error() {
         .invoke(call("read", serde_json::json!({ "path": "/no/such/file" })))
         .await
         .expect_err("missing file");
-    assert!(matches!(err, ToolError::Execution(_)));
+    assert!(matches!(err, ToolError::DefinitiveFailure(_)));
 }
 
 #[tokio::test]
@@ -235,7 +235,7 @@ async fn glob_absolute_pattern_reuses_the_confined_logical_path_projection() {
         ))
         .await
         .expect_err("G3 untrusted absolute pattern");
-    assert!(matches!(outside, ToolError::Execution(_)), "G3/E3");
+    assert!(matches!(outside, ToolError::DefinitiveFailure(_)), "G3/E3");
 
     let ambiguous = glob
         .invoke(call(
@@ -361,7 +361,7 @@ async fn edit_fails_closed_on_missing_or_ambiguous_old() {
         ))
         .await
         .expect_err("missing old");
-    assert!(matches!(missing, ToolError::Execution(_)));
+    assert!(matches!(missing, ToolError::DefinitiveFailure(_)));
 
     let ambiguous = tool("edit")
         .invoke(call(
@@ -370,7 +370,7 @@ async fn edit_fails_closed_on_missing_or_ambiguous_old() {
         ))
         .await
         .expect_err("ambiguous old");
-    assert!(matches!(ambiguous, ToolError::Execution(_)));
+    assert!(matches!(ambiguous, ToolError::DefinitiveFailure(_)));
     // The file is untouched because the edit failed closed.
     assert_eq!(std::fs::read_to_string(&path).expect("read back"), "a a a");
 }
@@ -414,7 +414,7 @@ async fn bash_nonzero_exit_is_a_typed_error() {
         .invoke(call("bash", serde_json::json!({ "command": "exit 3" })))
         .await
         .expect_err("nonzero exit");
-    assert!(matches!(err, ToolError::Execution(_)));
+    assert!(matches!(err, ToolError::DefinitiveFailure(_)));
 }
 
 #[tokio::test]
@@ -520,7 +520,7 @@ async fn grep_missing_file_is_a_typed_error() {
         ))
         .await
         .expect_err("missing file");
-    assert!(matches!(err, ToolError::Execution(_)));
+    assert!(matches!(err, ToolError::DefinitiveFailure(_)));
 }
 
 #[tokio::test]
@@ -603,7 +603,7 @@ async fn write_to_an_unwritable_path_is_a_typed_error() {
         ))
         .await
         .expect_err("bad dir");
-    assert!(matches!(err, ToolError::Execution(_)));
+    assert!(matches!(err, ToolError::DefinitiveFailure(_)));
 }
 
 #[tokio::test]
@@ -615,7 +615,7 @@ async fn edit_missing_file_is_a_typed_error() {
         ))
         .await
         .expect_err("missing file");
-    assert!(matches!(err, ToolError::Execution(_)));
+    assert!(matches!(err, ToolError::DefinitiveFailure(_)));
 }
 
 #[tokio::test]

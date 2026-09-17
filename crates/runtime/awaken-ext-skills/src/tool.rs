@@ -444,7 +444,7 @@ impl RawTool for ListSkillsTool {
         let entries: Vec<serde_json::Value> = self
             .registry
             .list()
-            .map_err(ToolError::Execution)?
+            .map_err(ToolError::DefinitiveFailure)?
             .iter()
             .filter(|s| s.model_invocable)
             .filter(|s| is_surfaced(s, self.activations.as_ref()))
@@ -533,7 +533,11 @@ impl RawTool for SkillTool {
         }
         // A leading slash is a user-invocation affordance; accept it here too.
         let key = name.trim_start_matches('/');
-        let Some(metadata) = self.registry.get(key).map_err(ToolError::Execution)? else {
+        let Some(metadata) = self
+            .registry
+            .get(key)
+            .map_err(ToolError::DefinitiveFailure)?
+        else {
             return Ok(ToolOutput::error(call_id, format!("unknown skill: {name}")));
         };
         if !metadata.model_invocable {
@@ -1072,7 +1076,7 @@ mod tests {
                 "test_agent"
             }
             async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
-                Err(ToolError::Execution("runner boom".to_string()))
+                Err(ToolError::DefinitiveFailure("runner boom".to_string()))
             }
         }
 

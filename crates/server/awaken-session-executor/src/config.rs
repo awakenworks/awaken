@@ -649,7 +649,7 @@ impl ToolExecutor for FilesystemFreeAgentToolExecutor {
     ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
     {
         if self.tools.get(&call.tool_id).is_none() {
-            return Err(awaken_runtime_contract::tool::ToolError::Execution(
+            return Err(awaken_runtime_contract::tool::ToolError::DefinitiveFailure(
                 format!("filesystem-free Session cannot execute `{}`", call.tool_id),
             ));
         }
