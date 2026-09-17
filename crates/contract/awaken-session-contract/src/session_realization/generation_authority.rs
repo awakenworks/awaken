@@ -31,7 +31,8 @@ pub fn realization_generation_authorizes(
 #[kani::unwind(3)]
 fn realization_generation_authority_requires_every_axis() {
     // G1-G64: all combinations of the immutable identity equalities and expiry
-    // ordering. Strings use two one-byte representatives of equality; expiry,
+    // ordering. Strings and the content digest use two one-byte representatives
+    // of equality; expiry,
     // epoch, and the generation's version/digest retain arbitrary values. The
     // attachment identity is now a coordinate of the complete generation
     // witness, so it varies inside `generation` rather than beside it. Live
@@ -45,12 +46,7 @@ fn realization_generation_authority_requires_every_axis() {
         generation: crate::McpGeneration::new(
             crate::McpAttachmentId("a".into()),
             kani::any(),
-            crate::McpAttachmentContentDigest::of_content(
-                &crate::McpTarget::parse_http("https://a.test/mcp").unwrap(),
-                false,
-                None,
-                crate::McpAttachmentOrigin::Session,
-            ),
+            crate::McpAttachmentContentDigest::proof_representative(true),
         ),
         runtime_incarnation: "a".into(),
         lease_epoch: kani::any(),
@@ -61,17 +57,7 @@ fn realization_generation_authority_requires_every_axis() {
         generation: crate::McpGeneration::new(
             crate::McpAttachmentId(if same_attachment { "a" } else { "b" }.into()),
             kani::any(),
-            crate::McpAttachmentContentDigest::of_content(
-                &crate::McpTarget::parse_http(if same_digest {
-                    "https://a.test/mcp"
-                } else {
-                    "https://b.test/mcp"
-                })
-                .unwrap(),
-                false,
-                None,
-                crate::McpAttachmentOrigin::Session,
-            ),
+            crate::McpAttachmentContentDigest::proof_representative(same_digest),
         ),
         runtime_incarnation: if same_incarnation { "a" } else { "b" }.into(),
         lease_epoch: kani::any(),
