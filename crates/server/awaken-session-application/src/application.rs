@@ -187,6 +187,8 @@ pub struct SessionApplication {
     lifecycle_supervisor_started: AtomicBool,
     lifecycle_wakeup: tokio::sync::Notify,
     event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
+    /// Process-local mutual exclusion for the co-located realization driver.
+    local_realization_locks: crate::realization::LocalRealizationLocks,
 }
 
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -270,6 +272,7 @@ impl SessionApplication {
                 std::process::id(),
                 APPLICATION_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
             ),
+            local_realization_locks: crate::realization::LocalRealizationLocks::default(),
             mutation_sequence: AtomicU64::new(0),
             lifecycle_supervisor_started: AtomicBool::new(false),
             lifecycle_wakeup: tokio::sync::Notify::new(),
@@ -429,6 +432,11 @@ impl SessionApplication {
     #[must_use]
     pub fn local_realization_owner(&self) -> &str {
         &self.local_realization_owner
+    }
+
+    /// Serialize this process's own realization drivers for one Session.
+    pub(crate) fn local_realization_locks(&self) -> &crate::realization::LocalRealizationLocks {
+        &self.local_realization_locks
     }
 
     /// Read the current executable Environment projection for Deployment admission.

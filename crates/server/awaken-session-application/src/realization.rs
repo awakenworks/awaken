@@ -31,6 +31,7 @@ use crate::{
 
 mod authority;
 mod control;
+mod local_lock;
 mod publication;
 mod recovery_backoff;
 
@@ -42,6 +43,7 @@ use authority::{
     exact_generation_key, generation_set_authorizes, verify_lease,
 };
 use control::RefreshedSessionRealizationControl;
+pub(crate) use local_lock::LocalRealizationLocks;
 use recovery_backoff::{
     SessionRecoveryTrigger, external_wake_coalescing_delay, next_external_wake_cooldown,
     next_session_recovery_delay,
@@ -595,6 +597,10 @@ impl SessionApplication {
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, SessionRealizationError> {
+        // One co-located phase driver per Session. The request path and the
+        // recovery sweep share this process; letting both drive interleaves
+        // their phases and repeats the same external MCP effect.
+        let _local_driver = self.local_realization_locks().acquire(session_id).await;
         let request_started = self
             .runtime()
             .observe_realization_request()
