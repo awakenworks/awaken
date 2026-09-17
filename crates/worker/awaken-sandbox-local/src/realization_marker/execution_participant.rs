@@ -3,6 +3,7 @@
 //! serializes pre-GO publication against cold adoption, snapshot and deletion.
 
 use super::*;
+#[cfg(target_os = "linux")]
 use awaken_local_process::ProcessExecutionIdentity;
 
 const MAX_EXECUTIONS: usize = 128;

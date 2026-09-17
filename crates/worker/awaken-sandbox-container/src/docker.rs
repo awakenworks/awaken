@@ -116,15 +116,8 @@ fn docker_host_staging_root(info: &ContainerInspectResponse) -> Result<PathBuf, 
     Ok(staging_root)
 }
 
-fn backend(e: impl std::fmt::Display) -> RuntimeError {
-    RuntimeError::Backend(e.to_string())
-}
-
-fn docker_backend(error: bollard::errors::Error) -> RuntimeError {
-    match error {
-        bollard::errors::Error::DockerStreamError { error } => RuntimeError::Backend(error),
-        other => backend(other),
-    }
+fn backend(e: impl crate::runtime::RuntimeFailure) -> RuntimeError {
+    e.into_runtime_error()
 }
 
 fn docker_not_found(error: &bollard::errors::Error) -> bool {
@@ -1146,7 +1139,7 @@ impl ContainerRuntime for DockerRuntime {
                         self.package_registry_credentials.clone(),
                     );
                     while let Some(result) = push.next().await {
-                        result.map_err(docker_backend)?;
+                        result.map_err(backend)?;
                     }
                     return self.package_image_reference(&image, &repository).await;
                 }
@@ -1172,7 +1165,7 @@ impl ContainerRuntime for DockerRuntime {
             };
             let mut build = self.docker.build_image(options, None, Some(context.into()));
             while let Some(result) = build.next().await {
-                result.map_err(docker_backend)?;
+                result.map_err(backend)?;
             }
             self.docker.inspect_image(&image).await.map_err(backend)?;
             if self.package_registry.is_some() {
@@ -1184,7 +1177,7 @@ impl ContainerRuntime for DockerRuntime {
                     self.package_registry_credentials.clone(),
                 );
                 while let Some(result) = push.next().await {
-                    result.map_err(docker_backend)?;
+                    result.map_err(backend)?;
                 }
                 return self.package_image_reference(&image, &repository).await;
             }

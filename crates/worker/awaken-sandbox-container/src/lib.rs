@@ -45,6 +45,7 @@ mod recovery;
 mod resident_hand;
 mod restore_target;
 mod runtime;
+mod runtime_error;
 mod secret;
 mod staged_mounts;
 mod writable;

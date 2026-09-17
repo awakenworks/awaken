@@ -54,9 +54,11 @@ pub awaken_sandbox_container::RootfsPlan::RootTarball::reference: alloc::string:
 pub awaken_sandbox_container::RootfsPlan::RootTarball::writable: bool
 pub enum awaken_sandbox_container::RuntimeError
 pub awaken_sandbox_container::RuntimeError::Backend(alloc::string::String)
+pub awaken_sandbox_container::RuntimeError::Conflict(alloc::string::String)
 pub awaken_sandbox_container::RuntimeError::EffectFenceExpired
 pub awaken_sandbox_container::RuntimeError::MayHaveCommitted(alloc::string::String)
 pub awaken_sandbox_container::RuntimeError::NotFound(alloc::string::String)
+pub awaken_sandbox_container::RuntimeError::Unauthorized(alloc::string::String)
 impl core::convert::From<awaken_sandbox_container::RuntimeError> for awaken_provisioning_contract::sandbox::error::SandboxError
 pub fn awaken_provisioning_contract::sandbox::error::SandboxError::from(awaken_sandbox_container::RuntimeError) -> Self
 pub enum awaken_sandbox_container::SandboxControlBindingRequest<'a>
