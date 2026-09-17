@@ -364,12 +364,12 @@ async fn environment(
         provider
             .create_effective_for_effect(
                 &crate::provisioning::agent_run_sandbox_spec(thread),
-                Some(&effect_fence),
-                Some(
-                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                crate::session_environment::ProviderEffect::Fenced {
+                    fence: &effect_fence,
+                    authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                         &effect_fence,
                     ),
-                ),
+                },
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -2581,8 +2581,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                 &crate::provisioning::agent_run_sandbox_spec("candidate-evidence"),
                 &owned.handle(),
                 &owned,
-                None,
-                None,
+                crate::session_environment::ProviderEffect::Unattached,
             )
             .await
             .unwrap(),

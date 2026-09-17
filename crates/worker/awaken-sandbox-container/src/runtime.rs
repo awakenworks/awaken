@@ -1868,7 +1868,7 @@ pub trait ContainerRuntime: Send + Sync {
         // retained continuation bytes as deleted.
         expectation.purpose = crate::ContainerObservationPurpose::TerminalCleanup;
         let admit = || {
-            pc::with_current_sandbox_effect(effect_fence, authority, || Ok(()))
+            pc::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))
                 .map_err(|error| RuntimeError::Backend(error.to_string()))
         };
         admit()?;

@@ -761,7 +761,13 @@ impl SharedHost {
             })?
             .spec;
         let observation = provider
-            .observe_effective(&spec, &handle, Some(environment.as_ref()))
+            .observe_effective(
+                &spec,
+                &handle,
+                Some(environment.as_ref()),
+                awaken_provisioning_contract::SandboxObservationBasis::Unattached,
+                awaken_sandbox_container::ContainerObservationPurpose::Recovery,
+            )
             .await
             .map_err(|error| {
                 HostError::unavailable_classified(
@@ -944,7 +950,7 @@ impl SharedHost {
             .transpose()?;
         let admit_original = || match (effect.provider_fence.as_ref(), authority.as_ref()) {
             (Some(fence), Some(authority)) => {
-                awaken_provisioning_contract::with_current_sandbox_effect(fence, authority, || {
+                awaken_provisioning_contract::with_current_sandbox_effect(fence, authority, |_| {
                     Ok(())
                 })
                 .map_err(|error| {
@@ -957,29 +963,36 @@ impl SharedHost {
             (None, None) => Ok(()),
             _ => unreachable!("fenced adoption always captures its authority"),
         };
-        let observation = match effect.provider_fence.as_ref() {
-            Some(effect_fence) => {
-                provider
-                    .observe_effective_for_effect(
-                        &spec,
-                        &handle,
-                        retained,
-                        effect_fence,
-                        awaken_sandbox_container::ContainerObservationPurpose::Recovery,
-                    )
-                    .await
-            }
-            None => provider.observe_effective(&spec, &handle, retained).await,
-        }
+        let provider_effect = crate::session_environment::ProviderEffect::from_parts(
+            effect.provider_fence.as_ref(),
+            authority.as_ref().map(|authority| {
+                authority as &dyn awaken_provisioning_contract::CurrentExecutionAuthority
+            }),
+        )
         .map_err(|error| {
             HostError::unavailable_classified(
-                "session_environment_observation_indeterminate",
-                format!(
-                    "could not inspect Session sandbox {}: {error}",
-                    handle.sandbox_id
-                ),
+                "session_environment_adoption_authority_lost",
+                error.to_string(),
             )
         })?;
+        let observation = provider
+            .observe_effective(
+                &spec,
+                &handle,
+                retained,
+                provider_effect.observation_basis(&spec),
+                awaken_sandbox_container::ContainerObservationPurpose::Recovery,
+            )
+            .await
+            .map_err(|error| {
+                HostError::unavailable_classified(
+                    "session_environment_observation_indeterminate",
+                    format!(
+                        "could not inspect Session sandbox {}: {error}",
+                        handle.sandbox_id
+                    ),
+                )
+            })?;
         admit_original()?;
         // Ready-adoption cause/effect table: C1 the validated exact handle is
         // already Resident or ordinarily Retiring; C2 an exact hidden Candidate
@@ -1015,14 +1028,10 @@ impl SharedHost {
                         let rebound = match revoked_owner.as_ref() {
                             Some(retiring) => provider
                                 .rebind_retained(&spec, &handle, &retiring.owned.environment(),
-                                    effect.provider_fence.as_ref(),
-                                    authority.as_ref().map(|authority| authority as &dyn awaken_provisioning_contract::CurrentExecutionAuthority))
+                                    provider_effect)
                                 .await,
                             None => provider
-                                .adopt_effective_for_effect(
-                                    &spec, &handle, effect.provider_fence.as_ref(),
-                                    authority.as_ref().map(|authority| authority as &dyn awaken_provisioning_contract::CurrentExecutionAuthority),
-                                )
+                                .adopt_effective_for_effect(&spec, &handle, provider_effect)
                                 .await,
                         };
                         admit_original()?;

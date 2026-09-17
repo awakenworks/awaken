@@ -148,7 +148,11 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
         async fn materialize_process(&self, _: &str) -> Result<Vec<u8>, pc::SandboxError> {
             unreachable!("file-only fixture")
         }
-        async fn write_back(&self, _: &str, _: Vec<u8>) -> Result<(), pc::SandboxError> {
+        async fn write_back(
+            &self,
+            _target: pc::SecretWritebackTarget<'_>,
+            _: Vec<u8>,
+        ) -> Result<(), pc::SandboxError> {
             unreachable!("read-only fixture")
         }
     }
@@ -1215,7 +1219,9 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     let root = crate::sandbox_dir(tmp.path(), &spec.scope);
     let mut creation =
         crate::realization_marker::begin(&root, &fingerprint, &create, None, None).unwrap();
-    creation.prepare_root().unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
     std::fs::create_dir(root.join("memory")).unwrap();
     std::fs::write(root.join("memory/value"), b"candidate").unwrap();
     let evidence = pc::MemoryMaterializationEvidence::new(
@@ -1240,7 +1246,9 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         vec![evidence.clone()],
     )
     .unwrap();
-    let realization = creation.complete(&completion).unwrap();
+    let realization = creation
+        .recorded_admission(|held, admitted| held.complete(&completion, admitted))
+        .unwrap();
     let payload = crate::LocalSandboxHandleV2 {
         previous: crate::LocalSandboxHandleV1 {
             outputs_path: spec.outputs_path.clone(),
@@ -1268,7 +1276,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         "M2 missing evidence"
     );
     assert_eq!(
-        pc::SandboxProvider::observe(&provider, &missing)
+        pc::SandboxProvider::observe(&provider, &missing, pc::SandboxObservationBasis::Unattached)
             .await
             .unwrap(),
         pc::SandboxObservation::Ready,
@@ -1674,9 +1682,7 @@ async fn terminal_checkpoint_cleanup_uses_the_hot_ready_guard() {
     let request = checkpoint_request();
 
     assert!(
-        pc::Sandbox::checkpoint(&sandbox, &request, &store)
-            .await
-            .is_err(),
+        sandbox.create_checkpoint(&request, &store).await.is_err(),
         "Rule H current realization rejects an unfenced upload"
     );
     sandbox

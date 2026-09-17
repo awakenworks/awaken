@@ -2,7 +2,8 @@
 
 use super::super::foundation::{MemoryMaterializationEvidence, SandboxError};
 use super::SandboxEffectFence;
-use crate::with_current_sandbox_effect;
+use crate::FenceToken;
+use crate::{SandboxEffectGuard, with_current_sandbox_effect};
 
 #[derive(Debug)]
 struct AppliedMemoryReconciliation {
@@ -33,14 +34,15 @@ impl MemoryReconciliationAck {
         authority: &dyn crate::CurrentExecutionAuthority,
         expected_materializations: &[MemoryMaterializationEvidence],
         supplied_materializations: &[MemoryMaterializationEvidence],
-        authorize_and_drain: impl FnOnce() -> Result<(), SandboxError>,
+        authorize_and_drain: impl FnOnce(&SandboxEffectGuard<'_>) -> Result<(), SandboxError>,
     ) -> Result<(), SandboxError> {
         // Replays and empty projections must cross the same live authority
         // boundary. The caller has already acquired any asynchronous mount
         // lock; no copied pre-await observation can authorize Copy retirement.
-        with_current_sandbox_effect(effect_fence, authority, || {
+        with_current_sandbox_effect(effect_fence, authority, |admitted| {
             self.acknowledge_current(
                 effect_fence,
+                admitted,
                 expected_materializations,
                 supplied_materializations,
                 authorize_and_drain,
@@ -51,9 +53,10 @@ impl MemoryReconciliationAck {
     fn acknowledge_current(
         &self,
         effect_fence: &SandboxEffectFence,
+        admitted: &SandboxEffectGuard<'_>,
         expected_materializations: &[MemoryMaterializationEvidence],
         supplied_materializations: &[MemoryMaterializationEvidence],
-        authorize_and_drain: impl FnOnce() -> Result<(), SandboxError>,
+        authorize_and_drain: impl FnOnce(&SandboxEffectGuard<'_>) -> Result<(), SandboxError>,
     ) -> Result<(), SandboxError> {
         MemoryMaterializationEvidence::validate_all(expected_materializations)?;
         MemoryMaterializationEvidence::validate_all(supplied_materializations)?;
@@ -91,12 +94,12 @@ impl MemoryReconciliationAck {
             // An aggregate-authorized successor effect in the same realization
             // lease must re-run provider authorization before rebinding the
             // process-local receipt; Copy draining is idempotent.
-            authorize_and_drain()?;
+            authorize_and_drain(admitted)?;
             previous.effect_fence = effect_fence.clone();
             return Ok(());
         }
 
-        authorize_and_drain()?;
+        authorize_and_drain(admitted)?;
         *applied = Some(AppliedMemoryReconciliation {
             effect_fence: effect_fence.clone(),
             materializations: expected_materializations.to_vec(),
@@ -116,11 +119,11 @@ impl MemoryReconciliationAck {
         expected_materializations: &[MemoryMaterializationEvidence],
         effect_fence: &SandboxEffectFence,
         authority: &dyn crate::CurrentExecutionAuthority,
-        prepare: impl FnOnce() -> Result<T, SandboxError>,
+        prepare: impl FnOnce(&SandboxEffectGuard<'_>) -> Result<T, SandboxError>,
     ) -> Result<T, SandboxError> {
-        with_current_sandbox_effect(effect_fence, authority, || {
+        with_current_sandbox_effect(effect_fence, authority, |admitted| {
             self.require_current_for_disposal(expected_materializations, effect_fence)?;
-            prepare()
+            prepare(admitted)
         })
     }
 
@@ -196,7 +199,7 @@ mod tests {
                         expected.clear();
                     }
                     if matches!(state, "acknowledged" | "mismatched") {
-                        ack.acknowledge(&fence, &authority, &expected, &expected, || Ok(()))
+                        ack.acknowledge(&fence, &authority, &expected, &expected, |_| Ok(()))
                             .unwrap();
                     }
                     if state == "mismatched" {
@@ -208,7 +211,7 @@ mod tests {
                         *authority.current.lock().unwrap() = None;
                     }
                     let mut calls = 0;
-                    let result = ack.require_for_disposal(&expected, &fence, &authority, || {
+                    let result = ack.require_for_disposal(&expected, &fence, &authority, |_| {
                         assert!(
                             authority.current.try_lock().is_err(),
                             "R1 held authority spans preparation"
@@ -226,11 +229,11 @@ mod tests {
                                 &expected,
                                 &fence,
                                 &authority,
-                                || Err::<(), _>(SandboxError::backend("disposal_preparation_uses_current_authority_for_empty_missing_and_cached_evidence", "prepare failed"))
+                                |_| Err::<(), _>(SandboxError::backend("disposal_preparation_uses_current_authority_for_empty_missing_and_cached_evidence", "prepare failed"))
                             )
                             .is_err()
                         );
-                        ack.require_for_disposal(&expected, &fence, &authority, || Ok(()))
+                        ack.require_for_disposal(&expected, &fence, &authority, |_| Ok(()))
                             .unwrap();
                     }
                 }
@@ -266,12 +269,12 @@ mod tests {
                     &EffectAuthority::new(&fence),
                     &expected,
                     &expected,
-                    || Ok(()),
+                    |_| Ok(()),
                 )
                 .unwrap();
                 let mut calls = 0;
                 assert!(
-                    ack.require_for_disposal(&expected, &fence, &FaultyAuthority(fault), || {
+                    ack.require_for_disposal(&expected, &fence, &FaultyAuthority(fault), |_| {
                         calls += 1;
                         Ok(())
                     })
@@ -282,7 +285,7 @@ mod tests {
                     usize::from(matches!(fault, "twice" | "after-effect-error")),
                     "{cached}/{fault}"
                 );
-                ack.require_for_disposal(&expected, &fence, &EffectAuthority::new(&fence), || {
+                ack.require_for_disposal(&expected, &fence, &EffectAuthority::new(&fence), |_| {
                     Ok(())
                 })
                 .unwrap();
@@ -346,7 +349,7 @@ mod tests {
                 };
                 let mut drains = 0;
                 if state == "replay" {
-                    ack.acknowledge(&fence, &valid, materials, materials, || {
+                    ack.acknowledge(&fence, &valid, materials, materials, |_| {
                         drains += 1;
                         Ok(())
                     })
@@ -358,7 +361,7 @@ mod tests {
                         &FaultyAuthority(fault),
                         materials,
                         materials,
-                        || {
+                        |_| {
                             drains += 1;
                             Ok(())
                         }
@@ -374,7 +377,7 @@ mod tests {
                     "{state}/{fault}"
                 );
                 assert_eq!(drains, usize::from(committed), "{state}/{fault}");
-                ack.acknowledge(&fence, &valid, materials, materials, || {
+                ack.acknowledge(&fence, &valid, materials, materials, |_| {
                     assert!(valid.current.try_lock().is_err());
                     assert!(ack.applied.try_lock().is_err());
                     drains += 1;
@@ -409,7 +412,7 @@ mod tests {
         std::thread::scope(|scope| {
             let call = || {
                 start.wait();
-                ack.acknowledge(&fence, &authority, &evidence, &evidence, || {
+                ack.acknowledge(&fence, &authority, &evidence, &evidence, |_| {
                     assert!(authority.current.try_lock().is_err());
                     assert!(ack.applied.try_lock().is_err());
                     drains.fetch_add(1, Ordering::SeqCst);
@@ -442,7 +445,7 @@ mod tests {
         for (index, fence) in [&first, &next].into_iter().enumerate() {
             let authority = EffectAuthority::new(fence);
             assert!(
-                ack.acknowledge(fence, &authority, &evidence, &evidence, || {
+                ack.acknowledge(fence, &authority, &evidence, &evidence, |_| {
                     Err(SandboxError::backend(
                         "provider_drain_failure_does_not_publish_ack_or_supersede_prior_effect",
                         "provider drain failed",
@@ -458,7 +461,7 @@ mod tests {
                     .map(|ack| ack.effect_fence.clone()),
                 (index == 1).then(|| first.clone())
             );
-            ack.acknowledge(fence, &authority, &evidence, &evidence, || Ok(()))
+            ack.acknowledge(fence, &authority, &evidence, &evidence, |_| Ok(()))
                 .unwrap();
             assert_eq!(
                 ack.applied.lock().unwrap().as_ref().unwrap().effect_fence,

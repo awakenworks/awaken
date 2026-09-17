@@ -44,7 +44,11 @@ impl pc::SecretBroker for CredentialBroker {
         ))
     }
 
-    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         *self.0.lock().unwrap() = bytes;
         Ok(())
     }
@@ -64,7 +68,11 @@ impl pc::SecretBroker for ProcessSecretBroker {
         Ok(b"podman-process-secret".to_vec())
     }
 
-    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        _bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         Err(pc::SandboxError::unsupported(
             "secret write-back is not configured",
         ))

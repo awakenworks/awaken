@@ -17,7 +17,11 @@ impl pc::SecretBroker for Broker {
         ))
     }
 
-    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+    async fn write_back(
+        &self,
+        _target: pc::SecretWritebackTarget<'_>,
+        _bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
         unreachable!("the Namespace provider accepts only read-only brokered secrets")
     }
 }
@@ -386,9 +390,11 @@ async fn terminal_takeover_disposes_incomplete_writable_memory_without_inventing
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
     let root = crate::sandbox_dir(tmp.path(), &spec.scope);
-    let creation =
+    let mut creation =
         crate::realization_marker::begin(&root, &fingerprint, &create, None, None).unwrap();
-    creation.prepare_root().unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
     std::fs::create_dir_all(root.join("workspace/memory")).unwrap();
     std::fs::write(root.join("workspace/memory/partial"), b"not-observable").unwrap();
     drop(creation);
@@ -483,7 +489,9 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     let root = crate::sandbox_dir(tmp.path(), &spec.scope);
     let mut creation =
         crate::realization_marker::begin(&root, &fingerprint, &create, None, None).unwrap();
-    creation.prepare_root().unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
     std::fs::create_dir_all(root.join("workspace/memory")).unwrap();
     std::fs::write(root.join("workspace/memory/value"), b"candidate").unwrap();
     let evidence = pc::MemoryMaterializationEvidence::new(
@@ -508,7 +516,9 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
         vec![evidence.clone()],
     )
     .unwrap();
-    let realization = creation.complete(&completion).unwrap();
+    let realization = creation
+        .recorded_admission(|held, admitted| held.complete(&completion, admitted))
+        .unwrap();
     let handle = pc::SandboxHandle::namespace_v2(
         NamespaceProvider::provider_kind(),
         spec.scope.clone(),

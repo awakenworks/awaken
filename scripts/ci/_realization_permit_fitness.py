@@ -17,7 +17,7 @@ from _session_effect_fitness import _rust_function
 # registry, or a future edit that puts a bare Session id back beside the permit
 # and lets the driver run for a Session the permit does not name.
 REALIZATION_DRIVER_DEFINITION = (
-    "crates/contract/awaken-session-contract/src/session_realization.rs"
+    "crates/server/awaken-session-application/src/session_realization_driver.rs"
 )
 REALIZATION_PERMIT_DEFINITION = (
     "crates/contract/awaken-session-contract/src/session_realization/exclusion.rs"
@@ -32,16 +32,22 @@ REALIZATION_PERMIT_MINTERS = {
         "registry.entry(session_id.to_string())"
     ),
 }
-# The only two entry points that may reach the contract-owned phase driver, and
-# the canonical accessor each must obtain its permit from.
+# The only two entry points that may reach the application-owned phase driver,
+# and the canonical accessor each must obtain its permit from.
 REALIZATION_DRIVER_ENTRIES = {
     "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs": (
         "session_slots.acquire_realization"
     ),
     "crates/server/awaken-session-application/src/realization.rs": (
-        "self.local_realization_locks().acquire(session_id)"
+        "self.local_realization_locks().acquire(session_id.as_str())"
     ),
 }
+# The driver lives in `awaken-session-application`: its owning crate reaches it
+# through `crate::`, every other crate through the package path. Both spellings
+# name the same single driver.
+REALIZATION_DRIVER_CALL = re.compile(
+    r"\b(?:awaken_session_application|crate)::drive_session_realization\s*\("
+)
 # The co-located registry type has exactly one owner, one re-export and one
 # composition-root field; a second instance would be a second exclusion.
 LOCAL_REALIZATION_REGISTRY = "LocalRealizationLocks"
@@ -52,12 +58,16 @@ LOCAL_REALIZATION_REGISTRY_HOLDERS = (
 )
 
 
+def _without_whitespace(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
 def realization_driver_permit_violations(sources: dict[str, str]) -> list[str]:
     """Every realization phase-driver entry acquires the one Session permit.
 
     Cause/effect graph. C1 the contract entry takes a permit and derives its
     Session from it; C2 the permit is minted only by the two declared exclusion
-    identity sources; C3 the contract driver is called only from the two
+    identity sources; C3 the phase driver is called only from the two
     declared entry points; C4 each such entry obtains its permit from the
     canonical per-Session accessor; C5 the co-located registry has exactly one
     owning module. E1 accept; E2 reject and name the bypass.
@@ -79,7 +89,7 @@ def realization_driver_permit_violations(sources: dict[str, str]) -> list[str]:
                 "`permit: &SessionRealizationPermit`; without it a caller can start a "
                 "phase driver without holding the Session's exclusion"
             )
-        if re.search(r"\bsession_id\s*:\s*&str", header):
+        if re.search(r"\bsession_id\s*:\s*&(?:str|SessionId)\b", header):
             errors.append(
                 f"{REALIZATION_DRIVER_DEFINITION}: drive_session_realization must not take a "
                 "Session id beside its permit; the two can disagree and the driver would "
@@ -117,7 +127,7 @@ def realization_driver_permit_violations(sources: dict[str, str]) -> list[str]:
     called = sorted(
         relative
         for relative, text in sources.items()
-        if re.search(r"awaken_session_contract::drive_session_realization\s*\(", text)
+        if REALIZATION_DRIVER_CALL.search(text)
     )
     if called != sorted(REALIZATION_DRIVER_ENTRIES):
         errors.append(
@@ -126,8 +136,10 @@ def realization_driver_permit_violations(sources: dict[str, str]) -> list[str]:
             "acquire the Session's exclusion through a declared accessor first"
         )
     for relative, accessor in REALIZATION_DRIVER_ENTRIES.items():
-        text = sources.get(relative, "")
-        if text and accessor not in text:
+        # Compared without whitespace: rustfmt breaks a long accessor chain
+        # across lines, and where the line wraps is not part of the rule.
+        text = _without_whitespace(sources.get(relative, ""))
+        if text and _without_whitespace(accessor) not in text:
             errors.append(
                 f"{relative}: a realization phase-driver entry must obtain its permit from "
                 f"{accessor!r}, not from a registry constructed at the call site"
@@ -158,7 +170,7 @@ def selftest_realization_driver_permit() -> None:
     | R4 | the driver stops deriving its Session from the permit  | reject |
     | R5 | a third module mints a permit                          | reject |
     | R6 | a declared minter loses its exclusion identity          | reject |
-    | R7 | a new module calls the contract phase driver            | reject |
+    | R7 | a new module calls the phase driver                     | reject |
     | R8 | a declared entry drops its canonical permit accessor    | reject |
     | R9 | a second co-located registry appears                    | reject |
     """
@@ -182,12 +194,12 @@ SessionRealizationPermit::acquire(session_id, || registry.entry(session_id.to_st
 """,
         "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs": """
 let realization = host.session_slots.acquire_realization(session_id).await;
-awaken_session_contract::drive_session_realization(realization, None)
+awaken_session_application::drive_session_realization(realization, None)
 """,
         "crates/server/awaken-session-application/src/realization.rs": """
 pub(crate) use local_lock::LocalRealizationLocks;
-let permit = self.local_realization_locks().acquire(session_id).await;
-awaken_session_contract::drive_session_realization(&permit, None)
+let permit = self.local_realization_locks().acquire(session_id.as_str()).await;
+crate::drive_session_realization(&permit, None)
 """,
         "crates/server/awaken-session-application/src/application.rs": """
 local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
@@ -245,7 +257,7 @@ local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
 
     new_entry = dict(canonical)
     new_entry["crates/server/awaken-session-executor/src/application.rs"] = (
-        "awaken_session_contract::drive_session_realization(permit, None)\n"
+        "awaken_session_application::drive_session_realization(permit, None)\n"
     )
     assert any(
         "phase-driver entry mismatch" in error
@@ -255,8 +267,8 @@ local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
     ad_hoc_permit = dict(canonical)
     ad_hoc_permit["crates/server/awaken-session-application/src/realization.rs"] = (
         canonical["crates/server/awaken-session-application/src/realization.rs"].replace(
-            "self.local_realization_locks().acquire(session_id)",
-            "LocalRealizationLocks::default().acquire(session_id)",
+            "self.local_realization_locks().acquire(session_id.as_str())",
+            "LocalRealizationLocks::default().acquire(session_id.as_str())",
         )
     )
     assert any(

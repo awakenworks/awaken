@@ -644,6 +644,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-provisioning-contract \
     --harness credential_expiry_never_exceeds_lease_or_own_ttl \
     --harness claim_retention_runs_once_only_for_an_unsettled_drop \
+    --harness fence_succession_is_exactly_renewal_or_epoch_advance \
     --harness revoked_or_expired_lease_always_denies_egress \
     --harness lease_loss_obeys_fixed_fail_closed_fence_priority \
     --harness valid_lease_timing_always_has_three_renewal_opportunities \

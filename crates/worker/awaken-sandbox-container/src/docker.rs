@@ -1522,7 +1522,7 @@ impl ContainerRuntime for DockerRuntime {
             return Err(backend("Docker restore cleanup plan fingerprint mismatch"));
         }
         let admit = || {
-            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
                 .map_err(backend)
         };
         admit()?;
@@ -1547,7 +1547,7 @@ impl ContainerRuntime for DockerRuntime {
         let staging_root = std::path::Path::new(live_inputs)
             .parent()
             .ok_or_else(|| backend("Docker restored live-input root has no staging parent"))?;
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| {
             crate::remove_host_staging_path(staging_root).map_err(pc::SandboxError::from)
         })
         .map_err(backend)?;
@@ -1912,10 +1912,10 @@ impl ContainerRuntime for DockerRuntime {
                 "Docker exact removal received foreign continuation evidence",
             ));
         }
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
             .map_err(backend)?;
         self.remove(container_id).await?;
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
             .map_err(backend)
     }
 }

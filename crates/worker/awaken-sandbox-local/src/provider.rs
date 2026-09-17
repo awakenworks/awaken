@@ -762,7 +762,7 @@ impl LocalProvider {
         let effect_fence = effect.map(|(fence, _)| fence);
         let admit = || {
             effect.map_or(Ok(()), |(fence, authority)| {
-                pc::with_current_sandbox_effect(fence, authority, || Ok(()))
+                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
             })
         };
         admit()?;
@@ -1068,37 +1068,30 @@ impl pc::SandboxProvider for LocalProvider {
     async fn observe(
         &self,
         handle: &pc::SandboxHandle,
+        basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         handle.local_payload()?;
+        let expected_effect_fence = match basis {
+            pc::SandboxObservationBasis::Unattached => None,
+            pc::SandboxObservationBasis::Effect { spec, effect_fence } => {
+                if handle.realization_fingerprint()
+                    != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
+                {
+                    return Ok(pc::SandboxObservation::Incompatible {
+                        reason:
+                            "Local sandbox handle does not match the effective observation spec"
+                                .into(),
+                    });
+                }
+                Some(effect_fence)
+            }
+        };
         crate::realization_marker::observe_adoption(
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
             handle.filesystem_effect_fence()?,
             handle.filesystem_physical_incarnation()?.as_deref(),
-            None,
-        )
-    }
-
-    async fn observe_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-        effect_fence: &pc::SandboxEffectFence,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        handle.local_payload()?;
-        if handle.realization_fingerprint()
-            != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
-        {
-            return Ok(pc::SandboxObservation::Incompatible {
-                reason: "Local sandbox handle does not match the effective observation spec".into(),
-            });
-        }
-        crate::realization_marker::observe_adoption(
-            &crate::sandbox_dir(&self.base, &handle.sandbox_id),
-            handle.realization_fingerprint(),
-            handle.filesystem_effect_fence()?,
-            handle.filesystem_physical_incarnation()?.as_deref(),
-            Some(effect_fence),
+            expected_effect_fence,
         )
     }
 
@@ -1135,6 +1128,17 @@ impl pc::SandboxProvider for LocalProvider {
             .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
 
+    fn restore_targets(&self) -> Option<&dyn pc::RestoreTargetSandboxProvider> {
+        Some(self)
+    }
+
+    fn restorable(&self) -> Option<&dyn pc::RestorableSandboxProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl pc::RestoreTargetSandboxProvider for LocalProvider {
     async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,
@@ -1142,18 +1146,6 @@ impl pc::SandboxProvider for LocalProvider {
     ) -> Result<pc::SandboxRestoreTarget<Box<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
             .acquire_restore_sandbox(spec, request)
-            .await?
-            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
-    }
-
-    async fn restore(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-        store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<pc::SandboxRestoreResult<Box<dyn pc::Sandbox>>, pc::SandboxError> {
-        Ok(self
-            .restore_exact_sandbox(spec, request, store)
             .await?
             .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
@@ -1167,6 +1159,21 @@ impl pc::SandboxProvider for LocalProvider {
     ) -> Result<(), pc::SandboxError> {
         self.dispose_restore_sandbox(spec, request, authorization, authority)
             .await
+    }
+}
+
+#[async_trait]
+impl pc::RestorableSandboxProvider for LocalProvider {
+    async fn restore(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<pc::SandboxRestoreResult<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+        Ok(self
+            .restore_exact_sandbox(spec, request, store)
+            .await?
+            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
 }
 
@@ -1707,41 +1714,8 @@ impl pc::Sandbox for LocalSandbox {
         )?))
     }
 
-    async fn checkpoint(
-        &self,
-        request: &pc::SandboxCheckpointRequest,
-        store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
-        self.create_checkpoint(request, store).await
-    }
-
-    async fn checkpoint_for_effect(
-        &self,
-        request: &pc::SandboxCheckpointRequest,
-        store: &dyn pc::SandboxCheckpointStore,
-        effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
-        self.create_checkpoint_for_effect(request, store, effect_fence, authority)
-            .await
-    }
-
-    async fn cleanup_checkpoint_for_terminal(
-        &self,
-        request: &pc::SandboxCheckpointRequest,
-        store: &dyn pc::SandboxCheckpointStore,
-        expected_effect_fence: &pc::SandboxEffectFence,
-        terminal_effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<(), pc::SandboxError> {
-        self.cleanup_checkpoint_for_terminal(
-            request,
-            store,
-            expected_effect_fence,
-            terminal_effect_fence,
-            authority,
-        )
-        .await
+    fn checkpointing(&self) -> Option<&dyn pc::CheckpointingSandbox> {
+        Some(self)
     }
 
     async fn attach(
@@ -1876,12 +1850,13 @@ impl pc::Sandbox for LocalSandbox {
                     .unwrap_or_default()
                     .to_vec())
             },
-            || {
+            |admitted| {
                 crate::authorize_terminal_disposal(
                     self.root.root(),
                     &self.realization,
                     &self.terminal_removal,
                     effect_fence,
+                    admitted,
                 )
                 .map(|_| ())
             },
@@ -1920,6 +1895,38 @@ impl pc::Sandbox for LocalSandbox {
             authorization,
             authority,
             std::future::ready(()),
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl pc::CheckpointingSandbox for LocalSandbox {
+    async fn checkpoint_for_effect(
+        &self,
+        request: &pc::SandboxCheckpointRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+        effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
+        self.create_checkpoint_for_effect(request, store, effect_fence, authority)
+            .await
+    }
+
+    async fn cleanup_checkpoint_for_terminal(
+        &self,
+        request: &pc::SandboxCheckpointRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+        expected_effect_fence: &pc::SandboxEffectFence,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        self.cleanup_checkpoint_for_terminal(
+            request,
+            store,
+            expected_effect_fence,
+            terminal_effect_fence,
+            authority,
         )
         .await
     }

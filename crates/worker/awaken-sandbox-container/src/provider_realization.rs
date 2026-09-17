@@ -388,7 +388,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         authorization.validate()?;
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))?;
         request.validate_for_spec(spec)?;
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
             .map_err(pc::SandboxError::from)?;
@@ -407,6 +407,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )
             .await
             .map_err(pc::SandboxError::from)?;
-        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
     }
 }

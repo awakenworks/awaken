@@ -35,6 +35,47 @@ fn recording_provider_cannot_advertise_process_stop_evidence() {
 
 #[async_trait]
 impl ContainerEnvironmentProvider for RecordingProvider {
+    async fn observe_environment(
+        &self,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxObservation,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not observe Environments",
+        ))
+    }
+    async fn adopt_environment_for_effect(
+        &self,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<
+        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced Environment adoption",
+        ))
+    }
+    async fn prepare_terminal_environment_for_effect(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
+        _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
+        _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<
+        Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced terminal preparation",
+        ))
+    }
+
     async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
         Ok(())
     }
@@ -56,7 +97,7 @@ impl ContainerEnvironmentProvider for RecordingProvider {
         }
     }
 
-    async fn create_environment(
+    async fn create_unattached_environment(
         &self,
         _spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
@@ -66,19 +107,15 @@ impl ContainerEnvironmentProvider for RecordingProvider {
     async fn create_environment_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        fence: Option<&pc::SandboxEffectFence>,
-        source: Option<&dyn pc::CurrentExecutionAuthority>,
+        fence: &pc::SandboxEffectFence,
+        source: &dyn pc::CurrentExecutionAuthority,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        let fence =
-            fence.ok_or_else(|| pc::SandboxError::fence_rejected("missing creation fence"))?;
-        let source =
-            source.ok_or_else(|| pc::SandboxError::fence_rejected("missing creation authority"))?;
         assert!(matches!(
             intent,
             awaken_sandbox_container::ContainerRealizationIntent::Create
         ));
-        pc::with_current_sandbox_effect(fence, source, || {
+        pc::with_current_sandbox_effect(fence, source, |_| {
             let mut specs = self.specs.lock().unwrap();
             if let Some(prior) = specs.iter().find(|prior| prior.scope == spec.scope) {
                 assert_eq!(
@@ -99,7 +136,7 @@ impl ContainerEnvironmentProvider for RecordingProvider {
         ))
     }
 
-    async fn adopt_environment(
+    async fn adopt_unattached_environment(
         &self,
         _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {

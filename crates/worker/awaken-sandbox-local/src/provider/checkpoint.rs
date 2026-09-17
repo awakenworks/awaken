@@ -21,7 +21,7 @@ impl CheckpointParticipantGuard for CurrentCheckpointParticipant<'_> {
         &self,
         request_fingerprint: &str,
     ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
-        pc::with_current_sandbox_effect(self.fence, self.authority, || {
+        pc::with_current_sandbox_effect(self.fence, self.authority, |_| {
             self.participant.completed_checkpoint(request_fingerprint)
         })
     }
@@ -32,7 +32,7 @@ impl CheckpointParticipantGuard for CurrentCheckpointParticipant<'_> {
         snapshot_digest: &str,
         snapshot_size_bytes: u64,
     ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
-        pc::with_current_sandbox_effect(self.fence, self.authority, || {
+        pc::with_current_sandbox_effect(self.fence, self.authority, |_| {
             self.participant.begin_checkpoint_upload(
                 request_fingerprint,
                 snapshot_digest,
@@ -46,14 +46,14 @@ impl CheckpointParticipantGuard for CurrentCheckpointParticipant<'_> {
         request_fingerprint: &str,
         reference: &pc::SandboxCheckpointRef,
     ) -> Result<(), pc::SandboxError> {
-        pc::with_current_sandbox_effect(self.fence, self.authority, || {
+        pc::with_current_sandbox_effect(self.fence, self.authority, |_| {
             self.participant
                 .complete_checkpoint_upload(request_fingerprint, reference)
         })
     }
 
     fn validate_before_effect(&self) -> Result<(), pc::SandboxError> {
-        pc::with_current_sandbox_effect(self.fence, self.authority, || {
+        pc::with_current_sandbox_effect(self.fence, self.authority, |_| {
             self.participant.validate_before_effect()
         })
     }
@@ -433,7 +433,10 @@ impl LocalSandbox {
         participant.validate_before_effect()
     }
 
-    pub(super) async fn create_checkpoint(
+    /// Test fixture: checkpoint bytes of a marker-free sandbox that no
+    /// aggregate effect owns. Production checkpoints are always effect-fenced.
+    #[cfg(test)]
+    pub(crate) async fn create_checkpoint(
         &self,
         request: &pc::SandboxCheckpointRequest,
         store: &dyn pc::SandboxCheckpointStore,
@@ -453,7 +456,7 @@ impl LocalSandbox {
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
-        pc::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+        pc::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
         validate_checkpoint_effect(request, effect_fence)?;
         let request_fingerprint = checkpoint_request_fingerprint(request, effect_fence);
         let evidence = self.realization.current().ok_or_else(|| {
@@ -491,13 +494,13 @@ impl LocalSandbox {
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()))?;
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()))?;
         validate_checkpoint_effect(request, expected_effect_fence)?;
         let request_fingerprint = checkpoint_request_fingerprint(request, expected_effect_fence);
         let mut slot = self.terminal_removal.lock().await;
         if let Some(removal) = slot.as_mut() {
-            pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
-                removal.refresh_authorization(terminal_effect_fence)?;
+            pc::with_current_sandbox_effect(terminal_effect_fence, authority, |admitted| {
+                removal.refresh_authorization(terminal_effect_fence, admitted)?;
                 removal.bind_checkpoint_expected(expected_effect_fence)
             })?;
             return self
@@ -519,7 +522,7 @@ impl LocalSandbox {
                 "legacy filesystem sandbox cannot recover a fenced checkpoint",
             )
         })?;
-        let mut ready = pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+        let mut ready = pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| {
             crate::realization_marker::begin_ready_terminal_checkpoint(
                 self.root.root(),
                 evidence,
@@ -584,7 +587,7 @@ mod tests {
                     let authority = EffectAuthority::new(&suspend);
                     let original = if cached {
                         Some(
-                            pc::Sandbox::checkpoint_for_effect(
+                            pc::CheckpointingSandbox::checkpoint_for_effect(
                                 &sandbox, &request, &store, &suspend, &authority,
                             )
                             .await
@@ -612,7 +615,7 @@ mod tests {
                         }
                         _ => {}
                     }
-                    let result = pc::Sandbox::checkpoint_for_effect(
+                    let result = pc::CheckpointingSandbox::checkpoint_for_effect(
                         &sandbox, &request, &store, &suspend, &authority,
                     )
                     .await;
@@ -683,7 +686,7 @@ mod tests {
                 let authority = EffectAuthority::new(&suspend);
                 let gate = Arc::new(tokio::sync::Notify::new());
                 *store.pause.lock().unwrap() = Some((CheckpointPause::AfterPut, gate.clone()));
-                let mut pending = Box::pin(pc::Sandbox::checkpoint_for_effect(
+                let mut pending = Box::pin(pc::CheckpointingSandbox::checkpoint_for_effect(
                     &sandbox, &request, &store, &suspend, &authority,
                 ));
                 std::future::poll_fn(|cx| {
@@ -741,12 +744,12 @@ mod tests {
                 // Explicit test recovery, not revival of production revoked roots.
                 *authority.current.lock().unwrap() =
                     Some((suspend.clone(), Duration::from_secs(1)));
-                let receipt = pc::Sandbox::checkpoint_for_effect(
+                let receipt = pc::CheckpointingSandbox::checkpoint_for_effect(
                     &sandbox, &request, &store, &suspend, &authority,
                 )
                 .await
                 .unwrap();
-                let replay = pc::Sandbox::checkpoint_for_effect(
+                let replay = pc::CheckpointingSandbox::checkpoint_for_effect(
                     &sandbox, &request, &store, &suspend, &authority,
                 )
                 .await
@@ -822,7 +825,7 @@ mod tests {
                     std::fs::write(&path, b"checkpoint-source").unwrap();
                     let store = CheckpointStore::default();
                     assert!(
-                        pc::Sandbox::cleanup_checkpoint_for_terminal(
+                        pc::CheckpointingSandbox::cleanup_checkpoint_for_terminal(
                             &sandbox,
                             &request,
                             &store,
@@ -853,9 +856,10 @@ mod tests {
                     } else {
                         None
                     };
-                    let mut pending = Box::pin(pc::Sandbox::cleanup_checkpoint_for_terminal(
-                        &sandbox, &request, &store, &suspend, &terminal, &authority,
-                    ));
+                    let mut pending =
+                        Box::pin(pc::CheckpointingSandbox::cleanup_checkpoint_for_terminal(
+                            &sandbox, &request, &store, &suspend, &terminal, &authority,
+                        ));
                     tokio::select! {
                         biased;
                         result = &mut pending => panic!("C2 must suspend: {result:?}"),
@@ -956,7 +960,7 @@ mod tests {
                     // this is not a production renewal of a revoked incarnation.
                     *authority.current.lock().unwrap() =
                         Some((terminal.clone(), Duration::from_secs(1)));
-                    pc::Sandbox::cleanup_checkpoint_for_terminal(
+                    pc::CheckpointingSandbox::cleanup_checkpoint_for_terminal(
                         &sandbox, &request, &store, &suspend, &terminal, &authority,
                     )
                     .await
@@ -984,7 +988,7 @@ mod tests {
                     assert!(store.objects.lock().unwrap().is_empty(), "R5");
                     *authority.current.lock().unwrap() = None;
                     assert!(
-                        pc::Sandbox::cleanup_checkpoint_for_terminal(
+                        pc::CheckpointingSandbox::cleanup_checkpoint_for_terminal(
                             &sandbox, &request, &store, &suspend, &terminal, &authority,
                         )
                         .await

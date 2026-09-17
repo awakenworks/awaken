@@ -795,6 +795,9 @@ pub enum awaken_session_contract::SessionRealizationDriveError
 pub awaken_session_contract::SessionRealizationDriveError::Control(awaken_session_contract::SessionRealizationControlFailure)
 pub awaken_session_contract::SessionRealizationDriveError::DidNotConverge
 pub awaken_session_contract::SessionRealizationDriveError::Effect(awaken_session_contract::RunError)
+pub enum awaken_session_contract::SessionRealizationExclusionDecision
+pub awaken_session_contract::SessionRealizationExclusionDecision::Admit
+pub awaken_session_contract::SessionRealizationExclusionDecision::Retry
 pub enum awaken_session_contract::SessionRepositoryConflict
 pub awaken_session_contract::SessionRepositoryConflict::AlreadyExists
 pub awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch
@@ -1659,8 +1662,8 @@ pub awaken_session_contract::SessionCleanupPreparation::artifact_receipts: alloc
 pub awaken_session_contract::SessionCleanupPreparation::effect: awaken_session_contract::SessionTerminalCleanupEffect
 pub awaken_session_contract::SessionCleanupPreparation::receipt_fingerprint: alloc::string::String
 impl awaken_session_contract::SessionCleanupPreparation
-pub const fn awaken_session_contract::SessionCleanupPreparation::provider_prepared_effect_fence(&self) -> &awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence
-pub fn awaken_session_contract::SessionCleanupPreparation::try_new(&awaken_session_contract::SessionTerminalCleanupEffect, awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence, alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>) -> core::result::Result<Self, awaken_session_contract::SessionCleanupError>
+pub const fn awaken_session_contract::SessionCleanupPreparation::provider_prepared_effect_fence(&self) -> &awaken_provisioning_contract::sandbox::fence::SandboxEffectFence
+pub fn awaken_session_contract::SessionCleanupPreparation::try_new(&awaken_session_contract::SessionTerminalCleanupEffect, awaken_provisioning_contract::sandbox::fence::SandboxEffectFence, alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>) -> core::result::Result<Self, awaken_session_contract::SessionCleanupError>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_session_contract::SessionCleanupPreparation
 pub fn awaken_session_contract::SessionCleanupPreparation::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_session_contract::SessionCleanupRepositoryPreparation
@@ -1691,7 +1694,7 @@ pub awaken_session_contract::SessionEnvironmentOperation::realization: core::opt
 pub awaken_session_contract::SessionEnvironmentOperation::started_at_unix_ms: u64
 impl awaken_session_contract::SessionEnvironmentOperation
 pub fn awaken_session_contract::SessionEnvironmentOperation::new(&str, &str, &str, &awaken_session_contract::SandboxGeneration, u64, core::option::Option<awaken_session_contract::SessionRealizationLease>, core::option::Option<&awaken_provisioning_contract::sandbox::runtime::SandboxCheckpointRef>) -> Self
-pub fn awaken_session_contract::SessionEnvironmentOperation::sandbox_effect_fence(&self) -> core::result::Result<core::option::Option<awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence>, awaken_provisioning_contract::sandbox::error::SandboxError>
+pub fn awaken_session_contract::SessionEnvironmentOperation::sandbox_effect_fence(&self) -> core::result::Result<core::option::Option<awaken_provisioning_contract::sandbox::fence::SandboxEffectFence>, awaken_provisioning_contract::sandbox::error::SandboxError>
 pub struct awaken_session_contract::SessionEnvironmentReceipt
 pub awaken_session_contract::SessionEnvironmentReceipt::binding: alloc::string::String
 pub awaken_session_contract::SessionEnvironmentReceipt::effect_id: alloc::string::String
@@ -1905,13 +1908,24 @@ pub awaken_session_contract::SessionRealizationLease::expires_at_unix_ms: u64
 pub awaken_session_contract::SessionRealizationLease::owner: alloc::string::String
 pub awaken_session_contract::SessionRealizationLease::runtime_incarnation: alloc::string::String
 impl awaken_session_contract::SessionRealizationLease
-pub fn awaken_session_contract::SessionRealizationLease::sandbox_effect_fence(&self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence, awaken_provisioning_contract::sandbox::error::SandboxError>
+pub fn awaken_session_contract::SessionRealizationLease::sandbox_effect_fence(&self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<awaken_provisioning_contract::sandbox::fence::SandboxEffectFence, awaken_provisioning_contract::sandbox::error::SandboxError>
+impl awaken_provisioning_contract::sandbox::fence::FenceToken for awaken_session_contract::SessionRealizationLease
+pub fn awaken_session_contract::SessionRealizationLease::epoch(&self) -> u64
+pub fn awaken_session_contract::SessionRealizationLease::expires_at_unix_ms(&self) -> u64
+pub fn awaken_session_contract::SessionRealizationLease::owner(&self) -> &str
+pub fn awaken_session_contract::SessionRealizationLease::runtime_incarnation(&self) -> &str
 pub struct awaken_session_contract::SessionRealizationLeaseReceipt
 pub awaken_session_contract::SessionRealizationLeaseReceipt::lease: awaken_session_contract::SessionRealizationLease
 pub awaken_session_contract::SessionRealizationLeaseReceipt::remaining_ms: core::num::nonzero::NonZeroU64
 impl awaken_session_contract::SessionRealizationLeaseReceipt
 pub fn awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(awaken_session_contract::SessionRealizationLease, u64) -> core::result::Result<Self, awaken_session_contract::SessionRealizationControlFailure>
 pub fn awaken_session_contract::SessionRealizationLeaseReceipt::observed(self, awaken_runtime_contract::authority_lease::AuthorityProofStarted) -> awaken_session_contract::ObservedSessionRealizationLease
+pub struct awaken_session_contract::SessionRealizationPermit
+impl awaken_session_contract::SessionRealizationPermit
+pub async fn awaken_session_contract::SessionRealizationPermit::acquire<Identity, Owner, Enter, Entered, Admit, Admitted>(&str, Enter, Admit) -> (Self, Admitted) where Identity: core::marker::Send + core::marker::Sync + 'static, Owner: core::marker::Send + core::marker::Sync + 'static, Enter: core::ops::function::FnMut() -> Entered, Entered: core::future::future::Future<Output = (Identity, Owner)>, Admit: core::ops::function::FnMut(&Identity) -> core::option::Option<Admitted>
+pub fn awaken_session_contract::SessionRealizationPermit::session_id(&self) -> &str
+impl core::fmt::Debug for awaken_session_contract::SessionRealizationPermit
+pub fn awaken_session_contract::SessionRealizationPermit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_session_contract::SessionRealizationProgress
 pub awaken_session_contract::SessionRealizationProgress::attempts: u32
 pub awaken_session_contract::SessionRealizationProgress::failed_at_unix_ms: core::option::Option<u64>
@@ -2109,7 +2123,7 @@ pub awaken_session_contract::SessionTerminalCleanupEffect::lease: awaken_session
 impl awaken_session_contract::SessionTerminalCleanupEffect
 pub fn awaken_session_contract::SessionTerminalCleanupEffect::new(awaken_session_contract::SessionCleanupCommand, awaken_session_contract::SessionRealizationLease) -> Self
 pub fn awaken_session_contract::SessionTerminalCleanupEffect::operation_id(&self) -> &str
-pub fn awaken_session_contract::SessionTerminalCleanupEffect::sandbox_effect_fence(&self) -> core::result::Result<awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence, awaken_provisioning_contract::sandbox::error::SandboxError>
+pub fn awaken_session_contract::SessionTerminalCleanupEffect::sandbox_effect_fence(&self) -> core::result::Result<awaken_provisioning_contract::sandbox::fence::SandboxEffectFence, awaken_provisioning_contract::sandbox::error::SandboxError>
 pub struct awaken_session_contract::SessionTerminalCleanupPreparationAuthorization
 impl awaken_session_contract::SessionTerminalCleanupPreparationAuthorization
 pub fn awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::inherited_provider_disposal(&self) -> core::option::Option<&awaken_provisioning_contract::sandbox::runtime::disposal::SandboxDisposalPreparation>
@@ -2223,15 +2237,15 @@ pub struct awaken_session_contract::SourceReleasePreparationEffect
 impl awaken_session_contract::SourceReleasePreparationEffect
 pub const fn awaken_session_contract::SourceReleasePreparationEffect::lease(&self) -> &awaken_session_contract::SessionRealizationLease
 pub const fn awaken_session_contract::SourceReleasePreparationEffect::operation(&self) -> &awaken_session_contract::SessionEnvironmentOperation
-pub fn awaken_session_contract::SourceReleasePreparationEffect::sandbox_effect_fence(&self) -> core::result::Result<awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence, awaken_provisioning_contract::sandbox::error::SandboxError>
+pub fn awaken_session_contract::SourceReleasePreparationEffect::sandbox_effect_fence(&self) -> core::result::Result<awaken_provisioning_contract::sandbox::fence::SandboxEffectFence, awaken_provisioning_contract::sandbox::error::SandboxError>
 pub struct awaken_session_contract::SourceReleasePreparedReceipt
 impl awaken_session_contract::SourceReleasePreparedReceipt
 pub fn awaken_session_contract::SourceReleasePreparedReceipt::generation_id(&self) -> &str
 pub const fn awaken_session_contract::SourceReleasePreparedReceipt::preparation(&self) -> &awaken_session_contract::SourceReleasePreparationEffect
-pub const fn awaken_session_contract::SourceReleasePreparedReceipt::provider_prepared_effect_fence(&self) -> &awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence
+pub const fn awaken_session_contract::SourceReleasePreparedReceipt::provider_prepared_effect_fence(&self) -> &awaken_provisioning_contract::sandbox::fence::SandboxEffectFence
 pub fn awaken_session_contract::SourceReleasePreparedReceipt::receipt_fingerprint(&self) -> &str
 pub fn awaken_session_contract::SourceReleasePreparedReceipt::source_binding(&self) -> &str
-pub fn awaken_session_contract::SourceReleasePreparedReceipt::try_new(awaken_session_contract::SourceReleasePreparationEffect, awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence, &awaken_session_contract::SandboxGeneration, &str) -> core::result::Result<Self, awaken_session_contract::SessionEnvironmentReceiptError>
+pub fn awaken_session_contract::SourceReleasePreparedReceipt::try_new(awaken_session_contract::SourceReleasePreparationEffect, awaken_provisioning_contract::sandbox::fence::SandboxEffectFence, &awaken_session_contract::SandboxGeneration, &str) -> core::result::Result<Self, awaken_session_contract::SessionEnvironmentReceiptError>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_session_contract::SourceReleasePreparedReceipt
 pub fn awaken_session_contract::SourceReleasePreparedReceipt::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_session_contract::StageMcpAttachment
@@ -2505,6 +2519,7 @@ pub fn awaken_session_contract::session_event_user_run_id(&str, &str) -> awaken_
 pub fn awaken_session_contract::session_model_override_decision<T: core::cmp::PartialEq + ?core::marker::Sized>(&T, &T) -> awaken_session_contract::SessionModelOverrideDecision
 pub fn awaken_session_contract::session_outcome_convenience_id(&str, &str, &str, u32) -> alloc::string::String
 pub const fn awaken_session_contract::session_realization_assignment(core::option::Option<u64>, bool, bool, bool, bool) -> awaken_session_contract::SessionRealizationAssignment
+pub const fn awaken_session_contract::session_realization_exclusion_admits(bool, bool) -> awaken_session_contract::SessionRealizationExclusionDecision
 pub fn awaken_session_contract::session_run_activity_operation_id(&str, &awaken_agent_contract::agent::run::Id) -> alloc::string::String
 pub const fn awaken_session_contract::session_run_activity_receipt_plan(awaken_session_contract::SessionRunReservation, core::option::Option<u64>) -> awaken_session_contract::SessionRunActivityReceiptPlan
 pub fn awaken_session_contract::session_run_id(&str, &str) -> awaken_agent_contract::agent::run::Id

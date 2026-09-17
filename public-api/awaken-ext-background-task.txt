@@ -37,7 +37,7 @@ impl awaken_ext_background_task::BackgroundTaskLifecycle
 pub const fn awaken_ext_background_task::BackgroundTaskLifecycle::is_terminal(&self) -> bool
 pub enum awaken_ext_background_task::BackgroundWait
 pub awaken_ext_background_task::BackgroundWait::ExternalInput
-pub awaken_ext_background_task::BackgroundWait::Remote(awaken_runtime_contract::tool::ToolTaskHandle)
+pub awaken_ext_background_task::BackgroundWait::Remote(awaken_tool_contract::tool::ToolTaskHandle)
 pub awaken_ext_background_task::BackgroundWait::Resource
 pub enum awaken_ext_background_task::TaskClaim
 pub awaken_ext_background_task::TaskClaim::Acquired(awaken_ext_background_task::TaskFence)
@@ -53,7 +53,7 @@ pub awaken_ext_background_task::TaskNotificationFormat::Json
 pub awaken_ext_background_task::TaskNotificationFormat::Tagged
 pub awaken_ext_background_task::TaskNotificationFormat::Text
 pub struct awaken_ext_background_task::BackgroundInvocation
-pub awaken_ext_background_task::BackgroundInvocation::call: awaken_runtime_contract::llm::ToolCall
+pub awaken_ext_background_task::BackgroundInvocation::call: awaken_tool_contract::tool::ToolCall
 pub struct awaken_ext_background_task::BackgroundTask
 pub awaken_ext_background_task::BackgroundTask::id: awaken_ext_background_task::BackgroundTaskId
 pub awaken_ext_background_task::BackgroundTask::invocation: awaken_ext_background_task::BackgroundInvocation
@@ -128,8 +128,8 @@ impl awaken_ext_background_task::TaskAttempt
 pub fn awaken_ext_background_task::TaskAttempt::fence(&self) -> awaken_ext_background_task::TaskFence
 pub fn awaken_ext_background_task::TaskAttempt::owns(&self, &awaken_ext_background_task::TaskFence) -> bool
 pub struct awaken_ext_background_task::TaskExecutionPolicy
-pub awaken_ext_background_task::TaskExecutionPolicy::concurrency: awaken_runtime_contract::tool::ToolConcurrency
-pub awaken_ext_background_task::TaskExecutionPolicy::recovery: awaken_runtime_contract::tool::ToolRecoveryPolicy
+pub awaken_ext_background_task::TaskExecutionPolicy::concurrency: awaken_tool_contract::tool::ToolConcurrency
+pub awaken_ext_background_task::TaskExecutionPolicy::recovery: awaken_tool_contract::tool::ToolRecoveryPolicy
 pub struct awaken_ext_background_task::TaskFence
 pub awaken_ext_background_task::TaskFence::epoch: u64
 pub awaken_ext_background_task::TaskFence::worker_id: alloc::string::String
@@ -153,4 +153,4 @@ pub fn awaken_ext_background_task::config_schema() -> serde_json::value::Value
 pub fn awaken_ext_background_task::management_tool_ids() -> [&'static str; 4]
 pub fn awaken_ext_background_task::process_supervisor() -> alloc::sync::Arc<awaken_ext_background_task::BackgroundTaskSupervisor>
 pub fn awaken_ext_background_task::task_state_cell(&awaken_ext_background_task::BackgroundTaskId) -> awaken_agent_contract::agent::state::StateCell<awaken_ext_background_task::BackgroundTask>
-pub fn awaken_ext_background_task::tasks_from_state(&awaken_agent_contract::agent::state::Store) -> core::result::Result<alloc::vec::Vec<awaken_ext_background_task::BackgroundTask>, awaken_runtime_contract::tool::ToolError>
+pub fn awaken_ext_background_task::tasks_from_state(&awaken_agent_contract::agent::state::Store) -> core::result::Result<alloc::vec::Vec<awaken_ext_background_task::BackgroundTask>, awaken_tool_contract::tool::ToolError>

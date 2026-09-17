@@ -44,11 +44,11 @@
     },
     "awaken-provisioning-contract": {
       "depth": 1,
-      "production_lines": 4293,
+      "production_lines": 4403,
       "catch_all_errors": 3,
-      "capability_defaults": 12,
+      "capability_defaults": 1,
       "growth_reasons": {
-        "production_lines": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)",
+        "production_lines": "sandbox effect fence: FenceToken succession law and SandboxEffectGuard live in the provisioning contract (capability defaults 12->1); SessionRealizationLease implements FenceToken so the generation-authority rule delegates to that one law",
         "catch_all_errors": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)"
       }
     },
@@ -84,11 +84,11 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 17020,
+      "production_lines": 17130,
       "catch_all_errors": 11,
       "capability_defaults": 49,
       "growth_reasons": {
-        "production_lines": "session-access digest newtype and queue-side WorkClaim replace bearer minting inside the WorkQueue port (token issuance moved to environment-execution-application)"
+        "production_lines": "sandbox effect fence: FenceToken succession law and SandboxEffectGuard live in the provisioning contract (capability defaults 12->1); SessionRealizationLease implements FenceToken so the generation-authority rule delegates to that one law. Session realization exclusion: the contract-owned SessionRealizationPermit and its admission kernel (session_realization/exclusion.rs) are the one authority both the Worker slot and the co-located registry mint through, so the permit vocabulary stays in the contract while its phase driver moved to awaken-session-application"
       }
     },
     "awaken-tenancy": {

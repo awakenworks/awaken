@@ -592,7 +592,10 @@ async fn disposed_handle_is_observed_as_absent_and_cannot_be_adopted() {
     sandbox.dispose_unattached().await.unwrap();
 
     assert!(matches!(
-        provider.observe(&handle).await.unwrap(),
+        provider
+            .observe(&handle, pc::SandboxObservationBasis::Unattached)
+            .await
+            .unwrap(),
         pc::SandboxObservation::DefinitivelyUnavailable {
             physical_incarnation: None
         }

@@ -53,7 +53,7 @@ pub use awaken_protocol_acp::{
     AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver, SessionMcpServer, Supervisor,
 };
 use awaken_provisioning_contract::ProcessHandle;
-pub use awaken_provisioning_contract::{SandboxError, SecretBroker};
+pub use awaken_provisioning_contract::{SandboxError, SecretBroker, SecretWritebackTarget};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{

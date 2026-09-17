@@ -5202,7 +5202,7 @@ impl awaken_provisioning_contract::SecretBroker for MatrixSecretBroker {
 
     async fn write_back(
         &self,
-        _reference: &str,
+        _target: awaken_provisioning_contract::SecretWritebackTarget<'_>,
         _bytes: Vec<u8>,
     ) -> std::result::Result<(), awaken_provisioning_contract::SandboxError> {
         Err(awaken_provisioning_contract::SandboxError::unsupported(

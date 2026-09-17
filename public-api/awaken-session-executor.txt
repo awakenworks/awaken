@@ -9,7 +9,7 @@ pub enum awaken_session_executor::ContainerHandResidency
 pub awaken_session_executor::ContainerHandResidency::AttachedExec
 pub awaken_session_executor::ContainerHandResidency::Resident
 impl awaken_session_executor::ContainerHandResidency
-pub const fn awaken_session_executor::ContainerHandResidency::recovery_capability(self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub const fn awaken_session_executor::ContainerHandResidency::recovery_capability(self) -> awaken_tool_contract::tool::ToolRecoveryCapability
 impl core::str::traits::FromStr for awaken_session_executor::ContainerHandResidency
 pub type awaken_session_executor::ContainerHandResidency::Err = alloc::string::String
 pub fn awaken_session_executor::ContainerHandResidency::from_str(&str) -> core::result::Result<Self, Self::Err>
@@ -429,7 +429,7 @@ pub fn awaken_session_executor::SharedHost::thread_agent_projection(&self, &str)
 pub fn awaken_session_executor::SharedHost::thread_workspace(&self, &str) -> alloc::string::String
 pub fn awaken_session_executor::SharedHost::web_search_provider_registry(&self) -> &awaken_ext_builtin_tools::web::WebSearchProviderRegistry
 pub fn awaken_session_executor::SharedHost::with_acp_tool_exporter(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool_export::AcpToolExporter>) -> Self
-pub fn awaken_session_executor::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
+pub fn awaken_session_executor::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>) -> Self
 pub fn awaken_session_executor::SharedHost::with_agent_publications(self, alloc::sync::Arc<dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>) -> Self
 pub fn awaken_session_executor::SharedHost::with_artifact_publisher(self, alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<awaken_dispatch_contract::ArtifactPublicationFence>>) -> Self
 pub fn awaken_session_executor::SharedHost::with_attempt_decorator(self, awaken_session_executor::AttemptExecutorDecorator) -> Self
@@ -559,7 +559,7 @@ pub const awaken_session_executor::UNCONFIGURED_MODEL_REF: &str
 pub trait awaken_session_executor::CacheVolumeInitializer: core::marker::Send + core::marker::Sync
 pub fn awaken_session_executor::CacheVolumeInitializer::initialize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_executor::CacheVolumeWarmup) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_executor::HandExecutorFactory: core::marker::Send + core::marker::Sync
-pub fn awaken_session_executor::HandExecutorFactory::bind(&self, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, &str, awaken_runtime_contract::tool::ToolRecoveryCapability) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>
+pub fn awaken_session_executor::HandExecutorFactory::bind(&self, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, &str, awaken_tool_contract::tool::ToolRecoveryCapability) -> alloc::sync::Arc<dyn awaken_tool_contract::tool::ToolExecutor>
 pub trait awaken_session_executor::LocalCommit: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::commit::coordinator::OperationCoordinator + awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView + awaken_agent_contract::thread::read::recovery::RunRecoverySource + awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed + core::marker::Send + core::marker::Sync
 pub fn awaken_session_executor::LocalCommit::authoritative_committed_messages<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_executor::LocalCommit::authoritative_committed_state<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

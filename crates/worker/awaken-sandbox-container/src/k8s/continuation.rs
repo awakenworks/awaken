@@ -10,6 +10,7 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::Api;
 use kube::api::{DeleteParams, PostParams, Preconditions};
+use pc::FenceToken as _;
 
 use super::error::api_not_found;
 use super::finalizer::{ExactFinalizerReleaseAdmission, release_exact_pod_finalizer};

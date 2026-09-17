@@ -17,7 +17,9 @@ fn admitted<'a>(
     }
     let mut guard = begin(root, fingerprint, effect, None, None).unwrap();
     if phase == "ready" && guard.completed_receipt().unwrap().is_none() {
-        guard.complete(&empty_receipt()).unwrap();
+        guard
+            .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+            .unwrap();
         guard = begin(root, fingerprint, effect, None, None).unwrap();
     }
     ProviderCreationGuard::Current {
@@ -177,7 +179,9 @@ async fn recreating_compensation_restores_exact_source_only_after_memory_cleanup
         let root = base.path().join("root");
         let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("root"));
         let mut original = begin(&root, &fingerprint, &fence("source", 1), None, None).unwrap();
-        let evidence = original.complete(&empty_receipt()).unwrap();
+        let evidence = original
+            .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
+            .unwrap();
         let source_marker = read_marker(&root).unwrap().unwrap();
         std::fs::remove_dir(&root).unwrap(); // Fixture: exact empty source was lost.
         let effect = fence("rebuild", 2);

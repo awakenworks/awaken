@@ -202,15 +202,15 @@ where
 /// a check.
 ///
 /// # Panics
-/// If the repository read fails, or the outbox is still draining at `timeout`.
+/// If the outbox read fails, or the outbox is still draining at `timeout`.
 pub async fn wait_for_delivered_lifecycle_facts(
-    repository: &dyn awaken_session_contract::ManagedSessionRepository,
+    outbox: &dyn awaken_session_contract::LifecycleOutbox,
     timeout: Duration,
     expectation: &str,
 ) {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let pending = repository
+        let pending = outbox
             .pending_lifecycle()
             .await
             .expect("read the Session repository's lifecycle outbox");

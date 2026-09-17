@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use awaken_resource_contract::InputResourceId;
 use serde::{Deserialize, Serialize};
 
-use super::runtime::SandboxEffectFence;
+use super::fence::SandboxEffectFence;
 use super::{
     RepositoryPublicationError, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
 };
@@ -85,6 +85,27 @@ impl SecretWritebackEffect {
     }
 }
 
+/// Which lifecycle owns one credential write-back.
+#[derive(Debug, Clone, Copy)]
+pub enum SecretWritebackTarget<'a> {
+    /// A Sandbox no aggregate effect owns: write the reference as-is.
+    Unattached { reference: &'a str },
+    /// Durable Session cleanup: one typed physical write-back identity under
+    /// the current aggregate authorization.
+    Effect(&'a SecretWritebackEffect),
+}
+
+impl SecretWritebackTarget<'_> {
+    /// The credential reference being written, whichever lifecycle owns it.
+    #[must_use]
+    pub fn reference(&self) -> &str {
+        match self {
+            Self::Unattached { reference } => reference,
+            Self::Effect(effect) => effect.reference(),
+        }
+    }
+}
+
 /// A content-addressed byte source a provider consults to resolve a `File`/`Resource`
 /// mount's bytes by id. Dependency-inverted so the worker-tier sandbox providers stay
 /// free of any durable store: the composition root injects an adapter over the
@@ -111,24 +132,18 @@ pub trait SecretBroker: Send + Sync {
     /// not silently reinterpret an arbitrary durable file/credential id.
     async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, SandboxError>;
 
-    /// Atomically persist a CLI-refreshed credential file under `reference`.
-    async fn write_back(&self, reference: &str, bytes: Vec<u8>) -> Result<(), SandboxError>;
-
-    /// Idempotently persist a CLI-refreshed credential file under one typed
-    /// physical write-back identity and the current aggregate authorization.
-    /// Durable Session cleanup must use this seam so a successor operation can
-    /// recognize a lost response for the same exact Sandbox without granting a
-    /// rebuilt/foreign Sandbox the predecessor's credential mutation. The
-    /// legacy method above remains only for explicitly unmanaged lifecycles.
-    async fn write_back_for_effect(
+    /// Atomically persist a CLI-refreshed credential file. `target` names
+    /// which lifecycle owns the file: durable Session cleanup must pass
+    /// [`SecretWritebackTarget::Effect`] so a successor operation can recognize a
+    /// lost response for the same exact Sandbox without granting a rebuilt or
+    /// foreign Sandbox the predecessor's credential mutation;
+    /// [`SecretWritebackTarget::Unattached`] is only for a Sandbox no aggregate
+    /// effect owns. A broker that cannot honour one case refuses it.
+    async fn write_back(
         &self,
-        _effect: &SecretWritebackEffect,
-        _bytes: Vec<u8>,
-    ) -> Result<(), SandboxError> {
-        Err(SandboxError::unsupported(
-            "effect-fenced credential write-back is unsupported",
-        ))
-    }
+        target: SecretWritebackTarget<'_>,
+        bytes: Vec<u8>,
+    ) -> Result<(), SandboxError>;
 }
 
 /// Realizes a [`MountSource::MemoryStore`](crate::vocab::MountSource::MemoryStore)
