@@ -316,9 +316,10 @@ pub enum WorkData {
     Session { id: String },
 }
 
-/// `BetaSelfHostedWork` — a work item on an environment's queue. `secret` is
-/// present only on the one Session poll response that acquired the lease;
-/// list/retrieve and HealthCheck projections keep it `null`.
+/// The lifecycle state of a work item.
+///
+/// SDK: inline — `BetaSelfHostedWork.state` (the same literal union is
+/// `BetaSelfHostedWorkHeartbeatResponse.state`).
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -371,7 +372,9 @@ impl<T> From<Option<T>> for RequiredNullable<T> {
     }
 }
 
-/// `Work`.
+/// `BetaSelfHostedWork` — a work item on an environment's queue. `secret` is
+/// present only on the one Session poll response that acquired the lease;
+/// list/retrieve and HealthCheck projections keep it `null`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Work {
