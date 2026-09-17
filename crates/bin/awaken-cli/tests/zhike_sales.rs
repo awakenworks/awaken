@@ -298,12 +298,21 @@ impl LlmExecutor for ScriptedSales {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let last = request
+        // A Run's new input is every trailing User message, not only the final
+        // one: a background-task notification committed while a customer turn
+        // was queued is delivered in the same Run after that customer text.
+        // Reading only the final message would silently drop the customer's
+        // instruction, so the script reads the whole trailing input group.
+        let trailing_inputs = request
             .messages
-            .last()
-            .unwrap()
-            .content
             .iter()
+            .rev()
+            .take_while(|message| message.role == awaken_runtime_contract::Role::User)
+            .count()
+            .max(1);
+        let last = request.messages[request.messages.len() - trailing_inputs..]
+            .iter()
+            .flat_map(|message| message.content.iter())
             .filter_map(|b| match b {
                 awaken_runtime_contract::ContentBlock::Text { text } => Some(text.as_str()),
                 _ => None,
@@ -422,7 +431,16 @@ async fn send_and_wait_until(
                 (s.as_u16(), v)
             }
         },
-        settled,
+        // The causal slice starts at this receipt's user.message. A concurrent
+        // background attention Run may publish idle after the receipt while
+        // this command is still queued; only its durable processed marker,
+        // committed with the Run's activity removal, proves this turn settled.
+        |events| {
+            events
+                .first()
+                .is_some_and(|accepted| accepted["processed_at"].is_string())
+                && settled(events)
+        },
     )
     .await;
     list["data"].as_array().unwrap().clone()
