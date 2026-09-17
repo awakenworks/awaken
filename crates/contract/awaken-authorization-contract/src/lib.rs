@@ -238,54 +238,6 @@ pub fn workspace_profile_role_contains(
     workspace_profile_role_authorities(role).contains(&authority)
 }
 
-/// Finite Hosted Runtime action-pattern vocabulary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostedRuntimeAuthority {
-    RunAll,
-    RunRead,
-}
-
-impl HostedRuntimeAuthority {
-    #[must_use]
-    pub const fn action_pattern(self) -> &'static str {
-        match self {
-            Self::RunAll => "run.*",
-            Self::RunRead => "run.read",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostedRuntimeRole {
-    WorkspaceAdmin,
-    WorkspaceMember,
-    AgentExecutor,
-}
-
-const RUNTIME_FULL_AUTHORITIES: &[HostedRuntimeAuthority] = &[HostedRuntimeAuthority::RunAll];
-const RUNTIME_MEMBER_AUTHORITIES: &[HostedRuntimeAuthority] = &[HostedRuntimeAuthority::RunRead];
-
-/// Complete, ordered Runtime authority projection consumed by production.
-#[must_use]
-pub const fn hosted_runtime_role_authorities(
-    role: HostedRuntimeRole,
-) -> &'static [HostedRuntimeAuthority] {
-    match role {
-        HostedRuntimeRole::WorkspaceAdmin | HostedRuntimeRole::AgentExecutor => {
-            RUNTIME_FULL_AUTHORITIES
-        }
-        HostedRuntimeRole::WorkspaceMember => RUNTIME_MEMBER_AUTHORITIES,
-    }
-}
-
-#[must_use]
-pub fn hosted_runtime_role_contains(
-    role: HostedRuntimeRole,
-    authority: HostedRuntimeAuthority,
-) -> bool {
-    hosted_runtime_role_authorities(role).contains(&authority)
-}
-
 /// Finite role vocabulary accepted by the legacy split-profile migration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceBindingRole {
@@ -443,61 +395,6 @@ pub const fn legacy_workspace_binding_migration_target(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WorkspaceBindingMigrationState {
-    Legacy {
-        role: WorkspaceBindingRole,
-        has_management_binding: bool,
-        has_resource_binding: bool,
-    },
-    Canonical(WorkspaceBindingRole),
-}
-
-/// Pure migration transition. Canonical states and unsafe/incomplete legacy
-/// pairs are fixed points; exact-authority legacy sets converge in one step.
-#[must_use]
-pub const fn migrate_workspace_binding_state(
-    state: WorkspaceBindingMigrationState,
-) -> WorkspaceBindingMigrationState {
-    match state {
-        WorkspaceBindingMigrationState::Canonical(_) => state,
-        WorkspaceBindingMigrationState::Legacy {
-            role,
-            has_management_binding,
-            has_resource_binding,
-        } => match legacy_workspace_binding_migration_target(
-            role,
-            has_management_binding,
-            has_resource_binding,
-        ) {
-            Some(role) => WorkspaceBindingMigrationState::Canonical(role),
-            None => state,
-        },
-    }
-}
-
-#[cfg(kani)]
-const fn migration_state_authority_mask(state: WorkspaceBindingMigrationState) -> u16 {
-    match state {
-        WorkspaceBindingMigrationState::Legacy {
-            role,
-            has_management_binding,
-            has_resource_binding,
-        } => {
-            (if has_management_binding {
-                legacy_management_authority_mask(role)
-            } else {
-                0
-            }) | (if has_resource_binding {
-                legacy_resource_authority_mask(role)
-            } else {
-                0
-            })
-        }
-        WorkspaceBindingMigrationState::Canonical(role) => canonical_authority_mask(role),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,7 +404,6 @@ mod tests {
         // C1 current ingress role -> E1 API keys plus exact connect, no wildcard.
         // C2 legacy management/resource binding presence -> E2 no automatic
         // upgrade: none of the four legacy combinations includes connect.
-        // An already-canonical binding remains an idempotent fixed point.
         assert_eq!(
             CREDENTIAL_INGRESS_AUTHORITIES
                 .iter()
@@ -517,12 +413,6 @@ mod tests {
         );
         for management in [false, true] {
             for resources in [false, true] {
-                let state = WorkspaceBindingMigrationState::Legacy {
-                    role: WorkspaceBindingRole::CredentialIngress,
-                    has_management_binding: management,
-                    has_resource_binding: resources,
-                };
-                assert_eq!(migrate_workspace_binding_state(state), state);
                 assert_eq!(
                     legacy_workspace_binding_migration_target(
                         WorkspaceBindingRole::CredentialIngress,
@@ -533,9 +423,6 @@ mod tests {
                 );
             }
         }
-        let canonical =
-            WorkspaceBindingMigrationState::Canonical(WorkspaceBindingRole::CredentialIngress);
-        assert_eq!(migrate_workspace_binding_state(canonical), canonical);
     }
 
     #[test]
@@ -594,19 +481,69 @@ mod tests {
             AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE,
             "awaken.workspace:hosted_builder"
         );
-        assert_eq!(
-            hosted_runtime_role_authorities(HostedRuntimeRole::WorkspaceMember)
-                .iter()
-                .map(|authority| authority.action_pattern())
-                .collect::<Vec<_>>(),
-            ["run.read"]
-        );
     }
 }
 
 #[cfg(kani)]
 mod verification {
     use super::*;
+
+    // The legacy binding migration is decided by the production selector
+    // `legacy_workspace_binding_migration_target`. This private state machine
+    // exists only to state its safety law: applying the selector preserves the
+    // authority mask and is a fixed point on its own result.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum WorkspaceBindingMigrationState {
+        Legacy {
+            role: WorkspaceBindingRole,
+            has_management_binding: bool,
+            has_resource_binding: bool,
+        },
+        Canonical(WorkspaceBindingRole),
+    }
+
+    /// Pure migration transition. Canonical states and unsafe/incomplete legacy
+    /// pairs are fixed points; exact-authority legacy sets converge in one step.
+    const fn migrate_workspace_binding_state(
+        state: WorkspaceBindingMigrationState,
+    ) -> WorkspaceBindingMigrationState {
+        match state {
+            WorkspaceBindingMigrationState::Canonical(_) => state,
+            WorkspaceBindingMigrationState::Legacy {
+                role,
+                has_management_binding,
+                has_resource_binding,
+            } => match legacy_workspace_binding_migration_target(
+                role,
+                has_management_binding,
+                has_resource_binding,
+            ) {
+                Some(role) => WorkspaceBindingMigrationState::Canonical(role),
+                None => state,
+            },
+        }
+    }
+
+    const fn migration_state_authority_mask(state: WorkspaceBindingMigrationState) -> u16 {
+        match state {
+            WorkspaceBindingMigrationState::Legacy {
+                role,
+                has_management_binding,
+                has_resource_binding,
+            } => {
+                (if has_management_binding {
+                    legacy_management_authority_mask(role)
+                } else {
+                    0
+                }) | (if has_resource_binding {
+                    legacy_resource_authority_mask(role)
+                } else {
+                    0
+                })
+            }
+            WorkspaceBindingMigrationState::Canonical(role) => canonical_authority_mask(role),
+        }
+    }
 
     fn symbolic_access() -> RouteAccess {
         if kani::any() {
@@ -770,19 +707,6 @@ mod verification {
                     | WorkspaceProfileAuthority::FileRead
                     | WorkspaceProfileAuthority::SkillRead
             )
-        );
-    }
-
-    #[kani::proof]
-    fn runtime_member_role_contains_exactly_run_read() {
-        let authority = if kani::any() {
-            HostedRuntimeAuthority::RunAll
-        } else {
-            HostedRuntimeAuthority::RunRead
-        };
-        assert_eq!(
-            hosted_runtime_role_contains(HostedRuntimeRole::WorkspaceMember, authority),
-            authority == HostedRuntimeAuthority::RunRead
         );
     }
 

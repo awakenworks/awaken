@@ -448,8 +448,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness hosted_admin_role_contains_exactly_its_seven_workspace_authorities \
     --harness hosted_builder_role_has_writes_without_apikey_or_model_administration \
     --harness workspace_member_role_contains_exactly_read_only_workspace_authorities \
-    --harness runtime_member_role_contains_exactly_run_read \
     --harness legacy_workspace_binding_migration_is_idempotent_and_authority_exact
+  # Hosted Runtime role vocabulary is owned by its only consumer.
+  run_kani awaken-control \
+    --harness runtime_member_role_contains_exactly_run_read
   run_kani awaken-acp-contract \
     --harness acp_capability_is_detected_exactly_after_a_verified_observation
   run_kani awaken-authz-enforce \
