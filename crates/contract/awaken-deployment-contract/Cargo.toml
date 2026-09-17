@@ -12,7 +12,6 @@ authority = "deployment"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-resource-contract.workspace = true
-awaken-session-contract.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true

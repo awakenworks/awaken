@@ -2036,10 +2036,9 @@ fn deployment_fact(id: &str, object_id: &str) -> DeploymentLifecycleFact {
     DeploymentLifecycleFact {
         id: id.into(),
         object_id: object_id.into(),
-        workspace_id: Some("ws_a".into()),
+        workspace_id: "ws_a".into(),
         event_type: "deployment.updated".into(),
         timestamp: 1,
-        runtime_interval: None,
     }
 }
 
@@ -2172,6 +2171,20 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     assert!(
         facts.iter().all(|fact| fact.id != "invalid-jump"),
         "D2 no fact"
+    );
+    // D1/E1 outbox shape: the Deployment-owned fact becomes the shared outbox
+    // record with its Workspace and no Session runtime interval.
+    assert_eq!(
+        facts.iter().find(|fact| fact.id == "deployment-create"),
+        Some(&ManagedLifecycleFact {
+            id: "deployment-create".into(),
+            object_id: "depl_cas".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "deployment.updated".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        }),
+        "D1/E1 exact outbox record"
     );
     assert_eq!(
         usize::from(facts.iter().any(|fact| fact.id == "left-writer"))
@@ -2316,10 +2329,9 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
             DeploymentLifecycleFact {
                 id: "failed-claim-fact".into(),
                 object_id: "drun_collision".into(),
-                workspace_id: Some("ws_a".into()),
+                workspace_id: "ws_a".into(),
                 event_type: "deployment_run.started".into(),
                 timestamp: 1,
-                runtime_interval: None,
             },
         )
         .await
@@ -2360,10 +2372,9 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     let fact = DeploymentLifecycleFact {
         id: "deployment-run-started".into(),
         object_id: run.id.clone(),
-        workspace_id: Some("ws_a".into()),
+        workspace_id: "ws_a".into(),
         event_type: "deployment_run.started".into(),
         timestamp: 1,
-        runtime_interval: None,
     };
     assert_eq!(
         repo.claim_scheduled_run(failed_claim_id, 1, advanced.clone(), run, fact)
@@ -2414,10 +2425,9 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
                 DeploymentLifecycleFact {
                     id: "stale-fact".into(),
                     object_id: "drun_stale".into(),
-                    workspace_id: Some("ws_a".into()),
+                    workspace_id: "ws_a".into(),
                     event_type: "deployment_run.started".into(),
                     timestamp: 2,
-                    runtime_interval: None,
                 },
             )
             .await
@@ -2475,10 +2485,9 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
                 DeploymentLifecycleFact {
                     id: "fresh-after-stale-fact".into(),
                     object_id: "drun_after_stale".into(),
-                    workspace_id: Some("ws_a".into()),
+                    workspace_id: "ws_a".into(),
                     event_type: "deployment_run.started".into(),
                     timestamp: 3,
-                    runtime_interval: None,
                 },
             )
             .await

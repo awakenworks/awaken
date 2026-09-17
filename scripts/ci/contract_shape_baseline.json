@@ -21,7 +21,7 @@
       "production_lines": 2571
     },
     "awaken-deployment-contract": {
-      "depth": 4,
+      "depth": 1,
       "catch_all_errors": 1
     },
     "awaken-environment-contract": {

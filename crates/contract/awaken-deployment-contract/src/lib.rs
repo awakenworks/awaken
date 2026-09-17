@@ -8,8 +8,6 @@ use async_trait::async_trait;
 mod model;
 mod schedule;
 
-/// Compatibility name for the one cross-aggregate lifecycle fact contract.
-pub use awaken_session_contract::ManagedLifecycleFact as DeploymentLifecycleFact;
 pub use model::{
     AgentSelector, CreateDeploymentCommand, DeploymentAgent, DeploymentLaunch,
     DeploymentLaunchOutcome, DeploymentOutcomeRubric, DeploymentPauseError, DeploymentPauseReason,
@@ -19,6 +17,24 @@ pub use model::{
     UpdateDeploymentCommand,
 };
 pub use schedule::Cron;
+
+/// A secret-free Deployment or DeploymentRun lifecycle fact committed in the
+/// same transaction as the aggregate write that caused it. Its stable id is the
+/// outbox key and the receiver idempotency key.
+///
+/// Deployment owns this value instead of re-exporting the Session outbox record:
+/// a Deployment fact can never carry a Session runtime interval, and the one
+/// store that writes the shared lifecycle outbox maps it into that record.
+#[derive(Debug, Clone)]
+pub struct DeploymentLifecycleFact {
+    pub id: String,
+    /// The Deployment or DeploymentRun id the event is about.
+    pub object_id: String,
+    pub workspace_id: String,
+    pub event_type: String,
+    /// Unix seconds.
+    pub timestamp: i64,
+}
 
 /// Largest revision representable by every supported durable SQL adapter.
 pub const MAX_DEPLOYMENT_REVISION: u64 = i64::MAX as u64;
