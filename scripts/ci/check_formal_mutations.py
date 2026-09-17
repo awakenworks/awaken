@@ -1478,8 +1478,12 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
     # input-only observation cannot release the Run activity. These mutations
     # exercise the same kernel consumed by the Event and Start compositions.
     kernel = (ROOT / "formal/tla/SessionEventKernel.tla").read_text()
+    # The kernel defines none of the protocol's temporal or action properties,
+    # so it inherits no property line at all; naming each one to drop broke
+    # the moment the protocol config gained a new property.
     kernel_config = "\n".join(line for line in config.splitlines()
-        if not any(word in line for word in ("ObservationTimes =", "UnknownTime =", "PROPERTIES First")))
+        if not line.lstrip().startswith(("PROPERTY ", "PROPERTIES "))
+        and not any(word in line for word in ("ObservationTimes =", "UnknownTime =")))
     guard = 'AnchorCommittedInput ==\n    /\\ kEventPhase = "Activated"\n    /\\ kCommittedDisposition = "Running"'
     assert kernel.count(guard) == 1
     unproven = kernel.replace(guard, 'AnchorCommittedInput ==\n    /\\ kEventPhase = "Activated"')
