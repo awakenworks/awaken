@@ -88,14 +88,9 @@ pub struct ChatMessage {
     pub content: Vec<ContentBlock>,
 }
 
-/// A model's request to invoke one tool. `tool_id` is the resolved descriptor
-/// id; `call_id` correlates the later result. No permission grant is implied.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub call_id: String,
-    pub tool_id: String,
-    pub arguments: serde_json::Value,
-}
+// The tool-call vocabulary is owned by `awaken-tool-contract`; the model port
+// still names it here so `llm::ToolCall` keeps resolving.
+pub use awaken_tool_contract::tool::ToolCall;
 
 /// One model response: the assistant message plus optional usage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

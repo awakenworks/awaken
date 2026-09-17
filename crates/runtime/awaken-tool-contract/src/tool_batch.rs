@@ -15,8 +15,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroU16;
 
-use crate::llm::ToolCall;
-use crate::tool::{ToolOutput, ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy};
+use crate::tool::{
+    ToolCall, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolBatchId(String);
@@ -120,8 +121,8 @@ pub enum ToolRecoveryAction {
 /// finalized batch, or publish staged effects before a terminal result.
 ///
 /// ```compile_fail
-/// use awaken_runtime_contract::tool_batch::{ToolBatch, ToolBatchPhase, ToolBatchId};
-/// use awaken_runtime_contract::RunId;
+/// use awaken_tool_contract::tool_batch::{ToolBatch, ToolBatchPhase, ToolBatchId};
+/// use awaken_agent_contract::agent::run::Id as RunId;
 ///
 /// let _ = ToolBatch {
 ///     id: ToolBatchId("tool-batch:run:0".into()),

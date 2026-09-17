@@ -907,8 +907,24 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-runtime-contract --checked-loop-profile resume-validator-empty-object-v1 \
     --harness resume_validator_preserves_complete_binding_decision_table
   run_kani awaken-runtime-contract --solver kissat \
-    --harness created_tool_handle_validation_never_invents_termination \
     --harness model_operation_history_preserves_distinct_subjects
+  run_kani awaken-tool-contract --solver kissat \
+    --harness created_tool_handle_validation_never_invents_termination
+  run_kani awaken-tool-contract \
+    --harness terminal_calls_are_never_reentered \
+    --harness only_the_matching_approval_ticket_enters_execution \
+    --harness executor_entry_admission_requires_exactly_executing_phase \
+    --harness every_tool_call_transition_has_the_unique_documented_precondition \
+    --harness a_tool_call_completion_is_applied_at_most_once \
+    --harness terminal_tool_calls_only_accept_result_staging \
+    --harness run_end_sealing_targets_exactly_nonterminal_calls \
+    --harness a_second_wait_is_never_admitted \
+    --harness only_finalized_batches_expose_staged_publication \
+    --harness recovery_reentry_requires_policy_capability_and_remaining_budget \
+    --harness every_u8_is_admitted_exactly_when_it_is_within_the_search_limit \
+    --harness same_resource_conflict_is_symmetric_and_exactly_one_write_or_more \
+    --harness tool_wave_extension_requires_every_exact_guard \
+    --harness tool_wave_extension_never_crosses_the_positive_bound_or_admits_serial
   run_kani awaken-runtime-contract \
     --harness native_attempt_termination_requires_every_closed_surface_fact \
     --harness credential_realization_receipt_requires_every_exact_binding_coordinate \
@@ -920,16 +936,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness max_token_continuation_requires_every_exact_guard \
     --harness anchored_context_window_never_moves_past_the_covered_prefix \
     --harness unanchored_legacy_context_never_hides_transcript_messages \
-    --harness terminal_calls_are_never_reentered \
-    --harness only_the_matching_approval_ticket_enters_execution \
-    --harness executor_entry_admission_requires_exactly_executing_phase \
-    --harness every_tool_call_transition_has_the_unique_documented_precondition \
-    --harness a_tool_call_completion_is_applied_at_most_once \
-    --harness terminal_tool_calls_only_accept_result_staging \
-    --harness run_end_sealing_targets_exactly_nonterminal_calls \
-    --harness a_second_wait_is_never_admitted \
-    --harness only_finalized_batches_expose_staged_publication \
-    --harness recovery_reentry_requires_policy_capability_and_remaining_budget \
     --harness child_result_is_recorded_once_and_duplicate_record_stutters \
     --harness child_result_is_consumed_only_from_ready \
     --harness terminal_delivery_phases_never_reopen \
@@ -952,10 +958,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness permission_verdict_projects_to_exact_non_widening_gate_outcome \
     --harness every_gate_outcome_has_one_exact_audit_label \
     --harness retry_is_authorized_only_inside_the_exact_bounded_budget \
-    --harness every_u8_is_admitted_exactly_when_it_is_within_the_search_limit \
-    --harness same_resource_conflict_is_symmetric_and_exactly_one_write_or_more \
-    --harness tool_wave_extension_requires_every_exact_guard \
-    --harness tool_wave_extension_never_crosses_the_positive_bound_or_admits_serial \
     --harness non_retryable_failure_is_immediately_terminal \
     --harness terminal_retry_state_never_reopens \
     --harness unknown_retry_state_fails_closed \
