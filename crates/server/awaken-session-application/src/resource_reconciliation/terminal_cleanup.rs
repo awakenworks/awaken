@@ -7,11 +7,10 @@ use awaken_session_contract::{
     PersistedSession, RenewSessionRealization, RunError, SandboxRestoreRequest,
     SessionRealizationControlFailure, SessionRealizationDriveError, SessionRuntime,
     SessionTerminalCleanupAction, SessionTerminalCleanupAssignment,
-    SessionTerminalCleanupDriveOutcome,
 };
 
 use super::{internal, mutation_failure, repository_preparation};
-use crate::{SessionApplication, SessionPreparationError};
+use crate::{SessionApplication, SessionPreparationError, SessionTerminalCleanupDriveOutcome};
 
 pub(super) fn terminal_restore_target_for_thread(
     workspace_id: &str,
@@ -248,7 +247,7 @@ impl SessionApplication {
             session_id,
             assignment,
             self.runtime(),
-            awaken_session_contract::drive_session_terminal_cleanup(
+            crate::drive_session_terminal_cleanup(
                 session_id,
                 &assignment.authority.lease,
                 self,

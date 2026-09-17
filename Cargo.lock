@@ -2442,6 +2442,7 @@ dependencies = [
  "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",
+ "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
  "awaken-skill-store",

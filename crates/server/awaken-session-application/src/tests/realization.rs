@@ -1884,7 +1884,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
     let commands = terminal_prepare_commands(work);
     assert_eq!(commands.len(), 1, "W2/E2");
     assert_eq!(commands[0].thread_id, "worker-terminal", "W2/E2");
-    awaken_session_contract::drive_session_terminal_cleanup(
+    crate::drive_session_terminal_cleanup(
         "worker-terminal",
         &asserted_terminal_lease,
         &application,
@@ -2016,7 +2016,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     );
 
     let worker_runtime = RecordingCleanupRuntime::default();
-    let outcome = awaken_session_contract::drive_session_terminal_cleanup(
+    let outcome = crate::drive_session_terminal_cleanup(
         "remote-cleanup",
         &asserted_lease,
         &application,
@@ -2026,7 +2026,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     .expect("W3 canonical Worker driver");
     assert_eq!(
         outcome,
-        awaken_session_contract::SessionTerminalCleanupDriveOutcome::Completed,
+        crate::SessionTerminalCleanupDriveOutcome::Completed,
         "W3/E3"
     );
     let replay = application
@@ -2062,7 +2062,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     );
     assert!(runtime.intents.lock().unwrap().is_empty(), "W3/E1");
 
-    awaken_session_contract::drive_session_terminal_cleanup(
+    crate::drive_session_terminal_cleanup(
         "remote-cleanup",
         &asserted_lease,
         &application,
@@ -2197,17 +2197,13 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
     );
 
     let worker_runtime = RecordingCleanupRuntime::default();
-    let outcome = awaken_session_contract::drive_session_terminal_cleanup(
-        session_id,
-        &lease,
-        &application,
-        &worker_runtime,
-    )
-    .await
-    .expect("R3/R4 canonical cleanup drive");
+    let outcome =
+        crate::drive_session_terminal_cleanup(session_id, &lease, &application, &worker_runtime)
+            .await
+            .expect("R3/R4 canonical cleanup drive");
     assert_eq!(
         outcome,
-        awaken_session_contract::SessionTerminalCleanupDriveOutcome::Completed,
+        crate::SessionTerminalCleanupDriveOutcome::Completed,
         "R3/R4"
     );
     {
@@ -2408,7 +2404,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     child_worker
         .fail_publication_once
         .store(true, Ordering::SeqCst);
-    awaken_session_contract::drive_session_terminal_cleanup(
+    crate::drive_session_terminal_cleanup(
         "publication-child-barrier",
         &exact_lease,
         &application,
@@ -2608,7 +2604,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert_eq!(root.len(), 1, "P5/E6");
     assert_eq!(root[0].thread_id, assignment.session_id, "P5/E6");
     let root_worker = RecordingCleanupRuntime::default();
-    awaken_session_contract::drive_session_terminal_cleanup(
+    crate::drive_session_terminal_cleanup(
         &assignment.session_id,
         &assignment.authority.lease,
         &application,
@@ -2692,7 +2688,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P6 root preparation"
     );
     let rejected_worker = RecordingCleanupRuntime::default();
-    awaken_session_contract::drive_session_terminal_cleanup(
+    crate::drive_session_terminal_cleanup(
         &rejected_assignment.session_id,
         &rejected_assignment.authority.lease,
         &application,

@@ -15,7 +15,7 @@ SESSION_REPOSITORY_PUBLICATION = (
     "terminal_cleanup/repository_publication.rs"
 )
 SESSION_CLEANUP_DRIVER = (
-    "crates/contract/awaken-session-contract/src/terminal_cleanup/driver.rs"
+    "crates/server/awaken-session-application/src/terminal_cleanup_driver.rs"
 )
 SESSION_CLEANUP_EFFECTS = (
     "crates/contract/awaken-session-contract/src/terminal_cleanup/effects.rs"
@@ -124,7 +124,6 @@ REQUIRED = {
         "SessionCleanupPreparation",
         "SessionCleanupDisposalReceipt",
         "SessionTerminalCleanupAction",
-        "drive_session_terminal_cleanup",
     ),
     SESSION_CLEANUP_DRIVER: (
         "SessionTerminalCleanupAction::Prepare",
