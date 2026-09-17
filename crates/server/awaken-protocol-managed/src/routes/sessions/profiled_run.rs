@@ -64,7 +64,7 @@ pub async fn submit_profiled_session_run(
     let admitted = Box::pin(application.admit_session_run_for_owner(
         &owner_scope,
         awaken_session_contract::AdmitSessionRun {
-            session_id: id.clone(),
+            session_id: awaken_session_contract::SessionId::from(&id),
             agent_id: body.agent_id,
             operation_id: body.operation_id,
             run_id: body.run_id,

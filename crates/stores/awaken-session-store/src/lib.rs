@@ -206,7 +206,7 @@ fn validate_session_create_command(
 ) -> Result<(), SessionRepositoryError> {
     if !session_create_shape_is_valid(
         !owner_scope.trim().is_empty(),
-        !session.session_id.trim().is_empty(),
+        !session.session_id.as_str().trim().is_empty(),
         !idempotency.key.trim().is_empty(),
         !idempotency.payload_hash.trim().is_empty(),
         session.revision == SessionRevision(0),
@@ -446,7 +446,8 @@ fn validate_current_mutation(
             Ok(None)
         }
         SessionMutationPayload::Delete(tombstone) => {
-            if !current.admits_tombstone(&tombstone.session_id, tombstone.deleted_revision) {
+            if !current.admits_tombstone(tombstone.session_id.as_str(), tombstone.deleted_revision)
+            {
                 return Err(SessionRepositoryError::InvalidMutation(
                     "Session tombstone requires hidden terminal disposition and completed cleanup"
                         .into(),

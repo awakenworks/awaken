@@ -21,7 +21,7 @@ pub(super) fn terminal_restore_target_for_thread(
         .then(|| {
             session
                 .environment
-                .restoring_request(workspace_id, &session.session_id)
+                .restoring_request(workspace_id, session.session_id.as_str())
         })
         .flatten()
 }
@@ -49,7 +49,7 @@ pub(super) fn bind_terminal_restore_target(
             let command = match terminal_restore_target_for_thread(
                 workspace_id,
                 session,
-                &session.session_id,
+                session.session_id.as_str(),
             ) {
                 Some(request) => command.with_restore_target(request).map_err(|error| {
                     SessionRealizationControlFailure::Invalid(error.to_string())
@@ -135,7 +135,7 @@ pub(super) fn terminal_cleanup_authorization_failure(
 }
 
 async fn supervise_local_terminal_cleanup_lease<Drive, Renew, RenewFuture, Clock>(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     initial_assignment: &SessionTerminalCleanupAssignment,
     runtime: &dyn SessionRuntime,
     drive: Drive,
@@ -192,7 +192,7 @@ where
                         )
                     })?;
                 let command = RenewSessionRealization {
-                    session_id: session_id.to_string(),
+                    session_id: session_id.clone(),
                     asserted_lease: asserted_lease.clone(),
                     requested_expires_at_unix_ms: requested_expiry_unix_ms,
                 };
@@ -244,11 +244,11 @@ impl SessionApplication {
     ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
         let session_id = assignment.session_id.as_str();
         supervise_local_terminal_cleanup_lease(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             assignment,
             self.runtime(),
             crate::drive_session_terminal_cleanup(
-                session_id,
+                &awaken_session_contract::SessionId::from(session_id),
                 &assignment.authority.lease,
                 self,
                 self.runtime(),
@@ -319,7 +319,11 @@ impl SessionApplication {
         >,
     > {
         Box::pin(async move {
-            let mut session = match self.session_repository().get(session_id).await {
+            let mut session = match self
+                .session_repository()
+                .get(&awaken_session_contract::SessionId::from(session_id))
+                .await
+            {
                 Ok(session) => session,
                 Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
                 Err(error) => return Err(repository_preparation(error)),
@@ -429,14 +433,20 @@ impl SessionApplication {
                     }
                     TerminalCleanupPath::DriveLocal => {
                         let assignment = self
-                            .claim_local_terminal_cleanup_assignment(session_id)
+                            .claim_local_terminal_cleanup_assignment(
+                                &awaken_session_contract::SessionId::from(session_id),
+                            )
                             .await
                             .map_err(|error| terminal_driver_failure(error.into()))?;
                         self.drive_local_terminal_cleanup(&assignment)
                             .await
                             .map_err(terminal_driver_failure)?;
                         drove_local_cleanup = true;
-                        session = match self.session_repository().get(session_id).await {
+                        session = match self
+                            .session_repository()
+                            .get(&awaken_session_contract::SessionId::from(session_id))
+                            .await
+                        {
                             Ok(session) => session,
                             Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                                 return Ok(None);
@@ -463,7 +473,10 @@ impl SessionApplication {
                 // projection without reconstructing the deleted one-stage
                 // per-thread effect registry.
                 self.runtime()
-                    .acknowledge_completed_terminal_cleanup(session_id, lease)
+                    .acknowledge_completed_terminal_cleanup(
+                        &awaken_session_contract::SessionId::from(session_id),
+                        lease,
+                    )
                     .await;
             }
             if !cleanup_completed {
@@ -738,17 +751,18 @@ mod tests {
             let release = Arc::new(tokio::sync::Notify::new());
             let dropped = Arc::new(AtomicBool::new(false));
             let calls = Arc::new(AtomicUsize::new(0));
-            let task =
-                tokio::spawn({
-                    let runtime = runtime.clone();
-                    let started = started.clone();
-                    let release = release.clone();
-                    let dropped = dropped.clone();
-                    let calls = calls.clone();
-                    async move {
-                        let renewal_runtime = runtime.clone();
-                        supervise_local_terminal_cleanup_lease(
-                        "session", &local_assignment(10_000_000), runtime.as_ref(),
+            let task = tokio::spawn({
+                let runtime = runtime.clone();
+                let started = started.clone();
+                let release = release.clone();
+                let dropped = dropped.clone();
+                let calls = calls.clone();
+                async move {
+                    let renewal_runtime = runtime.clone();
+                    supervise_local_terminal_cleanup_lease(
+                        &awaken_session_contract::SessionId::from("session"),
+                        &local_assignment(10_000_000),
+                        runtime.as_ref(),
                         async move {
                             let _drop = DriveDropGuard(dropped);
                             started.notify_one();
@@ -759,22 +773,24 @@ mod tests {
                             calls.fetch_add(1, Ordering::SeqCst);
                             let runtime = renewal_runtime.clone();
                             async move {
-                                *runtime.observation.lock().unwrap() = Some(
-                                    AuthorityProofStarted::from_clock_sample(
-                                        scheduled, std::time::Duration::from_micros(response_us),
-                                    ),
-                                );
+                                *runtime.observation.lock().unwrap() =
+                                    Some(AuthorityProofStarted::from_clock_sample(
+                                        scheduled,
+                                        std::time::Duration::from_micros(response_us),
+                                    ));
                                 let mut lease = command.asserted_lease;
                                 lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
                                 awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
-                                    lease, command.requested_expires_at_unix_ms - 30,
+                                    lease,
+                                    command.requested_expires_at_unix_ms - 30,
                                 )
                             }
                         },
                         || 10_000_000,
-                    ).await
-                    }
-                });
+                    )
+                    .await
+                }
+            });
             started.notified().await;
             tokio::time::advance(std::time::Duration::from_millis(
                 crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS,
@@ -853,7 +869,7 @@ mod tests {
             let effect_release = Arc::clone(&effect_release);
             async move {
                 supervise_local_terminal_cleanup_lease(
-                    "session",
+                    &awaken_session_contract::SessionId::from("session"),
                     &initial,
                     runtime.as_ref(),
                     async move {
@@ -997,7 +1013,7 @@ mod tests {
         let mut mismatched = local_assignment(19_000_000);
         mismatched.session_id = "other-session".into();
         let mismatched_result = supervise_local_terminal_cleanup_lease(
-            "session",
+            &awaken_session_contract::SessionId::from("session"),
             &mismatched,
             &mismatch_runtime,
             async { Ok(SessionTerminalCleanupDriveOutcome::Completed) },
@@ -1056,7 +1072,7 @@ mod tests {
                 let drive_started = Arc::clone(&drive_started);
                 async move {
                     supervise_local_terminal_cleanup_lease(
-                        "session",
+                        &awaken_session_contract::SessionId::from("session"),
                         &initial,
                         runtime.as_ref(),
                         async move {
@@ -1157,7 +1173,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let completed_runtime = RecordingTerminalProjectionRuntime::default();
         let result = supervise_local_terminal_cleanup_lease(
-            "session",
+            &awaken_session_contract::SessionId::from("session"),
             &local_assignment(30_000_000),
             &completed_runtime,
             async { Ok(SessionTerminalCleanupDriveOutcome::Completed) },
@@ -1193,7 +1209,7 @@ mod tests {
         let failed_calls = Arc::new(AtomicUsize::new(0));
         let failed_runtime = RecordingTerminalProjectionRuntime::default();
         let failed = supervise_local_terminal_cleanup_lease(
-            "session",
+            &awaken_session_contract::SessionId::from("session"),
             &local_assignment(40_000_000),
             &failed_runtime,
             async {

@@ -94,7 +94,7 @@ struct PendingCoordinationCall {
 }
 
 fn project_committed_coordination_links(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     advisor_model: Option<&str>,
     committed: &RunRecoverySnapshot,
 ) -> Result<Vec<CoordinatedThreadLink>, HostError> {
@@ -206,7 +206,7 @@ fn apply_lifecycle_latest_runs(
 }
 
 fn apply_advisor_call(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     run_id: &RunId,
     step: usize,
     call_id: &str,
@@ -227,7 +227,7 @@ fn apply_advisor_call(
         return Ok(());
     }
     links.push(CoordinatedThreadLink {
-        session_id: session_id.to_string(),
+        session_id: session_id.clone(),
         thread_id,
         target: CoordinatedThreadTarget::Advisor {
             model: model.to_string(),
@@ -239,7 +239,7 @@ fn apply_advisor_call(
 }
 
 fn apply_coordination_result(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     call: &PendingCoordinationCall,
     content: &[ContentBlock],
     is_error: bool,
@@ -275,7 +275,7 @@ fn apply_coordination_result(
     ) {
         (Some(agent_id), None) => {
             let expected = awaken_session_contract::coordinated_thread_id(
-                session_id,
+                session_id.as_str(),
                 &call.run_id,
                 &operation_id,
             );
@@ -293,7 +293,7 @@ fn apply_coordination_result(
                 return Ok(());
             }
             links.push(CoordinatedThreadLink {
-                session_id: session_id.to_string(),
+                session_id: session_id.clone(),
                 thread_id,
                 target: CoordinatedThreadTarget::Agent {
                     agent_id: agent_id.to_string(),
@@ -319,7 +319,7 @@ fn apply_coordination_result(
 }
 
 fn apply_active_batch_coordination_results(
-    session_id: &str,
+    session_id: &awaken_session_contract::SessionId,
     active: &[PendingCoordinationCall],
     batch: Option<&awaken_runtime_contract::ToolBatch>,
     links: &mut Vec<CoordinatedThreadLink>,
@@ -362,7 +362,7 @@ impl SharedHost {
         &self,
         command: &awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(ThreadId, ResumeTicket), HostError> {
-        if command.session_id.trim().is_empty()
+        if command.session_id.as_str().trim().is_empty()
             || command.expected_run_id.0.trim().is_empty()
             || command.expected_correlation_id.trim().is_empty()
             || command.tool_use_id.trim().is_empty()
@@ -371,7 +371,7 @@ impl SharedHost {
                 "Session Thread tool reply is incomplete",
             ));
         }
-        let thread_id = command.target.thread_id(&command.session_id);
+        let thread_id = command.target.thread_id(command.session_id.as_str());
         if command
             .target
             .child_thread_id()
@@ -381,7 +381,7 @@ impl SharedHost {
                 "a coordinated child Thread must differ from its parent Session",
             ));
         }
-        let commit = self.commit_for_read(&command.session_id).await?;
+        let commit = self.commit_for_read(command.session_id.as_str()).await?;
         let snapshot = commit
             .recovery_snapshot(&thread_id, &command.expected_run_id)
             .await
@@ -481,7 +481,7 @@ impl SharedHost {
                 SessionReplyReceipt::Absent => return Err(active_error),
             },
         };
-        let parent = ThreadId(command.session_id.clone());
+        let parent = ThreadId(command.session_id.to_string());
         let dispatch = self
             .dispatch_store()?
             .list_dispatches()
@@ -535,7 +535,7 @@ impl SharedHost {
             super::run::session_thread_reply_result(&ticket, &command.tool_use_id, &command.reply);
 
         let store = self.dispatch_store()?;
-        let parent = ThreadId(command.session_id.clone());
+        let parent = ThreadId(command.session_id.to_string());
         let dispatch = store
             .list_dispatches()
             .await
@@ -553,13 +553,17 @@ impl SharedHost {
         } else {
             let epoch = session_activity_epoch
                 .ok_or_else(|| HostError::internal("foreground Session reply requires activity"))?;
-            self.enqueue_foreground_session_resume_dispatch(&command.session_id, &ticket, epoch)
-                .await?
+            self.enqueue_foreground_session_resume_dispatch(
+                command.session_id.as_str(),
+                &ticket,
+                epoch,
+            )
+            .await?
         };
         let context_messages = command
             .accompanying_system
             .as_ref()
-            .map(|system| crate::session_system_message(&command.session_id, system))
+            .map(|system| crate::session_system_message(command.session_id.as_str(), system))
             .transpose()
             .map_err(|error| HostError::bad_request(error.message))?
             .into_iter()
@@ -670,7 +674,7 @@ impl SharedHost {
         } = command;
         let (baseline, tools, resources) = self
             .session_slots
-            .read(&session_id, |slot| {
+            .read(session_id.as_str(), |slot| {
                 (
                     slot.baseline.clone(),
                     slot.tools.clone(),
@@ -727,8 +731,13 @@ impl SharedHost {
         // authority; the target's deterministic fresh Run owns the accepted
         // message as frozen activation input.  Dispatch carries that complete
         // Run activation and never stages a parallel PendingInput/outbox fact.
-        let activation_input =
-            coordinated_activation_input(&session_id, &thread_id, &run_id, &operation_id, message);
+        let activation_input = coordinated_activation_input(
+            session_id.as_str(),
+            &thread_id,
+            &run_id,
+            &operation_id,
+            message,
+        );
         let origin = DelegationOrigin {
             delegation_id: DelegationId(format!(
                 "coordination:{}",
@@ -746,14 +755,19 @@ impl SharedHost {
             .with_delegation_origin(origin);
         let request = crate::agent_runner::child_dispatch_request(
             activation,
-            ThreadId(session_id.clone()),
+            ThreadId(session_id.to_string()),
             Some(resources),
             self.agent_publications.as_deref(),
         )
         .map_err(|error| HostError::bad_request(error.to_string()))?
         .with_session_activity_epoch(session_activity_epoch);
         let admission = self
-            .coordinated_child_admission(&session_id, &thread_id, intent, max_unarchived_threads)
+            .coordinated_child_admission(
+                session_id.as_str(),
+                &thread_id,
+                intent,
+                max_unarchived_threads,
+            )
             .await?;
         let store = self.dispatch_store()?;
 
@@ -767,18 +781,18 @@ impl SharedHost {
         // dispatch and waits for settlement. No relation flag, terminal cache,
         // or process-local lock is introduced.
         let archived = self
-            .session_thread_disposition(&session_id, &thread_id)
+            .session_thread_disposition(session_id.as_str(), &thread_id)
             .await?
             == awaken_agent_contract::ThreadDisposition::Archived;
         let failed = intent == CoordinatedRunIntent::FollowUp
             && self
-                .coordinated_thread_has_failed_run(&session_id, &thread_id)
+                .coordinated_thread_has_failed_run(session_id.as_str(), &thread_id)
                 .await?;
         if archived || failed {
             // This admission may already be durable, so it is not a definitive
             // caller rejection until cancellation has settled. Once quiescent,
             // the bad request is safe: no accepted child execution remains.
-            self.cancel_and_await_coordinated_thread_quiescence(&session_id, &thread_id)
+            self.cancel_and_await_coordinated_thread_quiescence(session_id.as_str(), &thread_id)
                 .await?;
             return Err(HostError::bad_request(if archived {
                 "Agent Thread is archived"
@@ -813,7 +827,7 @@ impl SharedHost {
         }
         let store = self.dispatch_store()?;
 
-        let ctx = self.ctx_for(&command.session_id, None).await?;
+        let ctx = self.ctx_for(command.session_id.as_str(), None).await?;
         let run_id = RunId(format!(
             "coord-report-run-{}",
             awaken_session_contract::stable_fingerprint(&(
@@ -824,18 +838,21 @@ impl SharedHost {
         ));
         let activation = RunActivation::new(
             run_id,
-            ThreadId(command.session_id.clone()),
+            ThreadId(command.session_id.to_string()),
             ctx.config.clone(),
             vec![command.message],
         )
-        .with_model_ref_override(self.inference_routing.override_for(&command.session_id));
+        .with_model_ref_override(
+            self.inference_routing
+                .override_for(command.session_id.as_str()),
+        );
         // The report command itself is durable Session provenance. Do not rely
         // on a process-local prepared slot to rediscover self-affinity after a
         // cold restart; the settlement observer must always route this root
         // continuation back to the same Session application.
         let request = self
             .resolved_dispatch(activation)?
-            .for_session(ThreadId(command.session_id.clone()))
+            .for_session(ThreadId(command.session_id.to_string()))
             .with_session_activity_epoch(command.session_activity_epoch);
         store
             .enqueue(request)
@@ -856,7 +873,7 @@ impl SharedHost {
     ) -> Result<SessionAgentMessageCommand, HostError> {
         let snapshot = self
             .session_thread_run_recovery_snapshot(
-                &command.session_id,
+                command.session_id.as_str(),
                 &command.source_thread_id,
                 &command.source_run_id,
             )
@@ -1119,9 +1136,12 @@ mod tests {
             store_cursor: 5,
             next_commit_ordinal: 1,
         };
-        let links =
-            project_committed_coordination_links("session", Some("advisor-model"), &snapshot)
-                .unwrap();
+        let links = project_committed_coordination_links(
+            &awaken_session_contract::SessionId::from("session"),
+            Some("advisor-model"),
+            &snapshot,
+        )
+        .unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target.advisor_model(), Some("advisor-model"));
         assert_eq!(
@@ -1140,9 +1160,12 @@ mod tests {
                 thread_id: ThreadId("session".into()),
                 state: RunState::Running,
             });
-        let error =
-            project_committed_coordination_links("session", Some("advisor-model"), &ambiguous)
-                .unwrap_err();
+        let error = project_committed_coordination_links(
+            &awaken_session_contract::SessionId::from("session"),
+            Some("advisor-model"),
+            &ambiguous,
+        )
+        .unwrap_err();
         assert!(error.message.contains("ambiguous Run coordinates"));
     }
 
@@ -1298,7 +1321,7 @@ mod tests {
             let receipt = host
                 .admit_coordinated_run(CoordinatedRunCommand {
                     intent: CoordinatedRunIntent::Spawn,
-                    session_id: session_id.clone(),
+                    session_id: awaken_session_contract::SessionId::from(&session_id),
                     thread_id: child_thread.clone(),
                     run_id: child_run.clone(),
                     parent_run_id: RunId(format!("coordinated-resource-parent-{rule}")),
@@ -1385,7 +1408,7 @@ mod tests {
         let mut links = Vec::new();
 
         apply_advisor_call(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             &first_run,
             0,
             "advisor-call-1",
@@ -1394,7 +1417,7 @@ mod tests {
         )
         .unwrap();
         apply_advisor_call(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             &first_run,
             0,
             "advisor-call-1",
@@ -1405,7 +1428,7 @@ mod tests {
         assert_eq!(links.len(), 1, "I1/E1");
 
         apply_advisor_call(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             &first_run,
             0,
             "advisor-call-2",
@@ -1414,7 +1437,7 @@ mod tests {
         )
         .unwrap();
         apply_advisor_call(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             &second_run,
             0,
             "advisor-call-1",
@@ -1448,7 +1471,7 @@ mod tests {
 
         assert!(
             apply_advisor_call(
-                session_id,
+                &awaken_session_contract::SessionId::from(session_id),
                 &first_run,
                 0,
                 "advisor-call-1",
@@ -1629,9 +1652,12 @@ mod tests {
             },
         ];
 
-        let mut warm =
-            project_committed_coordination_links(session, Some("advisor-model"), &snapshot)
-                .expect("P1 one committed root prefix");
+        let mut warm = project_committed_coordination_links(
+            &awaken_session_contract::SessionId::from(session),
+            Some("advisor-model"),
+            &snapshot,
+        )
+        .expect("P1 one committed root prefix");
         assert!(
             apply_lifecycle_latest_runs(&mut warm, &lifecycle, snapshot.store_cursor),
             "P3/E4 stops at the first event beyond the snapshot watermark"
@@ -1653,9 +1679,12 @@ mod tests {
 
         let mut without_batch = snapshot.clone();
         without_batch.state.clear();
-        let without_batch =
-            project_committed_coordination_links(session, Some("advisor-model"), &without_batch)
-                .expect("P2 snapshot without the publication-gap authority");
+        let without_batch = project_committed_coordination_links(
+            &awaken_session_contract::SessionId::from(session),
+            Some("advisor-model"),
+            &without_batch,
+        )
+        .expect("P2 snapshot without the publication-gap authority");
         assert_eq!(without_batch.len(), 2, "P2/E1,E2,E3");
         assert!(
             without_batch.iter().all(|link| link.thread_id != gap_child),
@@ -1664,9 +1693,12 @@ mod tests {
 
         let cold_snapshot: RunRecoverySnapshot =
             serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
-        let mut cold =
-            project_committed_coordination_links(session, Some("advisor-model"), &cold_snapshot)
-                .expect("P4 cold recovery projection");
+        let mut cold = project_committed_coordination_links(
+            &awaken_session_contract::SessionId::from(session),
+            Some("advisor-model"),
+            &cold_snapshot,
+        )
+        .expect("P4 cold recovery projection");
         assert!(apply_lifecycle_latest_runs(
             &mut cold,
             &lifecycle,

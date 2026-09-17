@@ -80,7 +80,7 @@ impl ManagedState {
         // preparing/idle status or a torn cross-source projection.
         let persisted = self
             .application
-            .session(session_id)
+            .session(&awaken_session_contract::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
         let persisted_status = Self::wire_session_status(persisted.execution);
@@ -387,7 +387,7 @@ impl ManagedState {
 
             let final_persisted = self
                 .application
-                .session(session_id)
+                .session(&awaken_session_contract::SessionId::from(session_id))
                 .await
                 .map_err(StateError::from)?;
             if final_persisted.session_id != persisted.session_id

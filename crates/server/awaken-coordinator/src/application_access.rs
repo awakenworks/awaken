@@ -163,7 +163,12 @@ pub async fn issue_application_access(
         .any(|operation| operation == "thread.run");
     let mut thread_bindings = HashMap::new();
     for requested in &request.thread_bindings {
-        let owner = match sessions.owner(&requested.managed_session_id).await {
+        let owner = match sessions
+            .owner(&awaken_session_contract::SessionId::from(
+                &requested.managed_session_id,
+            ))
+            .await
+        {
             Ok(owner) => owner,
             Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return Err(ApplicationAccessIssuanceError::SessionNotFound);
@@ -175,7 +180,12 @@ pub async fn issue_application_access(
         if owner != workspace_id {
             return Err(ApplicationAccessIssuanceError::SessionNotFound);
         }
-        let session = match sessions.get(&requested.managed_session_id).await {
+        let session = match sessions
+            .get(&awaken_session_contract::SessionId::from(
+                &requested.managed_session_id,
+            ))
+            .await
+        {
             Ok(session) => session,
             Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return Err(ApplicationAccessIssuanceError::SessionNotFound);
@@ -407,7 +417,7 @@ mod tests {
         async fn replay_create(
             &self,
             _owner_scope: &str,
-            _session_id: &str,
+            _session_id: &awaken_session_contract::SessionId,
             _idempotency: &awaken_session_contract::IdempotencyRecord,
         ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError>
         {
@@ -456,7 +466,7 @@ mod tests {
 
         async fn get(
             &self,
-            session_id: &str,
+            session_id: &awaken_session_contract::SessionId,
         ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
             if self.failure == Some(TestSessionReadFailure::Get) {
                 return Err(awaken_session_contract::SessionRepositoryError::Corrupt(
@@ -464,7 +474,7 @@ mod tests {
                 ));
             }
             self.rows
-                .get(session_id)
+                .get(session_id.as_str())
                 .map(|(_, session)| session.clone())
                 .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
         }
@@ -494,7 +504,7 @@ mod tests {
 
         async fn idempotency_receipt(
             &self,
-            _session_id: &str,
+            _session_id: &awaken_session_contract::SessionId,
             _key: &str,
         ) -> Result<
             Option<awaken_session_contract::SessionIdempotencyReceipt>,
@@ -505,7 +515,7 @@ mod tests {
 
         async fn owner(
             &self,
-            session_id: &str,
+            session_id: &awaken_session_contract::SessionId,
         ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
             if self.failure == Some(TestSessionReadFailure::Owner) {
                 return Err(
@@ -515,7 +525,7 @@ mod tests {
                 );
             }
             self.rows
-                .get(session_id)
+                .get(session_id.as_str())
                 .map(|(owner, _)| owner.clone())
                 .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
         }

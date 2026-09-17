@@ -175,7 +175,7 @@ impl SessionApplication {
     /// Worker effect. The work value owns no queue or receipt.
     pub(crate) async fn terminal_cleanup_work_for_lease(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionTerminalCleanupWork>,
@@ -320,7 +320,7 @@ impl SessionApplication {
             != terminal_restore_target_for_thread(
                 &owner_scope,
                 &session,
-                &effect.command.session_id,
+                effect.command.session_id.as_str(),
             )
         {
             return Err(SessionRealizationControlFailure::Invalid(
@@ -375,7 +375,7 @@ impl SessionApplication {
     /// `SessionCleanupOperation`.
     pub(crate) async fn terminal_repository_publication_command_for_lease(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
@@ -406,7 +406,7 @@ impl SessionApplication {
             return Ok(None);
         }
         let command = terminal_cleanup
-            .publication_command(session_id)
+            .publication_command(session_id.as_str())
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
         let Some(command) = command else {
             return Ok(None);
@@ -435,7 +435,7 @@ impl SessionApplication {
     /// topology, is the sole admission authority.
     pub(crate) async fn record_terminal_repository_publication_receipt_from_root(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
@@ -449,7 +449,7 @@ impl SessionApplication {
 
     pub(crate) async fn record_terminal_repository_publication_rejection_from_root(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
@@ -463,7 +463,7 @@ impl SessionApplication {
 
     async fn record_terminal_repository_publication_effect_from_root(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         lease: &SessionRealizationLease,
         effect: awaken_session_contract::SessionRepositoryPublicationEffect,
     ) -> Result<(), SessionRealizationControlFailure> {
@@ -493,13 +493,13 @@ impl SessionApplication {
                 awaken_session_contract::SessionRepositoryPublicationEffect::Published(receipt) => {
                     session
                         .terminal_cleanup
-                        .record_repository_publication_receipt(session_id, receipt)
+                        .record_repository_publication_receipt(session_id.as_str(), receipt)
                 }
                 awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(
                     rejection,
                 ) => session
                     .terminal_cleanup
-                    .record_repository_publication_rejection(session_id, rejection),
+                    .record_repository_publication_rejection(session_id.as_str(), rejection),
             }
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
             if changed {
@@ -718,14 +718,14 @@ impl SessionApplication {
                 target,
                 reference: ResourceReference {
                     kind: ResourceReferenceKind::SessionBinding,
-                    reference_id: session.session_id.clone(),
+                    reference_id: session.session_id.to_string(),
                 },
             })
             .collect();
         references
             .replace_references(
                 ResourceReferenceKind::SessionBinding,
-                &session.session_id,
+                session.session_id.as_str(),
                 records,
             )
             .await
@@ -783,7 +783,11 @@ impl SessionApplication {
         }
     }
 
-    pub(crate) async fn repair_resource_references(&self, owner_scope: &str, session_id: &str) {
+    pub(crate) async fn repair_resource_references(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_contract::SessionId,
+    ) {
         let authoritative = self.session_repository().get(session_id).await;
         let repair = match authoritative {
             Ok(session) => {
@@ -795,7 +799,7 @@ impl SessionApplication {
                     Some(references) => references
                         .replace_references(
                             ResourceReferenceKind::SessionBinding,
-                            session_id,
+                            session_id.as_str(),
                             Vec::new(),
                         )
                         .await
@@ -807,7 +811,7 @@ impl SessionApplication {
         };
         if let Err(error) = repair {
             tracing::warn!(
-                session_id,
+                session_id = session_id.as_str(),
                 workspace_id = owner_scope,
                 error = %error,
                 "Session Resource reference repair remains pending"
@@ -839,12 +843,12 @@ impl SessionApplication {
     /// repeats this check to close the race with a concurrent first writer.
     pub async fn replay_session_resource_manifest(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         idempotency_key: &str,
         request_fingerprint: &str,
     ) -> Result<Option<SessionResourceManifestOutcome>, SessionResourceManifestError> {
         let record = Self::resource_manifest_idempotency_record(
-            session_id,
+            session_id.as_str(),
             idempotency_key,
             request_fingerprint,
         );
@@ -881,12 +885,12 @@ impl SessionApplication {
     /// method has a durable, queryable desired manifest.
     pub async fn replace_session_resource_manifest(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         command: ReplaceSessionResourceManifest,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
         let command_record = command.idempotency_key.as_ref().map(|key| {
             Self::resource_manifest_idempotency_record(
-                session_id,
+                session_id.as_str(),
                 key,
                 &command.request_fingerprint,
             )
@@ -923,7 +927,7 @@ impl SessionApplication {
 
     async fn replace_session_resource_manifest_once(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         command: &ReplaceSessionResourceManifest,
         command_record: Option<IdempotencyRecord>,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
@@ -965,9 +969,11 @@ impl SessionApplication {
             let result = if session.resources.pending.is_some() {
                 session
                     .resources
-                    .revise_unattempted_pending(&session.session_id, desired.clone())
+                    .revise_unattempted_pending(session.session_id.as_str(), desired.clone())
             } else {
-                session.resources.prepare(&session.session_id, desired)
+                session
+                    .resources
+                    .prepare(session.session_id.as_str(), desired)
             };
             result.map_err(|error| match error {
                 awaken_session_contract::ResourceActivationError::Pending => {
@@ -1079,7 +1085,7 @@ impl SessionApplication {
     /// durable root CAS. A conflict reloads and recompiles the exact pin.
     pub async fn rotate_repository_credential(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         owner_scope: &str,
         binding_id: &awaken_resource_contract::BindingId,
         material: CredentialMaterialInput,
@@ -1218,7 +1224,7 @@ impl SessionApplication {
     async fn settle_resource_reconciliation(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         resource_revision: u64,
         desired: &ResolvedSessionResources,
         settlement: ResourceSettlement,
@@ -1398,7 +1404,7 @@ impl SessionApplication {
                     }
                     Err(error) => {
                         result.failures.push(SessionReconciliationFailure {
-                            session_id: candidate.session_id.clone(),
+                            session_id: candidate.session_id.to_string(),
                             message: error.to_string(),
                         });
                         return result;
@@ -1410,7 +1416,7 @@ impl SessionApplication {
                     .await
                 {
                     result.failures.push(SessionReconciliationFailure {
-                        session_id,
+                        session_id: session_id.into_string(),
                         message: error.to_string(),
                     });
                     return result;
@@ -1437,7 +1443,7 @@ impl SessionApplication {
                             .await;
                     }
                     Err(error) => result.failures.push(SessionReconciliationFailure {
-                        session_id,
+                        session_id: session_id.into_string(),
                         message: error.to_string(),
                     }),
                 }
@@ -1530,12 +1536,12 @@ impl SessionApplication {
                     .await?;
                 if let Err(error) = self
                     .runtime()
-                    .apply_session_inputs(&session_id, &transition)
+                    .apply_session_inputs(session_id.as_str(), &transition)
                     .await
                 {
                     let settlement = match self
                         .runtime()
-                        .apply_session_inputs(&session_id, &transition.reversed())
+                        .apply_session_inputs(session_id.as_str(), &transition.reversed())
                         .await
                     {
                         Ok(()) => ResourceSettlement::Rollback(error.to_string()),
@@ -1608,11 +1614,11 @@ impl SessionApplication {
                 awaken_session_contract::SessionResourceTransition::new(active.clone(), active)
                     .map_err(internal)?;
             self.runtime()
-                .apply_session_inputs(&session_id, &transition)
+                .apply_session_inputs(session_id.as_str(), &transition)
                 .await
                 .map_err(SessionPreparationError::Rejected)?;
             if session.resources.activations.is_empty() {
-                session.resources.adopt_legacy_active(&session_id);
+                session.resources.adopt_legacy_active(session_id.as_str());
                 session = self
                     .commit_resource_snapshot(
                         owner_scope,
@@ -1636,7 +1642,7 @@ impl SessionApplication {
         }
 
         match self
-            .release_terminal_resources(owner_scope, &session_id)
+            .release_terminal_resources(owner_scope, session_id.as_str())
             .await?
         {
             Some(session) => Ok(session),
@@ -1705,7 +1711,7 @@ impl SessionApplication {
             if !self
                 .retire_session_repository_input(
                     owner_scope,
-                    &session.session_id,
+                    session.session_id.as_str(),
                     &retirement.source,
                 )
                 .await
@@ -1803,7 +1809,7 @@ impl SessionApplication {
         // effects are replay-safe through their existing Vault/Registry
         // authorities until the same root accepts physical disposal.
         let receipt = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-            &session.session_id,
+            session.session_id.as_str(),
             owner_scope,
             &session.resources,
         )
@@ -1822,7 +1828,9 @@ impl SessionApplication {
         for configured in configured.iter().rev() {
             let adopted = match self
                 .session_repository()
-                .get(configured.owner.session_id())
+                .get(&awaken_session_contract::SessionId::from(
+                    configured.owner.session_id(),
+                ))
                 .await
             {
                 Ok(session) => session_resources_reference_repository(

@@ -134,7 +134,7 @@ fn initial_event_installation_decision_table_is_closed() {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedSession {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     /// Durable creation and last root-mutation times. Absent means historical
     /// unknown, never the current read/recovery time. Omission preserves legacy
     /// aggregate fingerprints until the owning application commits a new fact.
@@ -234,7 +234,7 @@ impl PersistedSession {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn frozen_with_budget(
-        session_id: impl Into<String>,
+        session_id: impl Into<crate::SessionId>,
         baseline: crate::SessionBaseline,
         resources: crate::SessionResourceState,
         mcp: crate::SessionMcpAttachmentSet,
@@ -528,7 +528,7 @@ impl PersistedSession {
             self.execution = SessionExecutionState::Terminated;
         }
         self.active_activity_epochs.clear();
-        self.terminal_cleanup.request(&self.session_id);
+        self.terminal_cleanup.request(self.session_id.as_str());
         self.disposition = SessionDisposition::Archived {
             archived_at: archived_at.into(),
         };
@@ -573,7 +573,7 @@ impl PersistedSession {
     /// reconciler, so no external cleanup effect needs to infer authority from a
     /// protocol projection.
     pub fn ensure_terminal_cleanup_fence(&mut self) -> bool {
-        self.terminal_cleanup.request(&self.session_id)
+        self.terminal_cleanup.request(self.session_id.as_str())
     }
 
     /// Freeze the exact Runtime target set and begin release of the currently
@@ -585,7 +585,7 @@ impl PersistedSession {
         runtime_commit_cursor: u64,
     ) -> Result<bool, crate::SessionCleanupError> {
         let mut changed = self.terminal_cleanup.freeze_targets(
-            &self.session_id,
+            self.session_id.as_str(),
             thread_ids,
             delegation_watermark,
             runtime_commit_cursor,
@@ -607,7 +607,7 @@ impl PersistedSession {
         &self,
     ) -> Result<bool, crate::SessionCleanupError> {
         self.terminal_cleanup
-            .has_complete_legacy_receipts(&self.session_id)
+            .has_complete_legacy_receipts(self.session_id.as_str())
     }
 
     /// Normalize one complete historical receipt set and retire the Resource
@@ -629,7 +629,7 @@ impl PersistedSession {
         }
         let changed = self
             .terminal_cleanup
-            .normalize_legacy_completion(&self.session_id)?;
+            .normalize_legacy_completion(self.session_id.as_str())?;
         if changed {
             self.resources.complete_terminal_release(release_reason);
             self.environment = crate::SessionEnvironmentState::Unmaterialized;
@@ -657,7 +657,7 @@ impl PersistedSession {
         let expected_restore_target = (preparation.effect.command.thread_id == self.session_id)
             .then(|| {
                 self.environment
-                    .restoring_request(workspace_id, &self.session_id)
+                    .restoring_request(workspace_id, self.session_id.as_str())
             })
             .flatten();
         if preparation.effect.command.restore_target != expected_restore_target {
@@ -680,13 +680,13 @@ impl PersistedSession {
         }
         if let Some(repository_preparation) = &repository_preparation {
             repository_preparation.verify_for_resources(
-                &self.session_id,
+                self.session_id.as_str(),
                 workspace_id,
                 &self.resources,
             )?;
         }
         self.terminal_cleanup.record_preparation(
-            &self.session_id,
+            self.session_id.as_str(),
             preparation,
             repository_preparation,
         )
@@ -705,7 +705,7 @@ impl PersistedSession {
     > {
         let Some(ordinary) = self
             .terminal_cleanup
-            .terminal_provider_disposal_preparation(&self.session_id)?
+            .terminal_provider_disposal_preparation(self.session_id.as_str())?
         else {
             return Ok(None);
         };
@@ -723,7 +723,7 @@ impl PersistedSession {
     ) -> Result<Option<crate::SessionTerminalCleanupAction>, crate::SessionCleanupError> {
         let provider_disposal = self.terminal_provider_disposal_preparation()?;
         self.terminal_cleanup
-            .terminal_work_action(&self.session_id, provider_disposal.as_ref())
+            .terminal_work_action(self.session_id.as_str(), provider_disposal.as_ref())
     }
 
     /// Admit the one exact physical-disposal receipt and retire the
@@ -742,7 +742,7 @@ impl PersistedSession {
             // Environment, or Resource projection.
             return self
                 .terminal_cleanup
-                .record_disposal(&self.session_id, None, receipt);
+                .record_disposal(self.session_id.as_str(), None, receipt);
         }
         if !self
             .realization
@@ -756,14 +756,14 @@ impl PersistedSession {
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
         let command = self
             .terminal_cleanup
-            .disposal_command(&self.session_id, Some(&provider_disposal))?
+            .disposal_command(self.session_id.as_str(), Some(&provider_disposal))?
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
         self.authorize_terminal_cleanup_disposal_effect(
             workspace_id,
             &crate::SessionTerminalCleanupDisposalEffect::new(command, lease.clone()),
         )?;
         let changed = self.terminal_cleanup.record_disposal(
-            &self.session_id,
+            self.session_id.as_str(),
             Some(&provider_disposal),
             receipt,
         )?;
@@ -795,7 +795,7 @@ impl PersistedSession {
         }
         if !self
             .terminal_cleanup
-            .pending_preparation_commands(&self.session_id)?
+            .pending_preparation_commands(self.session_id.as_str())?
             .contains(&effect.command.without_restore_target())
         {
             return Err(crate::SessionCleanupError::CommandNotPending);
@@ -828,7 +828,7 @@ impl PersistedSession {
             .repository_preparation()
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
         repository_preparation.verify_for_resources(
-            &self.session_id,
+            self.session_id.as_str(),
             workspace_id,
             &self.resources,
         )?;
@@ -840,7 +840,7 @@ impl PersistedSession {
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
         if self
             .terminal_cleanup
-            .disposal_command(&self.session_id, Some(&provider_disposal))?
+            .disposal_command(self.session_id.as_str(), Some(&provider_disposal))?
             .as_ref()
             != Some(&effect.command)
         {

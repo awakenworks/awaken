@@ -226,7 +226,7 @@ mod tests {
             .run_admitted_session_for_owner(
                 "default",
                 AdmitSessionRun {
-                    session_id: session.id.clone(),
+                    session_id: awaken_session_contract::SessionId::from(&session.id),
                     agent_id: "coder".into(),
                     operation_id: operation_id.into(),
                     run_id: session_run_id(&session.id, operation_id),
@@ -250,7 +250,7 @@ mod tests {
         // test transport plumbing, not a second application completion path.
         let active_epochs = state
             .session_application()
-            .session(&session.id)
+            .session(&awaken_session_contract::SessionId::from(&session.id))
             .await
             .expect("L1 committed active Session")
             .active_activity_epochs;
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(
             state
                 .session_application()
-                .session(&session.id)
+                .session(&awaken_session_contract::SessionId::from(&session.id))
                 .await
                 .expect("L1 settled Session")
                 .execution,

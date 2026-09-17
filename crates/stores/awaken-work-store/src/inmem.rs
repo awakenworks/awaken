@@ -46,7 +46,7 @@ impl InMemoryQueueAuthority {
     fn current_session_lease(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         now_ms: u64,
     ) -> Option<SessionWorkLease> {
         let work = self
@@ -63,7 +63,7 @@ impl InMemoryQueueAuthority {
             .map(|(owner, epoch, expires_at_unix_ms)| SessionWorkLease {
                 work_id: work.id,
                 environment_id: env_id.to_string(),
-                session_id: session_id.to_string(),
+                session_id: session_id.clone(),
                 owner,
                 epoch,
                 expires_at_unix_ms,
@@ -228,13 +228,17 @@ impl WorkQueue for InMemoryWorkQueue {
     async fn enqueue_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<String, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
-        self.enqueue_session_inner(&mut authority.works, env_id, session_id)
+        self.enqueue_session_inner(&mut authority.works, env_id, session_id.as_str())
     }
 
-    async fn wake_session(&self, env_id: &str, session_id: &str) -> Result<String, WorkQueueError> {
+    async fn wake_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<String, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
         let InMemoryQueueAuthority {
             works,
@@ -413,7 +417,7 @@ impl WorkQueue for InMemoryWorkQueue {
             |(lease_owner, lease_epoch, expires_at_unix_ms)| WorkSessionAccess {
                 work_id: work_id.clone(),
                 environment_id: work.environment_id.clone(),
-                session_id: session_id.clone(),
+                session_id: awaken_session_contract::SessionId::from(session_id),
                 lease_owner,
                 lease_epoch,
                 expires_at_unix_ms,
@@ -633,7 +637,7 @@ impl WorkQueue for InMemoryWorkQueue {
     async fn retire_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
         let InMemoryQueueAuthority {
@@ -692,7 +696,7 @@ impl WorkQueue for InMemoryWorkQueue {
     async fn acquire_session(
         &self,
         env_id: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
@@ -704,7 +708,8 @@ impl WorkQueue for InMemoryWorkQueue {
             authority.book.lease(&lease.work_id, now_ms);
             return Ok(authority.current_session_lease(env_id, session_id, now_ms));
         }
-        let work_id = self.enqueue_session_inner(&mut authority.works, env_id, session_id)?;
+        let work_id =
+            self.enqueue_session_inner(&mut authority.works, env_id, session_id.as_str())?;
         {
             let InMemoryQueueAuthority {
                 works,
@@ -861,7 +866,10 @@ mod tests {
         assert_eq!(w.state, WorkState::Queued);
         assert!(matches!(w.data, WorkPayload::HealthCheck { id: ref d } if *d == id));
         let session = queue
-            .enqueue_session("env_a", "session_a")
+            .enqueue_session(
+                "env_a",
+                &awaken_session_contract::SessionId::from("session_a"),
+            )
             .await
             .expect("enqueue");
         assert_eq!(id, "work_0000000000000000", "T1/E1");
@@ -880,7 +888,10 @@ mod tests {
 
         let reversed = q();
         let session = reversed
-            .enqueue_session("env_a", "session_a")
+            .enqueue_session(
+                "env_a",
+                &awaken_session_contract::SessionId::from("session_a"),
+            )
             .await
             .expect("T2 session");
         let health = reversed
@@ -935,8 +946,14 @@ mod tests {
     #[tokio::test]
     async fn claim_leases_oldest_queued_and_caps_at_one_active() {
         let q = q();
-        let w1 = q.enqueue_session("env_a", "s1").await.expect("enqueue");
-        let _w2 = q.enqueue_session("env_a", "s2").await.expect("enqueue");
+        let w1 = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
+        let _w2 = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s2"))
+            .await
+            .expect("enqueue");
         let leased = q
             .claim("env_a", "w", 0)
             .await
@@ -964,7 +981,10 @@ mod tests {
     #[tokio::test]
     async fn an_expired_lease_is_reclaimed_on_the_next_poll() {
         let q = q();
-        let w1 = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let w1 = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         // Worker A leases it; while its lease is live, a re-poll is capped.
         assert_eq!(
             q.claim("env_a", "a", 0)
@@ -1020,7 +1040,10 @@ mod tests {
     #[tokio::test]
     async fn lease_reclaim_is_exact_at_the_ttl_boundary() {
         let q = q();
-        let w1 = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let w1 = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         assert_eq!(
             q.claim("env_a", "a", 0)
                 .await
@@ -1054,7 +1077,10 @@ mod tests {
          * accepted and stamped; E2 a different owner is rejected without a
          * state mutation. Rules A1=C1+C2->E1, A2=C1+!C2->E2. */
         let q = q();
-        let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let id = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         q.claim("env_a", "worker-a", 0)
             .await
             .expect("claim query")
@@ -1079,7 +1105,10 @@ mod tests {
         // Delayed acknowledgement/stop calls from worker-a must both stutter,
         // leaving the replacement claim active and unacknowledged.
         let q = q();
-        let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let id = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         q.claim("env_a", "worker-a", 0)
             .await
             .expect("first claim")
@@ -1105,7 +1134,10 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_extends_and_reports_ttl() {
         let q = q();
-        let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let id = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         q.claim("env_a", "worker", 0)
             .await
             .expect("claim query")
@@ -1123,7 +1155,10 @@ mod tests {
     #[tokio::test]
     async fn membership_is_enforced_across_environments() {
         let q = q();
-        let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let id = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         assert!(
             q.get("env_b", &id).await.expect("get").is_none(),
             "wrong env → none"
@@ -1152,7 +1187,10 @@ mod tests {
     async fn stats_split_queued_depth_from_pending_and_count_pollers() {
         let q = q();
         q.enqueue_healthcheck("env_a").await.expect("enqueue");
-        let s = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let s = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         // Two queued, no poll yet.
         let st = q.stats("env_a", 0).await.expect("stats");
         assert_eq!(st.depth, 2);
@@ -1172,7 +1210,9 @@ mod tests {
     #[tokio::test]
     async fn workers_polling_counts_distinct_workers_within_the_window() {
         let q = q();
-        q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        q.enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         // Two distinct workers poll; the same worker polling twice is not double-counted.
         q.claim("env_a", "w1", 0).await.expect("claim");
         q.claim("env_a", "w2", 100).await.expect("claim");
@@ -1195,7 +1235,10 @@ mod tests {
     #[tokio::test]
     async fn oldest_queued_at_persists_while_processing_and_clears_when_drained() {
         let q = q();
-        let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let id = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         // Queued: oldest_queued_at is set.
         assert!(
             q.stats("env_a", 0)
@@ -1236,7 +1279,10 @@ mod tests {
     #[tokio::test]
     async fn update_metadata_upserts_and_remove_env_purges() {
         let q = q();
-        let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        let id = q
+            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .await
+            .expect("enqueue");
         let patch = BTreeMap::from([("k".to_string(), Some("v".to_string()))]);
         let up = q
             .update_metadata("env_a", &id, patch)
@@ -1270,7 +1316,10 @@ mod tests {
         // Decision rows I1=C1+C2(current)->E1, I2=C2(wrong)->E2,
         // I3=C3->E3, I4=C4->PreconditionFailed and epoch two stays live.
         let q = q();
-        let id = q.enqueue_session("env", "sesn_1").await.unwrap();
+        let id = q
+            .enqueue_session("env", &awaken_session_contract::SessionId::from("sesn_1"))
+            .await
+            .unwrap();
         let first = q
             .claim_with_session_access("env", "owner-a", "poller", 0, None)
             .await

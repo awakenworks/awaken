@@ -12,6 +12,7 @@
 //! another); making it a checked contract forces the backends to agree by construction.
 //! Postgres joins the same suite behind its DB harness (`pg_tests.sh`).
 
+use awaken_session_contract::SessionId;
 use awaken_session_contract::work_queue::{
     HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
 };
@@ -34,7 +35,7 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 /// out exactly ONE lease, and exactly one item is Active.
 async fn single_active_cap<Q: WorkQueue>(q: &Q) {
     for i in 0..5 {
-        q.enqueue_session("env", &format!("s{i}"))
+        q.enqueue_session("env", &SessionId::from(format!("s{i}")))
             .await
             .expect("enqueue");
     }
@@ -61,7 +62,9 @@ async fn single_active_cap<Q: WorkQueue>(q: &Q) {
 /// Reclaim is exact at the TTL boundary: a live lease caps the env until `now == expiry`,
 /// then the lapsed item is reclaimable.
 async fn reclaim_at_ttl<Q: WorkQueue>(q: &Q) {
-    q.enqueue_session("env", "s0").await.expect("enqueue");
+    q.enqueue_session("env", &SessionId::from("s0"))
+        .await
+        .expect("enqueue");
     assert!(
         q.claim("env", "a", 0).await.expect("claim").is_some(),
         "first claim leases"
@@ -85,7 +88,10 @@ async fn reclaim_at_ttl<Q: WorkQueue>(q: &Q) {
 /// Requested reclaim age is measured from the last lease refresh, independently
 /// of the TTL selected by that heartbeat.
 async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
-    let id = q.enqueue_session("env", "s0").await.expect("enqueue");
+    let id = q
+        .enqueue_session("env", &SessionId::from("s0"))
+        .await
+        .expect("enqueue");
     q.claim("env", "worker-a", 0)
         .await
         .expect("claim query")
@@ -123,8 +129,12 @@ async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
 
 /// Environments lease independently: a claim in one never touches another's cap.
 async fn env_isolation<Q: WorkQueue>(q: &Q) {
-    q.enqueue_session("env_a", "a0").await.expect("enqueue a");
-    q.enqueue_session("env_b", "b0").await.expect("enqueue b");
+    q.enqueue_session("env_a", &SessionId::from("a0"))
+        .await
+        .expect("enqueue a");
+    q.enqueue_session("env_b", &SessionId::from("b0"))
+        .await
+        .expect("enqueue b");
     let la = q
         .claim("env_a", "w", 0)
         .await
@@ -154,7 +164,7 @@ async fn env_isolation<Q: WorkQueue>(q: &Q) {
 /// Stopping the active item frees the next, and no item is lost or duplicated.
 async fn stop_frees_next<Q: WorkQueue>(q: &Q) {
     for i in 0..3 {
-        q.enqueue_session("env", &format!("s{i}"))
+        q.enqueue_session("env", &SessionId::from(format!("s{i}")))
             .await
             .expect("enqueue");
     }
@@ -182,7 +192,7 @@ async fn stop_frees_next<Q: WorkQueue>(q: &Q) {
 /// remove_env purges everything: no items, nothing to claim.
 async fn remove_env_purges<Q: WorkQueue>(q: &Q) {
     for i in 0..3 {
-        q.enqueue_session("env", &format!("s{i}"))
+        q.enqueue_session("env", &SessionId::from(format!("s{i}")))
             .await
             .expect("enqueue");
     }
@@ -209,16 +219,28 @@ async fn session_enqueue_is_idempotent<Q: WorkQueue>(q: &Q) {
     // | D1 | same | same | yes | same id / one row |
     // | D2 | same | different | no | distinct id / two rows |
     // | D3 | different | same | no | distinct id in other queue |
-    let first = q.enqueue_session("env", "session-a").await.expect("D1");
-    let replay = q.enqueue_session("env", "session-a").await.expect("D1");
+    let first = q
+        .enqueue_session("env", &SessionId::from("session-a"))
+        .await
+        .expect("D1");
+    let replay = q
+        .enqueue_session("env", &SessionId::from("session-a"))
+        .await
+        .expect("D1");
     assert_eq!(replay, first, "D1 canonical identity");
     assert_eq!(q.list("env").await.expect("D1 list").len(), 1, "D1");
 
-    let other_session = q.enqueue_session("env", "session-b").await.expect("D2");
+    let other_session = q
+        .enqueue_session("env", &SessionId::from("session-b"))
+        .await
+        .expect("D2");
     assert_ne!(other_session, first, "D2");
     assert_eq!(q.list("env").await.expect("D2 list").len(), 2, "D2");
 
-    let other_env = q.enqueue_session("env-b", "session-a").await.expect("D3");
+    let other_env = q
+        .enqueue_session("env-b", &SessionId::from("session-a"))
+        .await
+        .expect("D3");
     assert_ne!(other_env, first, "D3");
     assert_eq!(q.list("env-b").await.expect("D3 list").len(), 1, "D3");
 }
@@ -227,7 +249,10 @@ async fn session_enqueue_is_idempotent<Q: WorkQueue>(q: &Q) {
 /// the returned token advances monotonically, and a stale token cannot extend
 /// the lease after a newer heartbeat has committed.
 async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
-    let id = q.enqueue_session("env", "s0").await.expect("enqueue");
+    let id = q
+        .enqueue_session("env", &SessionId::from("s0"))
+        .await
+        .expect("enqueue");
     q.claim("env", "worker", 0)
         .await
         .expect("claim query")
@@ -345,9 +370,12 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
 /// return after a partial mutation. L9 is an accepted replay, not a new owner-
 /// authorized effect: the stopped row intentionally no longer stores its owner.
 async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
-    let id = q.enqueue_session("env", "session").await.expect("L1");
+    let id = q
+        .enqueue_session("env", &SessionId::from("session"))
+        .await
+        .expect("L1");
     let first = q
-        .acquire_session("env", "session", "owner-a", 0)
+        .acquire_session("env", &SessionId::from("session"), "owner-a", 0)
         .await
         .expect("L1")
         .expect("L1 lease");
@@ -358,7 +386,7 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
     );
 
     let renewed = q
-        .acquire_session("env", "session", "owner-a", 10)
+        .acquire_session("env", &SessionId::from("session"), "owner-a", 10)
         .await
         .expect("L2")
         .expect("L2 lease");
@@ -368,7 +396,7 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
         "L2/E1"
     );
     let fenced = q
-        .acquire_session("env", "session", "owner-b", 11)
+        .acquire_session("env", &SessionId::from("session"), "owner-b", 11)
         .await
         .expect("L3")
         .expect("L3 returns the current lease for typed fencing");
@@ -394,22 +422,32 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
             .is_accepted()
     );
 
-    assert_eq!(q.enqueue_session("env", "session").await.expect("L4"), id);
+    assert_eq!(
+        q.enqueue_session("env", &SessionId::from("session"))
+            .await
+            .expect("L4"),
+        id
+    );
     assert_eq!(
         q.get("env", &id).await.unwrap().unwrap().state,
         WorkState::Stopped,
         "L4/E3"
     );
     assert!(
-        q.acquire_session("env", "session", "owner-b", 20)
+        q.acquire_session("env", &SessionId::from("session"), "owner-b", 20)
             .await
             .expect("L4")
             .is_none(),
         "L4/E3 exact acquire cannot bypass explicit wake"
     );
-    assert_eq!(q.wake_session("env", "session").await.expect("L5"), id);
+    assert_eq!(
+        q.wake_session("env", &SessionId::from("session"))
+            .await
+            .expect("L5"),
+        id
+    );
     let replacement = q
-        .acquire_session("env", "session", "owner-a", 20)
+        .acquire_session("env", &SessionId::from("session"), "owner-a", 20)
         .await
         .expect("L5")
         .expect("L5 lease");
@@ -468,7 +506,7 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
         // The existing acquire contract returns another owner's current lease
         // without renewing it; this observes owner/epoch/expiry, not a repair.
         let current = q
-            .acquire_session("env", "session", "observer", 20)
+            .acquire_session("env", &SessionId::from("session"), "observer", 20)
             .await
             .expect("L7 read current authority");
         assert_eq!(current.as_ref(), Some(&replacement), "L7/E2 {field}");
@@ -489,7 +527,7 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
         let after = q.get("env", &id).await.unwrap().unwrap();
         assert_eq!(projection(&after), projection(&stopped), "L9/E5");
         assert!(
-            q.acquire_session("env", "session", "observer", 20)
+            q.acquire_session("env", &SessionId::from("session"), "observer", 20)
                 .await
                 .expect("L9 no authority")
                 .is_none(),
@@ -508,12 +546,21 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
 /// Session makes recovery impossible; releasing by reusable worker id would revoke
 /// a replacement generation. Exact incarnation requeue avoids all three.
 async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
-    let first = q.enqueue_session("env-a", "first").await.expect("G1");
-    q.enqueue_session("env-a", "next")
+    let first = q
+        .enqueue_session("env-a", &SessionId::from("first"))
+        .await
+        .expect("G1");
+    q.enqueue_session("env-a", &SessionId::from("next"))
         .await
         .expect("G1 successor");
-    let second = q.enqueue_session("env-b", "second").await.expect("G1");
-    let unrelated = q.enqueue_session("env-c", "other").await.expect("G2");
+    let second = q
+        .enqueue_session("env-b", &SessionId::from("second"))
+        .await
+        .expect("G1");
+    let unrelated = q
+        .enqueue_session("env-c", &SessionId::from("other"))
+        .await
+        .expect("G2");
     q.claim("env-a", "worker:1:old", 0).await.unwrap().unwrap();
     q.claim("env-b", "worker:1:old", 0).await.unwrap().unwrap();
     q.claim("env-c", "worker:2:new", 0).await.unwrap().unwrap();
@@ -559,7 +606,10 @@ async fn reclaim_age_boundary_cases(q: &impl WorkQueue) {
     // These distinguish None from Some(0), catch an omitted shared cutoff,
     // and assert the same Work identity survives each accepted re-claim.
     let environment = "env_reclaim_cutoff";
-    let id = q.enqueue_session(environment, "s1").await.unwrap();
+    let id = q
+        .enqueue_session(environment, &SessionId::from("s1"))
+        .await
+        .unwrap();
     assert_eq!(q.claim(environment, "a", 0).await.unwrap().unwrap().id, id);
     for (now, age, expected) in [
         (1, None, false),

@@ -125,7 +125,7 @@ impl SharedHost {
         &self,
         command: &awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<SessionReplyReceipt, HostError> {
-        if command.session_id.trim().is_empty()
+        if command.session_id.as_str().trim().is_empty()
             || command.expected_run_id.0.trim().is_empty()
             || command.expected_correlation_id.trim().is_empty()
             || command.tool_use_id.trim().is_empty()
@@ -134,8 +134,8 @@ impl SharedHost {
                 "Session Thread tool reply is incomplete",
             ));
         }
-        let thread_id = command.target.thread_id(&command.session_id);
-        let commit = self.commit_for_read(&command.session_id).await?;
+        let thread_id = command.target.thread_id(command.session_id.as_str());
+        let commit = self.commit_for_read(command.session_id.as_str()).await?;
         let snapshot = commit
             .recovery_snapshot(&thread_id, &command.expected_run_id)
             .await

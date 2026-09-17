@@ -47,7 +47,10 @@ pub(super) async fn session_repository_publication_poll(
             .await?;
         let projection = session_control(&service)
             .map_err(RealizationHttpError::from)?
-            .terminal_repository_publication_command(&request.session_id, &request.lease)
+            .terminal_repository_publication_command(
+                &awaken_session_contract::SessionId::from(request.session_id),
+                &request.lease,
+            )
             .await
             .map_err(RealizationHttpError::from)?;
         Ok(json!({ "projection": projection }))
@@ -67,7 +70,7 @@ pub(super) async fn session_repository_publication_complete(
         session_control(&service)
             .map_err(RealizationHttpError::from)?
             .record_terminal_repository_publication_receipt(
-                &request.session_id,
+                &awaken_session_contract::SessionId::from(request.session_id),
                 &request.lease,
                 request.receipt,
             )
@@ -90,7 +93,7 @@ pub(super) async fn session_repository_publication_reject(
         session_control(&service)
             .map_err(RealizationHttpError::from)?
             .record_terminal_repository_publication_rejection(
-                &request.session_id,
+                &awaken_session_contract::SessionId::from(request.session_id),
                 &request.lease,
                 request.rejection,
             )

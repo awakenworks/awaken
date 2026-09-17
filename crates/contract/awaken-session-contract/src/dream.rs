@@ -29,12 +29,12 @@ pub struct DreamProcessRecord {
     pub source_memory_store_id: String,
     #[serde(default)]
     pub output_behavior: DreamOutputBehavior,
-    pub session_ids: Vec<String>,
+    pub session_ids: Vec<crate::SessionId>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
     pub agent_id: String,
     pub result_memory_store_id: Option<String>,
-    pub session_id: Option<String>,
+    pub session_id: Option<crate::SessionId>,
     #[serde(default)]
     pub transcript_file_ids: Vec<String>,
     #[serde(default)]
@@ -56,7 +56,7 @@ struct StoredDreamProcessRecord {
     source_memory_store_id: String,
     #[serde(default)]
     output_behavior: DreamOutputBehavior,
-    session_ids: Vec<String>,
+    session_ids: Vec<crate::SessionId>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
     #[serde(default)]
@@ -64,7 +64,7 @@ struct StoredDreamProcessRecord {
     #[serde(default)]
     agent_selection: Option<LegacyDreamAgentSelection>,
     result_memory_store_id: Option<String>,
-    session_id: Option<String>,
+    session_id: Option<crate::SessionId>,
     #[serde(default)]
     transcript_file_ids: Vec<String>,
     #[serde(default)]
@@ -164,7 +164,7 @@ pub trait DreamProcessStore: Send + Sync {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DreamInput {
     MemoryStore { memory_store_id: String },
-    Sessions { session_ids: Vec<String> },
+    Sessions { session_ids: Vec<crate::SessionId> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -552,7 +552,7 @@ pub struct Dream {
     pub model: DreamModelConfig,
     pub output_behavior: DreamOutputBehavior,
     pub outputs: Vec<DreamOutput>,
-    pub session_id: Option<String>,
+    pub session_id: Option<crate::SessionId>,
     pub status: DreamStatus,
     pub usage: DreamUsage,
 }

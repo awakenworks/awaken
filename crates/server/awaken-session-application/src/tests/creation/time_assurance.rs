@@ -64,20 +64,27 @@ async fn application_creation_time_survives_process_crash_boundaries() {
         if mode == "before" {
             assert!(
                 matches!(
-                    repo.get("time-assurance").await,
+                    repo.get(&awaken_session_contract::SessionId::from("time-assurance"))
+                        .await,
                     Err(SessionRepositoryError::NotFound)
                 ),
                 "T5"
             );
         } else {
-            let durable = repo.get("time-assurance").await.unwrap();
+            let durable = repo
+                .get(&awaken_session_contract::SessionId::from("time-assurance"))
+                .await
+                .unwrap();
             assert_eq!(durable.created_at_unix_ms, Some(100), "T7 creation");
             assert_eq!(durable.updated_at_unix_ms, Some(100), "T7 atomic root");
             assert!(durable.frozen_baseline().is_some(), "T7 complete root");
         }
         // Replay may complete later activation; it must never recreate the root
         // or replace the original creation time with the recovery clock.
-        let prior = repo.get("time-assurance").await.ok();
+        let prior = repo
+            .get(&awaken_session_contract::SessionId::from("time-assurance"))
+            .await
+            .ok();
         let app = timed_application(repo.clone(), 2_000);
         let recovered = app.create_session(command()).await.unwrap();
         crash_traces.push(super::super::observation_refinement::root_observation(

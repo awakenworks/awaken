@@ -33,7 +33,11 @@ impl ManagedState {
         };
         if let Some(persisted) = self
             .application
-            .replay_session_create(&workspace_id, &session_id, &idempotency)
+            .replay_session_create(
+                &workspace_id,
+                &awaken_session_contract::SessionId::from(&session_id),
+                &idempotency,
+            )
             .await
             .map_err(Self::map_create_replay_error)?
         {
@@ -192,7 +196,11 @@ mod tests {
             );
         }
         assert_eq!(
-            repo.get(&created.id).await.unwrap().title.as_deref(),
+            repo.get(&awaken_session_contract::SessionId::from(created.id))
+                .await
+                .unwrap()
+                .title
+                .as_deref(),
             Some("first")
         );
     }

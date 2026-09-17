@@ -3,6 +3,7 @@
 //! frozen generation-1 state and realization claims are durable before Runtime
 //! I/O; a failed realization fails the create with the mapped error envelope.
 
+use awaken_session_contract::SessionId;
 mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -124,7 +125,7 @@ impl SessionRuntime for PreparingFake {
                 }
         ) {
             if let Some(repo) = &self.repo {
-                match repo.get(thread).await {
+                match repo.get(&SessionId::from(thread)).await {
                     Ok(session) => self.observed_durable.lock().unwrap().push(session),
                     Err(awaken_session_contract::SessionRepositoryError::NotFound) => {}
                     Err(error) => return Err(RunError::internal(error.to_string())),
@@ -176,7 +177,7 @@ impl SessionRuntime for PreparingFake {
     }
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _thread_id: &str,
     ) -> Result<Option<RunRecoverySnapshot>, RunError> {
         // This fixture never commits a Run. Explicit absence keeps it honest
@@ -317,7 +318,7 @@ impl SessionRuntime for HotRuntime {
     }
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _thread_id: &str,
     ) -> Result<Option<RunRecoverySnapshot>, RunError> {
         // Hot MCP replacement mutates only the Session aggregate; no fixture
@@ -793,7 +794,11 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         );
     }
     let session_id = session["id"].as_str().expect("created Session id");
-    let active = h.repo.get(session_id).await.expect("active aggregate");
+    let active = h
+        .repo
+        .get(&SessionId::from(session_id))
+        .await
+        .expect("active aggregate");
     assert_eq!(
         active.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Active,
@@ -1065,7 +1070,11 @@ async fn session_without_mcp_servers_echoes_empty_and_prepares_an_empty_init() {
     }
     assert!(h.staged.lock().unwrap().is_empty());
     let session_id = session["id"].as_str().expect("A3 Session id");
-    let durable = h.repo.get(session_id).await.expect("A3 aggregate");
+    let durable = h
+        .repo
+        .get(&SessionId::from(session_id))
+        .await
+        .expect("A3 aggregate");
     assert!(durable.mcp.attachments.is_empty(), "A3/E1");
 }
 
@@ -1369,7 +1378,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         );
         assert_eq!(state.drained.last().unwrap().generation.version(), 1, "H3");
     }
-    let durable = h.repo.get(id).await.expect("H3 durable");
+    let durable = h.repo.get(&SessionId::from(id)).await.expect("H3 durable");
     assert_eq!(durable.visible_mcp_servers().len(), 1, "H3");
     assert_eq!(
         durable.mcp.attachments[0].state,
@@ -1428,7 +1437,11 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     )
     .await
     .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "H5");
-    let durable = failed.repo.get(failed_id).await.expect("H5 durable");
+    let durable = failed
+        .repo
+        .get(&SessionId::from(failed_id))
+        .await
+        .expect("H5 durable");
     assert_eq!(
         durable.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Active,
@@ -1489,7 +1502,11 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         ),
     )
     .await.expect_for(StatusCode::INTERNAL_SERVER_ERROR, "H7");
-    let durable = mismatch.repo.get(mismatch_id).await.expect("H7 durable");
+    let durable = mismatch
+        .repo
+        .get(&SessionId::from(mismatch_id))
+        .await
+        .expect("H7 durable");
     assert_eq!(
         durable.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Failed,
@@ -1574,7 +1591,7 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     .await
     .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
-    let mut requested = h.repo.get(id).await.unwrap();
+    let mut requested = h.repo.get(&SessionId::from(id)).await.unwrap();
     requested
         .mcp
         .request_full_replacement(
@@ -1598,7 +1615,7 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     .await;
 
     assert_eq!(h.managed.reconcile_session_realizations().await, 1, "R1");
-    let mut active = h.repo.get(id).await.unwrap();
+    let mut active = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         active.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Active,
@@ -1616,7 +1633,7 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     )
     .await;
     assert_eq!(h.managed.reconcile_session_realizations().await, 1, "R2");
-    let active = h.repo.get(id).await.unwrap();
+    let active = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert!(
         active.realization.as_ref().unwrap().epoch > first_epoch,
         "R2"
@@ -1640,7 +1657,7 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     .await;
     let staged_before = h.state.lock().unwrap().staged.len();
     assert_eq!(h.managed.reconcile_session_realizations().await, 1, "R3");
-    let removed = h.repo.get(id).await.unwrap();
+    let removed = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         removed.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Removed,
@@ -1683,7 +1700,7 @@ async fn mcp_recovery_retry_decision_table_case() {
     .await
     .expect(StatusCode::OK);
     let retry_id = created["id"].as_str().unwrap();
-    let mut retry = h.repo.get(retry_id).await.unwrap();
+    let mut retry = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
     retry
         .mcp
         .request_full_replacement(
@@ -1701,7 +1718,7 @@ async fn mcp_recovery_retry_decision_table_case() {
     replace_session_fixture(h.repo.as_ref(), "default", retry, "test:recovery-retry").await;
     h.state.lock().unwrap().mode = HotStageMode::FailNext;
     assert_eq!(h.managed.reconcile_session_realizations().await, 0, "R5");
-    let failed_retry = h.repo.get(retry_id).await.unwrap();
+    let failed_retry = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
     assert_eq!(
         failed_retry.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Failed,
@@ -1721,7 +1738,7 @@ async fn mcp_recovery_retry_decision_table_case() {
     )
     .await
     .expect_for(StatusCode::OK, "R6");
-    let retried = h.repo.get(retry_id).await.unwrap();
+    let retried = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
     assert_eq!(retried.mcp.attachments.len(), 2, "R6");
     assert_eq!(
         retried.mcp.attachments[1].state,
@@ -1772,7 +1789,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
     )
     .await
     .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "P1");
-    let unacknowledged = h.repo.get(id).await.unwrap();
+    let unacknowledged = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         unacknowledged.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Active,
@@ -1792,7 +1809,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
     .await
     .expect_for(StatusCode::OK, "P2");
     assert_eq!(recovered["agent"]["mcp_servers"], json!([desired]), "P2");
-    let acknowledged = h.repo.get(id).await.unwrap();
+    let acknowledged = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(acknowledged.mcp.attachments.len(), 1, "P2 same generation");
     assert!(
         acknowledged.mcp.attachments[0].publication_acknowledged,
@@ -1809,7 +1826,13 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
     .await
     .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "P3");
     assert_eq!(
-        h.repo.get(id).await.unwrap().mcp.attachments[0].state,
+        h.repo
+            .get(&SessionId::from(id))
+            .await
+            .unwrap()
+            .mcp
+            .attachments[0]
+            .state,
         awaken_session_contract::McpAttachmentState::Draining,
         "P3"
     );
@@ -1824,7 +1847,13 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
     .expect_for(StatusCode::OK, "P4");
     assert_eq!(removed["agent"]["mcp_servers"], json!([]), "P4");
     assert_eq!(
-        h.repo.get(id).await.unwrap().mcp.attachments[0].state,
+        h.repo
+            .get(&SessionId::from(id))
+            .await
+            .unwrap()
+            .mcp
+            .attachments[0]
+            .state,
         awaken_session_contract::McpAttachmentState::Removed,
         "P4"
     );
@@ -1915,7 +1944,7 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     );
     let legacy_receipt = h
         .repo
-        .idempotency_receipt(id, &legacy_key)
+        .idempotency_receipt(&SessionId::from(id), &legacy_key)
         .await
         .expect("I2c receipt read")
         .expect("I2c stable pre-upgrade receipt namespace");
@@ -1961,7 +1990,11 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     // I2b setup reads the current root fence. The command receipt remains the
     // application-layer idempotency authority, while every wire response pairs
     // its current body with the current root revision from one cache snapshot.
-    let durable_after_replay = h.repo.get(id).await.expect("I2b durable root");
+    let durable_after_replay = h
+        .repo
+        .get(&SessionId::from(id))
+        .await
+        .expect("I2b durable root");
     assert!(
         durable_after_replay.revision > legacy_receipt.committed_revision,
         "I2b realization advances beyond the command receipt"
@@ -2078,7 +2111,9 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     .expect_for(StatusCode::OK, "I6");
     assert_eq!(updated["agent"]["tools"], expected_tools, "I6");
     assert_eq!(
-        awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
+        awaken_protocol_managed::project::managed_tools(
+            &h.repo.get(&SessionId::from(id)).await.unwrap().tools
+        ),
         serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(expected_tools).unwrap(),
         "I6"
     );
@@ -2130,7 +2165,11 @@ async fn create_conflict_after_root_commit_returns_one_recoverable_session() {
         .await
         .expect_for(StatusCode::OK, "/E1");
         let id = created["id"].as_str().expect("E1 Session id");
-        let durable = h.repo.get(id).await.expect("E1 durable root");
+        let durable = h
+            .repo
+            .get(&SessionId::from(id))
+            .await
+            .expect("E1 durable root");
         assert_eq!(
             response_headers["etag"].to_str().unwrap(),
             format!("\"{}\"", durable.revision.0),
@@ -2164,7 +2203,11 @@ async fn create_conflict_after_root_commit_returns_one_recoverable_session() {
             )
             .await
             .expect_for(StatusCode::CONFLICT, "P3/E4");
-            assert_eq!(h.repo.get(id).await.unwrap(), durable, "P3/E4");
+            assert_eq!(
+                h.repo.get(&SessionId::from(id)).await.unwrap(),
+                durable,
+                "P3/E4"
+            );
         }
     }
 }
@@ -2218,7 +2261,9 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "T1");
     assert_eq!(h.state.lock().unwrap().replaced_tools.len(), 1, "T1");
     assert_eq!(
-        awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
+        awaken_protocol_managed::project::managed_tools(
+            &h.repo.get(&SessionId::from(id)).await.unwrap().tools
+        ),
         serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(tools.clone()).unwrap(),
         "T1 durable truth"
     );
@@ -2311,7 +2356,17 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     .expect_for(StatusCode::OK, "C1");
     assert_eq!(updated["agent"]["mcp_servers"], json!([desired]), "C1");
     assert_eq!(h.state.lock().unwrap().staged.len(), 1, "C1");
-    assert_eq!(h.repo.get(id).await.unwrap().mcp.attachments.len(), 1, "C1");
+    assert_eq!(
+        h.repo
+            .get(&SessionId::from(id))
+            .await
+            .unwrap()
+            .mcp
+            .attachments
+            .len(),
+        1,
+        "C1"
+    );
 
     let (get_headers, _) =
         call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[])
@@ -2331,7 +2386,12 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     .expect_for(StatusCode::CONFLICT, "C2");
     assert_eq!(h.state.lock().unwrap().staged.len(), effects, "C2");
     assert_ne!(
-        h.repo.get(id).await.unwrap().title.as_deref(),
+        h.repo
+            .get(&SessionId::from(id))
+            .await
+            .unwrap()
+            .title
+            .as_deref(),
         Some("must-not-apply"),
         "C2"
     );
@@ -2342,7 +2402,11 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         "managed:update-command:{id}:{}",
         awaken_session_application::SessionApplication::update_operation_id(id, c3_idempotency_key)
     );
-    let durable_before_c3 = h.repo.get(id).await.expect("C3 root before command");
+    let durable_before_c3 = h
+        .repo
+        .get(&SessionId::from(id))
+        .await
+        .expect("C3 root before command");
     conflicts.conflict_on_next(4);
     let staged_before = h.state.lock().unwrap().staged.len();
     let (failed_headers, failed) = call_with_headers(
@@ -2366,7 +2430,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     );
     let committed_receipt = h
         .repo
-        .idempotency_receipt(id, &c3_receipt_key)
+        .idempotency_receipt(&SessionId::from(id), &c3_receipt_key)
         .await
         .expect("C3 receipt read")
         .expect("C3 command receipt committed before realization");
@@ -2375,7 +2439,11 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         durable_before_c3.revision.0 + 1,
         "C3 one command root CAS"
     );
-    let durable_after_conflict = h.repo.get(id).await.expect("C3 committed durable root");
+    let durable_after_conflict = h
+        .repo
+        .get(&SessionId::from(id))
+        .await
+        .expect("C3 committed durable root");
     assert_eq!(
         durable_after_conflict.revision.0,
         committed_receipt.committed_revision.0 + 2,
@@ -2411,7 +2479,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     .await
     .expect_for(StatusCode::OK, "C3 exact receipt replay repairs");
     assert_eq!(updated["agent"]["mcp_servers"], json!([replacement]), "C3");
-    let durable = h.repo.get(id).await.unwrap();
+    let durable = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         replay_headers["etag"].to_str().unwrap(),
         format!("\"{}\"", durable.revision.0),
@@ -2434,7 +2502,11 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
             .await
             .expect(StatusCode::OK);
     let etag = get_headers["etag"].to_str().unwrap();
-    let durable_before_c4 = h.repo.get(id).await.expect("C4 root before command");
+    let durable_before_c4 = h
+        .repo
+        .get(&SessionId::from(id))
+        .await
+        .expect("C4 root before command");
     assert_eq!(
         etag,
         format!("\"{}\"", durable_before_c4.revision.0),
@@ -2463,7 +2535,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         failed["error"]["message"], "Session changed concurrently",
         "C4 exact post-commit cause"
     );
-    let durable = h.repo.get(id).await.unwrap();
+    let durable = h.repo.get(&SessionId::from(id)).await.unwrap();
     let desired_after_c4 = durable.mcp.desired_attachments();
     assert_eq!(
         desired_after_c4.len(),
@@ -2587,7 +2659,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         }
         async fn session_thread_recovery_snapshot(
             &self,
-            _session_id: &str,
+            _session_id: &SessionId,
             _thread_id: &str,
         ) -> Result<Option<RunRecoverySnapshot>, RunError> {
             // `owns_thread` is the only durable evidence in this minting case;

@@ -147,7 +147,7 @@ struct RecordingSessionCoordination {
 impl awaken_session_contract::SessionAgentCoordination for RecordingSessionCoordination {
     async fn list_session_agents(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
     ) -> Result<
         Vec<awaken_session_contract::SessionAgentRosterEntry>,
         awaken_session_contract::RunError,
@@ -182,7 +182,7 @@ impl awaken_session_contract::SessionAgentCoordination for RecordingSessionCoord
 
     async fn interrupt_session_thread(
         &self,
-        _session_id: &str,
+        _session_id: &awaken_session_contract::SessionId,
         _child_thread_id: &ThreadId,
     ) -> Result<(), awaken_session_contract::RunError> {
         Ok(())
@@ -249,7 +249,7 @@ enum WorkMode {
 impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for RecordingSessionWork {
     async fn acquire_session_work(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         worker_owner: &str,
         now_ms: u64,
         _acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
@@ -274,7 +274,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for Recordin
                 awaken_session_contract::work_queue::SessionWorkLease {
                     work_id: format!("work-{session_id}"),
                     environment_id: "env".into(),
-                    session_id: session_id.into(),
+                    session_id: session_id.clone(),
                     owner: if matches!(mode, WorkMode::Foreign) {
                         "other-worker".into()
                     } else {

@@ -27,18 +27,26 @@ pub(super) async fn deletion_observation(
     session_id: &str,
     owner_scope: &str,
 ) -> serde_json::Value {
-    let root = match repo.get(session_id).await {
+    let root = match repo
+        .get(&awaken_session_contract::SessionId::from(session_id))
+        .await
+    {
         Ok(root) => Some(root),
         Err(awaken_session_contract::SessionRepositoryError::NotFound) => None,
         Err(error) => panic!("deletion observation failed: {error}"),
     };
     let tombstone = repo
-        .deleted_event_admissions(owner_scope, session_id)
+        .deleted_event_admissions(
+            owner_scope,
+            &awaken_session_contract::SessionId::from(session_id),
+        )
         .await
         .expect("deletion evidence");
     let owner = if root.is_some() {
         assert!(tombstone.is_none(), "live root has no tombstone");
-        repo.owner(session_id).await.expect("durable owner")
+        repo.owner(&awaken_session_contract::SessionId::from(session_id))
+            .await
+            .expect("durable owner")
     } else {
         assert!(
             tombstone.is_some(),

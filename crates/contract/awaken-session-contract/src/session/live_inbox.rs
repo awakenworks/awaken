@@ -68,27 +68,27 @@ pub trait LiveInboxApplication: Send + Sync {
     async fn snapshot(
         &self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
     ) -> Result<LiveInboxSnapshot, LiveInboxApplicationError>;
 
     async fn queue(
         &self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
         content: Vec<ContentBlock>,
     ) -> Result<u64, LiveInboxApplicationError>;
 
     async fn remove(
         &self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
         message_id: u64,
     ) -> Result<(), LiveInboxApplicationError>;
 
     async fn replace(
         &self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
         message_id: u64,
         content: Vec<ContentBlock>,
     ) -> Result<(), LiveInboxApplicationError>;
@@ -96,7 +96,7 @@ pub trait LiveInboxApplication: Send + Sync {
     async fn reorder(
         &self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
         order: Vec<u64>,
     ) -> Result<(), LiveInboxApplicationError>;
 }

@@ -50,7 +50,11 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                 .await
                 .unwrap();
             let run = RunId("cancelled-model".into());
-            let activity = warm.application.begin_activity(&session.id).await.unwrap();
+            let activity = warm
+                .application
+                .begin_activity(&awaken_session_contract::SessionId::from(&session.id))
+                .await
+                .unwrap();
             runtime.lifecycle.lock().unwrap().extend([
                 lifecycle(
                     1,
@@ -105,7 +109,7 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
             }
             warm.application
                 .settle_activity_observed(
-                    &session.id,
+                    &awaken_session_contract::SessionId::from(&session.id),
                     activity.activity_epoch,
                     Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                         activity_epoch: activity.activity_epoch,
@@ -207,7 +211,7 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
             0,
             "child",
             awaken_session_contract::CoordinatedThreadLink {
-                session_id: session.id.clone(),
+                session_id: awaken_session_contract::SessionId::from(&session.id),
                 thread_id: ThreadId(child_id.into()),
                 target: awaken_session_contract::CoordinatedThreadTarget::Agent {
                     agent_id: "researcher".into(),

@@ -631,14 +631,14 @@ impl SqliteManagedSessionRepository {
     ) -> Result<(), SessionRepositoryError> {
         tx.execute(
             "DELETE FROM managed_session_vault_reference WHERE session_id = ?1",
-            params![session.session_id],
+            params![session.session_id.as_str()],
         )
         .map_err(storage)?;
         for vault_id in referenced_vault_ids(session) {
             tx.execute(
                 "INSERT INTO managed_session_vault_reference (session_id, vault_id) \
                  VALUES (?1, ?2)",
-                params![session.session_id, vault_id],
+                params![session.session_id.as_str(), vault_id],
             )
             .map_err(storage)?;
         }
@@ -649,13 +649,13 @@ impl SqliteManagedSessionRepository {
                     (session_id, observed_revision) VALUES (?1, ?2) \
                  ON CONFLICT (session_id) DO UPDATE SET \
                     observed_revision = excluded.observed_revision",
-                params![session.session_id, db_revision(session.revision)?],
+                params![session.session_id.as_str(), db_revision(session.revision)?],
             )
             .map_err(storage)?;
         } else {
             tx.execute(
                 "DELETE FROM managed_session_reconciliation_work WHERE session_id = ?1",
-                params![session.session_id],
+                params![session.session_id.as_str()],
             )
             .map_err(storage)?;
         }
@@ -668,14 +668,14 @@ impl SqliteManagedSessionRepository {
     ) -> Result<(), SessionRepositoryError> {
         tx.execute(
             "DELETE FROM managed_session_credential_source_reference WHERE session_id = ?1",
-            params![session.session_id],
+            params![session.session_id.as_str()],
         )
         .map_err(storage)?;
         for source_id in referenced_mcp_credential_source_ids(session) {
             tx.execute(
                 "INSERT INTO managed_session_credential_source_reference \
                     (session_id, credential_source_id) VALUES (?1, ?2)",
-                params![session.session_id, source_id],
+                params![session.session_id.as_str(), source_id],
             )
             .map_err(storage)?;
         }
@@ -826,7 +826,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             if let Some(replayed) = Self::create_replay(
                 &tx,
                 &owner_scope,
-                &session.session_id,
+                session.session_id.as_str(),
                 &idempotency,
                 MissingCreateReceipt::AllowInsertFence,
             )? {
@@ -841,7 +841,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                      VALUES (?1, ?2, ?3, ?4) \
                      ON CONFLICT (session_id) DO NOTHING",
                     params![
-                        session.session_id,
+                        session.session_id.as_str(),
                         owner_scope,
                         db_revision(new_revision)?,
                         aggregate_str(&session)?,
@@ -852,7 +852,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 if let Some(replayed) = Self::create_replay(
                     &tx,
                     &owner_scope,
-                    &session.session_id,
+                    session.session_id.as_str(),
                     &idempotency,
                     MissingCreateReceipt::RejectOccupied,
                 )? {
@@ -865,7 +865,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             // A concurrent delete can win after the first tombstone read. Recheck
             // in this same write transaction before any index, receipt, or outbox
             // row makes a deleted identity live again.
-            if Self::is_tombstoned(&tx, &session.session_id)? {
+            if Self::is_tombstoned(&tx, session.session_id.as_str())? {
                 return Err(SessionRepositoryError::Conflict(
                     SessionRepositoryConflict::Tombstoned,
                 ));
@@ -876,7 +876,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     (session_id, idempotency_key, payload_hash, committed_revision)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![
-                    session.session_id,
+                    session.session_id.as_str(),
                     idempotency.key,
                     idempotency.payload_hash,
                     db_revision(new_revision)?,
@@ -899,11 +899,11 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     async fn replay_create(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         if owner_scope.trim().is_empty()
-            || session_id.trim().is_empty()
+            || session_id.as_str().trim().is_empty()
             || idempotency.key.trim().is_empty()
             || idempotency.payload_hash.trim().is_empty()
         {
@@ -1018,7 +1018,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         aggregate_json = ?2, revision = ?3
                      WHERE session_id = ?1 AND scope_id = ?4 AND revision = ?5",
                             params![
-                                replacement.session_id,
+                                replacement.session_id.as_str(),
                                 aggregate_str(&replacement)?,
                                 db_revision(next)?,
                                 owner_scope,
@@ -1047,7 +1047,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
                         params![
-                            tombstone.session_id,
+                            tombstone.session_id.as_str(),
                             owner_scope,
                             db_revision(tombstone.deleted_revision)?,
                             tombstone.deleted_at,
@@ -1128,7 +1128,10 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .await
     }
 
-    async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError> {
+    async fn get(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<PersistedSession, SessionRepositoryError> {
         let session_id = session_id.to_string();
         self.with_connection(move |conn| {
             let raw = conn
@@ -1279,7 +1282,9 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     let rows = quarantined
                         .query_map(params![RECOVERY_BATCH_SIZE], |row| {
                             Ok(SessionRecoveryQuarantine {
-                                session_id: row.get(0)?,
+                                session_id: awaken_session_contract::SessionId::from(
+                                    row.get::<_, String>(0)?,
+                                ),
                                 reason: row.get(1)?,
                             })
                         })
@@ -1401,7 +1406,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
 
     async fn idempotency_receipt(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         key: &str,
     ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
     {
@@ -1435,7 +1440,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     async fn deleted_event_admissions(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
     ) -> Result<
         Option<awaken_session_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
@@ -1449,7 +1454,10 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         }).await
     }
 
-    async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError> {
+    async fn owner(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<String, SessionRepositoryError> {
         let session_id = session_id.to_string();
         self.with_connection(move |conn| {
             conn.query_row(

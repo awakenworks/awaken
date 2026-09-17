@@ -1,6 +1,7 @@
 //! The production request identity is wired through lifecycle and dispatch
 //! clients over a real socket, including the post-registration incarnation bind.
 
+use awaken_session_contract::SessionId;
 #[path = "signed_worker_transport_http/attempt_binding.rs"]
 mod attempt_binding;
 
@@ -172,7 +173,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
 
     async fn acquire_session_work(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         worker_owner: &str,
         now_ms: u64,
         _acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
@@ -198,7 +199,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
                     awaken_session_contract::work_queue::SessionWorkLease {
                         work_id: "work-session".into(),
                         environment_id: "env".into(),
-                        session_id: session_id.into(),
+                        session_id: session_id.clone(),
                         owner: owner.clone().expect("checked existing owner"),
                         epoch: 1,
                         expires_at_unix_ms: now_ms + 60_000,
@@ -212,7 +213,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
                 awaken_session_contract::work_queue::SessionWorkLease {
                     work_id: "work-session".into(),
                     environment_id: "env".into(),
-                    session_id: session_id.into(),
+                    session_id: session_id.clone(),
                     owner: worker_owner.into(),
                     epoch: 1,
                     expires_at_unix_ms: now_ms + 60_000,
@@ -228,7 +229,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
         self.released_sessions
             .lock()
             .unwrap()
-            .push(lease.session_id.clone());
+            .push(lease.session_id.to_string());
         let mut owner = self.owner.lock().unwrap();
         if owner.as_deref() != Some(lease.owner.as_str()) {
             return Ok(false);
@@ -432,7 +433,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
 
     async fn terminal_cleanup_work(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionTerminalCleanupWork>,
@@ -450,7 +451,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
         Ok(Some(awaken_session_contract::SessionTerminalCleanupWork {
             assignment: awaken_session_contract::SessionTerminalCleanupAssignment {
-                session_id: session_id.to_string(),
+                session_id: session_id.clone(),
                 projection,
                 authority: self.receipt(lease.clone())?,
             },
@@ -511,7 +512,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
 
     async fn terminal_repository_publication_command(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
@@ -527,7 +528,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
 
     async fn record_terminal_repository_publication_receipt(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _lease: &awaken_session_contract::SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
@@ -541,7 +542,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
 
     async fn record_terminal_repository_publication_rejection(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _lease: &awaken_session_contract::SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
@@ -558,7 +559,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
 impl awaken_session_contract::SessionAgentCoordination for RecordingSessionControl {
     async fn list_session_agents(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
     ) -> Result<
         Vec<awaken_session_contract::SessionAgentRosterEntry>,
         awaken_session_contract::RunError,
@@ -594,7 +595,7 @@ impl awaken_session_contract::SessionAgentCoordination for RecordingSessionContr
 
     async fn interrupt_session_thread(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _child_thread_id: &ThreadId,
     ) -> Result<(), awaken_session_contract::RunError> {
         Err(awaken_session_contract::RunError::internal(

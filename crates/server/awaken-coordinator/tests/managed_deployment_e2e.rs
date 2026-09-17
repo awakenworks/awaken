@@ -234,13 +234,13 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     runtime_publications
         .available
         .store(false, Ordering::Release);
-    let error = Box::pin(
-        managed
-            .session_application()
-            .drive_session_event_batches(&session_id, None),
-    )
-    .await
-    .expect_err("D2 lifecycle execution must observe the unavailable publication");
+    let error =
+        Box::pin(managed.session_application().drive_session_event_batches(
+            &awaken_session_contract::SessionId::from(&session_id),
+            None,
+        ))
+        .await
+        .expect_err("D2 lifecycle execution must observe the unavailable publication");
     assert!(
         error.to_string().contains("publication"),
         "D2 expected publication failure: {error}"

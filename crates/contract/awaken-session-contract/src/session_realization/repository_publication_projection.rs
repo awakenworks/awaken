@@ -74,7 +74,7 @@ impl SessionRepositoryPublicationProjection {
         current_lease: SessionRealizationLease,
     ) -> Result<Self, SessionRealizationControlFailure> {
         if workspace_id.trim().is_empty()
-            || command.session_id.trim().is_empty()
+            || command.session_id.as_str().trim().is_empty()
             || current_lease.expires_at_unix_ms == 0
         {
             return Err(SessionRealizationControlFailure::Invalid(

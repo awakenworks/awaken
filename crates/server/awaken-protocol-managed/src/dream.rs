@@ -12,7 +12,7 @@ impl DreamSessionSource for crate::ManagedState {
         workspace_id: &str,
         updated_after_ms: u64,
         limit: usize,
-    ) -> Vec<String> {
+    ) -> Vec<awaken_session_contract::SessionId> {
         let mut sessions = self
             .list_sessions_scoped(workspace_id)
             .into_iter()
@@ -32,7 +32,11 @@ impl DreamSessionSource for crate::ManagedState {
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| right.cmp(left));
-        sessions.into_iter().take(limit).map(|(_, id)| id).collect()
+        sessions
+            .into_iter()
+            .take(limit)
+            .map(|(_, id)| awaken_session_contract::SessionId::from(id))
+            .collect()
     }
 
     async fn session_usage(&self, workspace_id: &str, session_id: &str) -> Option<DreamUsage> {

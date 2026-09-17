@@ -51,8 +51,11 @@ impl SharedHost {
                 std::borrow::Cow::Owned(snapshot)
             }
         };
-        let mut links =
-            project_committed_coordination_links(session_id, advisor_model.as_deref(), &committed)?;
+        let mut links = project_committed_coordination_links(
+            &awaken_session_contract::SessionId::from(session_id),
+            advisor_model.as_deref(),
+            &committed,
+        )?;
         if links.is_empty() {
             return Ok(links);
         }
@@ -209,7 +212,7 @@ mod tests {
         let managed = crate::ManagedHost::new(host.clone());
         assert!(
             managed
-                .coordinated_threads(session, None)
+                .coordinated_threads(&awaken_session_contract::SessionId::from(session), None)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -245,7 +248,10 @@ mod tests {
             .unwrap();
         let before = queries.latest_run_reads();
         let original = managed
-            .coordinated_threads(session, Some(&snapshot))
+            .coordinated_threads(
+                &awaken_session_contract::SessionId::from(session),
+                Some(&snapshot),
+            )
             .await
             .unwrap();
         assert_eq!(original.len(), 1, "Q2 exact advisor link");
@@ -267,7 +273,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             managed
-                .coordinated_threads(session, Some(&snapshot))
+                .coordinated_threads(
+                    &awaken_session_contract::SessionId::from(session),
+                    Some(&snapshot)
+                )
                 .await
                 .unwrap(),
             original,
@@ -280,7 +289,7 @@ mod tests {
         );
         assert_eq!(
             managed
-                .coordinated_threads(session, None)
+                .coordinated_threads(&awaken_session_contract::SessionId::from(session), None)
                 .await
                 .unwrap()
                 .len(),
@@ -314,7 +323,10 @@ mod tests {
         let before = queries.latest_run_reads();
         assert_eq!(
             managed
-                .coordinated_threads(session, Some(&snapshot))
+                .coordinated_threads(
+                    &awaken_session_contract::SessionId::from(session),
+                    Some(&snapshot)
+                )
                 .await
                 .unwrap(),
             original,
@@ -326,7 +338,7 @@ mod tests {
             "Q4 no hidden recovery query"
         );
         let error = managed
-            .coordinated_threads(session, None)
+            .coordinated_threads(&awaken_session_contract::SessionId::from(session), None)
             .await
             .unwrap_err();
         assert!(
@@ -339,7 +351,10 @@ mod tests {
         let mut foreign = snapshot.clone();
         foreign.thread_id = ThreadId("another-session".into());
         let error = managed
-            .coordinated_threads(session, Some(&foreign))
+            .coordinated_threads(
+                &awaken_session_contract::SessionId::from(session),
+                Some(&foreign),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -400,7 +415,10 @@ mod tests {
             let managed = crate::ManagedHost::new(host.clone());
             assert_eq!(
                 managed
-                    .session_thread_usage(session_id, &thread_id.0)
+                    .session_thread_usage(
+                        &awaken_session_contract::SessionId::from(session_id),
+                        &thread_id.0
+                    )
                     .await
                     .unwrap(),
                 awaken_session_contract::SessionUsage::default(),
@@ -421,7 +439,10 @@ mod tests {
                 .await
                 .unwrap();
             let error = managed
-                .session_thread_usage(session_id, &thread_id.0)
+                .session_thread_usage(
+                    &awaken_session_contract::SessionId::from(session_id),
+                    &thread_id.0,
+                )
                 .await
                 .expect_err("U2 unavailable State must not become zero usage");
             assert!(
@@ -446,7 +467,10 @@ mod tests {
                 )]));
                 let restarted = crate::ManagedHost::new(make_host());
                 let actual = restarted
-                    .session_thread_usage(session_id, &thread_id.0)
+                    .session_thread_usage(
+                        &awaken_session_contract::SessionId::from(session_id),
+                        &thread_id.0,
+                    )
                     .await
                     .unwrap();
                 assert_eq!(
@@ -525,7 +549,10 @@ mod tests {
         );
         assert_eq!(
             crate::ManagedHost::new(host.clone())
-                .session_thread_usage(session_id, &child_id.0)
+                .session_thread_usage(
+                    &awaken_session_contract::SessionId::from(session_id),
+                    &child_id.0
+                )
                 .await
                 .expect("R1 absent usage read"),
             awaken_session_contract::SessionUsage::default(),
@@ -624,7 +651,10 @@ mod tests {
 
         let managed = crate::ManagedHost::new(host.clone());
         let snapshot = managed
-            .session_thread_recovery_snapshot(session_id, &child_id.0)
+            .session_thread_recovery_snapshot(
+                &awaken_session_contract::SessionId::from(session_id),
+                &child_id.0,
+            )
             .await
             .expect("R2 ManagedHost read")
             .expect("R2 committed child Run");
@@ -657,12 +687,19 @@ mod tests {
         assert_eq!(snapshot.store_cursor, 3, "R2/E3 parent-store cursor");
         assert_eq!(snapshot.next_commit_ordinal, 2, "R2/E2 claimed ordinal");
         let exact_snapshot = managed
-            .session_thread_run_recovery_snapshot(session_id, &child_id.0, &child_run)
+            .session_thread_run_recovery_snapshot(
+                &awaken_session_contract::SessionId::from(session_id),
+                &child_id.0,
+                &child_run,
+            )
             .await
             .expect("R2 ManagedHost exact read")
             .expect("R2 exact committed child Run");
         let usage = managed
-            .session_thread_usage(session_id, &child_id.0)
+            .session_thread_usage(
+                &awaken_session_contract::SessionId::from(session_id),
+                &child_id.0,
+            )
             .await
             .expect("R2 ManagedHost usage read");
         assert_eq!(usage.input_tokens, 13, "R2/E6 authoritative usage");
@@ -675,7 +712,7 @@ mod tests {
         assert_eq!(
             managed
                 .session_thread_run_recovery_snapshot(
-                    session_id,
+                    &awaken_session_contract::SessionId::from(session_id),
                     &child_id.0,
                     &RunId("snapshot-absent-run".into()),
                 )

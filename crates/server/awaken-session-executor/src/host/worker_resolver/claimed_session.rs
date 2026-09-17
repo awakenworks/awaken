@@ -193,7 +193,7 @@ pub(super) async fn install_claimed_session_projection(
     HostWorkerResolver::drive_session_realization(
         host,
         control.as_ref(),
-        &thread_id.0,
+        &awaken_session_contract::SessionId::from(&thread_id.0),
         directive,
         Some(claimed),
         request_started,

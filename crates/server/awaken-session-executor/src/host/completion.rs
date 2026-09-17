@@ -245,7 +245,7 @@ impl SharedHost {
         let outcome = store
             .activate_session_run_reservation(
                 &delivery.run_id,
-                &ThreadId(delivery.session_id),
+                &ThreadId(delivery.session_id.into_string()),
                 delivery.session_activity_epoch,
             )
             .await
@@ -342,7 +342,9 @@ impl SharedHost {
         let session_id = delivery.command.session_id.clone();
         let run_id = delivery.command.expected_run_id.clone();
         let correlation_id = delivery.command.expected_correlation_id.clone();
-        let ctx = self.ctx_for_session_coordination(&session_id, None).await?;
+        let ctx = self
+            .ctx_for_session_coordination(session_id.as_str(), None)
+            .await?;
         let messages_before = self
             .authoritative_step_snapshot(&ctx, &run_id)
             .await?

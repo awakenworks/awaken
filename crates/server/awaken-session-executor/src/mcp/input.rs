@@ -54,7 +54,7 @@ impl McpNotificationHandler for SessionMcpInput {
         // by the notification payload. Existing root authority and transport
         // drain fences both apply to this incoming effect.
         let admitted = host
-            .active_mcp_projections(&self.generation.session_id)
+            .active_mcp_projections(self.generation.session_id.as_str())
             .iter()
             .any(|projection| {
                 let current = &projection.request.generation;
@@ -71,17 +71,17 @@ impl McpNotificationHandler for SessionMcpInput {
                 input_event_id,
             } => {
                 let operation = operation_id(
-                    &self.generation.session_id,
+                    self.generation.session_id.as_str(),
                     &self.server,
                     &input_method,
                     &input_event_id,
                 );
                 let target = awaken_session_contract::session_run_id(
-                    &self.generation.session_id,
+                    self.generation.session_id.as_str(),
                     &operation,
                 );
                 if host
-                    .cancel_durable(&self.generation.session_id, &target.0)
+                    .cancel_durable(self.generation.session_id.as_str(), &target.0)
                     .await
                     .is_err()
                 {
@@ -93,7 +93,12 @@ impl McpNotificationHandler for SessionMcpInput {
                 return;
             }
         };
-        let operation = operation_id(&self.generation.session_id, &self.server, method, &event_id);
+        let operation = operation_id(
+            self.generation.session_id.as_str(),
+            &self.server,
+            method,
+            &event_id,
+        );
         let message = Message::text(Id(operation.clone()), Role::User,
             json!({"source":"mcp","server":self.server,"method":method,"event_id":event_id,"text":text}).to_string());
         // The Session application's existing operation identity admits retries
@@ -103,7 +108,7 @@ impl McpNotificationHandler for SessionMcpInput {
             match application
                 .submit_session_run_background(
                     &operation,
-                    &self.generation.session_id,
+                    self.generation.session_id.as_str(),
                     None,
                     vec![message.clone()],
                     None,

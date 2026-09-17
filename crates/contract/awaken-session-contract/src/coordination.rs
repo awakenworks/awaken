@@ -31,7 +31,7 @@ pub enum SessionAgentTarget {
 /// refinement against the source Thread's committed `ActiveToolBatch`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionAgentMessageCommand {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub source_thread_id: ThreadId,
     pub source_run_id: RunId,
     pub source_call_id: String,
@@ -211,7 +211,7 @@ pub fn session_agent_boundary_action(
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoordinatedRunCommand {
     pub intent: CoordinatedRunIntent,
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub thread_id: ThreadId,
     pub run_id: RunId,
     pub parent_run_id: RunId,
@@ -233,7 +233,7 @@ pub struct CoordinatedRunCommand {
 /// participates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionAgentBoundaryCommand {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub source_thread_id: ThreadId,
     pub source_run_id: RunId,
     /// Trusted immutable execution identity copied from the exact claimed
@@ -257,7 +257,7 @@ pub struct SessionAgentBoundaryCommand {
 /// the message authority, so no parallel Outbox/Inbox fact is created.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionAgentReportContinuation {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub source_thread_id: ThreadId,
     pub source_run_id: RunId,
     pub session_activity_epoch: u64,
@@ -432,7 +432,7 @@ pub enum SessionThreadToolReply {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionThreadToolReplyCommand {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     /// Managed `agent.tool_use`/`agent.custom_tool_use` request Event answered by
     /// this reply. Older/internal callers may omit it; current Managed lowering
     /// retains the occurrence identity so a provider call id reused in a later
@@ -1002,7 +1002,7 @@ impl CoordinatedThreadTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoordinatedThreadLink {
-    pub session_id: String,
+    pub session_id: crate::SessionId,
     pub thread_id: ThreadId,
     pub target: CoordinatedThreadTarget,
     pub created_by_operation_id: String,
@@ -1019,7 +1019,7 @@ pub trait SessionAgentCoordination: Send + Sync {
     /// terminal, budget, or roster policy.
     async fn admit_session_run_activity(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _agent_id: &str,
         _run_id: &RunId,
         _mode: SessionRunActivityAdmissionMode,
@@ -1035,7 +1035,7 @@ pub trait SessionAgentCoordination: Send + Sync {
     /// decision in a Worker or Runtime.
     async fn admit_session_model_request(
         &self,
-        _session_id: &str,
+        _session_id: &crate::SessionId,
         _thread_id: &ThreadId,
         _run_id: &RunId,
     ) -> Result<bool, crate::RunError> {
@@ -1046,7 +1046,7 @@ pub trait SessionAgentCoordination: Send + Sync {
 
     async fn list_session_agents(
         &self,
-        session_id: &str,
+        session_id: &crate::SessionId,
     ) -> Result<Vec<SessionAgentRosterEntry>, crate::RunError>;
 
     async fn send_session_agent_message(
@@ -1073,7 +1073,7 @@ pub trait SessionAgentCoordination: Send + Sync {
 
     async fn interrupt_session_thread(
         &self,
-        session_id: &str,
+        session_id: &crate::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), crate::RunError>;
 

@@ -222,7 +222,7 @@ impl SessionApplication {
     /// before current pending-tool admission; it does not own another receipt.
     pub async fn session_event_batch_idempotency(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         key: &str,
         request_fingerprint: &str,
     ) -> Result<SessionEventBatchIdempotency, RunError> {
@@ -241,7 +241,7 @@ impl SessionApplication {
 
     async fn message_projection_anchor(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
@@ -265,7 +265,7 @@ impl SessionApplication {
 
     async fn run_snapshot_projection_anchor(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
@@ -303,7 +303,7 @@ impl SessionApplication {
                     return Err(RunError::bad_request("Session System input is incomplete"));
                 }
                 messages.push(awaken_agent_contract::agent::message::Message::new(
-                    MessageId::session_system(&session_id, &system.operation_id),
+                    MessageId::session_system(session_id.as_str(), &system.operation_id),
                     Role::System,
                     system.content,
                 ));
@@ -312,7 +312,7 @@ impl SessionApplication {
                 return Err(RunError::bad_request("Session User input is incomplete"));
             }
             messages.push(awaken_agent_contract::agent::message::Message::new(
-                MessageId::session_event_input(&session_id, &command.operation_id),
+                MessageId::session_event_input(session_id.as_str(), &command.operation_id),
                 Role::User,
                 command.content,
             ));
@@ -343,7 +343,7 @@ impl SessionApplication {
         traceparent: Option<String>,
     ) -> Result<SessionEventBatch, RunError> {
         self.append_session_event_batch_idempotent(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             inputs,
             data_subject_id,
             traceparent,
@@ -357,7 +357,7 @@ impl SessionApplication {
     /// either observe that exact batch or a conflict under the same root CAS.
     pub async fn append_session_event_batch_idempotent(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
@@ -385,7 +385,7 @@ impl SessionApplication {
     /// periodic recovery authority if this future is lost after acceptance.
     pub async fn append_and_drive_session_event_batch_idempotent(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
@@ -421,7 +421,7 @@ impl SessionApplication {
     pub async fn close_session_event_admission(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         key: String,
         request_fingerprint: String,
     ) -> Result<awaken_session_contract::SessionEventAdmission, RunError> {
@@ -476,7 +476,7 @@ impl SessionApplication {
 
     async fn resolve_session_event_batch(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         admission: EventBatchAdmission,
         wake_after_accept: bool,
     ) -> Result<SessionEventBatch, RunError> {
@@ -522,7 +522,7 @@ impl SessionApplication {
                 if plan == SessionEventBatchAdmissionPlan::AppendAccepted {
                     let source_commit_cursor = self
                         .runtime()
-                        .session_thread_recovery_snapshot(session_id, session_id)
+                        .session_thread_recovery_snapshot(session_id, session_id.as_str())
                         .await?
                         .map_or(0, |snapshot| snapshot.store_cursor);
                     Some(SessionEventProjectionAnchor {
@@ -538,7 +538,7 @@ impl SessionApplication {
                     .checked_add(1)
                     .ok_or_else(|| RunError::internal("Session revision is exhausted"))?,
             );
-            let batch_id = session_event_batch_id(session_id, committed_revision)
+            let batch_id = session_event_batch_id(session_id.as_str(), committed_revision)
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
             let mut batch = match (plan, &admission) {
                 (
@@ -550,7 +550,7 @@ impl SessionApplication {
                         ..
                     },
                 ) => SessionEventBatch::compile_attributed(
-                    session_id,
+                    session_id.as_str(),
                     batch_id,
                     inputs.clone(),
                     data_subject_id.clone(),
@@ -655,7 +655,7 @@ impl SessionApplication {
                     Err(error) => {
                         result
                             .failures
-                            .push((candidate.session_id.clone(), error.to_string()));
+                            .push((candidate.session_id.to_string(), error.to_string()));
                         return result;
                     }
                 };
@@ -670,7 +670,9 @@ impl SessionApplication {
                 {
                     Ok(true) => result.settled = 1,
                     Ok(false) => {}
-                    Err(error) => result.failures.push((session_id, error.to_string())),
+                    Err(error) => result
+                        .failures
+                        .push((String::from(session_id), error.to_string())),
                 }
                 result
             },
@@ -691,7 +693,7 @@ impl SessionApplication {
     /// Outcome's Worker/Judge execution before delivering its own interrupt.
     pub async fn drive_session_event_batches(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         preferred_batch_id: Option<&str>,
     ) -> Result<(), RunError> {
         let _ = self
@@ -702,7 +704,7 @@ impl SessionApplication {
 
     async fn reconcile_session_event_batches(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         preferred_batch_id: Option<&str>,
         mut initial_session: Option<PersistedSession>,
     ) -> Result<bool, RunError> {
@@ -790,7 +792,10 @@ impl SessionApplication {
     /// after accepting, but before anchoring, an Event batch. The canonical
     /// supervisor marks those receipts resolved under root CAS and never calls
     /// any Runtime effect after terminal state.
-    async fn resolve_terminal_event_batches(&self, session_id: &str) -> Result<bool, RunError> {
+    async fn resolve_terminal_event_batches(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+    ) -> Result<bool, RunError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_run_error)?;
             let mut session = self
@@ -875,7 +880,7 @@ impl SessionApplication {
                 // therefore leaves a retryable command rather than a leaked
                 // Running epoch with no remaining recovery trigger.
                 if let Some(failed) = superseded_tool_reply.as_ref() {
-                    self.settle_superseded_tool_reply_activity(&session.session_id, failed)
+                    self.settle_superseded_tool_reply_activity(session.session_id.as_str(), failed)
                         .await?;
                 }
                 self.observe_session_event(
@@ -957,10 +962,11 @@ impl SessionApplication {
                 operation_id,
                 content,
             } => Box::pin(async move {
-                let message_id = MessageId::session_system(&session.session_id, &operation_id);
+                let message_id =
+                    MessageId::session_system(session.session_id.as_str(), &operation_id);
                 let committed = self
                     .runtime()
-                    .committed_messages(&session.session_id)
+                    .committed_messages(session.session_id.as_str())
                     .await?;
                 let Some(message) = committed.iter().find(|message| message.id == message_id)
                 else {
@@ -1007,7 +1013,7 @@ impl SessionApplication {
             } => Box::pin(async move {
                 let source_commit_cursor = match self
                     .prepare_outcome(
-                        &session.session_id,
+                        session.session_id.as_str(),
                         &outcome_id,
                         &description,
                         rubric.execution_reference(),
@@ -1047,10 +1053,10 @@ impl SessionApplication {
                 let accompanying_system = adjacent_system_input(session, &batch_id, &operation_id);
                 SessionAgentCoordination::reply_session_thread_tool(
                     self,
-                    reply.delivery_command(&session.session_id, accompanying_system),
+                    reply.delivery_command(session.session_id.as_str(), accompanying_system),
                 )
                 .await?;
-                let target_thread = reply.target.thread_id(&session.session_id);
+                let target_thread = reply.target.thread_id(session.session_id.as_str());
                 // Current admissions freeze the Awaiting commit before
                 // delivery. Legacy rows lack it and retain the old
                 // post-delivery recovery fallback for compatibility.
@@ -1084,7 +1090,9 @@ impl SessionApplication {
                 let targets = interrupt.targets;
                 for target in &targets {
                     let result = match target {
-                        SessionThreadTarget::Primary => self.interrupt(&session.session_id).await,
+                        SessionThreadTarget::Primary => {
+                            self.interrupt(session.session_id.as_str()).await
+                        }
                         SessionThreadTarget::Child(child_thread_id) => {
                             SessionAgentCoordination::interrupt_session_thread(
                                 self,
@@ -1119,7 +1127,7 @@ impl SessionApplication {
                     .max()
                     .unwrap_or_default();
                 for target in &targets {
-                    let thread_id = target.thread_id(&session.session_id);
+                    let thread_id = target.thread_id(session.session_id.as_str());
                     if let Some(snapshot) = self
                         .runtime()
                         .session_thread_recovery_snapshot(&session.session_id, &thread_id.0)
@@ -1130,7 +1138,7 @@ impl SessionApplication {
                 }
                 self.settle_event_batch_wake(session, &batch_id).await?;
                 if let Some(failed) = superseded_tool_reply.as_ref() {
-                    self.settle_superseded_tool_reply_activity(&session.session_id, failed)
+                    self.settle_superseded_tool_reply_activity(session.session_id.as_str(), failed)
                         .await?;
                 }
                 self.observe_session_event(
@@ -1158,7 +1166,10 @@ impl SessionApplication {
         failed: &FailedToolReplyCoordinate,
     ) -> Result<(), RunError> {
         let Some((_, activity_epoch)) = self
-            .recover_activity_for_operation(session_id, &failed.activity_operation_id)
+            .recover_activity_for_operation(
+                &awaken_session_contract::SessionId::from(session_id),
+                &failed.activity_operation_id,
+            )
             .await
             .map_err(crate::SessionActivityError::run_error)?
         else {
@@ -1188,7 +1199,7 @@ impl SessionApplication {
         else {
             return Ok(None);
         };
-        let message_id = MessageId::session_event_input(&session.session_id, operation_id);
+        let message_id = MessageId::session_event_input(session.session_id.as_str(), operation_id);
         let observation = if state == RunState::Running {
             // The durable root already retained the immutable input coordinate.
             // Repeated supervisor scans must not reload a growing transcript
@@ -1207,7 +1218,7 @@ impl SessionApplication {
                 .runtime()
                 .session_thread_run_recovery_snapshot(
                     &session.session_id,
-                    &session.session_id,
+                    session.session_id.as_str(),
                     run_id,
                 )
                 .await?;
@@ -1257,7 +1268,7 @@ impl SessionApplication {
 
     async fn observe_session_event(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         batch_id: &str,
         operation_id: &str,
         observation: EventObservation,
@@ -1390,7 +1401,7 @@ impl SessionApplication {
         if let Some(epoch) = wake
             && session.active_activity_epochs.contains(&epoch)
         {
-            self.settle_activity(&session.session_id, epoch)
+            self.settle_activity(session.session_id.as_str(), epoch)
                 .await
                 .map_err(crate::SessionActivityError::run_error)?;
         }
@@ -1399,12 +1410,12 @@ impl SessionApplication {
 
     async fn reconcile_blocking_root_run(
         &self,
-        session_id: &str,
+        session_id: &awaken_session_contract::SessionId,
         target_run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<bool, RunError> {
         let Some(snapshot) = self
             .runtime()
-            .session_thread_recovery_snapshot(session_id, session_id)
+            .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await?
         else {
             return Ok(false);
@@ -1507,11 +1518,11 @@ fn preceding_event_runtime_target(
         .rev()
         .find_map(|entry| match &entry.event {
             SessionEventCommand::UserMessage { run_id, .. } => Some((
-                awaken_agent_contract::agent::thread::Id(session.session_id.clone()),
+                awaken_agent_contract::agent::thread::Id(session.session_id.to_string()),
                 run_id.clone(),
             )),
             SessionEventCommand::ToolReply { reply, .. } => Some((
-                reply.target.thread_id(&session.session_id),
+                reply.target.thread_id(session.session_id.as_str()),
                 reply.expected_run_id.clone(),
             )),
             SessionEventCommand::SystemMessage { .. }
@@ -1611,7 +1622,7 @@ fn select_session_event(
                     {
                         let activity_operation_id = reply
                             .delivery_command(
-                                &session.session_id,
+                                session.session_id.as_str(),
                                 adjacent_system_input(session, batch_id, operation_id),
                             )
                             .activity_operation_id();

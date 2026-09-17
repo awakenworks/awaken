@@ -1,5 +1,6 @@
 pub mod resources;
 
+use awaken_session_contract::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -169,7 +170,7 @@ pub async fn drive_retained_session_events(
     let mut task = tokio::task::JoinSet::new();
     task.spawn(async move {
         application
-            .drive_session_event_batches(&session_id, None)
+            .drive_session_event_batches(&SessionId::from(session_id), None)
             .await
     });
     match task.join_next().await {
@@ -345,7 +346,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
     async fn replay_create(
         &self,
         owner_scope: &str,
-        session_id: &str,
+        session_id: &SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         self.inner
@@ -369,7 +370,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
             if let Some((key, value)) = metadata_change {
                 let mut concurrent = self
                     .inner
-                    .get(mutation.payload.session_id())
+                    .get(&SessionId::from(mutation.payload.session_id()))
                     .await
                     .expect("concurrent metadata Session exists");
                 concurrent.metadata.insert(key, value);
@@ -394,13 +395,13 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
             if self.resource_changes.lock().unwrap().contains(&call) {
                 let mut concurrent = self
                     .inner
-                    .get(mutation.payload.session_id())
+                    .get(&SessionId::from(mutation.payload.session_id()))
                     .await
                     .expect("concurrent Resource Session exists");
                 let session_id = concurrent.session_id.clone();
                 concurrent
                     .resources
-                    .prepare(&session_id, concurrent.resources.active.clone())
+                    .prepare(session_id.as_str(), concurrent.resources.active.clone())
                     .expect("concurrent Resource intent is valid");
                 concurrent
                     .resources
@@ -426,7 +427,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
             }
             let current_revision = self
                 .inner
-                .get(mutation.payload.session_id())
+                .get(&SessionId::from(mutation.payload.session_id()))
                 .await
                 .map(|session| session.revision)
                 .or_else(|error| match error {
@@ -453,7 +454,10 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         self.inner.complete_lifecycle(fact_id).await
     }
 
-    async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError> {
+    async fn get(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<PersistedSession, SessionRepositoryError> {
         self.inner.get(session_id).await
     }
 
@@ -476,13 +480,13 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
 
     async fn idempotency_receipt(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         key: &str,
     ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError> {
         self.inner.idempotency_receipt(session_id, key).await
     }
 
-    async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError> {
+    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError> {
         self.inner.owner(session_id).await
     }
 }

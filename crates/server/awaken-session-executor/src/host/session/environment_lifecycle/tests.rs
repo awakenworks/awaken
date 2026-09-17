@@ -516,8 +516,11 @@ fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_close
             "{rule}/suspend"
         );
         assert_eq!(
-            host.authorize_terminal_cleanup_lease(rule, &asserted)
-                .is_ok(),
+            host.authorize_terminal_cleanup_lease(
+                &awaken_session_contract::SessionId::from(rule),
+                &asserted
+            )
+            .is_ok(),
             terminal,
             "{rule}/terminal"
         );

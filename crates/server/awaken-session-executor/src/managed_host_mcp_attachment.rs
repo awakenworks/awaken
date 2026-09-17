@@ -22,7 +22,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
 
         if request.workspace_id.trim().is_empty()
-            || request.generation.session_id.trim().is_empty()
+            || request.generation.session_id.as_str().trim().is_empty()
             || request.realization_id.trim().is_empty()
             || request.stage_idempotency_key.trim().is_empty()
             || request.name.trim().is_empty()
@@ -35,7 +35,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         if !self
             .host
             .session_slots
-            .mcp_realization_admitted(&request.generation.session_id)
+            .mcp_realization_admitted(request.generation.session_id.as_str())
         {
             return Err(RunError::unavailable_classified(
                 "session_environment_quiescing",
@@ -117,7 +117,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         let execution_backend = self
             .host
             .session_slots
-            .read(&request.generation.session_id, |slot| {
+            .read(request.generation.session_id.as_str(), |slot| {
                 slot.backend_ref.clone()
             })
             .flatten()
@@ -197,7 +197,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     let provider = self
                         .host
                         .projected_session_environment_provider(
-                            &request.generation.session_id,
+                            request.generation.session_id.as_str(),
                             None,
                         )
                         .map_err(crate::managed_adapter_error::to_run_error)?;
@@ -235,7 +235,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                         let network = self
                             .host
                             .session_slots
-                            .read(&request.generation.session_id, |slot| {
+                            .read(request.generation.session_id.as_str(), |slot| {
                                 slot.environment_projection
                                     .as_ref()
                                     .map(|projection| projection.network.clone())
@@ -325,7 +325,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                             holder,
                             credential: &access.credential,
                             workspace_id: &request.workspace_id,
-                            session_id: &request.generation.session_id,
+                            session_id: request.generation.session_id.as_str(),
                             attachment_id: &request.generation.attachment_id().0,
                             generation: request.generation.generation.version(),
                             runtime_incarnation: &request.generation.runtime_incarnation,
@@ -458,13 +458,13 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             (None, None, false)
         } else if let Some(target) = sandbox_stdio.as_ref() {
             let session_id = &request.generation.session_id;
-            let environment = match self.host.session_environment(session_id).await {
+            let environment = match self.host.session_environment(session_id.as_str()).await {
                 Some(environment) => environment,
                 None => {
                     let agent_id = self
                         .host
                         .session_slots
-                        .read(session_id, |slot| {
+                        .read(session_id.as_str(), |slot| {
                             slot.agent_id.clone().or_else(|| {
                                 slot.baseline
                                     .as_ref()
@@ -479,7 +479,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                             )
                         })?;
                     self.host
-                        .ctx_for(session_id, Some(&agent_id))
+                        .ctx_for(session_id.as_str(), Some(&agent_id))
                         .await
                         .map_err(|error| {
                             RunError::classified(
@@ -489,7 +489,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                                 ),
                             )
                         })?;
-                    let realized = self.host.session_environment(session_id).await;
+                    let realized = self.host.session_environment(session_id.as_str()).await;
                     realized.ok_or_else(|| {
                         RunError::classified(
                             "mcp_sandbox_unavailable",

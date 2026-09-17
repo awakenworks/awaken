@@ -1,4 +1,5 @@
 use super::*;
+use awaken_session_contract::SessionId;
 mod mcp_relay_lease;
 mod projection_convergence;
 mod resource_staging_lease;
@@ -290,7 +291,7 @@ fn reject_environment_test_coordination<T>() -> Result<T, awaken_session_contrac
 impl awaken_session_contract::SessionAgentCoordination for RejectingSessionAgentCoordination {
     async fn admit_session_model_request(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _thread_id: &awaken_agent_contract::agent::thread::Id,
         _run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<bool, awaken_session_contract::RunError> {
@@ -299,7 +300,7 @@ impl awaken_session_contract::SessionAgentCoordination for RejectingSessionAgent
 
     async fn list_session_agents(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
     ) -> Result<
         Vec<awaken_session_contract::SessionAgentRosterEntry>,
         awaken_session_contract::RunError,
@@ -326,7 +327,7 @@ impl awaken_session_contract::SessionAgentCoordination for RejectingSessionAgent
 
     async fn interrupt_session_thread(
         &self,
-        _session_id: &str,
+        _session_id: &SessionId,
         _child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), awaken_session_contract::RunError> {
         reject_environment_test_coordination()
@@ -3125,7 +3126,10 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
-            .session_run_state(thread, &RunId("cold-session-reservation-run".into()))
+            .session_run_state(
+                &SessionId::from(thread),
+                &RunId("cold-session-reservation-run".into())
+            )
             .await
             .expect("R1 read pre-claim state"),
         None,
@@ -8033,7 +8037,7 @@ fn test_committed_environment(
     receipt: awaken_session_contract::SessionEnvironmentReceipt,
 ) -> awaken_session_contract::SessionEnvironmentState {
     let generation = awaken_session_contract::SandboxGeneration::new(
-        &receipt.session_id,
+        receipt.session_id.as_str(),
         1,
         u64::MAX,
         "test-environment",
@@ -8167,7 +8171,7 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
         self.observed_before_publish.store(
-            host.session_environment(&receipt.session_id)
+            host.session_environment(receipt.session_id.as_str())
                 .await
                 .is_none(),
             Ordering::SeqCst,
@@ -11040,7 +11044,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let default_generation = generation("mcp-acp-default-relay");
     default_relay_host
         .install_session_realization_lease(
-            &default_generation.session_id,
+            default_generation.session_id.as_str(),
             awaken_session_contract::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: default_generation.runtime_incarnation.clone(),
@@ -11205,7 +11209,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // opaque external route. H31 owns the retained real relay/upstream call.
     secure_acp_host
         .install_session_realization_lease(
-            &secure_generation.session_id,
+            secure_generation.session_id.as_str(),
             awaken_session_contract::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: secure_generation.runtime_incarnation.clone(),
@@ -12078,7 +12082,10 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
 
     drop(permit);
     let proof = host
-        .drain_mcp_projections(&generation.session_id, std::slice::from_ref(&generation))
+        .drain_mcp_projections(
+            generation.session_id.as_str(),
+            std::slice::from_ref(&generation),
+        )
         .await
         .expect("R3 settled retry");
     assert_eq!(
@@ -12689,10 +12696,11 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
             } else {
                 crate::session_slot::test_observed_lease(lease)
             };
-            host.session_slots.update(&expired.session_id, |slot| {
-                slot.realization_authority =
-                    crate::session_slot::SessionRealizationAuthority::Live(proof);
-            });
+            host.session_slots
+                .update(expired.session_id.as_str(), |slot| {
+                    slot.realization_authority =
+                        crate::session_slot::SessionRealizationAuthority::Live(proof);
+                });
         }
         assert_eq!(
             host.mcp_generation_is_authorized_at(&expired, base + 100),
@@ -12735,7 +12743,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
     ] {
         let host = SharedHost::new(Arc::new(OkModel), "stub");
         let old_generation = McpGenerationRef {
-            session_id: format!("renew-{rule}"),
+            session_id: SessionId::from(format!("renew-{rule}")),
             generation: McpGeneration::of_bare_target(
                 McpAttachmentId("browser".into()),
                 1,
@@ -12789,7 +12797,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             McpProjectionState::Draining,
         ] {
             host.session_slots
-                .modify(&old_generation.session_id, |slot| {
+                .modify(old_generation.session_id.as_str(), |slot| {
                     slot.mcp[0].state = live_state
                 });
             assert!(
@@ -12802,9 +12810,11 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             );
         }
         host.session_slots
-            .modify(&old_generation.session_id, |slot| slot.mcp[0].state = state);
+            .modify(old_generation.session_id.as_str(), |slot| {
+                slot.mcp[0].state = state
+            });
         host.install_session_realization_lease(
-            &old_generation.session_id,
+            old_generation.session_id.as_str(),
             awaken_session_contract::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: old_generation.runtime_incarnation.clone(),
@@ -12832,7 +12842,9 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         );
         assert_eq!(
             host.session_slots
-                .read(&renewed.generation.session_id, |slot| slot.mcp.len()),
+                .read(renewed.generation.session_id.as_str(), |slot| slot
+                    .mcp
+                    .len()),
             Some(1),
             "{rule}/E2"
         );
@@ -12949,7 +12961,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
         "S1"
     );
     assert!(
-        host.active_mcp_projections(&generation.session_id)
+        host.active_mcp_projections(generation.session_id.as_str())
             .is_empty(),
         "S1"
     );
@@ -12961,7 +12973,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
         "S2"
     );
     assert!(
-        host.active_mcp_projections(&generation.session_id)
+        host.active_mcp_projections(generation.session_id.as_str())
             .is_empty(),
         "S2"
     );
@@ -12969,7 +12981,8 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     relay.set_route(&generation, &server);
     host.publish_mcp_projection(&generation).await.expect("S3");
     assert_eq!(
-        host.active_mcp_projections(&generation.session_id).len(),
+        host.active_mcp_projections(generation.session_id.as_str())
+            .len(),
         1,
         "S3"
     );
@@ -16398,7 +16411,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     );
 
     let command = awaken_session_contract::SessionThreadToolReplyCommand {
-        session_id: parent.0.clone(),
+        session_id: SessionId::from(&parent.0),
         tool_request_event_id: Some("evt-coordinated-reply-tool-use-1".into()),
         expected_thread_version: Some(admitted_thread_version),
         target: awaken_session_contract::SessionThreadTarget::Child(child.clone()),
@@ -16842,7 +16855,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
         .await
         .expect("R2 RemoteInput without ToolBatch");
     let command = awaken_session_contract::SessionThreadToolReplyCommand {
-        session_id: thread.0.clone(),
+        session_id: SessionId::from(&thread.0),
         tool_request_event_id: Some("remote-input-event".into()),
         expected_thread_version: None,
         target: awaken_session_contract::SessionThreadTarget::Primary,
@@ -16916,7 +16929,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
         .await
         .expect("R1 ToolCall without ToolBatch");
     let tool_command = awaken_session_contract::SessionThreadToolReplyCommand {
-        session_id: tool_thread.0.clone(),
+        session_id: SessionId::from(&tool_thread.0),
         tool_request_event_id: Some("missing-tool-batch-event".into()),
         expected_thread_version: None,
         target: awaken_session_contract::SessionThreadTarget::Primary,
@@ -17067,7 +17080,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         );
 
         let command = awaken_session_contract::SessionThreadToolReplyCommand {
-            session_id: parent.0.clone(),
+            session_id: SessionId::from(&parent.0),
             tool_request_event_id: Some("evt-primary-reply-tool-use-1".into()),
             expected_thread_version: None,
             target: awaken_session_contract::SessionThreadTarget::Primary,
@@ -17278,7 +17291,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     assert_eq!(root_pause.ticket.run_id, root_run, "B1/E1");
     assert_eq!(root_pause.prior_session_activity_epoch, None, "B1/E1");
     let root_delivery = SessionBudgetResumeDelivery {
-        session_id: root.0.clone(),
+        session_id: SessionId::from(&root.0),
         thread_id: root.clone(),
         run_id: root_run.clone(),
         correlation_id: root_pause.ticket.correlation_id,
@@ -17389,7 +17402,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         .expect("B2 child ticket");
     assert_eq!(first_pause.prior_session_activity_epoch, Some(41), "B2/E2");
     let first_delivery = SessionBudgetResumeDelivery {
-        session_id: parent.0.clone(),
+        session_id: SessionId::from(&parent.0),
         thread_id: child.clone(),
         run_id: child_run.clone(),
         correlation_id: first_pause.ticket.correlation_id.clone(),
@@ -17485,7 +17498,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     assert_eq!(after_stale.session_activity_epoch, Some(42), "B4/E5");
     assert!(dispatch.list(&child).await.unwrap().is_empty(), "B4/E5");
     let second_delivery = SessionBudgetResumeDelivery {
-        session_id: parent.0.clone(),
+        session_id: SessionId::from(&parent.0),
         thread_id: child.clone(),
         run_id: child_run.clone(),
         correlation_id: second_pause.ticket.correlation_id,
@@ -19076,7 +19089,7 @@ fn terminal_preparation_authorization(
     let session_id = &effect.command.session_id;
     let thread_id = &effect.command.thread_id;
     let session = terminal_test_session(
-        session_id,
+        session_id.as_str(),
         projection,
         effect.lease.clone(),
         (thread_id != session_id).then_some(thread_id.clone()),
@@ -19101,7 +19114,7 @@ fn terminal_disposal_effect(
     let session_id = preparation.effect.command.session_id.clone();
     let thread_id = preparation.effect.command.thread_id.clone();
     let mut session = terminal_test_session(
-        &session_id,
+        session_id.as_str(),
         projection,
         current_lease.clone(),
         (thread_id != session_id).then_some(thread_id.clone()),
@@ -19109,12 +19122,12 @@ fn terminal_disposal_effect(
     );
     let mut expected_command = session
         .terminal_cleanup
-        .command_for(&session_id, &thread_id)
+        .command_for(session_id.as_str(), &thread_id)
         .expect("the aggregate retains the exact preparation command");
     if thread_id == session_id
         && let Some(request) = projection
             .environment
-            .restoring_request(&projection.workspace_id, &session_id)
+            .restoring_request(&projection.workspace_id, session_id.as_str())
     {
         expected_command = expected_command
             .with_restore_target(request)
@@ -19125,7 +19138,7 @@ fn terminal_disposal_effect(
         "the Host receipt must bind the aggregate-derived command",
     );
     let repository_preparation = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-        &session_id,
+        session_id.as_str(),
         &projection.workspace_id,
         &session.resources,
     )
@@ -20318,7 +20331,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         }
         host.install_test_terminal_cleanup_projection(
             &awaken_session_contract::SessionTerminalCleanupAssignment {
-                session_id: thread.clone(),
+                session_id: SessionId::from(&thread),
                 projection: projection.clone(),
                 authority: crate::session_slot::test_lease_receipt(lease.clone()),
             },
@@ -21273,7 +21286,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     let activation =
         crate::host::worker_resolver::test_support::test_activation(&session.0, &run.0);
     let command = awaken_session_contract::AdmitSessionRun {
-        session_id: session.0.clone(),
+        session_id: SessionId::from(&session.0),
         agent_id: activation.snapshot.root_agent_id.0.clone(),
         operation_id: "terminal-reservation-operation".into(),
         run_id: run.clone(),
@@ -21547,7 +21560,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         self.renewal_sessions
             .lock()
             .unwrap()
-            .push(command.session_id.clone());
+            .push(command.session_id.to_string());
         let gate = self.renewal_gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             gate.acquire_owned()
@@ -21562,15 +21575,14 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             .renewal_delay_ms
             .lock()
             .unwrap()
-            .get(&command.session_id)
+            .get(command.session_id.as_str())
             .copied();
         if let Some(delay) = delay {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
-        let response =
-            {
-                let mut renewals = self.renewals.lock().unwrap();
-                renewals.get_mut(&command.session_id).map(|current| {
+        let response = {
+            let mut renewals = self.renewals.lock().unwrap();
+            renewals.get_mut(command.session_id.as_str()).map(|current| {
                 if !awaken_session_contract::realization_lease_generation_authorizes(
                     current, &command.asserted_lease,
                 ) || command.requested_expires_at_unix_ms < current.expires_at_unix_ms {
@@ -21580,7 +21592,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
                     Ok(crate::session_slot::test_lease_receipt(current.clone()))
                 }
             })
-            };
+        };
         if let Some(response) = response {
             // Gate the already accepted immutable response, not the request:
             // later Control mutations cannot rewrite this response in flight.
@@ -21747,14 +21759,19 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
 
     async fn terminal_cleanup_work(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionTerminalCleanupWork>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.events.lock().unwrap().push("cleanup:poll".into());
-        if self.renewals.lock().unwrap().contains_key(session_id) {
+        if self
+            .renewals
+            .lock()
+            .unwrap()
+            .contains_key(session_id.as_str())
+        {
             return Ok(None);
         }
         let Some(session) = self.session.lock().unwrap().clone() else {
@@ -21780,7 +21797,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         };
         Ok(Some(awaken_session_contract::SessionTerminalCleanupWork {
             assignment: awaken_session_contract::SessionTerminalCleanupAssignment {
-                session_id: session_id.into(),
+                session_id: session_id.clone(),
                 projection,
                 authority: crate::session_slot::test_lease_receipt(current),
             },
@@ -21790,7 +21807,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
 
     async fn terminal_repository_publication_command(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
@@ -21817,7 +21834,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         }
         session
             .terminal_cleanup
-            .publication_command(session_id)
+            .publication_command(session_id.as_str())
             .map(|command| {
                 command.map(|command| {
                     awaken_session_contract::SessionRepositoryPublicationProjection {
@@ -21836,7 +21853,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
 
     async fn record_terminal_repository_publication_receipt(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
@@ -21856,7 +21873,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             .as_mut()
             .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?
             .terminal_cleanup
-            .record_repository_publication_receipt(session_id, receipt.clone())
+            .record_repository_publication_receipt(session_id.as_str(), receipt.clone())
             .map_err(|error| {
                 awaken_session_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
@@ -21872,7 +21889,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
 
     async fn record_terminal_repository_publication_rejection(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
@@ -21892,7 +21909,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             .as_mut()
             .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?
             .terminal_cleanup
-            .record_repository_publication_rejection(session_id, rejection.clone())
+            .record_repository_publication_rejection(session_id.as_str(), rejection.clone())
             .map_err(|error| {
                 awaken_session_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
@@ -21938,7 +21955,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             ) => {
                 let repository_preparation =
                     awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-                        &preparation.effect.command.session_id,
+                        preparation.effect.command.session_id.as_str(),
                         &projection.workspace_id,
                         &session.resources,
                     )
