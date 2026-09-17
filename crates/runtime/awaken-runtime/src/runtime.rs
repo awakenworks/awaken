@@ -406,7 +406,15 @@ impl Runtime {
         let service = self.run_delegation().ok_or_else(|| {
             DelegationExecutionError::new("delegation cancellation has no configured service")
         })?;
-        service.cancel(cancellation.clone()).await?;
+        service
+            .cancellation()
+            .ok_or_else(|| {
+                DelegationExecutionError::new(
+                    "Run delegation service does not support durable cancellation",
+                )
+            })?
+            .cancel(cancellation.clone())
+            .await?;
         self.delivered_child_cancellations
             .lock()
             .insert(cancellation.delegation_id);

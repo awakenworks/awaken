@@ -325,17 +325,23 @@ pub trait RunDelegationService: Send + Sync {
         request: DelegationResume,
     ) -> Result<DelegationStep, DelegationExecutionError>;
 
+    /// The durable-cancellation capability of this service, if it has one.
+    fn cancellation(&self) -> Option<&dyn CancellableRunDelegationService> {
+        None
+    }
+}
+
+/// Optional capability of a [`RunDelegationService`] that can cancel the child
+/// Runs it started (ADR-0080 capability ladder).
+#[async_trait]
+pub trait CancellableRunDelegationService: RunDelegationService {
     /// Idempotently deliver a cancellation that was committed with the parent
     /// Run's terminal state. Implementations must treat retries as addressing
     /// the same child Run, never as a new operation.
     async fn cancel(
         &self,
-        _cancellation: ChildRunCancellation,
-    ) -> Result<(), DelegationExecutionError> {
-        Err(DelegationExecutionError::new(
-            "Run delegation service does not support durable cancellation",
-        ))
-    }
+        cancellation: ChildRunCancellation,
+    ) -> Result<(), DelegationExecutionError>;
 }
 
 /// The current Run's relationship registry, committed beside `ToolBatch` through

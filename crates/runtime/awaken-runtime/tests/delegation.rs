@@ -26,8 +26,8 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
-    DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
-    PendingChildRunResults, RunDelegationService, RunDelegations,
+    CancellableRunDelegationService, DelegationExecutionError, DelegationRequest, DelegationResume,
+    DelegationStep, PendingChildRunResults, RunDelegationService, RunDelegations,
 };
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -530,6 +530,13 @@ impl RunDelegationService for MockRunDelegationService {
         step_to_result(&self.resume_step)
     }
 
+    fn cancellation(&self) -> Option<&dyn CancellableRunDelegationService> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl CancellableRunDelegationService for MockRunDelegationService {
     async fn cancel(
         &self,
         cancellation: ChildRunCancellation,

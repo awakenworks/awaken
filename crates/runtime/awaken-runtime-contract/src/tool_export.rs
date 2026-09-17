@@ -20,20 +20,9 @@ impl AcpToolExport {
 
 #[async_trait::async_trait]
 pub trait AcpToolExporter: Send + Sync {
-    /// Serve the same tool set on the multiplexed attached process channel.
-    /// Each local client owns an independent MCP peer; the export lease owns
-    /// all peers. The Host supplies the workload's exact stdio command, the
-    /// connection adapter owns byte substreams, and MCP owns their framing. Unsupported adapters fail
-    /// before publishing a transport they cannot serve.
-    async fn export_channel_set(
-        &self,
-        _server: crate::resolved::AcpMcpServer,
-        _descriptors: Vec<crate::resolved::ToolDescriptor>,
-        _tools: Vec<Arc<dyn crate::tool::RawTool>>,
-        _reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
-        _writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-    ) -> Result<AcpToolExport, String> {
-        Err("ACP tool exporter does not support attached channels".into())
+    /// The attached-channel capability of this exporter, if it has one.
+    fn attached_channels(&self) -> Option<&dyn AttachedChannelToolExporter> {
+        None
     }
 
     async fn export_set(
@@ -52,4 +41,22 @@ pub trait AcpToolExporter: Send + Sync {
         self.export_set(server_name, vec![descriptor], vec![tool])
             .await
     }
+}
+
+/// Optional capability of an [`AcpToolExporter`] that serves tools on an
+/// attached process channel (ADR-0080 capability ladder).
+#[async_trait::async_trait]
+pub trait AttachedChannelToolExporter: AcpToolExporter {
+    /// Serve the same tool set on the multiplexed attached process channel.
+    /// Each local client owns an independent MCP peer; the export lease owns
+    /// all peers. The Host supplies the workload's exact stdio command, the
+    /// connection adapter owns byte substreams, and MCP owns their framing.
+    async fn export_channel_set(
+        &self,
+        server: crate::resolved::AcpMcpServer,
+        descriptors: Vec<crate::resolved::ToolDescriptor>,
+        tools: Vec<Arc<dyn crate::tool::RawTool>>,
+        reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+        writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    ) -> Result<AcpToolExport, String>;
 }
