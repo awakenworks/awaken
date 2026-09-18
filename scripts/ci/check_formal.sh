@@ -20,9 +20,6 @@ awaken_append_repo_tools
 # VERIFICATION FAILED", and a full filesystem as a CBMC SIGABRT on a GOTO binary
 # that a short write truncated. scripts/ci/gate_tools.json declares both, and
 # owns the pinned versions this file also states as shell constants above.
-python3 scripts/ci/gate_tools.py require --gate formal
-python3 scripts/ci/gate_tools.py disk --stage formal
-
 require_tools=0
 if [ "${1:-}" = "--require-tools" ]; then
   require_tools=1
@@ -112,6 +109,13 @@ kani_solver_tools="$(scripts/ci/bootstrap_kani.sh --solver-tools)"
 if [ -d "$kani_solver_tools" ] && [[ ":$PATH:" != *":$kani_solver_tools:"* ]]; then
   export PATH="$PATH:$kani_solver_tools"
 fi
+
+# Declared-environment preflight. It runs here, not at the top of the file:
+# argument validation above must fail without side effects, and tool selection
+# must stay the first physical step inside the receipt/EXIT lifecycle, so a
+# preflight failure retires a stale Passed like any other gate failure.
+python3 scripts/ci/gate_tools.py require --gate formal
+python3 scripts/ci/gate_tools.py disk --stage formal
 
 rust_trace_dir="$formal_artifact_dir/rust-traces"
 rendered_trace_dir="$formal_artifact_dir/rendered-traces"
