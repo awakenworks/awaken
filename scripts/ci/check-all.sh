@@ -128,6 +128,11 @@ run static "Rust gate control-flow self-test" scripts/ci/check-rust.sh --self-te
 # here as well as in the formal group, because a machine that cannot run the
 # formal group is exactly the one those rules exist to keep working.
 run static "Kani bootstrap publication rules" python3 scripts/ci/test_bootstrap_kani.py
+# The tool manifest is the one declaration of what every group needs from this
+# machine. Its self-test proves each row still locates by the method it states,
+# so a missing tool is reported as a missing tool and never as a proof failure,
+# a broken import, or a container pull error.
+run static "gate tool manifest self-test" python3 scripts/ci/gate_tools.py --self-test
 run static "prerequisite doctor self-test" scripts/ci/doctor.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
 run static "sandbox image provenance self-test" python3 scripts/release/awaken_sandbox_image_provenance.py self-test
