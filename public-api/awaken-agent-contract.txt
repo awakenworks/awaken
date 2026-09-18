@@ -488,6 +488,17 @@ pub awaken_agent_contract::audit::run_event::RunEvent::StateChanged::commands: u
 impl core::convert::From<awaken_agent_contract::audit::run_event::RunEvent> for awaken_agent_contract::audit::draft::Draft
 pub fn awaken_agent_contract::audit::draft::Draft::from(awaken_agent_contract::audit::run_event::RunEvent) -> Self
 pub mod awaken_agent_contract::clock
+pub mod awaken_agent_contract::clock::utc
+pub const awaken_agent_contract::clock::utc::MAX_RFC3339_NANOS: i128
+pub fn awaken_agent_contract::clock::utc::bounded_rfc3339_nanos(i128) -> i128
+pub fn awaken_agent_contract::clock::utc::civil_from_days(i64) -> (i64, u32, u32)
+pub fn awaken_agent_contract::clock::utc::days_from_civil(i64, u32, u32) -> i64
+pub const fn awaken_agent_contract::clock::utc::days_in_month(i64, u32) -> u32
+pub fn awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(u64) -> alloc::string::String
+pub fn awaken_agent_contract::clock::utc::format_rfc3339_utc_nanos(i128) -> alloc::string::String
+pub fn awaken_agent_contract::clock::utc::parse_rfc3339_utc_nanos(&str) -> core::option::Option<i128>
+pub fn awaken_agent_contract::clock::utc::project_epoch_millis(u128) -> u64
+pub fn awaken_agent_contract::clock::utc::rfc3339_to_epoch_millis(&str) -> core::option::Option<u64>
 pub struct awaken_agent_contract::clock::ManualClock
 impl awaken_agent_contract::clock::ManualClock
 pub fn awaken_agent_contract::clock::ManualClock::advance(&self, u64)
@@ -495,15 +506,21 @@ pub fn awaken_agent_contract::clock::ManualClock::new(u64) -> Self
 pub fn awaken_agent_contract::clock::ManualClock::set(&self, u64)
 impl awaken_agent_contract::clock::Clock for awaken_agent_contract::clock::ManualClock
 pub fn awaken_agent_contract::clock::ManualClock::now_ms(&self) -> u64
+pub fn awaken_agent_contract::clock::ManualClock::observed_at(&self) -> alloc::string::String
 pub struct awaken_agent_contract::clock::SystemClock
 impl awaken_agent_contract::clock::Clock for awaken_agent_contract::clock::SystemClock
 pub fn awaken_agent_contract::clock::SystemClock::now_ms(&self) -> u64
+pub fn awaken_agent_contract::clock::SystemClock::observed_at(&self) -> alloc::string::String
 pub trait awaken_agent_contract::clock::Clock: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::clock::Clock::now_ms(&self) -> u64
+pub fn awaken_agent_contract::clock::Clock::observed_at(&self) -> alloc::string::String
 impl awaken_agent_contract::clock::Clock for awaken_agent_contract::clock::ManualClock
 pub fn awaken_agent_contract::clock::ManualClock::now_ms(&self) -> u64
+pub fn awaken_agent_contract::clock::ManualClock::observed_at(&self) -> alloc::string::String
 impl awaken_agent_contract::clock::Clock for awaken_agent_contract::clock::SystemClock
 pub fn awaken_agent_contract::clock::SystemClock::now_ms(&self) -> u64
+pub fn awaken_agent_contract::clock::SystemClock::observed_at(&self) -> alloc::string::String
+pub fn awaken_agent_contract::clock::system_clock() -> alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>
 pub mod awaken_agent_contract::event
 pub mod awaken_agent_contract::event::agent
 pub enum awaken_agent_contract::event::agent::AgentEvent

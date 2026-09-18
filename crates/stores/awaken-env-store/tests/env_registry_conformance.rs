@@ -9,7 +9,10 @@
 //! record `get` should still return — is a real cross-deployment inconsistency, caught
 //! here as a contract violation. Postgres joins behind its DB harness.
 
-use awaken_agent_contract::clock::system_clock;
+use std::sync::Arc;
+
+use awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339;
+use awaken_agent_contract::clock::{Clock, ManualClock, system_clock};
 use awaken_env_store::{InMemoryEnvRegistry, SqliteEnvRegistry};
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvRegistry,
@@ -638,7 +641,144 @@ async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
     );
 }
 
-async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
+/// Every Environment instant is a reading of the registry's injected clock.
+///
+/// Decision table. Causes: C1 a create; C2 an update that changes something;
+/// C3 an update that changes nothing; C4 an archive; C5 a second archive of the
+/// same record. Effects: E1 `created_at` and `updated_at` are the reading at the
+/// create; E2 `updated_at` advances to the reading at the commit while
+/// `created_at` does not move; E3 a no-op update commits nothing, so neither
+/// moves; E4 `archived_at` and `updated_at` are the reading at the archive;
+/// E5 the replayed archive is idempotent and moves nothing. Rules R1..R5.
+///
+/// Diffusion: a sibling Environment created at a different instant, untouched by
+/// any of these commands, keeps its own pair — so a fix applied to one path only
+/// is caught. The immutable revision history is checked too: each authored
+/// revision carries the instants of the commit that authored it.
+async fn environment_instants_are_the_injected_clock<R: EnvRegistry>(r: &R, clock: &ManualClock) {
+    const CREATED: u64 = 1_700_000_000_000;
+    const SIBLING: u64 = CREATED + 1_000;
+    const UPDATED: u64 = CREATED + 7_000;
+    const NOOP: u64 = CREATED + 11_000;
+    const ARCHIVED: u64 = CREATED + 23_000;
+
+    clock.set(CREATED);
+    let id = make(r, "instants").await;
+    clock.set(SIBLING);
+    let sibling_id = make(r, "sibling").await;
+
+    let created = r.get(&id).await.expect("R1").expect("R1 record");
+    assert_eq!(
+        created.created_at,
+        Some(epoch_millis_to_rfc3339(CREATED)),
+        "R1/E1"
+    );
+    assert_eq!(
+        created.updated_at,
+        Some(epoch_millis_to_rfc3339(CREATED)),
+        "R1/E1"
+    );
+    assert_eq!(created.archived_at, None, "R1 not archived");
+
+    clock.set(UPDATED);
+    let updated = r
+        .update(
+            &id,
+            created.revision,
+            EnvUpdate {
+                name: Some("renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("R2")
+        .expect("R2 record");
+    assert_eq!(
+        updated.created_at, created.created_at,
+        "R2/E2 acceptance is fixed"
+    );
+    assert_eq!(
+        updated.updated_at,
+        Some(epoch_millis_to_rfc3339(UPDATED)),
+        "R2/E2"
+    );
+
+    clock.set(NOOP);
+    let unchanged = r
+        .update(&id, updated.revision, EnvUpdate::default())
+        .await
+        .expect("R3")
+        .expect("R3 record");
+    assert_eq!(
+        unchanged.updated_at, updated.updated_at,
+        "R3/E3 no commit, no instant"
+    );
+    assert_eq!(
+        unchanged.revision, updated.revision,
+        "R3/E3 no revision either"
+    );
+
+    clock.set(ARCHIVED);
+    let archived = r.archive(&id).await.expect("R4").expect("R4 record");
+    let at_archive = Some(epoch_millis_to_rfc3339(ARCHIVED));
+    assert_eq!(archived.archived_at, at_archive, "R4/E4");
+    assert_eq!(
+        archived.updated_at, at_archive,
+        "R4/E4 one reading, both fields"
+    );
+    assert_eq!(
+        archived.created_at, created.created_at,
+        "R4/E4 acceptance is fixed"
+    );
+
+    clock.set(ARCHIVED + 60_000);
+    let replayed = r.archive(&id).await.expect("R5").expect("R5 record");
+    assert_eq!(replayed.archived_at, at_archive, "R5/E5 idempotent");
+    assert_eq!(replayed.updated_at, at_archive, "R5/E5 idempotent");
+
+    // Diffusion over the sibling object in the same store.
+    let sibling = r
+        .get(&sibling_id)
+        .await
+        .expect("sibling")
+        .expect("sibling record");
+    assert_eq!(
+        sibling.created_at,
+        Some(epoch_millis_to_rfc3339(SIBLING)),
+        "diffusion"
+    );
+    assert_eq!(
+        sibling.updated_at,
+        Some(epoch_millis_to_rfc3339(SIBLING)),
+        "diffusion"
+    );
+    assert_eq!(sibling.archived_at, None, "diffusion: untouched");
+
+    // Immutable history carries the instants of the commit that authored it.
+    let first = r
+        .get_revision(&id, EnvironmentRevision(1))
+        .await
+        .expect("history")
+        .expect("revision 1");
+    assert_eq!(
+        first.updated_at,
+        Some(epoch_millis_to_rfc3339(CREATED)),
+        "history R1"
+    );
+    let second = r
+        .get_revision(&id, updated.revision)
+        .await
+        .expect("history")
+        .expect("revision 2");
+    assert_eq!(
+        second.updated_at,
+        Some(epoch_millis_to_rfc3339(UPDATED)),
+        "history R2"
+    );
+}
+
+async fn run_suite<R: EnvRegistry>(fresh_with: impl Fn(Arc<dyn Clock>) -> R) {
+    let fresh = || fresh_with(system_clock());
     unique_ids(&fresh()).await;
     archive_preserves_authoritative_history(&fresh()).await;
     missing_id_fails_closed(&fresh()).await;
@@ -648,18 +788,21 @@ async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     package_network_invariant_is_atomic(&fresh()).await;
     idempotent_create_decision_table(&fresh()).await;
     sandbox_binding_is_one_environment_revision(&fresh()).await;
+    let clock = Arc::new(ManualClock::new(0));
+    let registry = fresh_with(clock.clone());
+    environment_instants_are_the_injected_clock(&registry, &clock).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────
 
 #[test]
 fn in_memory_backend_conforms() {
-    block(run_suite(InMemoryEnvRegistry::new));
+    block(run_suite(InMemoryEnvRegistry::with_clock));
 }
 
 #[test]
 fn sqlite_backend_conforms() {
-    block(run_suite(|| {
-        SqliteEnvRegistry::open_in_memory(system_clock()).expect("sqlite in-memory registry")
+    block(run_suite(|clock| {
+        SqliteEnvRegistry::open_in_memory(clock).expect("sqlite in-memory registry")
     }));
 }
