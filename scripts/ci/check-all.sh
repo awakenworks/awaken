@@ -16,13 +16,32 @@ awaken_append_repo_tools
 
 groups=(static docs rust api contracts formal reliability postgres kubernetes k3d frontend e2e sandbox)
 requested_group=all
+# `--full-gate` is the scheduled entry point: every group, a log, and a summary.
+# `--record` additionally blesses scripts/ci/gate_record.json — but only after
+# the run below finds nothing failed, because a record written by a partial run
+# is exactly the claim nobody earned. docs/adr/0080 owns the policy.
+full_gate=0
+record_full_gate=0
+original_arguments=("$@")
+usage() {
+  echo "usage: scripts/ci/check-all.sh [--group <name>|--list-groups|--full-gate [--record]]" >&2
+  exit 2
+}
 case "${1:-}" in
   "") ;;
+  --full-gate)
+    full_gate=1
+    shift
+    if [ "${1:-}" = "--record" ]; then
+      record_full_gate=1
+      shift
+    fi
+    [ "$#" -eq 0 ] || usage
+    ;;
   --group)
     requested_group="${2:-}"
     if [ -z "$requested_group" ]; then
-      echo "usage: scripts/ci/check-all.sh [--group <name>|--list-groups]" >&2
-      exit 2
+      usage
     fi
     valid=0
     for group in "${groups[@]}"; do
@@ -38,10 +57,21 @@ case "${1:-}" in
     exit 0
     ;;
   *)
-    echo "usage: scripts/ci/check-all.sh [--group <name>|--list-groups]" >&2
-    exit 2
+    usage
     ;;
 esac
+
+# A scheduled run needs a file to read afterwards, and a run that takes hours
+# needs one even when a terminal goes away. Re-enter once with output teed; the
+# marker variable is what stops that from recursing.
+if [ "$full_gate" -eq 1 ] && [ -z "${AWAKEN_FULL_GATE_LOG:-}" ]; then
+  full_gate_log_directory="${AWAKEN_FULL_GATE_LOG_DIR:-target/test-timings}"
+  mkdir -p "$full_gate_log_directory"
+  full_gate_log="$full_gate_log_directory/full-gate-$(date -u +%Y%m%dT%H%M%SZ).log"
+  echo "full gate log: $full_gate_log"
+  AWAKEN_FULL_GATE_LOG="$full_gate_log" "$0" "${original_arguments[@]}" 2>&1 | tee "$full_gate_log"
+  exit "${PIPESTATUS[0]}"
+fi
 
 failed=()   # labels of checks that failed
 repro=()    # standalone reproduce command, parallel to `failed`
@@ -55,6 +85,24 @@ initialize_timing_file() {
 rm -f "$timing_file"
 initialize_timing_file
 
+# Groups whose external tools have already been decided this run.
+declare -A prechecked=()
+
+# A group's first check decides that group's environment first. Every external
+# tool a group needs is declared in scripts/ci/gate_tools.json, and an absent one
+# is reported as an absent tool here — never later, inside the check, wearing the
+# name of whatever its absence happened to break.
+precheck_group() {
+  local group="$1"
+  [ -z "${prechecked[$group]:-}" ] || return 0
+  prechecked[$group]=1
+  echo "-> $group tool precheck"
+  if ! python3 scripts/ci/gate_tools.py require --gate "$group"; then
+    failed+=("$group tool precheck")
+    repro+=("python3 scripts/ci/gate_tools.py require --gate $group")
+  fi
+}
+
 # run "<group>" "<label>" <command...> — runs the check; on failure records its label and
 # a reproduce command. Never aborts early, so one run surfaces every failure.
 run() {
@@ -62,6 +110,7 @@ run() {
   if [ "$requested_group" != all ] && [ "$requested_group" != "$group" ]; then
     return 0
   fi
+  precheck_group "$group"
   echo "-> $label"
   started=$SECONDS
   if ! "$@"; then
@@ -128,6 +177,22 @@ run static "Rust gate control-flow self-test" scripts/ci/check-rust.sh --self-te
 # here as well as in the formal group, because a machine that cannot run the
 # formal group is exactly the one those rules exist to keep working.
 run static "Kani bootstrap publication rules" python3 scripts/ci/test_bootstrap_kani.py
+# The tool manifest is the one declaration of what every group needs from this
+# machine. Its self-test proves each row still locates by the method it states,
+# so a missing tool is reported as a missing tool and never as a proof failure,
+# a broken import, or a container pull error.
+run static "gate tool manifest self-test" python3 scripts/ci/gate_tools.py --self-test
+# Disk is a prerequisite like any other, and it filled twice in one session. The
+# reclaimer decides what is derived build output and what is a checkout; that
+# decision is what must stay proved, because it runs with --apply.
+run static "build-space reclamation self-test" python3 scripts/ci/reclaim_build_space.py --self-test
+# The full gate takes hours, so it is rarely run end to end; main once carried
+# four unrelated defects behind a gate that had never completed, each hiding the
+# next. This reports how far main has walked from the last recorded green full
+# gate. It warns here and fails only under --require-fresh, so an ordinary run is
+# never blocked by somebody else's schedule; docs/adr/0080 owns the policy.
+run static "full-gate freshness self-test" python3 scripts/ci/check_gate_freshness.py --self-test
+run static "full-gate freshness" python3 scripts/ci/check_gate_freshness.py
 run static "prerequisite doctor self-test" scripts/ci/doctor.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
 run static "sandbox image provenance self-test" python3 scripts/release/awaken_sandbox_image_provenance.py self-test
@@ -170,3 +235,20 @@ if [ "${#failed[@]}" -ne 0 ]; then
 fi
 echo "✅ repository check group '$requested_group' passed"
 echo "   timings: $timing_file"
+if [ "$full_gate" -eq 1 ]; then
+  echo ""
+  echo "full gate summary:"
+  if command -v column >/dev/null 2>&1; then
+    column -t -s "$(printf '\t')" "$timing_file"
+  else
+    cat "$timing_file"
+  fi
+  if [ -n "${AWAKEN_FULL_GATE_LOG:-}" ]; then
+    echo "   log: $AWAKEN_FULL_GATE_LOG"
+  fi
+fi
+# Reached only when every group above passed, so this is the one place a record
+# can be written and the only run that is entitled to write one.
+if [ "$record_full_gate" -eq 1 ]; then
+  python3 scripts/ci/check_gate_freshness.py --record --gates "${groups[*]}" || exit 1
+fi

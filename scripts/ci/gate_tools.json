@@ -1,0 +1,377 @@
+{
+  "version": 1,
+  "comment": [
+    "Every external thing a check group needs, declared once.",
+    "",
+    "Before this file the knowledge was scattered across the scripts that happened",
+    "to need it: _provider_environment.sh knew two tool homes, bootstrap_kani.sh knew",
+    "the solver directory, check_formal.sh knew the pinned solver version, pg_tests.sh",
+    "knew two container images, doctor.sh kept a prose table that nothing compared",
+    "against reality. The cost was always the same shape: an absent tool was reported",
+    "as whatever its absence happened to break -- a proof failure, a broken import, a",
+    "pull-access error -- and the symptom named the wrong cause.",
+    "",
+    "scripts/ci/gate_tools.py is the only reader. doctor.sh reports from it, the gate",
+    "runners precheck from it, and its --self-test proves every row can be located by",
+    "the method it states or is legitimately absent on this machine.",
+    "",
+    "locate kinds:",
+    "  path           - a binary found by name on PATH",
+    "  bundle         - a binary found on PATH or inside one of `directories`,",
+    "                   which scripts/ci/_provider_environment.sh appends to PATH",
+    "  kani-bundle    - a binary inside `scripts/ci/bootstrap_kani.sh --solver-tools`",
+    "  cargo-bin      - a cargo subcommand, i.e. a `cargo-<name>` binary on PATH",
+    "  rust-toolchain - a named toolchain listed by `rustup toolchain list`",
+    "  file           - a file at `path`, overridable by `env_override`",
+    "  container-image- an image an engine must be able to run",
+    "  node-root      - a package root whose node_modules a gate imports;",
+    "                   check_node_dependencies.py owns the decision",
+    "  builtin        - compiled into another tool, so there is nothing to locate",
+    "",
+    "requirement: `required` means the gate cannot run without it and the runner must",
+    "fail by name; `optional` means the gate skips a named part of its work and `skip`",
+    "says which part; `fetched` means the engine downloads it at first use, so a",
+    "locally absent one is reported with its pull command rather than failed."
+  ],
+  "disk_minimums": [
+    {
+      "stage": "formal",
+      "gigabytes": 50,
+      "reason": "CBMC writes whole-program GOTO binaries per harness. A short write truncates one, and the backend aborts with SIGABRT instead of reporting os error 28."
+    },
+    {
+      "stage": "rust-full",
+      "gigabytes": 30,
+      "reason": "A full workspace build plus every test binary and the nextest archive."
+    },
+    {
+      "stage": "postgres",
+      "gigabytes": 10,
+      "reason": "Container image layers for the database and the object store, plus their volumes."
+    }
+  ],
+  "build_space_reclamation": {
+    "comment": [
+      "Reclaimable build space, and the rules that make reclaiming it safe.",
+      "scripts/ci/reclaim_build_space.py is the only reader; docs/adr/0080 states the policy.",
+      "",
+      "The machine filled up twice in one session. 152 of 219 checkouts carried an",
+      "in-tree target/ totalling 509G against ~1.1G of source each, the shared cargo",
+      "intermediates had grown to 1.4T, and a stale /data tree held another 129G.",
+      "A full filesystem does not announce itself: it reached CBMC as os error 28,",
+      "truncated a GOTO binary, and crashed the backend with SIGABRT.",
+      "",
+      "Build output is derived. A checkout, its history and its uncommitted changes",
+      "are not, and nothing here may touch them."
+    ],
+    "worktree_target_idle_days": 7,
+    "detached_target_idle_days": 7,
+    "shared_intermediate_idle_days": 3,
+    "worktree_roots": ["/build/scratch", "$HOME/Codes", "$HOME/Codes/worktrees", "$HOME/Codes/*-worktrees", "/data/$USER"],
+    "detached_target_roots": ["/build/targets"],
+    "shared_intermediate_roots": ["/build/targets/cargo-intermediates"],
+    "safety_rules": [
+      "Only a build-output directory is ever removed: an in-tree `target/` of a git checkout, a cargo target directory directly under a declared target root, or one entry of a shared cargo-intermediates root.",
+      "A checkout, a `.git` directory or file, a bare repository and any source tree are never touched, whatever their age.",
+      "A path is in use when a live process has its cwd at or inside it, or names it in CARGO_TARGET_DIR or CARGO_BUILD_BUILD_DIR. In-use paths are kept regardless of age. Liveness is read from /proc/<pid>/cwd and /proc/<pid>/environ, never from a process-name pattern.",
+      "A path outside every declared root is never a candidate, so a typo cannot widen the scope.",
+      "Age is the newest modification time within the first two levels of the directory, so an active build is young even when its root directory is not."
+    ],
+    "needs_a_decision_instead": [
+      "A worktree holding unmerged commits or uncommitted changes: its build output is still reclaimable, but the checkout itself is a person's decision, not this tool's.",
+      "The sccache disk cache: it is already capped by cache.disk size in ~/.config/sccache/config, so it is bounded rather than leaking. Report its size, do not reclaim it."
+    ]
+  },
+  "cleanup_suggestions": [
+    "$CARGO_TARGET_DIR/debug/incremental - rebuilt on demand, always safe to delete",
+    "target/test-timings - gate telemetry only; check-all.sh recreates it",
+    "target/formal-artifacts - previous formal diagnostics; a new run writes its own",
+    "docker image prune -f and docker container prune -f - reclaims stopped gate substrates",
+    "$HOME/.cargo/registry/cache - re-downloaded on demand",
+    "scripts/ci/reclaim_build_space.py - reports and reclaims idle build output across every checkout"
+  ],
+  "tools": [
+    {
+      "name": "cargo",
+      "locate": "path",
+      "gates": ["rust", "api", "formal", "reliability"],
+      "requirement": "required",
+      "install": "https://rustup.rs"
+    },
+    {
+      "name": "rustup",
+      "locate": "path",
+      "gates": ["rust", "api", "formal"],
+      "requirement": "required",
+      "install": "https://rustup.rs"
+    },
+    {
+      "name": "cargo-nextest",
+      "locate": "cargo-bin",
+      "gates": ["rust", "reliability"],
+      "requirement": "required",
+      "install": "cargo install cargo-nextest --locked"
+    },
+    {
+      "name": "cargo-deny",
+      "locate": "cargo-bin",
+      "gates": ["rust"],
+      "requirement": "required",
+      "install": "cargo install cargo-deny --locked"
+    },
+    {
+      "name": "cargo-public-api",
+      "locate": "cargo-bin",
+      "gates": ["api"],
+      "requirement": "required",
+      "version": {
+        "command": ["cargo-public-api", "--version"],
+        "contains": "0.52.0",
+        "owner": "scripts/ci/check_public_api.sh PUBLIC_API_TOOL_VERSION"
+      },
+      "install": "cargo install cargo-public-api --locked --version 0.52.0"
+    },
+    {
+      "name": "nightly-2026-07-14",
+      "locate": "rust-toolchain",
+      "gates": ["api"],
+      "requirement": "required",
+      "note": "cargo-public-api renders through rustdoc. A moving nightly renames std paths and the snapshots drift without a source change.",
+      "version": {
+        "owner": "scripts/ci/check_public_api.sh PUBLIC_API_NIGHTLY"
+      },
+      "install": "rustup toolchain install nightly-2026-07-14"
+    },
+    {
+      "name": "cargo-kani",
+      "locate": "cargo-bin",
+      "note": "scripts/ci/bootstrap_kani.sh owns the compiler and backend selection; this row only proves `cargo kani` resolves.",
+      "gates": ["formal"],
+      "requirement": "required",
+      "install": "scripts/ci/bootstrap_kani.sh"
+    },
+    {
+      "name": "z3",
+      "locate": "bundle",
+      "directories": ["$HOME/.local/share/awaken-formal/tools/tlapm/lib/tlapm/backends/bin"],
+      "gates": ["formal"],
+      "requirement": "optional",
+      "solver": true,
+      "skip": "the pinned-solver Kani harnesses",
+      "version": {
+        "command": ["z3", "--version"],
+        "expect": "Z3 version 4.8.9 - 64 bit",
+        "mismatch": "hard-error",
+        "owner": "scripts/ci/check_formal.sh z3_version"
+      },
+      "absent_reason": "install the pinned solver on PATH (TLAPS bundles it)",
+      "install": "scripts/ci/bootstrap_kani.sh installs TLAPS, which bundles the pinned solver"
+    },
+    {
+      "name": "kissat",
+      "locate": "kani-bundle",
+      "gates": ["formal"],
+      "requirement": "optional",
+      "solver": true,
+      "skip": "the kissat Kani harnesses",
+      "absent_reason": "the kissat solver is not on PATH (the released Kani bundle ships it)",
+      "install": "scripts/ci/bootstrap_kani.sh"
+    },
+    {
+      "name": "cadical",
+      "locate": "builtin",
+      "gates": ["formal"],
+      "requirement": "optional",
+      "solver": true,
+      "skip": "nothing: the backend links it in",
+      "install": "compiled into the CBMC backend"
+    },
+    {
+      "name": "minisat",
+      "locate": "builtin",
+      "gates": ["formal"],
+      "requirement": "optional",
+      "solver": true,
+      "skip": "nothing: the backend links it in",
+      "install": "compiled into the CBMC backend"
+    },
+    {
+      "name": "tlapm",
+      "locate": "bundle",
+      "directories": ["$HOME/.local/bin"],
+      "env_override": "TLAPM_BIN",
+      "gates": ["formal"],
+      "requirement": "optional",
+      "skip": "the TLAPS proofs",
+      "version": {
+        "command": ["tlapm", "--version"],
+        "expect": "763bf3c",
+        "mismatch": "hard-error",
+        "owner": "scripts/ci/check_formal.sh tlapm_version"
+      },
+      "install": "scripts/ci/check_formal.sh reports its expected location"
+    },
+    {
+      "name": "java",
+      "locate": "path",
+      "gates": ["formal"],
+      "requirement": "optional",
+      "skip": "every TLC model check",
+      "install": "your distribution's default JRE"
+    },
+    {
+      "name": "tla2tools.jar",
+      "locate": "file",
+      "path": "$XDG_DATA_HOME/tlaplus/tla2tools.jar",
+      "env_override": "TLA2TOOLS_JAR",
+      "gates": ["formal"],
+      "requirement": "optional",
+      "skip": "every TLC model check",
+      "version": {
+        "expect": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+        "mismatch": "hard-error",
+        "owner": "scripts/ci/check_formal.sh tlc_version"
+      },
+      "install": "https://github.com/tlaplus/tlaplus/releases"
+    },
+    {
+      "name": "cmake",
+      "locate": "path",
+      "gates": ["formal"],
+      "requirement": "optional",
+      "condition": "only to rebuild the CBMC backend from source",
+      "skip": "rebuilding the CBMC backend; the released bundle still works",
+      "install": "your distribution's cmake"
+    },
+    {
+      "name": "ninja",
+      "locate": "path",
+      "gates": ["formal"],
+      "requirement": "optional",
+      "condition": "only to rebuild the CBMC backend from source",
+      "skip": "rebuilding the CBMC backend; the released bundle still works",
+      "install": "your distribution's ninja-build"
+    },
+    {
+      "name": "python3",
+      "locate": "path",
+      "gates": ["static", "docs", "formal", "contracts"],
+      "requirement": "required",
+      "install": "your distribution's python3"
+    },
+    {
+      "name": "node",
+      "locate": "path",
+      "gates": ["static", "e2e", "frontend", "contracts"],
+      "requirement": "required",
+      "install": "https://nodejs.org (this repo pins it through nvm)"
+    },
+    {
+      "name": "npm",
+      "locate": "path",
+      "gates": ["static", "e2e"],
+      "requirement": "required",
+      "install": "ships with node"
+    },
+    {
+      "name": "pnpm",
+      "locate": "path",
+      "gates": ["static", "e2e", "frontend", "contracts"],
+      "requirement": "required",
+      "install": "corepack enable pnpm"
+    },
+    {
+      "name": "e2e",
+      "locate": "node-root",
+      "gates": ["static", "e2e", "contracts"],
+      "requirement": "required",
+      "note": "Outside pnpm-workspace.yaml on purpose, so `pnpm install` reports Already up to date while this root stays empty and the next gate dies with ERR_MODULE_NOT_FOUND.",
+      "install": "npm --prefix e2e install"
+    },
+    {
+      "name": "web",
+      "locate": "node-root",
+      "gates": ["frontend"],
+      "requirement": "required",
+      "install": "pnpm install"
+    },
+    {
+      "name": ".",
+      "locate": "node-root",
+      "gates": ["static", "contracts"],
+      "requirement": "required",
+      "install": "pnpm install"
+    },
+    {
+      "name": "docker",
+      "locate": "path",
+      "gates": ["postgres", "kubernetes", "k3d", "sandbox", "e2e"],
+      "requirement": "required",
+      "install": "https://docs.docker.com/engine/install/"
+    },
+    {
+      "name": "podman",
+      "locate": "path",
+      "gates": ["sandbox"],
+      "requirement": "optional",
+      "skip": "the podman substrate row of the sandbox capability suite",
+      "install": "your distribution's podman"
+    },
+    {
+      "name": "bwrap",
+      "locate": "path",
+      "gates": ["sandbox"],
+      "requirement": "optional",
+      "skip": "the bubblewrap substrate row of the sandbox capability suite",
+      "install": "your distribution's bubblewrap"
+    },
+    {
+      "name": "k3d",
+      "locate": "path",
+      "gates": ["k3d", "kubernetes"],
+      "requirement": "required",
+      "install": "https://k3d.io"
+    },
+    {
+      "name": "kubectl",
+      "locate": "path",
+      "gates": ["k3d", "kubernetes"],
+      "requirement": "required",
+      "install": "https://kubernetes.io/docs/tasks/tools/"
+    },
+    {
+      "name": "helm",
+      "locate": "path",
+      "gates": ["k3d"],
+      "requirement": "required",
+      "install": "https://helm.sh/docs/intro/install/"
+    },
+    {
+      "name": "postgres:16-alpine",
+      "locate": "container-image",
+      "gates": ["postgres"],
+      "requirement": "fetched",
+      "install": "docker pull postgres:16-alpine",
+      "owner": "scripts/ci/pg_tests.sh"
+    },
+    {
+      "name": "minio/minio:RELEASE.2024-12-18T13-15-44Z",
+      "locate": "container-image",
+      "env_override": "AWAKEN_CI_OBJECT_IMAGE",
+      "gates": ["postgres"],
+      "requirement": "fetched",
+      "note": "An unpulled image fails with the same 'pull access denied' text as a private repository, which reads as a permission problem rather than a missing image.",
+      "install": "docker pull minio/minio:RELEASE.2024-12-18T13-15-44Z",
+      "owner": "scripts/ci/pg_tests.sh MINIO_IMAGE"
+    },
+    {
+      "name": "minio/mc:RELEASE.2024-11-21T17-21-54Z",
+      "locate": "container-image",
+      "env_override": "AWAKEN_CI_OBJECT_CLIENT_IMAGE",
+      "gates": ["postgres"],
+      "requirement": "fetched",
+      "install": "docker pull minio/mc:RELEASE.2024-11-21T17-21-54Z",
+      "owner": "scripts/ci/pg_tests.sh MC_IMAGE"
+    }
+  ]
+}
