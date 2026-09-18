@@ -4,16 +4,22 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../../.." && pwd)"
 source "$repo_root/scripts/ci/_deadline.sh"
 
-# Only --self-test is an argument here; everything else used to fall through to
-# a real image build, so a misspelled probe spent minutes in Docker and then
-# reported success for a run nobody asked for.
-case "${1:-}" in
-  ""|--self-test) ;;
-  *) echo "usage: deploy/images/sandbox/build.sh [--self-test]" >&2; exit 2 ;;
-esac
-if [ "$#" -gt 1 ]; then
+# The argument vocabulary is exactly: an optional mode flag, then an optional
+# image reference and runtime-id set. Anything else used to fall through to a
+# real image build, so a misspelled `--ensure-curent` spent minutes in Docker
+# and then reported success for a full rebuild nobody asked for -- the opposite
+# of what the caller wanted, with the same exit code.
+usage() {
   echo "usage: deploy/images/sandbox/build.sh [--self-test]" >&2
+  echo "       deploy/images/sandbox/build.sh [--ensure|--ensure-hand|--ensure-current] [<image>] [<runtime-ids>]" >&2
   exit 2
+}
+case "${1:-}" in
+  ""|--self-test|--ensure|--ensure-hand|--ensure-current) ;;
+  -*) usage ;;
+esac
+if [ "${1:-}" = "--self-test" ] && [ "$#" -ne 1 ]; then
+  usage
 fi
 
 release_image_labels=()

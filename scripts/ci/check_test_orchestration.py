@@ -140,6 +140,29 @@ DURATION = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ms|s|m|h)\Z")
 DURATION_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 QUALITY_WORKFLOW = ".github/workflows/quality.yml"
 RELEASE_WORKFLOW = ".github/workflows/release.yml"
+# A workflow other than the canonical one that runs a suite command is running a
+# copy of release-gate logic. `sdk-drift-canary.yml` is exactly that: it drives
+# the same official-SDK canaries the release gate drives, on a schedule, and
+# nothing said the two spellings had to agree. Every such command must be the
+# same string check-all.sh uses, or be registered here with why it differs.
+#
+# Key: the exact command. Value: why the release manifest does not own it.
+WORKFLOW_ONLY_COMMANDS: dict[str, str] = {
+    "pnpm --filter @awaken/managed-sdk-oracle check:python:online": (
+        "The online variant of the oracle check: it queries PyPI for a newer "
+        "`anthropic` release. The release manifest deliberately runs the "
+        "hermetic `check` instead, because a gate must not fail on somebody "
+        "else's publish. Running the online one on a schedule is the point of "
+        "the canary; it is not a second copy of the gate's command."
+    ),
+}
+# The command shapes a workflow can use to run a repository suite. Matched
+# anywhere on the line, not anchored: these appear inside `run: |` blocks with
+# redirections, `| tee` and line continuations after them, and an anchored
+# pattern silently matched none of them.
+WORKFLOW_SUITE_COMMAND = re.compile(
+    r"(npm --prefix \S+ run \S+|pnpm --filter \S+ \S+|pnpm -C \S+ \S+|scripts/ci/[\w.-]+\.sh)"
+)
 K8S_CONTAINER_GATE = "scripts/e2e/k8s_container_e2e.sh"
 
 
@@ -550,6 +573,54 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
             "canonical full gate must have exactly one workflow owner: "
             + ", ".join(gate_owners)
         )
+    errors += workflow_only_registry_errors(workflows)
+    return errors
+
+
+def workflow_command_copy_errors(workflows: dict[str, str], check_all: str) -> list[str]:
+    """W2: a second workflow may not keep its own spelling of a gate command.
+
+    The canary workflow runs the release gate's official-SDK checks on a
+    schedule. Nothing tied the two spellings together, so the gate could be
+    changed and the canary would keep watching the old thing -- reporting green
+    about a command the release gate no longer runs.
+    """
+
+    errors: list[str] = []
+    for relative, workflow in sorted(workflows.items()):
+        if relative in (QUALITY_WORKFLOW, RELEASE_WORKFLOW):
+            continue
+        for command in WORKFLOW_SUITE_COMMAND.findall(workflow):
+            command = command.strip()
+            # Compared to end of line, not by substring: `test:sdk-latest` is a
+            # prefix of `test:sdk-latest-canary`, and a rule that cannot tell
+            # those apart is the rule that let the two lanes drift.
+            if f"{command}\n" in check_all or command in WORKFLOW_ONLY_COMMANDS:
+                continue
+            errors.append(
+                f"{relative}: runs `{command}`, which scripts/ci/check-all.sh does not run. A "
+                "second workflow holding its own spelling of a suite command is a copy of "
+                "release-gate logic that nothing keeps in step; use the manifest's exact "
+                "command or register it in WORKFLOW_ONLY_COMMANDS with why it must differ"
+            )
+    return errors
+
+
+def workflow_only_registry_errors(workflows: dict[str, str]) -> list[str]:
+    """A registered workflow-only command that no workflow runs is stale."""
+
+    errors = []
+    for command, reason in sorted(WORKFLOW_ONLY_COMMANDS.items()):
+        if any(
+            command in workflow
+            for relative, workflow in workflows.items()
+            if relative not in (QUALITY_WORKFLOW, RELEASE_WORKFLOW)
+        ):
+            continue
+        errors.append(
+            f"WORKFLOW_ONLY_COMMANDS names `{command}`, which no workflow runs any more; drop "
+            f"the stale entry ({reason.split('.')[0]})"
+        )
     return errors
 
 
@@ -608,25 +679,58 @@ GATE_OWNED_CHECKERS = (
     "check_feature_matrix.py",
 )
 
-PUSH_GATE_COMMANDS = (
-    "cargo clippy --workspace --all-targets",
-    # The maximal feature graph: every optional feature the workspace declares
-    # must compile before a commit leaves the machine. Without it a tier behind
-    # a feature wall rots unseen, and the crate that fails first hides the rest.
-    "cargo check --workspace --all-features --all-targets",
+# The two ledger checks `--push` adds on top of what `--full` compiles. These
+# are push-only by design: they answer in seconds and their answers come hours
+# later otherwise. Everything else `--push` runs is *derived* from `--full`
+# below, never listed here.
+PUSH_ONLY_COMMANDS = (
     "python3 scripts/ci/check_formal_coverage.py",
     "python3 scripts/ci/check_formal_surface.py --require-complete",
 )
+# A compile-or-lint command, as it appears in the gate, up to its first quoted
+# argument (`"${locked[@]}"`), which is where the two lanes stop being textually
+# identical.
+GATE_CARGO_COMMAND = re.compile(r"^\s*(cargo (?:clippy|check) --workspace [^\n\"]*)", re.MULTILINE)
+# The compile surface a lint must cover. Narrowing it is the defect: the gate
+# once compiled 108 features with `cargo check` and linted one named feature
+# with clippy, so `-D warnings` had never been applied to most of what compiled.
+MAXIMAL_COMPILE_SURFACE = "--workspace --all-features --all-targets"
+
+
+def gate_branch(gate: str, pattern: str) -> str:
+    """One `case` arm of check-rust.sh, by its arm pattern."""
+
+    match = re.search(rf"(?ms)^  {re.escape(pattern)}\)\n(.*?)^    ;;", gate)
+    return match.group(1) if match else ""
+
+
+def push_gate_commands(gate: str) -> tuple[str, ...]:
+    """What `--push` must run, derived from what `--full` runs.
+
+    Two literal lists is how the lanes diverged: somebody widened the full
+    gate's compile surface and nobody widened the push gate's, so a commit could
+    leave a machine having satisfied a strictly weaker check than the one that
+    would judge it. The push list is therefore not written down at all -- it is
+    read off the `--full` arm, plus the two ledger checks push adds.
+    """
+
+    full = gate_branch(gate, "--full")
+    derived = [command.rstrip() for command in GATE_CARGO_COMMAND.findall(full)]
+    return tuple(dict.fromkeys(derived)) + PUSH_ONLY_COMMANDS
 
 
 def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     """Rust hook composition delegates each static scan to the existing gate.
 
-    Pre-commit runs `--quick`; pre-push runs `--push`, which is `--quick`
-    plus the two checks in PUSH_GATE_COMMANDS. The gate must actually run
-    those commands on its `--push` path: a hook that names a mode the script
-    does not implement, or a mode that silently drops one of the commands,
-    keeps the pre-commit latency and loses the reason the mode exists.
+    Pre-commit runs `--quick`; pre-push runs `--push`, which is `--quick` plus
+    everything `--full` compiles or lints plus the two ledger checks. The gate
+    must actually run those commands on its `--push` path: a hook that names a
+    mode the script does not implement, or a mode that silently drops one of the
+    commands, keeps the pre-commit latency and loses the reason the mode exists.
+
+    The list is derived from the `--full` arm rather than restated, so widening
+    the full gate's compile surface without widening the push gate's is a
+    failure here instead of a divergence nobody notices.
     """
     errors = []
     pre_commit = hooks.split("pre-commit:", 1)[-1].split("\npre-push:", 1)[0]
@@ -645,11 +749,21 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     push_body = push_branch.group(1) if push_branch else ""
     if not push_branch or 'if [ "$mode" = "--push" ]' not in push_body:
         errors.append("check-rust.sh must implement --push as --quick plus push-only steps")
-    for command in PUSH_GATE_COMMANDS:
+    derived = push_gate_commands(gate)
+    if len(derived) == len(PUSH_ONLY_COMMANDS):
+        errors.append(
+            "check-rust.sh --full compiles or lints nothing this rule can derive; the push "
+            "gate would then be derived from an empty set and assert nothing"
+        )
+    for command in derived:
         if command not in push_body:
-            errors.append(f"check-rust.sh --push must run {command}")
+            errors.append(
+                f"check-rust.sh --push must run {command} — it is what --full runs, and a push "
+                "gate weaker than the gate that judges the commit lets the difference reach main"
+            )
     if "-D warnings" not in push_body:
         errors.append("check-rust.sh --push clippy must deny warnings")
+    errors += lint_surface_errors(gate)
     cargo_gate = gate.find("if ! command -v cargo")
     for checker in GATE_OWNED_CHECKERS:
         command = f"python3 scripts/ci/{checker}"
@@ -661,6 +775,47 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
             errors.append(f"Rust hook does not cover changes to {checker}")
         if cargo_gate < 0 or gate.find(command) > cargo_gate:
             errors.append(f"Cargo absence must not suppress {checker}")
+    return errors
+
+
+def lint_surface_errors(gate: str) -> list[str]:
+    """`-D warnings` must be applied to the maximal graph in every judging lane.
+
+    The gate compiled 108 optional features with `cargo check` and linted a
+    single named feature with clippy, so everything it proved *compiles* was
+    never proved warning-free. The two commands were independent literals, which
+    is why nobody noticed they had stopped agreeing.
+
+    The rule is over the surface, not the command: a lane that lints at all must
+    lint `--workspace --all-features --all-targets`. `--quick` may still compile
+    a narrower graph for speed -- that surface is a strict subset of the maximal
+    one, so it cannot hide anything the judging lanes will not see.
+    """
+
+    errors: list[str] = []
+    for arm, must_lint in (("--quick|--push", True), ("--full", True)):
+        body = gate_branch(gate, arm)
+        if not body:
+            errors.append(f"check-rust.sh has no {arm} arm to check the lint surface of")
+            continue
+        linted = {
+            command.split("cargo clippy ", 1)[1].strip()
+            for command in GATE_CARGO_COMMAND.findall(body)
+            if command.strip().startswith("cargo clippy")
+        }
+        if must_lint and not linted:
+            errors.append(
+                f"check-rust.sh {arm} compiles the workspace but runs no workspace clippy; "
+                "a lane that judges a commit must lint what it compiles"
+            )
+            continue
+        if MAXIMAL_COMPILE_SURFACE not in linted:
+            errors.append(
+                f"check-rust.sh {arm} lints {sorted(linted)} instead of "
+                f"`{MAXIMAL_COMPILE_SURFACE}`; clippy must cover the same feature set "
+                "cargo check covers, or the gate must state and enforce why a narrower set "
+                "is correct"
+            )
     return errors
 
 
@@ -967,6 +1122,15 @@ def validate(root: Path) -> list[str]:
             }
         )
     )
+    errors.extend(
+        workflow_command_copy_errors(
+            {
+                path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+                for path in (root / ".github" / "workflows").glob("*.yml")
+            },
+            (root / "scripts/ci/check-all.sh").read_text(encoding="utf-8"),
+        )
+    )
     errors.extend(e2e_lock_owner_errors((root / "pnpm-lock.yaml").read_text(encoding="utf-8")))
     return errors
 
@@ -1059,6 +1223,8 @@ def self_test() -> None:
     # | H9   | T  | T  | F  | T  | F  | reject: --push without clippy |
     # | H10  | T  | T  | T  | F  | F  | reject: --push without the ledger |
     # | H11  | T  | T  | T* | T  | F  | reject: clippy present but warnings allowed |
+    # | H12  | --full widens its compile/lint surface, --push does not | reject |
+    # | H13  | the lint surface is narrower than the compiled surface  | reject |
     pre_push_at = hooks.index("\npre-push:")
     assert rust_hook_errors(
         hooks[:pre_push_at].replace("check-rust.sh --quick", "check-rust.sh --push") + hooks[pre_push_at:],
@@ -1075,10 +1241,30 @@ def self_test() -> None:
     push_start = gate.index("  --quick|--push)")
     push_end = gate.index("    ;;", push_start)
     push_body = gate[push_start:push_end]
-    assert "cargo clippy --workspace --all-targets" in push_body and "check_formal_coverage.py" in push_body, (
+    clippy_command = "cargo clippy " + MAXIMAL_COMPILE_SURFACE
+    assert clippy_command in push_body and "check_formal_coverage.py" in push_body, (
         "H5 the live --push branch carries both commands"
     )
-    without_clippy = gate[:push_start] + push_body.replace("cargo clippy --workspace --all-targets", "true") + gate[push_end:]
+    # H5b the push list is derived from --full, not restated: every compile or
+    # lint command the full arm runs is in the push arm, and the derivation is
+    # what says so.
+    assert set(push_gate_commands(gate)) - set(PUSH_ONLY_COMMANDS), (
+        "H5b the derivation must read at least one command off the --full arm"
+    )
+    for derived in push_gate_commands(gate):
+        assert derived in push_body, f"H5b --push is missing the derived command {derived}"
+    # H12 widen --full alone: the derivation makes that a failure, where two
+    # literal lists let the lanes silently disagree.
+    full_start = gate.index("  --full)")
+    widened = gate[:full_start] + gate[full_start:].replace(
+        clippy_command, "cargo clippy --workspace --all-features --all-targets --tests", 1
+    )
+    assert rust_hook_errors(hooks, widened), "H12 a wider --full must widen --push too"
+    # H13 narrow the lint surface while the compile surface stays maximal.
+    narrowed = gate.replace(clippy_command, "cargo clippy --workspace --all-targets")
+    assert lint_surface_errors(narrowed), "H13 the lint surface must equal the compiled surface"
+    assert not lint_surface_errors(gate), "H13 the live gate lints what it compiles"
+    without_clippy = gate[:push_start] + push_body.replace(clippy_command, "true") + gate[push_end:]
     assert rust_hook_errors(hooks, without_clippy), "H9 --push must run workspace clippy"
     without_ledger = gate[:push_start] + push_body.replace("python3 scripts/ci/check_formal_coverage.py", "true") + gate[push_end:]
     assert rust_hook_errors(hooks, without_ledger), "H10 --push must run the formal ledger"
@@ -1499,7 +1685,28 @@ def self_test() -> None:
         path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
         for path in (ROOT / ".github" / "workflows").glob("*.yml")
     }
+    check_all_text = (ROOT / "scripts/ci/check-all.sh").read_text(encoding="utf-8")
     assert not workflow_gate_errors(workflows), "W1"
+    assert not workflow_command_copy_errors(workflows, check_all_text), \
+        "W13 the live workflows spell every gate command the way the manifest does"
+    # W13 a workflow other than the canonical pair keeps its own spelling of a
+    # suite command => reject; the registered online canary => accept; a
+    # registered command nothing runs => reject as stale.
+    canary = "sdk-drift-canary.yml"
+    assert not workflow_command_copy_errors(
+        {canary: "run: npm --prefix e2e run test:sdk-latest-canary\n"},
+        "run e2e x npm --prefix e2e run test:sdk-latest-canary\n",
+    ), "W13 a command the manifest owns, spelled the same way"
+    assert workflow_command_copy_errors(
+        {canary: "run: npm --prefix e2e run test:sdk-latest\n"},
+        "run e2e x npm --prefix e2e run test:sdk-latest-canary\n",
+    ), "W13 a workflow may not hold its own spelling of a gate command"
+    assert not workflow_command_copy_errors(
+        {canary: "run: pnpm --filter @awaken/managed-sdk-oracle check:python:online\n"}, ""
+    ), "W13 a registered workflow-only command"
+    assert workflow_only_registry_errors({canary: "run: true\n"}), \
+        "W13 a registered command no workflow runs is stale"
+    assert not workflow_only_registry_errors(workflows), "W13 the live registry is current"
     # W12 lock-owner table: C4 root pnpm importers exclude E2E => the reviewed
     # npm lock is its sole dependency source. A duplicate importer is rejected
     # even if release happens to install via npm today.
