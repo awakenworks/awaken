@@ -14,6 +14,14 @@ source scripts/ci/_deadline.sh
 source scripts/ci/_provider_environment.sh
 awaken_append_repo_tools
 
+# Decide this stage's environment before it does anything long, so a missing
+# tool is reported as a missing tool. Without this the same facts arrive hours
+# later wearing the wrong name: an absent solver as "0 of N failed ...
+# VERIFICATION FAILED", and a full filesystem as a CBMC SIGABRT on a GOTO binary
+# that a short write truncated. scripts/ci/gate_tools.json declares both, and
+# owns the pinned versions this file also states as shell constants above.
+python3 scripts/ci/gate_tools.py require --gate formal
+python3 scripts/ci/gate_tools.py disk --stage formal
 
 require_tools=0
 if [ "${1:-}" = "--require-tools" ]; then

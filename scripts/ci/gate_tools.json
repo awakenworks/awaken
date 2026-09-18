@@ -110,8 +110,9 @@
       "install": "rustup toolchain install nightly-2026-07-14"
     },
     {
-      "name": "kani",
-      "locate": "path",
+      "name": "cargo-kani",
+      "locate": "cargo-bin",
+      "note": "scripts/ci/bootstrap_kani.sh owns the compiler and backend selection; this row only proves `cargo kani` resolves.",
       "gates": ["formal"],
       "requirement": "required",
       "install": "scripts/ci/bootstrap_kani.sh"

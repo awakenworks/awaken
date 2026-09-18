@@ -55,6 +55,24 @@ initialize_timing_file() {
 rm -f "$timing_file"
 initialize_timing_file
 
+# Groups whose external tools have already been decided this run.
+declare -A prechecked=()
+
+# A group's first check decides that group's environment first. Every external
+# tool a group needs is declared in scripts/ci/gate_tools.json, and an absent one
+# is reported as an absent tool here — never later, inside the check, wearing the
+# name of whatever its absence happened to break.
+precheck_group() {
+  local group="$1"
+  [ -z "${prechecked[$group]:-}" ] || return 0
+  prechecked[$group]=1
+  echo "-> $group tool precheck"
+  if ! python3 scripts/ci/gate_tools.py require --gate "$group"; then
+    failed+=("$group tool precheck")
+    repro+=("python3 scripts/ci/gate_tools.py require --gate $group")
+  fi
+}
+
 # run "<group>" "<label>" <command...> — runs the check; on failure records its label and
 # a reproduce command. Never aborts early, so one run surfaces every failure.
 run() {
@@ -62,6 +80,7 @@ run() {
   if [ "$requested_group" != all ] && [ "$requested_group" != "$group" ]; then
     return 0
   fi
+  precheck_group "$group"
   echo "-> $label"
   started=$SECONDS
   if ! "$@"; then

@@ -256,6 +256,13 @@ if ! command -v docker >/dev/null 2>&1 \
   exit 0
 fi
 
+# The substrate this gate starts is declared in scripts/ci/gate_tools.json, so
+# an image that is not cached is named here rather than reaching Docker as
+# "pull access denied", which reads as a permission problem on a private
+# repository. Its volumes need room, so the filesystem is checked too.
+python3 scripts/ci/gate_tools.py require --gate postgres || exit 1
+python3 scripts/ci/gate_tools.py disk --stage postgres || exit 1
+
 NAME="awaken-ci-pg-$$"
 OBJECT_NAME="awaken-ci-object-$$"
 REQUESTED_PORT="${AWAKEN_CI_PG_PORT:-}"

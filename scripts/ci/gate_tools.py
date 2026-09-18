@@ -498,6 +498,30 @@ def _declared_tool_homes() -> set[str]:
     return homes
 
 
+def _owner_literal(owner: str) -> tuple[str, str] | None:
+    """The shell constant a version pin names, as ``(where, value)``.
+
+    A pin is written twice on purpose: the gate script states it as a shell
+    constant its own tests exercise, and the manifest states it so one file
+    answers "what does this machine need". Two copies drift, so the manifest's
+    ``owner`` field names the constant and this reads it back.
+    """
+
+    parts = owner.split()
+    if len(parts) != 2:
+        return None
+    script, variable = parts
+    path = ROOT / script
+    if not path.is_file():
+        return None
+    match = re.search(
+        rf'^\s*(?:readonly\s+)?{re.escape(variable)}="([^"]*)"',
+        path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    return (owner, match.group(1)) if match else None
+
+
 def _check_all_groups() -> set[str]:
     text = CHECK_ALL.read_text(encoding="utf-8")
     match = re.search(r"^groups=\(([^)]*)\)", text, re.MULTILINE)
@@ -528,6 +552,7 @@ def self_test() -> int:
     | M6   | a `bundle` row names a tool home                   | _provider_environment.sh appends it |
     | M7   | a tiny disk threshold / a huge one                  | accept / refuse by name        |
     | M8   | a solver absent here                               | reports a skip, never a proof failure |
+    | M9   | a version pin naming an owning shell constant      | both copies say the same thing |
     """
 
     manifest = load()
@@ -556,6 +581,21 @@ def self_test() -> int:
         for gate in tool.get("gates", []):
             if groups and gate not in groups:
                 problems.append(f"M3 {name}: gate {gate!r} is not a check-all.sh group")
+        pin = tool.get("version", {})
+        if pin.get("owner"):
+            literal = _owner_literal(pin["owner"])
+            if literal is None:
+                problems.append(
+                    f"M9 {name}: no constant named by {pin['owner']!r} could be read, so the "
+                    "manifest's pin has no owner to agree with"
+                )
+            else:
+                declared = pin.get("expect") or pin.get("contains") or name
+                if literal[1] != declared:
+                    problems.append(
+                        f"M9 {name}: the manifest says {declared!r} but {pin['owner']} says "
+                        f"{literal[1]!r}; one pin drifted from the other"
+                    )
         if tool.get("locate") == "bundle":
             for directory in _bundle_directories(tool):
                 if directory.rstrip("/") not in homes:
@@ -578,6 +618,12 @@ def self_test() -> int:
                     problems.append(
                         f"M4 {name} is absent but gate {gate!r} still reports itself ready"
                     )
+
+    for group in sorted(groups - {gate for tool in manifest["tools"] for gate in tool["gates"]}):
+        problems.append(
+            f"M3 check-all.sh group {group!r} declares no tool, so `require --gate {group}` "
+            "cannot answer whether this machine can run it"
+        )
 
     stages = [entry["stage"] for entry in manifest["disk_minimums"]]
     if len(stages) != len(set(stages)):
