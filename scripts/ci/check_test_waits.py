@@ -107,6 +107,20 @@ LOOP_HEAD = re.compile(
     r"|for\s+(?:mut\s+)?[\w(),\s_]+\s+in\s+[\w:.]*\d*\.\.)",
 )
 LOOP_EXIT = re.compile(r"\bbreak\b|\breturn\b|\bthrow\b")
+# Only a *bounded* loop can expire, so only a bounded loop can expire quietly.
+# An unbounded `loop {` or `while !stop` is a fake server or a producer; it
+# never reaches a deadline path at all.
+BOUNDED_LOOP = re.compile(
+    r"for\s+(?:mut\s+)?[\w(),\s_]+\s+in\s+[\w:.]*\d+\s*\.\.|"
+    r"for\s*\(\s*(?:let|var|const)?\s*\w+\s*=[^;]*;[^;]*<[^;]*;|"
+    r"while[\s(].*(?:Date\.now|performance\.now|Instant::now|elapsed)\s*\(\s*\)\s*<",
+)
+# A wait that expires must say so. `throw`, an assertion, or a Rust panic all
+# stop the test; anything else lets the deadline pass unremarked.
+LOUD_FAILURE = re.compile(
+    r"\bthrow\b|\bassert(?:_eq|_ne)?!|\bassert\b|\bexpect\(|\bpanic!|\bunwrap\(|"
+    r"\bexpect!|\.expect\(",
+)
 # A wait that delegates to an owner is not a private loop.
 OWNED_WAIT = re.compile(
     r"wait_for_session_events|wait_for_delivered_lifecycle_facts|"
@@ -118,7 +132,7 @@ WAIT_CALL = re.compile(
 REASON = re.compile(r"awaken-wait:\s*(?P<reason>.+?)\s*$")
 MIN_REASON = 20
 
-RULES = ("sleep-then-assert", "generic-settle", "private-wait-loop")
+RULES = ("sleep-then-assert", "generic-settle", "private-wait-loop", "silent-timeout")
 
 MESSAGES = {
     "sleep-then-assert": (
@@ -139,6 +153,12 @@ MESSAGES = {
         "this is a private poll loop; the repository has one wait owner per "
         "side so a settle condition cannot drift into a generic signal. Use "
         "{owner} and give it a durable fact"
+    ),
+    "silent-timeout": (
+        "this wait's deadline path is silent -- when it expires the test simply "
+        "carries on, so a product that never reaches the awaited state still "
+        "reports green and verifies nothing. Fail there, naming what was "
+        "awaited and showing what was observed instead; {owner} already does"
     ),
 }
 
@@ -211,6 +231,32 @@ def _in_poll_loop(lines: list[str], index: int) -> bool:
     return False
 
 
+def _loop_end(lines: list[str], index: int) -> int:
+    """The index of the line closing the loop opened at `index`."""
+
+    indent = len(lines[index]) - len(lines[index].lstrip())
+    for offset in range(index + 1, min(len(lines), index + 60)):
+        line = lines[offset]
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip()) <= indent and line.strip().startswith(("}", "end")):
+            return offset
+    return min(len(lines) - 1, index + 60)
+
+
+def _fails_loudly_on_deadline(lines: list[str], index: int) -> bool:
+    """Does the loop opened at `index` report its own expiry?
+
+    The deadline path is whatever runs once the loop falls through. It is loud
+    when the loop itself throws/asserts, when the code just after it does, or
+    when the loop delegates to an owner whose timeout already fails.
+    """
+
+    end = _loop_end(lines, index)
+    region = _code(lines, index, end - index + 1) + "\n" + _code(lines, end + 1, 6)
+    return bool(LOUD_FAILURE.search(region) or OWNED_WAIT.search(region))
+
+
 def _window(lines: list[str], index: int, span: int = 40) -> str:
     return "\n".join(lines[index : index + span])
 
@@ -247,6 +293,12 @@ def file_violations(relative: str, text: str) -> list[tuple[str, int, str]]:
             body = _window(lines, index, 20)
             if SLEEP.search(body) and LOOP_EXIT.search(body) and not OWNED_WAIT.search(body):
                 found.append(("private-wait-loop", index + 1, stripped))
+            if (
+                SLEEP.search(body)
+                and BOUNDED_LOOP.search(line)
+                and not _fails_loudly_on_deadline(lines, index)
+            ):
+                found.append(("silent-timeout", index + 1, stripped))
 
         if (
             SLEEP.search(line)
@@ -349,6 +401,9 @@ def selftest() -> None:
     | S8   | an `awaken-wait:` marker that says nothing          | reject |
     | S9   | a `src` file's inline `#[cfg(test)] mod … {`        | in scope |
     | S10  | a `#[cfg(test)]` on one item, or `mod tests;`       | out of scope |
+    | S11  | bounded poll loop that just falls through           | reject |
+    | S12  | same loop throwing, asserting, or panicking at exit | accept |
+    | S13  | unbounded loop (a fake server, a producer)          | not S11 |
     """
 
     def rules(text: str) -> set[str]:
@@ -437,6 +492,38 @@ def selftest() -> None:
     scoped = test_module_of(inline)
     assert scoped.splitlines()[0] == "", "S9 line numbers are preserved"
     assert "sleep-then-assert" in rules(scoped), "S9"
+
+    s11 = (
+        "async function until(read, tries = 50) {\n"
+        "  for (let i = 0; i < tries; i += 1) {\n"
+        "    const seen = await read();\n"
+        "    if (seen) return seen;\n"
+        "    await sleep(100);\n"
+        "  }\n"
+        "  return null;\n"
+        "}\n"
+    )
+    assert "silent-timeout" in rules(s11), "S11"
+
+    s12 = (
+        "async function until(read, tries = 50) {\n"
+        "  for (let i = 0; i < tries; i += 1) {\n"
+        "    const seen = await read();\n"
+        "    if (seen) return seen;\n"
+        "    await sleep(100);\n"
+        "  }\n"
+        "  throw new Error('the committed revision never advanced');\n"
+        "}\n"
+    )
+    assert "silent-timeout" not in rules(s12), "S12"
+
+    s13 = (
+        "    while !stop.load(Ordering::Acquire) {\n"
+        "        std::thread::sleep(Duration::from_millis(2));\n"
+        "    }\n"
+        "    return;\n"
+    )
+    assert "silent-timeout" not in rules(s13), "S13"
 
     assert short_reasons("// awaken-wait: flaky\n"), "S8"
     assert not short_reasons(
