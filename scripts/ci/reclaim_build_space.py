@@ -490,9 +490,28 @@ def _fixture(root: Path, now: float) -> tuple[Policy, set[Path], dict[str, Path]
     for name, when in (("idle", old), ("young", young), ("building", old)):
         touch(detached / name, when)
         made[f"detached-{name}"] = detached / name
-    # A source tree that wandered into the target root must be left alone.
-    (detached / "a-checkout" / ".git").mkdir(parents=True)
-    made["detached-checkout"] = detached / "a-checkout"
+    # A checkout that wandered into the target root must be left alone — and it
+    # has to be old and to look like cargo output, or the age and shape guards
+    # would keep it and the checkout guard would never be the reason.
+    checkout = detached / "a-checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "src").mkdir()
+    (checkout / "src" / "lib.rs").write_text("// source\n")
+    touch(checkout, old)
+    (checkout / "debug").mkdir()
+    for item in (
+        checkout / "debug", checkout / ".git", checkout / "src" / "lib.rs",
+        checkout / "src", checkout,
+    ):
+        os.utime(item, (old, old))
+    made["detached-checkout"] = checkout
+    # An old directory under the same root that is not build output at all.
+    source_only = detached / "not-build-output"
+    source_only.mkdir()
+    (source_only / "notes.txt").write_text("keep me\n")
+    for item in (source_only / "notes.txt", source_only):
+        os.utime(item, (old, old))
+    made["detached-source-only"] = source_only
 
     for name, when in (("aa", old), ("bb", young)):
         blob = shared / name
@@ -556,11 +575,21 @@ def self_test() -> int:
             elif actual.verdict != verdict:
                 problems.append(f"{rule} {path} was {actual.verdict}, expected {verdict}")
 
-        for rule, path in (
-            ("D5", made["detached-checkout"]),
-            ("D5", made["checkout-idle"]),
-            ("D5", made["plain-target"]),
+        # D5 is the rule that matters most, so it is asserted positively: the
+        # old checkout below is scanned, is older than the threshold, and does
+        # look like cargo output, so only the checkout guard can keep it.
+        for rule, path, verdict in (
+            ("D5", made["detached-checkout"], KEPT_PROTECTED),
+            ("D5", made["detached-source-only"], KEPT_PROTECTED),
         ):
+            candidate = found.get(path)
+            if candidate is None:
+                problems.append(f"{rule} {path} was never considered, so nothing protected it")
+            elif candidate.verdict != verdict:
+                problems.append(
+                    f"{rule} {path} was {candidate.verdict}, expected {verdict}"
+                )
+        for rule, path in (("D5", made["checkout-idle"]), ("D5", made["plain-target"])):
             candidate = found.get(path)
             if candidate is not None and candidate.verdict == RECLAIMABLE:
                 problems.append(f"{rule} {path} must never be reclaimable")
