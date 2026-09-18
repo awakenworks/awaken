@@ -514,6 +514,45 @@ mod tests {
             "T7 is not constructible either"
         );
     }
+
+    #[test]
+    fn the_durable_ingress_refuses_every_under_specified_binding() {
+        // The producer ratchet only holds the *number* of unvalidated
+        // constructors down. What makes an under-specified binding
+        // unrepresentable in a restored aggregate is this: the wire has no
+        // door of its own, so a snapshot written before the completeness rule
+        // -- or by any other writer -- fails closed on the way in rather than
+        // reaching a comparison fence.
+        //
+        // C1 the stored object states complete coordinates; C2 its backend is
+        // executable; C3 no coordinate is padded. E1 decode, E2 refuse.
+        // R1 C1 & C2 & C3 => E1. R2 !C1 => E2. R3 !C2 => E2. R4 !C3 => E2.
+        let decode = |provider: &str, model: &str, backend: &str| {
+            serde_json::from_value::<ModelBinding>(serde_json::json!({
+                "provider_identity_ref": provider,
+                "model_ref": model,
+                "backend_ref": backend,
+            }))
+        };
+        assert_eq!(
+            decode("anthropic", "claude-opus-4", "native").expect("R1"),
+            ModelBinding::parse("anthropic", "claude-opus-4", "native").expect("R1"),
+        );
+        for (rule, provider, model, backend) in [
+            ("R2 half a native binding", "anthropic", "", "native"),
+            ("R2 the other half", "", "claude-opus-4", "native"),
+            ("R3 inexecutable backend", "p", "m", ""),
+            ("R4 padded backend", "p", "m", " native"),
+            ("R4 padded provider", " p", "m", "native"),
+        ] {
+            let refusal = decode(provider, model, backend)
+                .expect_err(&format!("{rule}: the durable ingress must refuse"));
+            assert!(
+                !refusal.to_string().is_empty(),
+                "{rule}: the refusal names why"
+            );
+        }
+    }
 }
 
 /// Kani exhausts the admission kernel over every fact combination: 2 (padded)

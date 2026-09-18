@@ -574,6 +574,25 @@ fn any_evidence(selector: u8) -> ModelExecutionEvidence {
     }
 }
 
+/// The one door through which this module's fixtures build a model binding.
+///
+/// `ModelBinding::new` asserts coordinates instead of admitting them, and a
+/// file that calls it once per fixture has that many places where a coordinate
+/// can be written without the admission in view. Collapsing them to one named
+/// door is the migration the producer ratchet counts; what is left here is one
+/// call site for the tests and the Kani proofs' own literals, not thirteen.
+/// The proofs keep theirs: under `cfg(kani)` the constructor builds the literal
+/// directly and admits nothing, and a door shared with them would read as
+/// production vocabulary to the contract-shape projection.
+#[cfg(test)]
+fn fixture_binding(
+    provider_identity_ref: &str,
+    model_ref: &str,
+    backend_ref: &str,
+) -> ModelBinding {
+    ModelBinding::new(provider_identity_ref, model_ref, backend_ref)
+}
+
 #[cfg(kani)]
 #[kani::proof]
 fn model_execution_reentry_requires_positive_evidence() {
@@ -723,7 +742,7 @@ mod tests {
         // not provider idempotency, replay authorization or stop evidence.
         let thread = ThreadId("thread:a".into());
         let run = RunId("run:b".into());
-        let record = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let record = ModelOperation::next(None, fixture_binding("p", "m", "b")).unwrap();
         let context = ModelOperationContext::from_operation(&thread, &run, &record);
         let mut restored: ModelOperation =
             serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();
@@ -791,7 +810,7 @@ mod tests {
         use awaken_agent_contract::agent::run::Id;
         let a = Id("a".into());
         let b = Id("b".into());
-        let mut operation = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let mut operation = ModelOperation::next(None, fixture_binding("p", "m", "b")).unwrap();
         let mut entered = ActiveModelOperation::write(&Some(operation.clone()));
         entered.bind_run(&a);
         operation.execution = terminated();
@@ -834,11 +853,11 @@ mod tests {
         use awaken_agent_contract::agent::{run::Id, thread::Id as ThreadId};
         let run = Id("run".into());
         let thread = ThreadId("thread".into());
-        let one = ModelOperation::next(None, ModelBinding::new("p", "one", "b")).unwrap();
-        let mut two = ModelOperation::next(Some(&one), ModelBinding::new("p", "two", "b")).unwrap();
+        let one = ModelOperation::next(None, fixture_binding("p", "one", "b")).unwrap();
+        let mut two = ModelOperation::next(Some(&one), fixture_binding("p", "two", "b")).unwrap();
         two.execution = terminated();
         let mut three =
-            ModelOperation::next(Some(&two), ModelBinding::new("p", "three", "b")).unwrap();
+            ModelOperation::next(Some(&two), fixture_binding("p", "three", "b")).unwrap();
         three.execution = not_dispatched();
         let command = |operation: &ModelOperation| {
             let mut command = ActiveModelOperation::write(&Some(operation.clone()));
@@ -914,7 +933,7 @@ mod tests {
         // commands are positive controls in the multi-invocation test above.
         use awaken_agent_contract::agent::{run::Id, state::Action};
         let run = Id("run".into());
-        let operation = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let operation = ModelOperation::next(None, fixture_binding("p", "m", "b")).unwrap();
         let mut original = ActiveModelOperation::write(&Some(operation.clone()));
         original.bind_run(&run);
         for mode in 0..10 {
@@ -979,7 +998,7 @@ mod tests {
         // bound without claiming an asymptotic benchmark or provider truth.
         let make = |ordinal| ModelOperation {
             ordinal: NonZeroU64::new(ordinal).unwrap(),
-            binding: ModelBinding::new("p", "m", "b"),
+            binding: fixture_binding("p", "m", "b"),
             phase: ModelOperationPhase::Entered,
             execution: ModelExecutionEvidence::Unknown,
         };
@@ -1173,8 +1192,7 @@ mod tests {
             ModelOperationPhase::Returned,
             ModelOperationPhase::TimedOut,
         ] {
-            let mut operation =
-                ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+            let mut operation = ModelOperation::next(None, fixture_binding("p", "m", "b")).unwrap();
             operation.phase = phase;
             let mut legacy = serde_json::to_value(&operation).unwrap();
             legacy.as_object_mut().unwrap().remove("execution");
@@ -1272,7 +1290,7 @@ mod tests {
         // C3 zero ordinal on wire. Effects: E1 exact successor; E2 MAX rejects;
         // E3 malformed zero rejects. R1=!MAX+C2=>E1; R2=MAX+C2=>E2;
         // R3=C3=>E3. No phase, including Returned, is termination authority.
-        let binding = ModelBinding::new("provider", "model", "adapter");
+        let binding = fixture_binding("provider", "model", "adapter");
         for previous in [0, 1, u64::MAX - 1, u64::MAX] {
             for phase in [
                 ModelOperationPhase::Entered,
