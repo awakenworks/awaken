@@ -994,6 +994,7 @@ def check_all(repo_root: Path) -> list[str]:
     return errors
 
 
+
 def selftest() -> None:
     # Cause/effect graph: C1 the Managed adapter projects committed Session
     # truth; C2 it constructs or directly mutates the aggregate. E1 C1 is
@@ -1762,3 +1763,13 @@ fn recover_terminal_receipts() {
     assert session_effect_violations(open_preparation_authorization), (
         "T2 preparation authorization fields remain closed"
     )
+
+
+if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:] != ["--self-test"]:
+        print("usage: python3 scripts/ci/_session_effect_fitness.py --self-test", file=sys.stderr)
+        raise SystemExit(2)
+    selftest()
+    print("_session_effect_fitness selftest: the decision tables hold")

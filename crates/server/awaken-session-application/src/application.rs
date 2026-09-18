@@ -435,7 +435,9 @@ impl SessionApplication {
     }
 
     /// Serialize this process's own realization drivers for one Session.
-    pub(crate) fn local_realization_locks(&self) -> &Arc<crate::realization::LocalRealizationLocks> {
+    pub(crate) fn local_realization_locks(
+        &self,
+    ) -> &Arc<crate::realization::LocalRealizationLocks> {
         &self.local_realization_locks
     }
 

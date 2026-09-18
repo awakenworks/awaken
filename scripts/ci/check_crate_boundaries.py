@@ -16,6 +16,7 @@ import _execution_ownership_fitness
 import _managed_protocol_boundary
 import _migration_fitness
 import _provider_env_fitness
+import _realization_permit_fitness
 import _resource_plane_fitness
 import _runtime_secret_boundary
 import _session_effect_fitness
@@ -1756,6 +1757,7 @@ def main() -> int:
     _execution_ownership_fitness.selftest()
     _managed_protocol_boundary.selftest()
     _provider_env_fitness.selftest()
+    _realization_permit_fitness.selftest()
     _wire_closure_fitness.selftest()
     _cancel_safety_fitness.selftest()
     selftest_builtin_tool_ownership()
@@ -1788,6 +1790,7 @@ def main() -> int:
         + _wire_closure_fitness.check_all(REPO_ROOT, CRATES)
         + _cancel_safety_fitness.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
+        + _realization_permit_fitness.check_all(REPO_ROOT)
         + _arch_fitness.check_all(architecture_fitness_specs())
         + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
         + _migration_fitness.check_all(REPO_ROOT)
