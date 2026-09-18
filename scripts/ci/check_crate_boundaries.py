@@ -1731,13 +1731,24 @@ def selftest_composite_identity_is_stated() -> None:
 # The producer half of the same class, ratcheted the same way. A
 # `ModelBinding` has one *validating* constructor, `ModelBinding::parse`, which
 # refuses the coordinates that make two bindings on different provider accounts
-# compare equal. `ModelBinding::new` is the pre-existing path that performs no
-# admission; it exists only because converting its call sites is a migration,
-# not a fix. The count may fall and may not rise, so a new producer cannot skip
-# the admission even while the old ones are still being moved. The durable
-# ingress is already closed: deserialization goes through `parse`.
+# compare equal. `ModelBinding::new` asserts them instead and panics where
+# `parse` would refuse. The count may fall and may not rise, so a new producer
+# cannot skip the admission even while the old ones are still being moved.
+#
+# Two of the three surfaces this ratchet was standing in for are now closed by
+# the compiler rather than by this count: the durable ingress decodes through
+# `#[serde(try_from)]` (proved by
+# `the_durable_ingress_refuses_every_under_specified_binding`), and a
+# `ModelBinding` literal is unwritable outside its module (a `compile_fail`
+# doctest on the type). What this count still guards is the remaining producers
+# themselves -- and a 2026-09-19 sweep of every one of them found no production
+# call site whose coordinates come from runtime data: each is a compile-time
+# literal in a fixture, a Kani proof, a doc example or a test, where a panic is
+# the intended assertion. That is why they are being collapsed to one fixture
+# door per module rather than deprecated: `#[deprecated]` would turn several
+# hundred fixture literals into build failures for no reachable refusal.
 UNVALIDATED_MODEL_BINDING_PRODUCER = re.compile(r"\bModelBinding::new\s*\(")
-UNVALIDATED_MODEL_BINDING_BASELINE = 430
+UNVALIDATED_MODEL_BINDING_BASELINE = 412
 # The one place `ModelBinding::new` is the subject rather than a producer: the
 # round-trip property asserts that every binding `new` builds also decodes,
 # which is the invariant whose absence let a constructible binding stall a run

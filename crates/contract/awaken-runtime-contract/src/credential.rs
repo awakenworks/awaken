@@ -452,6 +452,22 @@ mod tests {
     use super::*;
     use crate::resolved::{BackendModelSelection, ModelBinding, ResolvedModelCandidate};
 
+    /// The one door through which this module's fixtures build a model binding.
+    ///
+    /// `ModelBinding::new` asserts coordinates instead of admitting them, and a
+    /// file that calls it once per fixture has that many places where a coordinate
+    /// can be written without the admission in view. Collapsing them to one named
+    /// door is the migration the producer ratchet counts; what is left here is a
+    /// single call site, not thirteen.
+    #[cfg(test)]
+    fn fixture_binding(
+        provider_identity_ref: &str,
+        model_ref: &str,
+        backend_ref: &str,
+    ) -> ModelBinding {
+        ModelBinding::new(provider_identity_ref, model_ref, backend_ref)
+    }
+
     #[test]
     fn backend_owned_candidates_never_compile_material_authority() {
         // Cause graph: BackendOwned -> exact Worker-local liveness fence -> ACP
@@ -461,7 +477,7 @@ mod tests {
         // material bindings, even when no plaintext holder is available.
         for selection in [BackendModelSelection::Default, BackendModelSelection::Exact] {
             let candidate = ResolvedModelCandidate::try_backend_owned(
-                ModelBinding::new(
+                fixture_binding(
                     "local-codex",
                     if selection == BackendModelSelection::Exact {
                         "gpt-exact"
@@ -508,7 +524,7 @@ mod tests {
             CredentialExecutionPolicy::self_hosted_provider(),
         );
         let candidate = ResolvedModelCandidate::try_provider_with_acp(
-            ModelBinding::new("anthropic", "claude-test", "acp:claude"),
+            fixture_binding("anthropic", "claude-test", "acp:claude"),
             "anthropic@1",
             "anthropic-messages@1",
             "workspace-a",
@@ -563,7 +579,7 @@ mod tests {
         );
 
         let native = ResolvedModelCandidate::try_provider(
-            ModelBinding::new("anthropic", "claude-test", "genai"),
+            fixture_binding("anthropic", "claude-test", "genai"),
             "anthropic@1",
             "anthropic-messages@1",
             "workspace-a",
@@ -601,7 +617,7 @@ mod tests {
             CredentialExecutionPolicy::self_hosted_provider(),
         );
         let candidate = ResolvedModelCandidate::try_provider_with_acp(
-            ModelBinding::new("anthropic", "claude-test", "acp:claude"),
+            fixture_binding("anthropic", "claude-test", "acp:claude"),
             "anthropic@1",
             "anthropic-messages@1",
             "workspace-a",
@@ -679,7 +695,7 @@ mod tests {
         ]);
         let candidate = |backend_ref: &str| {
             ResolvedModelCandidate::try_provider_with_acp(
-                ModelBinding::new("provider", "model", backend_ref),
+                fixture_binding("provider", "model", backend_ref),
                 "provider@1",
                 "route@1",
                 "workspace-a",
@@ -767,7 +783,7 @@ mod tests {
         };
         let remote = |credential| {
             ResolvedModelCandidate::try_remote(
-                ModelBinding::new("", "", "a2a:https://agent.example"),
+                fixture_binding("", "", "a2a:https://agent.example"),
                 "workspace-a",
                 credential,
                 "sha256:card-security",
