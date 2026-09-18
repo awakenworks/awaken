@@ -207,8 +207,8 @@ pub struct awaken_session_application::SessionApplication
 impl awaken_session_application::SessionApplication
 pub const awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS: usize
 pub async fn awaken_session_application::SessionApplication::commit_mutation(&self, &str, awaken_session_contract::session_repo::repository_port::SessionMutation) -> core::result::Result<awaken_session_contract::session_repo::repository_port::SessionMutationResult, awaken_session_application::SessionMutationError>
-pub async fn awaken_session_application::SessionApplication::commit_session_snapshot(&self, &str, awaken_session_contract::session_repo::persisted_session::PersistedSession, &str, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> core::result::Result<awaken_session_contract::session_repo::persisted_session::PersistedSession, awaken_session_application::SessionMutationError>
-pub async fn awaken_session_application::SessionApplication::commit_session_snapshot_with_record(&self, &str, awaken_session_contract::session_repo::persisted_session::PersistedSession, awaken_session_contract::session_repo::repository_port::IdempotencyRecord, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> core::result::Result<(awaken_session_contract::session_repo::persisted_session::PersistedSession, bool), awaken_session_application::SessionMutationError>
+pub async fn awaken_session_application::SessionApplication::commit_session_snapshot_with_outcome(&self, &str, awaken_session_contract::session_repo::persisted_session::PersistedSession, &str, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> core::result::Result<awaken_session_application::SnapshotCommit, awaken_session_application::SessionMutationError>
+pub async fn awaken_session_application::SessionApplication::commit_session_snapshot_with_record(&self, &str, awaken_session_contract::session_repo::persisted_session::PersistedSession, awaken_session_contract::session_repo::repository_port::IdempotencyRecord, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> core::result::Result<awaken_session_application::SnapshotCommit, awaken_session_application::SessionMutationError>
 pub async fn awaken_session_application::SessionApplication::owner(&self, &awaken_session_contract::session_id::SessionId) -> core::result::Result<alloc::string::String, awaken_session_application::SessionMutationError>
 pub async fn awaken_session_application::SessionApplication::replay_accepted_session_create(&self, &str, &awaken_session_contract::session_id::SessionId, &awaken_session_contract::session_repo::repository_port::IdempotencyRecord) -> core::result::Result<core::option::Option<awaken_session_contract::session_repo::persisted_session::PersistedSession>, awaken_session_application::SessionCreationError>
 pub async fn awaken_session_application::SessionApplication::replay_session_create(&self, &str, &awaken_session_contract::session_id::SessionId, &awaken_session_contract::session_repo::repository_port::IdempotencyRecord) -> core::result::Result<core::option::Option<awaken_session_contract::session_repo::persisted_session::PersistedSession>, awaken_session_application::SessionCreationError>
@@ -432,7 +432,10 @@ pub fn awaken_session_application::SessionDeleteCommand::new(impl core::convert:
 pub struct awaken_session_application::SessionDispositionMutation
 pub awaken_session_application::SessionDispositionMutation::owner_scope: alloc::string::String
 pub awaken_session_application::SessionDispositionMutation::session: awaken_session_contract::session_repo::persisted_session::PersistedSession
-pub awaken_session_application::SessionDispositionMutation::transitioned: bool
+impl awaken_session_application::SessionDispositionMutation
+pub fn awaken_session_application::SessionDispositionMutation::committed(alloc::string::String, awaken_session_application::SnapshotCommit) -> Self
+pub fn awaken_session_application::SessionDispositionMutation::transitioned(&self) -> bool
+pub fn awaken_session_application::SessionDispositionMutation::unchanged(alloc::string::String, awaken_session_contract::session_repo::persisted_session::PersistedSession) -> Self
 pub struct awaken_session_application::SessionEventBatchCutoverValidationSnapshot
 pub awaken_session_application::SessionEventBatchCutoverValidationSnapshot::event_batch_failures: u64
 pub awaken_session_application::SessionEventBatchCutoverValidationSnapshot::generation: u64
@@ -535,6 +538,11 @@ pub awaken_session_application::SessionUpdateOutcome::changes: awaken_session_ap
 pub awaken_session_application::SessionUpdateOutcome::command_applied: bool
 pub awaken_session_application::SessionUpdateOutcome::command_revision: awaken_session_contract::session_repo::repository_port::SessionRevision
 pub awaken_session_application::SessionUpdateOutcome::session: awaken_session_contract::session_repo::persisted_session::PersistedSession
+pub struct awaken_session_application::SnapshotCommit
+impl awaken_session_application::SnapshotCommit
+pub fn awaken_session_application::SnapshotCommit::into_session(self) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
+pub fn awaken_session_application::SnapshotCommit::session(&self) -> &awaken_session_contract::session_repo::persisted_session::PersistedSession
+pub fn awaken_session_application::SnapshotCommit::transitioned(&self) -> bool
 pub struct awaken_session_application::WorkDispatchFailure
 pub awaken_session_application::WorkDispatchFailure::environment_id: alloc::string::String
 pub awaken_session_application::WorkDispatchFailure::message: alloc::string::String

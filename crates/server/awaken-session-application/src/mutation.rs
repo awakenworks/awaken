@@ -27,6 +27,55 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
     }
 }
 
+/// What one snapshot commit did to the durable root: the committed aggregate,
+/// and whether *this* call is the one that applied it.
+///
+/// The pair is sealed because the second half is a decision a caller must not
+/// author. A concurrent replay loses the root CAS and reads the winner's
+/// aggregate back; reporting that read as an application is what duplicated a
+/// terminal fact on the delete path. Both coordinates therefore leave the CAS
+/// together, and the only producer is
+/// [`SessionApplication::commit_session_snapshot_with_record`] — a literal is a
+/// compile error outside this module:
+///
+/// ```compile_fail,E0451
+/// use awaken_session_application::SnapshotCommit;
+///
+/// fn fabricate(session: awaken_session_contract::PersistedSession) -> SnapshotCommit {
+///     SnapshotCommit {
+///         session,
+///         transitioned: true,
+///     }
+/// }
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+#[must_use = "a snapshot commit carries the applied/replayed outcome; name what happens to it"]
+pub struct SnapshotCommit {
+    session: PersistedSession,
+    transitioned: bool,
+}
+
+impl SnapshotCommit {
+    /// Whether this call won the root CAS. `false` is an absorbing replay whose
+    /// aggregate was written by a concurrent winner.
+    #[must_use]
+    pub fn transitioned(&self) -> bool {
+        self.transitioned
+    }
+
+    #[must_use]
+    pub fn session(&self) -> &PersistedSession {
+        &self.session
+    }
+
+    /// Take the committed aggregate and deliberately drop the applied/replayed
+    /// outcome, for a command whose response does not report it.
+    #[must_use]
+    pub fn into_session(self) -> PersistedSession {
+        self.session
+    }
+}
+
 /// Failure returned by the Session application's one repository CAS boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionMutationError {
@@ -224,38 +273,42 @@ impl SessionApplication {
             .transpose()
     }
 
-    /// Commit a complete aggregate replacement through the sole root CAS.
-    pub async fn commit_session_snapshot(
+    /// Commit a complete aggregate replacement through the sole root CAS and
+    /// return the canonical Applied/Replayed outcome with it.
+    ///
+    /// There is deliberately no outcome-discarding sibling. The one that
+    /// existed returned only the aggregate, so a command that *did* report
+    /// applied/replayed had to invent the second half beside the call — which
+    /// is exactly how a concurrent archive replay came to report itself as an
+    /// application. A caller whose response does not carry the distinction
+    /// names the discard with [`SnapshotCommit::into_session`].
+    pub async fn commit_session_snapshot_with_outcome(
         &self,
         owner_scope: &str,
         session: PersistedSession,
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<PersistedSession, SessionMutationError> {
-        // Keep the newly shared aggregate-owning future off each caller's
-        // stack, as at the existing creation boundary. Polling/cancellation
-        // remain inline with this caller; no task or retry owner is detached.
-        Box::pin(self.commit_session_snapshot_with_outcome(
+    ) -> Result<SnapshotCommit, SessionMutationError> {
+        // Keep the shared aggregate-owning future off each caller's stack, as
+        // at the existing creation boundary. Polling/cancellation remain inline
+        // with this caller; no task or retry owner is detached.
+        Box::pin(self.compile_session_snapshot_idempotency(
             owner_scope,
             session,
             operation,
             lifecycle_facts,
         ))
         .await
-        .map(|(session, _)| session)
     }
 
-    /// Preserve the canonical Applied/Replayed distinction for commands whose
-    /// response reports whether this call actually changed the durable root.
-    /// This is the sole snapshot idempotency compiler; session-only callers
-    /// delegate here and retain their existing response contract.
-    pub(crate) async fn commit_session_snapshot_with_outcome(
+    /// The sole snapshot idempotency compiler.
+    async fn compile_session_snapshot_idempotency(
         &self,
         owner_scope: &str,
         session: PersistedSession,
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<(PersistedSession, bool), SessionMutationError> {
+    ) -> Result<SnapshotCommit, SessionMutationError> {
         let expected_revision = session.revision;
         let payload = SessionMutationPayload::Replace(session.clone());
         let payload_hash = payload.stable_hash();
@@ -276,7 +329,7 @@ impl SessionApplication {
         mut session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<(PersistedSession, bool), SessionMutationError> {
+    ) -> Result<SnapshotCommit, SessionMutationError> {
         let session_id = session.session_id.clone();
         let result = commit_observed_snapshot(
             self.sessions_repo.as_ref(),
@@ -291,13 +344,19 @@ impl SessionApplication {
         match applied_root_revision(result)? {
             Some(new_revision) => {
                 session.revision = new_revision;
-                Ok((session, true))
+                Ok(SnapshotCommit {
+                    session,
+                    transitioned: true,
+                })
             }
             None => self
                 .sessions_repo
                 .get(&session_id)
                 .await
-                .map(|session| (session, false))
+                .map(|session| SnapshotCommit {
+                    session,
+                    transitioned: false,
+                })
                 .map_err(repository_failure),
         }
     }

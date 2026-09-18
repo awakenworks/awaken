@@ -204,7 +204,7 @@ impl SessionApplication {
             }
             session.realization = Some(renewed);
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
                     "renew-session-realization-lease",
@@ -212,8 +212,9 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => {
-                    return session
+                Ok(commit) => {
+                    return commit
+                        .into_session()
                         .realization
                         .ok_or(SessionRealizationControlFailure::NotReady);
                 }
@@ -393,7 +394,7 @@ impl SessionApplication {
             }
             session.realization = Some(lease);
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
                     "begin-session-realization",
@@ -401,11 +402,11 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => {
+                Ok(commit) => {
                     return self
                         .next_action(
                             owner_scope,
-                            &session,
+                            &commit.into_session(),
                             needs_assignment,
                             activate_pending_resources,
                         )
@@ -719,7 +720,7 @@ impl SessionApplication {
         let ready_fact =
             initial_ready.then(|| initial_idle_fact(&owner_scope, command.session_id.as_str()));
         let session = self
-            .commit_session_snapshot(
+            .commit_session_snapshot_with_outcome(
                 &owner_scope,
                 session,
                 "acknowledge-session-realization",
@@ -729,7 +730,8 @@ impl SessionApplication {
             .map_err(|error| match error {
                 SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
                 error => unavailable(error),
-            })?;
+            })?
+            .into_session();
         if ready_fact.is_some() {
             self.notify_lifecycle_fact();
         }
@@ -798,17 +800,20 @@ impl SessionApplication {
             }
         }
         if retry_initial {
-            self.commit_session_snapshot(
-                &owner_scope,
-                session,
-                "retry-session-realization",
-                Vec::new(),
-            )
-            .await
-            .map_err(|error| match error {
-                SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
-                error => unavailable(error),
-            })?;
+            // The retry intent's response carries no applied/replayed
+            // distinction: a replay observes the same realization progress.
+            let _outcome = self
+                .commit_session_snapshot_with_outcome(
+                    &owner_scope,
+                    session,
+                    "retry-session-realization",
+                    Vec::new(),
+                )
+                .await
+                .map_err(|error| match error {
+                    SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
+                    error => unavailable(error),
+                })?;
             return Ok(());
         }
         let realizing = session
@@ -858,17 +863,19 @@ impl SessionApplication {
             .into_iter()
             .collect::<Vec<_>>();
         let emitted_runtime_interval = !lifecycle_facts.is_empty();
-        self.commit_session_snapshot(
-            &owner_scope,
-            session,
-            "fail-session-realization",
-            lifecycle_facts,
-        )
-        .await
-        .map_err(|error| match error {
-            SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
-            error => unavailable(error),
-        })?;
+        // Failure is absorbing; the caller reports no applied/replayed bit.
+        let _outcome = self
+            .commit_session_snapshot_with_outcome(
+                &owner_scope,
+                session,
+                "fail-session-realization",
+                lifecycle_facts,
+            )
+            .await
+            .map_err(|error| match error {
+                SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
+                error => unavailable(error),
+            })?;
         if emitted_runtime_interval {
             self.notify_lifecycle_fact();
         }
@@ -999,7 +1006,7 @@ impl SessionApplication {
             }
             current.realization = conflict.previous_realization.clone();
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &conflict.owner_scope,
                     current,
                     "revoke-terminal-cleanup-recovery",
@@ -1217,7 +1224,7 @@ impl SessionApplication {
         };
         session.realization = Some(claim.attempted_lease.clone());
         let committed = match self
-            .commit_session_snapshot(
+            .commit_session_snapshot_with_outcome(
                 owner_scope,
                 session,
                 "claim-terminal-cleanup-recovery",
@@ -1225,7 +1232,7 @@ impl SessionApplication {
             )
             .await
         {
-            Ok(committed) => committed,
+            Ok(commit) => commit.into_session(),
             Err(SessionMutationError::Conflict) => {
                 return TerminalCleanupRootClaim::Conflict(Box::new(claim));
             }

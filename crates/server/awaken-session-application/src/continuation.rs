@@ -163,8 +163,9 @@ impl SessionApplication {
         session: PersistedSession,
         reason: &str,
     ) -> Result<PersistedSession, SessionContinuationError> {
-        self.commit_session_snapshot(owner_scope, session, reason, Vec::new())
+        self.commit_session_snapshot_with_outcome(owner_scope, session, reason, Vec::new())
             .await
+            .map(crate::SnapshotCommit::into_session)
             .map_err(SessionContinuationError::mutation)
     }
 

@@ -748,10 +748,15 @@ impl SessionApplication {
             .await
             .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
         match self
-            .commit_session_snapshot(owner_scope, candidate, operation, lifecycle_facts)
+            .commit_session_snapshot_with_outcome(
+                owner_scope,
+                candidate,
+                operation,
+                lifecycle_facts,
+            )
             .await
         {
-            Ok(committed) => Ok(committed),
+            Ok(commit) => Ok(commit.into_session()),
             Err(error) => {
                 self.repair_resource_references(owner_scope, &session_id)
                     .await;
@@ -765,7 +770,7 @@ impl SessionApplication {
         owner_scope: &str,
         candidate: PersistedSession,
         idempotency: IdempotencyRecord,
-    ) -> Result<(PersistedSession, bool), SessionMutationError> {
+    ) -> Result<crate::SnapshotCommit, SessionMutationError> {
         let session_id = candidate.session_id.clone();
         self.synchronize_resource_references(owner_scope, &candidate)
             .await
@@ -774,7 +779,7 @@ impl SessionApplication {
             .commit_session_snapshot_with_record(owner_scope, candidate, idempotency, Vec::new())
             .await
         {
-            Ok(committed) => Ok(committed),
+            Ok(commit) => Ok(commit),
             Err(error) => {
                 self.repair_resource_references(owner_scope, &session_id)
                     .await;
@@ -934,7 +939,7 @@ impl SessionApplication {
                 .replace(input)
                 .map_err(internal)?;
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     owner_scope,
                     persisted,
                     "repository-credential-update",
@@ -942,7 +947,7 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(committed) => return Ok(committed),
+                Ok(commit) => return Ok(commit.into_session()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     persisted = self
                         .session_repository()

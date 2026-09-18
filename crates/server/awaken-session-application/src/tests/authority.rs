@@ -81,14 +81,15 @@ async fn anchor_unsettled_event(
             )
             .expect("anchor exact accepted effect")
     );
-    app.commit_session_snapshot(
-        "workspace",
-        session,
-        &format!("test-anchor-event:{session_id}"),
-        Vec::new(),
-    )
-    .await
-    .expect("commit effect anchor");
+    let _fixture = app
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            session,
+            &format!("test-anchor-event:{session_id}"),
+            Vec::new(),
+        )
+        .await
+        .expect("commit effect anchor");
 }
 
 fn coordination_spawn_command(
@@ -1422,7 +1423,7 @@ async fn root_mutation_cause_effect_decision_table() {
         payload_hash: payload.stable_hash(),
     };
 
-    let (applied, changed) = app
+    let commit = app
         .commit_session_snapshot_with_record(
             "workspace",
             candidate.clone(),
@@ -1431,10 +1432,11 @@ async fn root_mutation_cause_effect_decision_table() {
         )
         .await
         .expect("M1");
-    assert!(changed, "M1");
+    assert!(commit.transitioned(), "M1");
+    let applied = commit.into_session();
     assert!(applied.revision > original.revision, "M1");
 
-    let (replayed, changed) = app
+    let commit = app
         .commit_session_snapshot_with_record(
             "workspace",
             candidate.clone(),
@@ -1443,17 +1445,18 @@ async fn root_mutation_cause_effect_decision_table() {
         )
         .await
         .expect("M2");
-    assert!(!changed, "M2");
-    assert_eq!(replayed.revision, applied.revision, "M2");
+    assert!(!commit.transitioned(), "M2");
+    assert_eq!(commit.into_session().revision, applied.revision, "M2");
 
     let mut later = applied.clone();
     later.title = Some("later durable root".into());
     later.metadata.insert("later".into(), "authority".into());
     later.updated_at_unix_ms = Some(u64::MAX);
     let later = app
-        .commit_session_snapshot("workspace", later, "later", Vec::new())
+        .commit_session_snapshot_with_outcome("workspace", later, "later", Vec::new())
         .await
-        .expect("M5 advance durable root");
+        .expect("M5 advance durable root")
+        .into_session();
     assert!(later.revision > applied.revision);
     let facts_before = repo.pending_lifecycle().await.expect("M5 outbox before");
     let replay_fact = awaken_session_contract::ManagedLifecycleFact {
@@ -1464,7 +1467,7 @@ async fn root_mutation_cause_effect_decision_table() {
         timestamp: 1,
         runtime_interval: None,
     };
-    let (current, changed) = app
+    let commit = app
         .commit_session_snapshot_with_record(
             "workspace",
             candidate.clone(),
@@ -1473,9 +1476,10 @@ async fn root_mutation_cause_effect_decision_table() {
         )
         .await
         .expect("M5 old receipt reloads current root");
-    assert!(!changed, "M5");
+    assert!(!commit.transitioned(), "M5");
     assert_eq!(
-        current, later,
+        commit.into_session(),
+        later,
         "M5 exact current aggregate, not receipt revision"
     );
     assert_eq!(
@@ -1523,7 +1527,7 @@ async fn root_mutation_cause_effect_decision_table() {
     );
 
     let stale = app
-        .commit_session_snapshot("workspace", candidate.clone(), "stale", Vec::new())
+        .commit_session_snapshot_with_outcome("workspace", candidate.clone(), "stale", Vec::new())
         .await;
     assert_eq!(stale, Err(SessionMutationError::Conflict), "M3");
 
@@ -1595,9 +1599,15 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let mut durable = inserted.clone();
     durable.title = Some("durable-after-create".into());
     let durable = app
-        .commit_session_snapshot("workspace", durable, "test-create-replay", Vec::new())
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            durable,
+            "test-create-replay",
+            Vec::new(),
+        )
         .await
-        .expect("prepare C2 durable aggregate");
+        .expect("prepare C2 durable aggregate")
+        .into_session();
     let mut lowered_again = original.clone();
     lowered_again.title = Some("new-lowering-must-not-win".into());
     let replayed = app
@@ -1783,7 +1793,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         .archive_with_repository_publication(command.clone())
         .await
         .expect("R3 exact release");
-    assert!(first.mutation.transitioned, "R3/E2");
+    assert!(first.mutation.transitioned(), "R3/E2");
     assert_eq!(
         *runtime.terminal_effect_order.lock().unwrap(),
         vec![
@@ -1798,7 +1808,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         .archive_with_repository_publication(command.clone())
         .await
         .expect("R4 response-loss replay");
-    assert!(!replay.mutation.transitioned, "R4/E4");
+    assert!(!replay.mutation.transitioned(), "R4/E4");
     assert_eq!(
         replay.publication_receipt, first.publication_receipt,
         "R4/E4"
@@ -2249,7 +2259,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     );
     let first = first.expect("L1 first");
     let second = second.expect("L1 second");
-    assert_ne!(first.transitioned, second.transitioned, "L1");
+    assert_ne!(first.transitioned(), second.transitioned(), "L1");
     let archived = repo
         .get(&SessionId::from("archive-race"))
         .await
@@ -2264,7 +2274,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         )
         .await
         .expect("L2");
-    assert!(!replay.transitioned, "L2");
+    assert!(!replay.transitioned(), "L2");
     assert_eq!(replay.session.revision, revision, "L2");
 
     let root_running = app
@@ -2370,7 +2380,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         )
         .await
         .expect("L6 force terminal");
-    assert!(forced.transitioned, "L6/E5");
+    assert!(forced.transitioned(), "L6/E5");
     assert!(forced.session.is_terminal(), "L6/E5");
     assert!(forced.session.active_activity_epochs.is_empty(), "L6/E5");
 
@@ -2382,7 +2392,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     app.release_terminal_resources(&transition.owner_scope, "delete-live")
         .await
         .expect("L7 reconciliation");
-    assert!(transition.transitioned, "L7");
+    assert!(transition.transitioned(), "L7");
     assert_eq!(transition.session.execution.as_str(), "terminated", "L7");
     assert!(transition.session.is_hidden(), "L7");
     assert!(transition.session.needs_resource_reconciliation(), "L7");
@@ -2432,13 +2442,13 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         .commit_delete_intent(SessionDeleteCommand::new("archive-race"))
         .await
         .expect("L8 archived Session is deletable");
-    assert!(archived_delete.transitioned, "L8");
+    assert!(archived_delete.transitioned(), "L8");
     assert!(archived_delete.session.is_hidden(), "L8");
     let failed_delete = app
         .commit_delete_intent(SessionDeleteCommand::new("delete-failed"))
         .await
         .expect("L9 failed Session is deletable");
-    assert!(failed_delete.transitioned, "L9");
+    assert!(failed_delete.transitioned(), "L9");
     assert_eq!(
         failed_delete.session.execution,
         SessionExecutionState::ActivationFailed,
@@ -2542,7 +2552,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
         )
         .await
         .expect("B4 archive retry")
-        .transitioned
+        .transitioned()
     );
     assert!(
         app.force_terminate_session(
@@ -2552,13 +2562,13 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
         )
         .await
         .expect("B4 force retry")
-        .transitioned
+        .transitioned()
     );
     assert!(
         app.commit_delete_intent(SessionDeleteCommand::new("batch-before-delete"))
             .await
             .expect("B4 delete retry")
-            .transitioned
+            .transitioned()
     );
 }
 
@@ -2642,7 +2652,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 .await
                 .unwrap();
             assert_eq!(
-                transition.transitioned, !lost_ack,
+                transition.transitioned(),
+                !lost_ack,
                 "D1 response loss recovers the winner"
             );
             let after_root = durable.get(&SessionId::from(&session_id)).await.unwrap();
@@ -2671,7 +2682,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
             assert_eq!(facts.len(), 1, "D1 exactly one fact");
             assert_eq!(facts[0].id, format!("session:{session_id}:deleted"));
             assert_eq!(facts[0].workspace_id.as_deref(), Some("workspace"));
-            observations.push(serde_json::json!({"rule": format!("{initial}-{lost_ack}-fence"), "kind": "fence", "lostAck": lost_ack, "result": if transition.transitioned { "applied" } else { "replayed" }, "receiptOwner": transition.owner_scope, "receiptRoot": serde_json::to_string(&transition.session).unwrap(), "before": before, "after": deletion_observation(durable.as_ref(), &session_id, "workspace").await}));
+            observations.push(serde_json::json!({"rule": format!("{initial}-{lost_ack}-fence"), "kind": "fence", "lostAck": lost_ack, "result": if transition.transitioned() { "applied" } else { "replayed" }, "receiptOwner": transition.owner_scope, "receiptRoot": serde_json::to_string(&transition.session).unwrap(), "before": before, "after": deletion_observation(durable.as_ref(), &session_id, "workspace").await}));
             let original_effect = observations.last().unwrap()["after"]["effect"].clone();
             let cold = application_with_runtime(
                 runtime.clone(),
@@ -2730,7 +2741,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     .commit_delete_intent(SessionDeleteCommand::new(&session_id))
                     .await
                     .unwrap();
-                assert!(!replay.transitioned, "D3 retry is an absorbing replay");
+                assert!(!replay.transitioned(), "D3 retry is an absorbing replay");
                 assert_eq!(
                     replay.owner_scope,
                     durable.owner(&SessionId::from(&session_id)).await.unwrap(),
@@ -2743,7 +2754,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 );
                 let after = deletion_observation(durable.as_ref(), &session_id, "workspace").await;
                 assert_eq!(after, before, "D3 full durable replay frame");
-                observations.push(serde_json::json!({"rule": format!("{initial}-{lost_ack}-{stage}"), "kind": "retry", "lostAck": lost_ack, "result": if replay.transitioned { "applied" } else { "replayed" }, "receiptOwner": replay.owner_scope, "receiptRoot": serde_json::to_string(&replay.session).unwrap(), "before": before, "after": after}));
+                observations.push(serde_json::json!({"rule": format!("{initial}-{lost_ack}-{stage}"), "kind": "retry", "lostAck": lost_ack, "result": if replay.transitioned() { "applied" } else { "replayed" }, "receiptOwner": replay.owner_scope, "receiptRoot": serde_json::to_string(&replay.session).unwrap(), "before": before, "after": after}));
             }
             let completed_revision = durable
                 .get(&SessionId::from(&session_id))
@@ -2861,14 +2872,15 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 if schedule == "different_revision" {
                     let mut predecessor = origin.clone();
                     predecessor.title = Some("independent committed predecessor".into());
-                    app.commit_session_snapshot(
-                        "workspace",
-                        predecessor,
-                        "delete-race-predecessor",
-                        Vec::new(),
-                    )
-                    .await
-                    .unwrap();
+                    let _fixture = app
+                        .commit_session_snapshot_with_outcome(
+                            "workspace",
+                            predecessor,
+                            "delete-race-predecessor",
+                            Vec::new(),
+                        )
+                        .await
+                        .unwrap();
                 }
                 let before_root = durable.get(&SessionId::from(session_id)).await.unwrap();
                 let before = deletion_observation(durable.as_ref(), session_id, "workspace").await;
@@ -2879,7 +2891,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     ))
                     .await
                     .unwrap();
-                assert!(winner.transitioned, "R1/R2 winner really applied");
+                assert!(winner.transitioned(), "R1/R2 winner really applied");
                 assert_eq!(winner.owner_scope, "workspace");
                 assert_eq!(
                     winner.session,
@@ -2962,7 +2974,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 } else {
                     let loser = loser.unwrap();
                     assert!(
-                        !loser.transitioned,
+                        !loser.transitioned(),
                         "R1 replay cannot claim a second applied Delete"
                     );
                     assert_eq!(loser.owner_scope, "workspace");
@@ -3406,14 +3418,15 @@ async fn run_activity_fence_decision_table() {
         let mut failed = still_preparing;
         failed.execution = SessionExecutionState::ActivationFailed;
         let failed = app
-            .commit_session_snapshot(
+            .commit_session_snapshot_with_outcome(
                 "workspace",
                 failed,
                 "activity-test-realization-failed",
                 Vec::new(),
             )
             .await
-            .expect("A7 terminal realization");
+            .expect("A7 terminal realization")
+            .into_session();
         assert_eq!(
             app.settle_activity("activity-preparing", 0)
                 .await
@@ -8128,4 +8141,258 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
         guard.blockers(&target, None, 0).await.is_err(),
         "F4/E3 a non-advancing cursor grants zero purge authority"
     );
+}
+
+/// Build one idle Session that owns exactly one writable Repository input, the
+/// fixture the profiled release command publishes from.
+async fn publication_race_fixture(
+    session_id: &str,
+) -> (
+    Arc<awaken_session_store::SqliteManagedSessionRepository>,
+    Arc<FaultingSessionRepository>,
+    Arc<RecordingCleanupRuntime>,
+    Arc<SessionApplication>,
+) {
+    let durable = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("publication race repository"),
+    );
+    let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
+    let mut session = persisted(session_id, false, "idle");
+    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: format!("{session_id}-source"),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    session.resources = awaken_session_contract::SessionResourceState::from_active(
+        repository_resources("source", "repo-1"),
+    );
+    create(repo.as_ref(), session).await;
+    let runtime = Arc::new(RecordingCleanupRuntime::default());
+    let app = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    (durable, repo, runtime, app)
+}
+
+fn publication_command(session_id: &str) -> SessionArchiveWithRepositoryPublicationCommand {
+    SessionArchiveWithRepositoryPublicationCommand {
+        owner_scope: "workspace".into(),
+        session_id: session_id.into(),
+        archived_at: "2026-09-19T00:00:00Z".into(),
+        lifecycle_fact: ManagedLifecycleFact {
+            id: format!("{session_id}:terminated"),
+            object_id: session_id.into(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.terminated".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        },
+        repository: SessionRepositoryPublicationSelector {
+            binding_id: awaken_resource_contract::BindingId::from("source"),
+            expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
+                branch: "awf/issue-coding".into(),
+                commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                expected_prior_commit: None,
+            },
+        },
+    }
+}
+
+#[tokio::test]
+async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_as_applied() {
+    // The twin of the Delete fence. Causes: C1 two profiled release commands
+    // are compiled from one root revision; C2 the delayed candidate actually
+    // reaches the root CAS and the store answers Replayed (not Conflict, which
+    // would be absorbed by the pre-CAS Archived check instead and so would not
+    // observe this rule at all). Effects: E1 exactly one call reports the
+    // transition; E2 the losing call returns the winner's complete aggregate
+    // and its own exact publication receipt; E3 the terminal lifecycle fact and
+    // the physical publication effect each happen once.
+    // R1 = C1 & C2 => E1 & E2 & E3.
+    let session_id = "publication-cas-race";
+    let (durable, repo, runtime, app) = publication_race_fixture(session_id).await;
+    let command = publication_command(session_id);
+    let origin = durable.get(&SessionId::from(session_id)).await.unwrap();
+
+    let pause = repo.pause_next_mutation("session:archive-with-repository-publication:");
+    let delayed = Arc::clone(&app);
+    let delayed_command = command.clone();
+    let loser = tokio::spawn(async move {
+        delayed
+            .archive_with_repository_publication(delayed_command)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
+        .await
+        .expect("C1 delayed candidate reaches the root CAS");
+    let candidate = pause.candidate.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        candidate.expected_revision, origin.revision,
+        "C1 both requests really start from the one origin revision"
+    );
+
+    let winner = app
+        .archive_with_repository_publication(command)
+        .await
+        .expect("E1 winner releases");
+    assert!(winner.mutation.transitioned(), "R1/E1 winner applied");
+    let winner_root = durable.get(&SessionId::from(session_id)).await.unwrap();
+    let facts_after_winner = durable.pending_lifecycle().await.unwrap();
+    let effects_after_winner = runtime.terminal_effect_order.lock().unwrap().clone();
+
+    pause.release.notify_one();
+    let loser = tokio::time::timeout(std::time::Duration::from_secs(5), loser)
+        .await
+        .expect("R1 delayed candidate returns")
+        .expect("R1 delayed task")
+        .expect("R1 delayed release is not an error");
+    assert!(
+        matches!(
+            pause.result.lock().unwrap().clone().unwrap(),
+            awaken_session_contract::SessionMutationResult::Replayed { .. }
+        ),
+        "C2 the delayed candidate really lost a root CAS by receipt replay"
+    );
+    assert!(
+        !loser.mutation.transitioned(),
+        "R1/E1 a replayed CAS is not a second applied archive"
+    );
+    assert_eq!(
+        loser.mutation.session, winner_root,
+        "R1/E2 the loser returns the winner's complete aggregate"
+    );
+    assert_eq!(
+        loser.publication_receipt, winner.publication_receipt,
+        "R1/E2 one durable publication receipt"
+    );
+    assert_eq!(
+        durable.pending_lifecycle().await.unwrap(),
+        facts_after_winner,
+        "R1/E3 the terminal fact is enqueued exactly once"
+    );
+    assert_eq!(
+        *runtime.terminal_effect_order.lock().unwrap(),
+        effects_after_winner,
+        "R1/E3 no second physical publication or cleanup effect"
+    );
+}
+
+#[tokio::test]
+async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
+    // Diffusion across the sibling commands that publish the same
+    // `SessionDispositionMutation` from the same aggregate, not only the one
+    // that broke. Causes: C1 two identical disposition commands race one root
+    // revision; C2 the delayed candidate reaches the root CAS. Effects: E1 the
+    // winner reports the transition; E2 the loser reports a replay; E3 the
+    // lifecycle outbox gains exactly one fact for the pair.
+    // R1 force terminate, R2 terminal release, R3 delete intent:
+    //     C1 & C2 => E1 & E2 & E3.
+    for (case, initial, mutation_key) in [
+        ("force", "running", "session:archive:"),
+        ("release", "activation_failed", "session:archive:"),
+        ("delete", "idle", "session:delete-intent:"),
+    ] {
+        let session_id = format!("disposition-race-{case}");
+        let durable = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
+        create(repo.as_ref(), persisted(&session_id, false, initial)).await;
+        let app = Arc::new(application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        ));
+        let origin = durable.get(&SessionId::from(&session_id)).await.unwrap();
+        let fact = ManagedLifecycleFact {
+            id: format!("{session_id}:terminated"),
+            object_id: session_id.clone(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.terminated".into(),
+            timestamp: 7,
+            runtime_interval: None,
+        };
+
+        let pause = repo.pause_next_mutation(mutation_key);
+        let delayed = Arc::clone(&app);
+        let delayed_id = session_id.clone();
+        let delayed_fact = fact.clone();
+        let loser = tokio::spawn(async move {
+            match case {
+                "force" => {
+                    delayed
+                        .force_terminate_session(&delayed_id, "2026-09-19T00:00:00Z", delayed_fact)
+                        .await
+                }
+                "release" => {
+                    delayed
+                        .release_terminal_session(&delayed_id, "2026-09-19T00:00:00Z", delayed_fact)
+                        .await
+                }
+                _ => {
+                    delayed
+                        .commit_delete_intent(SessionDeleteCommand::at_for_test(&delayed_id, 11))
+                        .await
+                }
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
+            .await
+            .unwrap_or_else(|_| panic!("C1 {case} delayed candidate reaches the root CAS"));
+        assert_eq!(
+            pause
+                .candidate
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap()
+                .expected_revision,
+            origin.revision,
+            "C1 {case} both requests start from the one origin revision"
+        );
+
+        let winner = match case {
+            "force" => {
+                app.force_terminate_session(&session_id, "2026-09-19T00:00:00Z", fact.clone())
+                    .await
+            }
+            "release" => {
+                app.release_terminal_session(&session_id, "2026-09-19T00:00:00Z", fact.clone())
+                    .await
+            }
+            _ => {
+                app.commit_delete_intent(SessionDeleteCommand::at_for_test(&session_id, 11))
+                    .await
+            }
+        }
+        .unwrap_or_else(|error| panic!("E1 {case} winner: {error:?}"));
+        assert!(winner.transitioned(), "R1-R3/E1 {case} winner applied");
+        let winner_facts = durable.pending_lifecycle().await.unwrap();
+
+        pause.release.notify_one();
+        let loser = tokio::time::timeout(std::time::Duration::from_secs(5), loser)
+            .await
+            .unwrap_or_else(|_| panic!("{case} delayed candidate returns"))
+            .unwrap()
+            .unwrap_or_else(|error| panic!("E2 {case} loser: {error:?}"));
+        assert!(
+            matches!(
+                pause.result.lock().unwrap().clone().unwrap(),
+                awaken_session_contract::SessionMutationResult::Replayed { .. }
+            ),
+            "C2 {case} the delayed candidate really lost the root CAS by receipt replay"
+        );
+        assert!(
+            !loser.transitioned(),
+            "R1-R3/E2 {case} a replayed CAS is not a second applied disposition"
+        );
+        assert_eq!(
+            durable.pending_lifecycle().await.unwrap(),
+            winner_facts,
+            "R1-R3/E3 {case} the terminal fact is enqueued exactly once"
+        );
+    }
 }

@@ -162,11 +162,12 @@ async fn mutation_time_receipt_table(repo: Arc<dyn awaken_session_contract::Sess
     );
     let committed = repo.get(&original.session_id).await.unwrap();
     let restarted = timed_application(repo.clone(), 999);
-    let (replayed, applied) = restarted
+    let commit = restarted
         .commit_session_snapshot_with_record(&owner, desired.clone(), key.clone(), vec![])
         .await
         .unwrap();
-    assert!(!applied);
+    assert!(!commit.transitioned());
+    let replayed = commit.into_session();
     assert_eq!(replayed, committed, "T7");
     super::super::observation_refinement::root_step("root-lost-ack", &committed, &replayed, 999);
     desired.title = Some("conflicting payload".into());
@@ -230,7 +231,7 @@ async fn concurrent_root_cas_time_belongs_only_to_the_winner() {
     };
     let (left, right) = tokio::join!(write(200), write(300));
     assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
-    let winner = left.or(right).unwrap().0;
+    let winner = left.or(right).unwrap().into_session();
     assert_eq!(
         winner.updated_at_unix_ms,
         winner.title.as_ref().and_then(|s| s.parse().ok())

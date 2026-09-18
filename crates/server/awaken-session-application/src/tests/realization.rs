@@ -602,7 +602,8 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
 
     let mut idle = outcome.session;
     idle.execution = SessionExecutionState::Idle;
-    app.commit_session_snapshot("workspace", idle, "test-safe-boundary", Vec::new())
+    let _fixture = app
+        .commit_session_snapshot_with_outcome("workspace", idle, "test-safe-boundary", Vec::new())
         .await
         .unwrap();
     let reconciliation = app.reconcile_resource_activations().await;
@@ -1683,8 +1684,8 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     let mut stale = repo.get(&SessionId::from("reference-fence")).await.unwrap();
     let mut winner = stale.clone();
     winner.title = Some("concurrent winner".into());
-    application
-        .commit_session_snapshot("workspace", winner, "concurrent", Vec::new())
+    let _fixture = application
+        .commit_session_snapshot_with_outcome("workspace", winner, "concurrent", Vec::new())
         .await
         .unwrap();
     stale
@@ -2085,7 +2086,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         )
         .await
         .expect("W4 completed cleanup replay");
-    assert!(!replay.transitioned, "W4 exact archive replay");
+    assert!(!replay.transitioned(), "W4 exact archive replay");
     let completed = repo
         .get(&SessionId::from("remote-cleanup"))
         .await
@@ -5834,9 +5835,15 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         .await
         .unwrap();
     let later = application
-        .commit_session_snapshot(&owner, failed_truth.clone(), "later-housekeeping", vec![])
+        .commit_session_snapshot_with_outcome(
+            &owner,
+            failed_truth.clone(),
+            "later-housekeeping",
+            vec![],
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .into_session();
     assert_eq!(later.updated_at_unix_ms, Some(900));
     assert_eq!(later.realization_progress.failed_at_unix_ms, Some(500));
     application
