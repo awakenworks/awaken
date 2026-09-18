@@ -83,6 +83,9 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
     let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    // The same repository read back as the lifecycle-outbox authority: its
+    // pending rows are the durable fact each delivery assertion settles on.
+    let facts: Arc<dyn awaken_session_contract::ManagedSessionRepository> = sessions.clone();
     let secret = generate_secret();
     secrets
         .put(
@@ -154,13 +157,17 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let session_id = session["id"].as_str().unwrap().to_string();
 
-    // 5. The receiver got the signed, workspace-scoped delivery for THIS session.
-    for _ in 0..100 {
-        if !inbox.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    // 5. The receiver got the signed, workspace-scoped delivery for THIS
+    // session. The settle condition is the committed outbox, not the arrival
+    // count: a row completes only after its delivery succeeded, so an empty
+    // outbox is the exact evidence that nothing more is in flight and `== 1`
+    // is a check rather than a race.
+    awaken_protocol_managed::test_support::wait_for_delivered_lifecycle_facts(
+        facts.as_ref(),
+        std::time::Duration::from_secs(2),
+        "the created Session's lifecycle fact to be delivered",
+    )
+    .await;
     let got = inbox.lock().unwrap().clone();
     assert_eq!(got.len(), 1, "exactly one delivery reached the receiver");
     let (payload, headers) = &got[0];
@@ -208,12 +215,12 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     let resp = app.oneshot(archive).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "guarded archive succeeds");
 
-    for _ in 0..100 {
-        if inbox.lock().unwrap().len() >= 2 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    awaken_protocol_managed::test_support::wait_for_delivered_lifecycle_facts(
+        facts.as_ref(),
+        std::time::Duration::from_secs(2),
+        "the archived Session's terminal lifecycle fact to be delivered",
+    )
+    .await;
     let got2 = inbox.lock().unwrap().clone();
     assert_eq!(
         got2.len(),

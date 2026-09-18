@@ -432,16 +432,13 @@ async fn send_and_wait_until(
                 (s.as_u16(), v)
             }
         },
-        // The causal slice starts at this receipt's user.message. A concurrent
-        // background attention Run may publish idle after the receipt while
-        // this command is still queued; only its durable processed marker,
-        // committed with the Run's activity removal, proves this turn settled.
-        |events| {
-            events
-                .first()
-                .is_some_and(|accepted| accepted["processed_at"].is_string())
-                && settled(events)
-        },
+        // The settle condition is the `DurableFact::command_processed` above: a
+        // concurrent background attention Run may publish idle after this
+        // receipt while the command is still queued, so only the command's own
+        // processed marker -- committed with the Run's activity removal --
+        // proves this turn settled. `settled` narrows that fact to the shape
+        // this turn expects; it never replaces it.
+        settled,
     )
     .await;
     list["data"].as_array().unwrap().clone()

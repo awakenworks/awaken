@@ -191,6 +191,41 @@ where
     }
 }
 
+/// Settle on the durable fact that every committed lifecycle fact has been
+/// delivered: the Session repository's outbox holds no pending row.
+///
+/// The outbox row is completed only after its delivery succeeded, so an empty
+/// outbox is the exact committed evidence that the receiver already has every
+/// fact the product owed it. Counting arrivals receiver-side instead settles on
+/// "enough have arrived", which is satisfied while a further delivery is still
+/// in flight -- an exactness assertion made against that signal is a race, not
+/// a check.
+///
+/// # Panics
+/// If the repository read fails, or the outbox is still draining at `timeout`.
+pub async fn wait_for_delivered_lifecycle_facts(
+    repository: &dyn awaken_session_contract::ManagedSessionRepository,
+    timeout: Duration,
+    expectation: &str,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let pending = repository
+            .pending_lifecycle()
+            .await
+            .expect("read the Session repository's lifecycle outbox");
+        if pending.is_empty() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {expectation}: {} lifecycle fact(s) undelivered",
+            pending.len()
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
 fn is_transient_committed_prefix_conflict(status: u16, body: &Value) -> bool {
     status == 503
         && body["error"]["type"] == "api_error"
