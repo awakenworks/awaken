@@ -48,11 +48,19 @@ from pathlib import Path
 # lefthook trigger is rendered from exactly that set.
 INPUT_GLOBS: tuple[str, ...] = (
     "crates/*/*/tests/**/*.rs",
+    "crates/*/*/src/**/*.rs",
     "e2e/**/*.mjs",
     "e2e/**/*.ts",
     "e2e/**/*.js",
     "scripts/ci/test_waits_baseline.json",
 )
+
+# An in-crate `#[cfg(test)]` module waits on the same product the integration
+# tests do, and the deepest lifecycle tests live there, so every `src` file is
+# read -- but only from its first `#[cfg(test)]` onward. Production code holds
+# real poll loops and real backoffs; this rule governs tests, not the product.
+CFG_TEST = re.compile(r"^\s*#\[cfg\(test\)\]")
+INLINE_TEST_MODULE = re.compile(r"^\s*(?:pub(?:\([\w:]+\))?\s+)?mod\s+\w+\s*\{")
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).resolve().parent / "test_waits_baseline.json"
@@ -141,12 +149,47 @@ def sources(root: Path) -> dict[str, str]:
     found: dict[str, str] = {}
     for path in sorted(root.glob("crates/*/*/tests/**/*.rs")):
         found[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+    for path in sorted(root.glob("crates/*/*/src/**/*.rs")):
+        found[path.relative_to(root).as_posix()] = test_module_of(
+            path.read_text(encoding="utf-8")
+        )
     for suffix in ("mjs", "ts", "js"):
         for path in sorted(root.glob(f"e2e/**/*.{suffix}")):
             if "node_modules" in path.parts:
                 continue
             found[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
     return found
+
+
+def test_module_of(text: str) -> str:
+    """`text` from its inline `#[cfg(test)] mod … {` on, earlier lines blanked.
+
+    Only an inline test *module* opens the region. A `#[cfg(test)]` on a single
+    helper, or a `#[cfg(test)] mod tests;` declaration, would otherwise pull the
+    production code that follows it into a rule about tests -- and production
+    code holds real poll loops and real backoffs. The declared module's own file
+    is covered by the `tests/` globs.
+
+    Blanking rather than slicing keeps every reported line number the one a
+    reader will open.
+    """
+
+    lines = text.splitlines()
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if CFG_TEST.match(line)
+            and any(
+                INLINE_TEST_MODULE.match(following)
+                for following in lines[index + 1 : index + 3]
+            )
+        ),
+        None,
+    )
+    if start is None:
+        return ""
+    return "\n".join([""] * start + lines[start:])
 
 
 def _exempt(lines: list[str], index: int) -> str | None:
@@ -182,9 +225,17 @@ def _code(lines: list[str], index: int, span: int) -> str:
     )
 
 
+# Every rule needs either a sleep (both sleep rules) or a status word (the
+# lifecycle rule), so a file carrying neither is skipped whole rather than
+# windowed line by line.
+CANDIDATE = re.compile(r"sleep|setTimeout|status")
+
+
 def file_violations(relative: str, text: str) -> list[tuple[str, int, str]]:
     """Every (rule, line number, source line) this file breaks."""
 
+    if not CANDIDATE.search(text):
+        return []
     lines = text.splitlines()
     found: list[tuple[str, int, str]] = []
     for index, line in enumerate(lines):
@@ -296,6 +347,8 @@ def selftest() -> None:
     | S6   | private poll loop with a sleep and an exit          | reject |
     | S7   | loop delegating to an owned wait                    | accept |
     | S8   | an `awaken-wait:` marker that says nothing          | reject |
+    | S9   | a `src` file's inline `#[cfg(test)] mod … {`        | in scope |
+    | S10  | a `#[cfg(test)]` on one item, or `mod tests;`       | out of scope |
     """
 
     def rules(text: str) -> set[str]:
@@ -351,6 +404,39 @@ def selftest() -> None:
         "    }\n"
     )
     assert "private-wait-loop" not in rules(s7), "S7"
+
+    production = (
+        "#[cfg(test)]\n"
+        "mod tests;\n"
+        "\n"
+        "async fn drain(&self) {\n"
+        "    tokio::time::sleep(self.backoff).await;\n"
+        "    assert_eq!(self.pending(), 0);\n"
+        "}\n"
+    )
+    assert test_module_of(production) == "", "S10"
+
+    single_item = (
+        "#[cfg(test)]\n"
+        "fn probe() -> u8 { 1 }\n"
+        "async fn drain(&self) {\n"
+        "    tokio::time::sleep(self.backoff).await;\n"
+        "    assert_eq!(self.pending(), 0);\n"
+        "}\n"
+    )
+    assert test_module_of(single_item) == "", "S10"
+
+    inline = (
+        "pub fn product() {}\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    tokio::time::sleep(d).await;\n"
+        "    assert_eq!(calls, 1);\n"
+        "}\n"
+    )
+    scoped = test_module_of(inline)
+    assert scoped.splitlines()[0] == "", "S9 line numbers are preserved"
+    assert "sleep-then-assert" in rules(scoped), "S9"
 
     assert short_reasons("// awaken-wait: flaky\n"), "S8"
     assert not short_reasons(
