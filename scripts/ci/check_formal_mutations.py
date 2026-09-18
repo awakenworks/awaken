@@ -422,33 +422,38 @@ class MutationOracleTests(unittest.TestCase):
                 normalize_observation_times([{"time": invalid}])
 
     def test_realization_root_and_reference_keys_name_one_complete_generation(self) -> None:
-        from copy import deepcopy
         from render_runtime_refinement_traces import project_realization_trace
-        # G1 the root names a generation by serde's `McpGeneration` string and a
-        # directive by its structured record: the SAME generation projects to the
-        # same model key. G2 a different content digest (or version) is another
-        # generation, never an alias. G3 an undecodable or incomplete root key is
-        # shape drift, not an opaque key that can never be authorized.
-        generation = {"attachment_id": "mcp_a", "version": 2, "content_digest": "fnv1a64:1"}
+        # G1 the root and every directive/call/report name a generation with the
+        # SAME key, emitted once by the Rust observation port: this renderer
+        # validates and uses it, and never rebuilds a second one from parts.
+        # G2 a different content digest (or version, or attachment) is another
+        # generation, never an alias for the current one. G3 an undecodable,
+        # truncated, widened or mistyped key is shape drift, not an opaque name
+        # that can never be authorized.
+        key = json.dumps(["mcp_a", 2, "fnv1a64:1"], separators=(",", ":"))
         lease = {"owner": "worker", "runtime_incarnation": "inc", "epoch": 1, "expires_at_unix_ms": 9}
-        def trace(root_generation, reference_generation, raw_key=None):
-            key = raw_key if raw_key is not None else json.dumps(root_generation, separators=(",", ":"))
+        def trace(root_key, reference_key):
             root = {"sequence": 0, "session": "s", "point": "begin-before", "data": {"revision": 1, "created": 1, "updated": 1, "lease": lease,
-                "attachments": [{"key": key, "state": "requested", "ack": False, "claim": None}]}}
-            reference = {"session_id": "s", "generation": reference_generation, "runtime_incarnation": "inc", "lease_epoch": 1, "lease_expires_at_unix_ms": 9}
+                "attachments": [{"key": root_key, "state": "requested", "ack": False, "claim": None}]}}
+            reference = {"key": reference_key, "session_id": "s", "runtime_incarnation": "inc", "lease_epoch": 1, "lease_expires_at_unix_ms": 9}
             directive = {"sequence": 1, "session": "s", "point": "projection", "data": {"lease": lease, "action": {"phase": "stage", "generations": [reference]}}}
             return project_realization_trace([root, directive])
-        projected = trace(generation, generation)[1]
-        self.assertEqual(projected["pending"], projected["expectstage"])
-        for field, value in (("content_digest", "fnv1a64:2"), ("version", 3)):
-            with self.subTest(field=field):
-                other = dict(deepcopy(generation), **{field: value})
-                projected = trace(generation, other)[1]
-                self.assertNotEqual(projected["pending"], projected["expectstage"])
-        incomplete = {key: value for key, value in generation.items() if key != "content_digest"}
-        for raw_key in ('["mcp_a",2]', "not-json", json.dumps(incomplete)):
-            with self.subTest(raw_key=raw_key), self.assertRaisesRegex(ValueError, "observation schema violation"):
-                trace(generation, generation, raw_key)
+        projected = trace(key, key)[1]
+        self.assertEqual(projected["pending"], projected["expectstage"], "G1")
+        self.assertEqual(projected["expectstage"], [key], "G1 the emitted key is used verbatim")
+        for axis, forged in (("content_digest", ["mcp_a", 2, "fnv1a64:2"]),
+                             ("version", ["mcp_a", 3, "fnv1a64:1"]),
+                             ("attachment_id", ["mcp_b", 2, "fnv1a64:1"])):
+            with self.subTest(axis=axis):
+                projected = trace(key, json.dumps(forged, separators=(",", ":")))[1]
+                self.assertNotEqual(projected["pending"], projected["expectstage"], "G2")
+        malformed = ('["mcp_a",2]', "not-json", "", '["mcp_a","2","fnv1a64:1"]',
+                     '["mcp_a",2,"fnv1a64:1","extra"]', '{"attachment_id":"mcp_a"}')
+        for raw_key in malformed:
+            with self.subTest(raw_key=raw_key, side="root"), self.assertRaisesRegex(ValueError, "observation schema violation"):
+                trace(raw_key, key)
+            with self.subTest(raw_key=raw_key, side="reference"), self.assertRaisesRegex(ValueError, "observation schema violation"):
+                trace(key, raw_key)
 
     def test_observation_trace_gate_rejects_missing_scenarios_and_schema_drift(self) -> None:
         from render_runtime_refinement_traces import render_observations
@@ -467,7 +472,7 @@ class MutationOracleTests(unittest.TestCase):
             # Q5 a present name with another family's relation cannot count as
             # the required producer. Q6 a valid partial run must still fail the
             # complete gate, even when the output directory already exists.
-            document = {"schema_version": 3, "projection_id": "session-observations-v3", "name": "binding-apply", "family": "processed", "steps": [{}]}
+            document = {"schema_version": 4, "projection_id": "session-observations-v4", "name": "binding-apply", "family": "processed", "steps": [{}]}
             write_json(raw / "binding-apply.json", document)
             with self.assertRaisesRegex(ValueError, "scenario/family drift"):
                 render_observations(raw, output, ROOT, manifest, False)

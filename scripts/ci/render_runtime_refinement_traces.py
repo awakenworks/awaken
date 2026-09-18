@@ -244,13 +244,15 @@ def normalize_observation_times(steps: list[dict[str, Any]]) -> list[dict[str, A
 # The wire contract is emitted at the existing Rust driver/root boundaries.
 # These schemas validate its selected fields; they never authorize transitions.
 LEASE_SCHEMA = {"owner": "text", "runtime_incarnation": "text", "epoch": "uint", "expires_at_unix_ms": "uint"}
-# A generation coordinate is the attachment plus its version; the content digest
-# the CAS binds to that version rides with it, so a record cannot name a
-# generation without naming what it bound.
-MCP_GENERATION_SCHEMA = {"attachment_id": "text", "version": "uint", "content_digest": "text"}
-GENERATION_SCHEMA = {"session_id": "text", "generation": MCP_GENERATION_SCHEMA, "runtime_incarnation": "text", "lease_epoch": "uint", "lease_expires_at_unix_ms": "uint"}
+# A generation is named by the canonical key the Rust observation port emits
+# (`realization_observation::generation_observation_key`): the attachment, its
+# monotonic version AND the content digest the CAS bound to that version. This
+# renderer validates that key's shape and then uses it verbatim. It deliberately
+# does not rebuild one from parts: a second derivation is a second opinion about
+# what names a generation, and the two silently disagreed.
+GENERATION_SCHEMA = {"key": "generation-key", "session_id": "text", "runtime_incarnation": "text", "lease_epoch": "uint", "lease_expires_at_unix_ms": "uint"}
 CLAIM_SCHEMA = {"realization_id": "text", "runtime_incarnation": "text", "lease_epoch": "uint", "lease_expires_at_unix_ms": "uint", "stage_idempotency_key": "text"}
-ATTACHMENT_SCHEMA = {"key": "text", "state": ("requested", "realizing", "active", "draining", "removed", "failed"), "ack": "bool", "claim": (None, CLAIM_SCHEMA)}
+ATTACHMENT_SCHEMA = {"key": "generation-key", "state": ("requested", "realizing", "active", "draining", "removed", "failed"), "ack": "bool", "claim": (None, CLAIM_SCHEMA)}
 ROOT_SCHEMA = {"revision": "uint", "created": (None, "uint"), "updated": (None, "uint"), "lease": (None, LEASE_SCHEMA), "attachments": [ATTACHMENT_SCHEMA]}
 ACTION_SCHEMAS = {"stage": {"phase": ("stage",), "generations": [GENERATION_SCHEMA]},
     "publish": {"phase": ("publish",), "publish": [GENERATION_SCHEMA], "drain": [GENERATION_SCHEMA]},
@@ -273,14 +275,15 @@ def validate_observation_schema(value: Any, schema: Any, path: str) -> None:
         if valid:
             for index, child in enumerate(value): validate_observation_schema(child, schema[0], f"{path}[{index}]")
             if schema[0] == GENERATION_SCHEMA:
-                identities = [generation_identity(g) for g in value]
-                valid = len(identities) == len(set(identities))
+                keys = [g["key"] for g in value]
+                valid = len(keys) == len(set(keys))
             elif schema[0] == ATTACHMENT_SCHEMA:
                 valid = len(value) == len({a["key"] for a in value})
     elif isinstance(schema, tuple):
         if schema[0] is None:
             if value is not None: validate_observation_schema(value, schema[1], path)
         else: valid = type(value) is str and value in schema
+    elif schema == "generation-key": valid = generation_key_is_complete(value)
     elif schema == "text": valid = type(value) is str and bool(value)
     elif schema == "uint": valid = type(value) is int and 0 <= value <= 2**64 - 1
     elif schema == "bool": valid = type(value) is bool
@@ -305,35 +308,28 @@ def realization_event_schema(event: dict[str, Any]) -> dict[str, Any]:
     return {"sequence": "uint", "session": "text", "point": (point,), "data": data_schema}
 
 
-def generation_identity(g: dict[str, Any]) -> tuple[str, int]:
-    """The coordinate a generation record names: one attachment, one version."""
-    return (g["generation"]["attachment_id"], g["generation"]["version"])
+def generation_key_is_complete(key: Any) -> bool:
+    """Validate — never rebuild — an emitted generation key.
 
-
-def generation_key(generation: dict[str, Any]) -> str:
-    """The model key of one complete generation: attachment, version AND digest.
-
-    Rust names a generation by the whole `McpGeneration` witness (its equality
-    includes the content digest) at the root and at every directive, call and
-    report. Dropping the digest from one side made keys that name the same
-    generation unequal; keeping it on both makes a stale digest a refinement
-    failure instead of an alias for the current version.
+    The producer is the only place that decides what names a generation, so the
+    only question here is whether the observed key still names a complete one:
+    exactly the attachment, the version and the content digest that version
+    bound. A truncated, reordered, mistyped or undecodable key is shape drift
+    and must reach the caller as a schema violation, not as an opaque name that
+    can never match anything.
     """
-    return json.dumps([generation["attachment_id"], generation["version"], generation["content_digest"]],
-        separators=(",", ":"))
-
-
-def root_generation_key(key: str) -> str:
-    """Decode a root attachment key (serialized `McpGeneration`) to its model key."""
-    path = "event.data.attachments.key"
-    try: generation = json.loads(key)
-    except json.JSONDecodeError: raise ValueError(f"observation schema violation at {path}") from None
-    validate_observation_schema(generation, MCP_GENERATION_SCHEMA, path)
-    return generation_key(generation)
+    if type(key) is not str: return False
+    try: coordinate = json.loads(key)
+    except json.JSONDecodeError: return False
+    if type(coordinate) is not list or len(coordinate) != 3: return False
+    attachment, version, digest = coordinate
+    return (type(attachment) is str and bool(attachment)
+        and type(version) is int and type(version) is not bool and 0 <= version <= 2**64 - 1
+        and type(digest) is str and bool(digest))
 
 
 def project_generation(g: dict[str, Any]) -> dict[str, Any]:
-    return {"key": generation_key(g["generation"]),
+    return {"key": g["key"],
         "session": g["session_id"], "incarnation": g["runtime_incarnation"],
         "epoch": g["lease_epoch"], "expiry": g["lease_expires_at_unix_ms"]}
 
@@ -355,7 +351,7 @@ def project_realization_trace(events: list[dict[str, Any]]) -> list[dict[str, An
         data, point = event["data"], event["point"]
         if "attachments" in data:
             lease = data["lease"]
-            attachments = [dict(a, key=root_generation_key(a["key"])) for a in data["attachments"]]
+            attachments = data["attachments"]
             if len({a["key"] for a in attachments}) != len(attachments):
                 raise ValueError("observation schema violation at event.data.attachments")
             state.update(revision=data["revision"], created=data["created"], updated=data["updated"],

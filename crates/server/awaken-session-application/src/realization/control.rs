@@ -43,7 +43,7 @@ impl SessionApplication {
                 .iter()
                 .map(|a| {
                     serde_json::json!({
-                        "key": serde_json::to_string(&a.generation).unwrap(),
+                        "key": observation::generation_observation_key(&a.generation),
                         "state": a.state, "ack": a.publication_acknowledged,
                         "claim": a.realization,
                     })

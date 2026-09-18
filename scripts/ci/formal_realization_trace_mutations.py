@@ -33,6 +33,23 @@ def replace_observation_field(value, path, replacement=None, *, delete=False):
     return result
 
 
+def generation_key_axis_mutants(key: str):
+    """Forge each axis of an EMITTED generation key, one at a time.
+
+    The renderer no longer rebuilds this key — the Rust observation port emits
+    it — so the counterfactuals have to forge it here instead. Decoding it to
+    change one axis is deliberate mutation, not a second derivation: each mutant
+    is a well-formed key naming a *different* generation, so it reaches TLC as a
+    refinement question rather than being rejected as shape drift. A stale
+    content digest under an unchanged attachment/version stays a killed mutant.
+    """
+    coordinate = json.loads(key)
+    for index, axis in enumerate(("attachment_id", "version", "content_digest")):
+        forged = list(coordinate)
+        forged[index] = coordinate[index] + 999 if index == 1 else "foreign-observation"
+        yield axis, json.dumps(forged, separators=(",", ":"))
+
+
 def check_realization_trace_mutants(tlc_jar: Path, trace_dir: Path, manifest: dict) -> None:
     from copy import deepcopy
     from render_runtime_refinement_traces import (render_observations, module_name, project_realization_trace,
@@ -80,6 +97,14 @@ def check_realization_trace_mutants(tlc_jar: Path, trace_dir: Path, manifest: di
                 invalid = [] if isinstance(underlying, dict) else {} if isinstance(underlying, list) else True if underlying == "uint" else 0 if underlying == "bool" else False
                 faults = [("type", invalid)] + ([] if nullable else [("null", None)])
                 if underlying == "text": faults.append(("empty", ""))
+                elif underlying == "generation-key":
+                    coordinate = json.loads(value)
+                    faults.extend([("empty", ""), ("not-json", "not-json"),
+                        ("object-key", json.dumps({"attachment_id": coordinate[0]}, separators=(",", ":"))),
+                        ("truncated-key", json.dumps(coordinate[:2], separators=(",", ":"))),
+                        ("widened-key", json.dumps([*coordinate, "extra"], separators=(",", ":"))),
+                        ("untyped-version", json.dumps([coordinate[0], str(coordinate[1]), coordinate[2]], separators=(",", ":"))),
+                        ("empty-digest", json.dumps([coordinate[0], coordinate[1], ""], separators=(",", ":")))])
                 elif underlying == "uint": faults.extend([("negative", -1), ("overflow", 2**64), ("fraction", 1.5)])
                 elif isinstance(underlying, tuple): faults.append(("unknown-enum", "unknown-observation"))
                 elif isinstance(underlying, list) and value: faults.append(("duplicate-element", value + [value[0]]))
@@ -108,14 +133,19 @@ def check_realization_trace_mutants(tlc_jar: Path, trace_dir: Path, manifest: di
                 reference = field_schema == GENERATION_SCHEMA
                 asserted_lease = field_schema == LEASE_SCHEMA and event["point"] in {"projection", "stage", "published", "complete"}
                 if reference or asserted_lease:
-                    # A reference's generation is itself a coordinate record
-                    # (attachment, version, content digest): change each of its
-                    # leaves, never the record as a whole, so every case stays
-                    # well-formed and reaches TLC instead of the shape check.
-                    leaves = [((field, sub), old) for field, record in value.items() if isinstance(record, dict)
-                              for sub, old in record.items()]
-                    leaves += [((field,), old) for field, old in value.items() if not isinstance(old, dict)]
+                    # Change each leaf of the record, never the record as a
+                    # whole, so every case stays well-formed and reaches TLC
+                    # instead of the shape check. A reference names its
+                    # generation through one emitted key carrying three
+                    # coordinates, so that leaf expands back into its axes.
+                    leaves = [((field,), old) for field, old in value.items()]
                     for fields, old in leaves:
+                        if fields == ("key",):
+                            for axis, forged in generation_key_axis_mutants(old):
+                                mutated = deepcopy(events)
+                                mutated[event_index] = replace_observation_field(event, (*path, "key"), forged)
+                                semantic_cases.append((step, mutated, f"{step['rule']}/{event_index}/{path}/key.{axis}"))
+                            continue
                         new = old + (999999999 if "expires" in fields[-1] else 999) if type(old) is int else "foreign-observation"
                         mutated = deepcopy(events)
                         mutated[event_index] = replace_observation_field(event, (*path, *fields), new)
