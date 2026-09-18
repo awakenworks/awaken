@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::event_batches::{
-    SessionEventBatch, SessionEventBatchError, SessionEventDispatchSettlementPlan,
+    SessionEventBatchError, SessionEventDispatchSettlementPlan,
     SessionEventDispatchSettlementReceipt, SessionEventProjectionAnchor,
-    session_event_execution_may_close,
+    session_event_execution_may_close, session_inputs_allow_idle,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,35 +381,7 @@ impl PersistedSession {
             receipt,
             processed_at_unix_ms,
         )?;
-        let all_events_processed = self
-            .event_batches
-            .iter()
-            .all(SessionEventBatch::is_complete);
-        // Awaiting blocks later ordinary User Runs in Dispatch. Their
-        // unprocessed admission is not physical activity and must not
-        // hide the action needed to unblock the predecessor. Other
-        // pending command kinds retain the existing reconciliation gate.
-        let only_blocked_users = boundary == crate::SessionAgentRunBoundary::Awaiting
-            && self.event_batches.iter().all(|batch| {
-                batch.events.iter().enumerate().all(|(index, entry)| {
-                    entry.processed
-                        || match &entry.event {
-                            crate::SessionEventCommand::UserMessage { .. } => true,
-                            crate::SessionEventCommand::SystemMessage { .. } => index
-                                .checked_sub(1)
-                                .and_then(|previous| batch.events.get(previous))
-                                .is_some_and(|previous| {
-                                    !previous.processed
-                                        && matches!(
-                                            previous.event,
-                                            crate::SessionEventCommand::UserMessage { .. }
-                                        )
-                                }),
-                            _ => false,
-                        }
-                })
-            });
-        let inputs_allow_idle = all_events_processed || only_blocked_users;
+        let inputs_allow_idle = session_inputs_allow_idle(&self.event_batches, boundary);
         match plan {
             SessionEventDispatchSettlementPlan::Apply => {
                 let last_active = self

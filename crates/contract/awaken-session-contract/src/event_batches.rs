@@ -367,10 +367,12 @@ pub struct SessionEventProjectionAnchor {
 }
 
 mod dispatch_settlement;
-pub(crate) use dispatch_settlement::session_event_execution_may_close;
 pub use dispatch_settlement::{
     SessionEventDispatchSettlementPlan, SessionEventDispatchSettlementReceipt,
     session_event_dispatch_settlement_plan,
+};
+pub(crate) use dispatch_settlement::{
+    session_event_execution_may_close, session_inputs_allow_idle,
 };
 mod admission;
 pub use admission::{
