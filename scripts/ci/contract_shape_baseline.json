@@ -84,11 +84,11 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 17035,
+      "production_lines": 17130,
       "catch_all_errors": 11,
       "capability_defaults": 49,
       "growth_reasons": {
-        "production_lines": "sandbox effect fence: FenceToken succession law and SandboxEffectGuard live in the provisioning contract (capability defaults 12->1); SessionRealizationLease implements FenceToken so the generation-authority rule delegates to that one law"
+        "production_lines": "sandbox effect fence: FenceToken succession law and SandboxEffectGuard live in the provisioning contract (capability defaults 12->1); SessionRealizationLease implements FenceToken so the generation-authority rule delegates to that one law. Session realization exclusion: the contract-owned SessionRealizationPermit and its admission kernel (session_realization/exclusion.rs) are the one authority both the Worker slot and the co-located registry mint through, so the permit vocabulary stays in the contract while its phase driver moved to awaken-session-application"
       }
     },
     "awaken-tenancy": {

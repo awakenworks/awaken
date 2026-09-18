@@ -133,7 +133,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     // The same repository read back as the lifecycle-outbox authority: its
     // pending rows are the durable fact each delivery assertion settles on.
-    let facts: Arc<dyn awaken_session_contract::ManagedSessionRepository> = sessions.clone();
+    let facts: Arc<dyn awaken_session_contract::LifecycleOutbox> = sessions.clone();
     let state = Arc::new(
         ManagedState::new(CoordinatedRuntimeFake::default()).with_session_repo(sessions.clone()),
     );
