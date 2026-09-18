@@ -13,7 +13,25 @@ awaken_configure_cargo_target "$PWD"
 awaken_unset_ambient_api_keys
 awaken_append_repo_tools
 
+# Argument admission happens here, before a single check runs. A misspelled
+# mode used to reach the `case` at the bottom of this file, so `--ful` first
+# executed every static scan and both neutral-graph compiles and only then
+# refused; a caller reading the tail of that output saw work, not a rejection.
+# Extra arguments were discarded outright, so `--full --require-tools` ran
+# `--full` and silently dropped the second word.
 mode="${1:---full}"
+case "$mode" in
+  --quick|--push|--full|--self-test) ;;
+  *)
+    echo "usage: scripts/ci/check-rust.sh [--quick|--push|--full|--self-test]" >&2
+    exit 2
+    ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: scripts/ci/check-rust.sh [--quick|--push|--full|--self-test]" >&2
+  echo "       (this gate takes exactly one mode; '${*:2}' is not part of it)" >&2
+  exit 2
+fi
 
 if [ ! -f Cargo.toml ]; then
   echo "OK - no Cargo.toml; skipping Rust checks."
@@ -190,17 +208,22 @@ case "$mode" in
       # scripts/ci/check_formal.sh -> the formal group fails hours later; the
       # ledger check proves selection in seconds, so it runs here. Neither is
       # a test run: the workspace suite stays in --full.
-      step "clippy" "review the errors above; auto-fixable lints: cargo clippy --fix --all-targets --allow-dirty" \
-        cargo clippy --workspace --all-targets --features "$workspace_features" "${locked[@]}" -- -D warnings
-      # P3 an optional feature is declared but no gate compiles it -> a
-      # renamed trait method, a deleted port or a builder added to one tier and
-      # not its sibling rots behind the feature wall and reaches main; worse, a
-      # crate that fails to compile stops its dependents from compiling, so one
-      # such rot hides the next. Compiling the maximal graph here makes
-      # "declared but never compiled" impossible. Compile only: these tiers need
-      # a live daemon to run, which their own integration gates provide.
-      step "all-features" "fix the compile errors above; every declared feature must compile" \
-        cargo check --workspace --all-features --all-targets "${locked[@]}"
+      #
+      # P3 an optional feature is declared but no gate compiles it -> a renamed
+      # trait method, a deleted port or a builder added to one tier and not its
+      # sibling rots behind the feature wall and reaches main; worse, a crate
+      # that fails to compile stops its dependents from compiling, so one such
+      # rot hides the next.
+      #
+      # P1 and P3 used to be two steps over two different graphs: clippy saw one
+      # named feature, `cargo check` saw all 108. So the lint never ran over the
+      # graph that compiled -- a warning-free `--features awaken-cli/container-k8s`
+      # said nothing about the feature-gated code the maximal graph pulls in.
+      # One step, one graph, both questions: clippy compiles everything
+      # `cargo check` compiled and lints all of it. Compile only: these tiers
+      # need a live daemon to run, which their own integration gates provide.
+      step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
+        cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings
       step "formal-coverage" "register the harness in scripts/ci/check_formal.sh or fix formal/coverage.json as shown above" \
         python3 scripts/ci/check_formal_coverage.py
       # The formal-evidence pre-commit hook now triggers on every production
@@ -218,12 +241,13 @@ case "$mode" in
     # artifact tree preserves Cargo's sibling layout for either C1 value.
     export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
     workspace_features+=",awaken-sandbox/hand"
-    # The full run's own feature set is still a subset of what the workspace
-    # declares, so it compiles the maximal graph for the same reason --push does.
-    step "all-features" "fix the compile errors above; every declared feature must compile" \
-      cargo check --workspace --all-features --all-targets "${locked[@]}"
-    if step "clippy" "review the errors above; auto-fixable lints: cargo clippy --fix --all-targets --allow-dirty" \
-      cargo clippy --workspace --all-targets --features "$workspace_features" "${locked[@]}" -- -D warnings; then
+    # The maximal graph, compiled and linted in one step -- the same command
+    # --push runs, so the two lanes cannot diverge in what they see. The test
+    # feature set below stays narrower on purpose: `--all-features` enables
+    # tiers whose tests need a live daemon, and their own integration gates run
+    # those. Compiling and linting them is free; running them is not.
+    if step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
+      cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings; then
       # Scenario/Coordinator integration uses the real release Hand companion.
       # C1 full workspace tests => E1 build its authored feature in the same
       # Cargo graph; a thin default binary must not replace the tested companion.
@@ -235,7 +259,7 @@ case "$mode" in
       step "doctest" "re-run with: cargo test --workspace --doc <test_name> -- --nocapture" \
         cargo test --workspace --doc --features "$workspace_features" "${locked[@]}"
     else
-      echo "   (skipping tests until clippy compiles)" >&2
+      echo "   (skipping tests until the maximal graph lints clean)" >&2
     fi
     ;;
   *)

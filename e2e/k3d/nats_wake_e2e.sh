@@ -190,6 +190,16 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then
+  # The batch size is the only positional, and --self-test the only flag. A
+  # rejection has to name the calling convention: "must be an integer" alone
+  # does not tell a caller that --self-test exists or that nothing else does.
+  case "${1:-}" in
+    ""|--self-test) ;;
+    -*)
+      echo "usage: e2e/k3d/nats_wake_e2e.sh [--self-test | <batch 1..1000>]" >&2
+      exit 2
+      ;;
+  esac
   if [[ "${1:-}" = --self-test ]]; then
     bash "$REPO_ROOT/e2e/k3d/nats_wake_contract_test.sh"
   else

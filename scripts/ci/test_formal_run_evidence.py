@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -24,18 +25,54 @@ def formal_gate_initialization(root: Path) -> str:
     return source.split("\npython3 scripts/ci/check_feature_coverage.py", 1)[0]
 
 
+SCRIPT_REFERENCE = re.compile(r"scripts/ci/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)*")
+
+# Entry points the fixture executes, plus the data files they read that no
+# script names in its own text.
+FIXTURE_ROOTS = (
+    "scripts/ci/formal_run_evidence.py",
+    "scripts/ci/check_formal.sh",
+    "scripts/ci/check-reliability.sh",
+    "scripts/ci/bootstrap_kani.sh",
+    "scripts/ci/patches/kani-wide-niche.patch",
+    "scripts/ci/patches/cbmc-smt-type-dependencies.patch",
+    "scripts/ci/fixtures/cbmc_recursive_alias.c",
+    "scripts/ci/fixtures/kani_wide_niche.rs",
+    "rust-toolchain.toml",
+)
+
+
+def fixture_sources() -> list[str]:
+    """Every repository file the fixture's entry scripts can reach.
+
+    Each copied script is scanned for `scripts/ci/...` paths and those are
+    copied too, transitively. A script that grows a dependency therefore
+    brings it into the fixture by itself; nothing has to be remembered here.
+    """
+
+    pending = list(FIXTURE_ROOTS)
+    seen: set[str] = set()
+    while pending:
+        relative = pending.pop()
+        if relative in seen or not (ROOT / relative).is_file():
+            continue
+        seen.add(relative)
+        if (ROOT / relative).suffix in {".patch", ".c", ".rs", ".toml"}:
+            continue
+        text = (ROOT / relative).read_text(encoding="utf-8", errors="ignore")
+        pending.extend(reference for reference in SCRIPT_REFERENCE.findall(text)
+                       if reference not in seen)
+    return sorted(seen)
+
+
 def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = None) -> None:
     """Shared synthetic Git/receipt fixture; it never attests a real proof run."""
     root.mkdir()
-    for relative in ("scripts/ci/formal_run_evidence.py", "scripts/ci/check_formal.sh",
-                     "scripts/ci/bootstrap_kani.sh", "scripts/ci/_cargo_target.sh",
-                     "scripts/ci/patches/kani-wide-niche.patch",
-                     "scripts/ci/patches/cbmc-smt-type-dependencies.patch",
-                     "scripts/ci/fixtures/cbmc_recursive_alias.c", "scripts/ci/fixtures/kani_wide_niche.rs",
-                     "scripts/ci/_deadline.sh", "scripts/ci/deadline.py",
-                     "scripts/ci/_provider_environment.sh", "scripts/ci/check-reliability.sh",
-                     "scripts/ci/check_node_dependencies.py",
-                     "rust-toolchain.toml"):
+    # The fixture copies the entry scripts' *dependency closure*, not a
+    # hand-kept list. A hand-kept list is a guardrail narrower than its
+    # subject: adding gate_tools.py to check_formal.sh left this list behind
+    # and the gate failed inside its own self-test with "can't open file".
+    for relative in fixture_sources():
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, target)

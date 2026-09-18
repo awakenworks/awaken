@@ -5,6 +5,7 @@ Wire contract: https://docs.nats.io/reference/system/monitor/varz
 This checks broker traffic, not exactly-once effects or per-Run wake causality.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -50,9 +51,19 @@ def main(paths: list[str]) -> int:
     return 0
 
 
+# One canonical spelling per argument, and nothing else admitted: a reader that
+# silently ignores what it was handed reports on a broker nobody asked about.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="nats_wake_evidence.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument("paths", nargs="*", help="varz snapshot files to compare")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
     try:
-        sys.exit(main(sys.argv[1:]))
+        sys.exit(main(parse(sys.argv[1:]).paths))
     except (OSError, ValueError) as error:
         print(f"NATS evidence unavailable: {error}", file=sys.stderr)
         sys.exit(1)

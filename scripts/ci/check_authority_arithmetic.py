@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 import tempfile
 from pathlib import Path
@@ -175,8 +176,8 @@ def self_test() -> int:
     return 0
 
 
-def main() -> int:
-    if sys.argv[1:] == ["--self-test"]:
+def main(arguments: argparse.Namespace) -> int:
+    if arguments.self_test:
         return self_test()
     errors = violations()
     if errors:
@@ -186,5 +187,22 @@ def main() -> int:
     return 0
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for: that is how
+# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
+# and the self-test never once executed. ``allow_abbrev=False`` closes the
+# second half: without it ``--self-tes`` is also accepted, so the flag has no
+# single spelling.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_authority_arithmetic.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument(
+        "--self-test", action="store_true", help="run the decision table instead of the scan"
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(parse(sys.argv[1:])))

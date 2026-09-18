@@ -104,9 +104,29 @@ pre-commit:
     #     in main came from that one shape; the ratchet freezes today's debt.
     test-waits:
       # >>> generated glob from check_test_waits.py INPUT_GLOBS — do not edit
-      glob: "{crates/*/*/src/**/*.rs,crates/*/*/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json}"
+      glob: "{crates/*/*/src/**/*.rs,crates/*/*/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_waits.py
+
+    # 3b. A failed read of durable state may never become an absence. The
+    #     recovery path is derived -- every production module that names a
+    #     checkpoint or the tri-state -- so a file joins the rule by doing the
+    #     thing the rule is about, and the trigger follows the same declaration.
+    observation-collapse:
+      # >>> generated glob from check_observation_collapse.py INPUT_GLOBS — do not edit
+      glob: "{crates/*/*/Cargo.toml,crates/*/*/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_observation_collapse.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_observation_collapse.py
+
+    # 3c. A guard's scope must be derived from its subject, never written out a
+    #     second time by hand. The checkers are themselves the corpus here: a new
+    #     literal list of paths among them is refused, and today's are registered
+    #     with the reason each cannot be derived.
+    scan-scope:
+      # >>> generated glob from check_scan_scope.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/scan_scope_registry.json}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_scan_scope.py
 
     # 3b. The one declaration of every external tool a gate needs. Its self-test
     #    proves each row can still be located by the method it states, so a row
@@ -125,6 +145,27 @@ pre-commit:
       glob: "{scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/reclaim_build_space.py}"
       # <<< generated glob
       run: python3 scripts/ci/reclaim_build_space.py --self-test
+
+    # 3c-bis. A gate entry point that accepts an argument it does not implement
+    #    runs something other than what the caller asked for and still exits
+    #    zero. check-all.sh invoked `--selftest` for years against a script whose
+    #    flag was `--self-test`, so that self-test never once ran. The rule is
+    #    over the whole set of entry points, so a new checker inherits it.
+    gate-arguments:
+      # >>> generated glob from check_gate_arguments.py INPUT_GLOBS — do not edit
+      glob: "{deploy/images/sandbox/build.sh,deploy/k3d/test_image_contract.py,e2e/*.sh,e2e/k3d/*.py,e2e/k3d/*.sh,e2e/k6/*.sh,lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/contract/*.sh,scripts/e2e/*.sh,scripts/release/*.py,scripts/release/*.sh}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_gate_arguments.py
+
+    # 3c-ter. An executable no lane runs still reads as coverage, still gets
+    #    cited as evidence, and rots in place. Three k3d runners sat unrun for
+    #    months and one of them is named in formal/coverage.json as the proof of
+    #    a requirement. Every executable is selected or registered with a reason.
+    lane-reachability:
+      # >>> generated glob from check_lane_reachability.py INPUT_GLOBS — do not edit
+      glob: "{deploy/**/*,e2e/**/*,formal/coverage.json,lefthook.yml,scripts/**/*}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_lane_reachability.py
 
     # 3d. The record of the last green full gate is evidence, so a commit may not
     #    leave it naming a commit that is gone, off main, or blessed by a partial

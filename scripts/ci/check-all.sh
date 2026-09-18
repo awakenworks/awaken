@@ -138,9 +138,20 @@ run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "formal-product-ledger" python3 scripts/ci/check_feature_coverage.py --require-complete
 run static "managed-wire-naming self-test" python3 scripts/ci/check_managed_wire_naming.py --self-test
 run static "managed-wire-naming" python3 scripts/ci/check_managed_wire_naming.py
-run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --selftest
+# A checker that accepts an argument it does not implement runs something other
+# than what this file asked for, and still exits zero — which is how the
+# degrading-defaults self-test below was invoked as `--selftest` for years while
+# that script's flag was `--self-test`, so it never once ran. The rule is over
+# the whole set of gate entry points, so a checker added tomorrow inherits it.
+run static "gate-argument hygiene self-test" python3 scripts/ci/check_gate_arguments.py --self-test
+# An executable no lane runs reads as coverage and is cited as evidence while
+# never executing. Every one is selected by a lane or registered with a reason.
+run static "lane-reachability self-test" python3 scripts/ci/check_lane_reachability.py --self-test
+run static "lane reachability" python3 scripts/ci/check_lane_reachability.py
+run static "gate-argument hygiene" python3 scripts/ci/check_gate_arguments.py
+run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --self-test
 run static "dependency-gates" python3 scripts/ci/check_dependency_gates.py
-run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_defaults.py --selftest
+run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_defaults.py --self-test
 run static "degrading-defaults" python3 scripts/ci/check_degrading_defaults.py
 run static "contract-shape self-test" python3 scripts/ci/check_contract_shape.py --self-test
 run static "contract-shape" python3 scripts/ci/check_contract_shape.py
@@ -158,12 +169,18 @@ run static "k3d harness self-test" e2e/k3d/harness.sh --self-test
 run static "distributed role rollout self-test" e2e/k3d/distributed_control_e2e.sh --self-test
 run static "NATS wake runner self-test" e2e/k3d/nats_wake_e2e.sh --self-test
 run static "k3d-product-image-contract" python3 deploy/k3d/test_image_contract.py
+# The product backend topology contract renders and asserts the shipped overlay
+# without a cluster. It sat executable and unrun; a topology assertion nothing
+# executes is indistinguishable from one that passes.
+run static "k3d product topology contract" e2e/k3d/product_backend_contract_test.sh
 run static "secrets self-test" python3 scripts/ci/check_secrets.py --self-test
 run static "secrets" python3 scripts/ci/check_secrets.py
 run static "file-limits self-test" python3 scripts/ci/check_file_limits.py --self-test
 run static "file-limits" python3 scripts/ci/check_file_limits.py
 run static "test-wait self-test" python3 scripts/ci/check_test_waits.py --self-test
 run static "test waits name a durable fact" python3 scripts/ci/check_test_waits.py
+run static "scan-scope self-test" python3 scripts/ci/check_scan_scope.py --self-test
+run static "a guard's scope is derived, not hand-written" python3 scripts/ci/check_scan_scope.py
 run static "commit-message self-test" python3 scripts/ci/check_commit_message.py --self-test
 run static "release-package self-test" python3 scripts/release/package.py --self-test
 run static "product release checker self-test" python3 scripts/ci/check_product_release.py --self-test

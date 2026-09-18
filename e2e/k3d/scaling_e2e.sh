@@ -18,6 +18,19 @@
 # Usage: e2e/k3d/scaling_e2e.sh [M]   (default M=15, from repo root)
 set -euo pipefail
 
+
+# The concurrent-run count is the only argument. It used to be read as
+# `${1:-15}`, so a flag or a typo became the default silently and the run
+# reported on a burst size nobody chose.
+case "${1:-}" in
+  "") ;;
+  [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+  *) echo "usage: e2e/k3d/scaling_e2e.sh [<concurrent runs 1..999>]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: e2e/k3d/scaling_e2e.sh [<concurrent runs 1..999>]" >&2
+  exit 2
+fi
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 source "$REPO_ROOT/e2e/k3d/harness.sh"

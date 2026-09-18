@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 import tempfile
@@ -832,12 +833,81 @@ MCP_TOOL_IDENTITY_GRAMMAR = {
 }
 MCP_TOOL_IDENTITY_EXEMPTIONS: dict[str, str] = {}
 
+# The identity crosses the process boundary, so the rule has to as well. The
+# console rewrites authored tool references when an MCP server is renamed, and
+# those references are the *encoded* ids the runtime will see; a second console
+# spelling diverges from the first exactly the way the Rust duplicate did.
+# `web/src/lib/mcp-tool-id.ts` is the console's owner and states the encoding it
+# mirrors. A rule scanning only `crates/` was a guard narrower than its subject:
+# `ToolOverridesEditor.tsx` re-implemented the prefix parse in plain sight.
+MCP_TOOL_IDENTITY_TS_OWNER = Path("web/src/lib/mcp-tool-id.ts")
+MCP_TOOL_IDENTITY_TS_ROOT = "web/src"
+# Operations on the grammar, not mentions of it: a placeholder string or a
+# translated message names the id without translating it, and a name cannot
+# diverge from the encoder the way a second parse can.
+MCP_TOOL_IDENTITY_TS_GRAMMAR = {
+    "`mcp__${": "build it with mcpToolId / mcpToolNamespace from lib/mcp-tool-id",
+    "`mcp.${": "build it with the dotted encoder in lib/mcp-tool-id",
+    'startsWith("mcp__"': "ask lib/mcp-tool-id (hasMcpToolNamespace), which owns the prefix",
+    "startsWith('mcp__'": "ask lib/mcp-tool-id (hasMcpToolNamespace), which owns the prefix",
+    '"mcp__".length': "ask lib/mcp-tool-id, which owns the prefix and its length",
+    '"mcp__" +': "build it with mcpToolId / mcpToolNamespace from lib/mcp-tool-id",
+    "/^mcp__/": "ask lib/mcp-tool-id (hasMcpToolNamespace / isCanonicalMcpToolId)",
+    'split("mcp__"': "take it apart with isCanonicalMcpToolId from lib/mcp-tool-id",
+}
+MCP_TOOL_IDENTITY_TS_EXEMPTIONS: dict[str, str] = {}
+TS_COMMENT_LINE = re.compile(r"^\s*(?://|\*|/\*)")
+
+
+def _typescript_without_comments(source: str) -> str:
+    """`source` with whole-line comments dropped: prose is not a second spelling."""
+
+    return "\n".join(
+        line for line in source.splitlines() if not TS_COMMENT_LINE.match(line)
+    )
+
+
+def check_mcp_tool_identity_is_owned_in_console(repo_root: Path = REPO_ROOT) -> list[str]:
+    """The console side of the same rule, over `web/src/**/*.{ts,tsx}`.
+
+    Test modules are separate files here rather than `#[cfg(test)]` items, so
+    `*.test.ts(x)` plays the part `production_rust` plays on the Rust side: a
+    test may name the encoding, because the shared vectors are how the two sides
+    are kept honest.
+    """
+
+    errors: list[str] = []
+    root = repo_root / MCP_TOOL_IDENTITY_TS_ROOT
+    if not root.is_dir():
+        return errors
+    for path in sorted(root.rglob("*")):
+        if path.suffix not in {".ts", ".tsx"} or "node_modules" in path.parts:
+            continue
+        relative = path.relative_to(repo_root)
+        if relative == MCP_TOOL_IDENTITY_TS_OWNER or ".test." in path.name:
+            continue
+        source = _typescript_without_comments(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+        for fragment, remedy in MCP_TOOL_IDENTITY_TS_GRAMMAR.items():
+            if fragment not in source:
+                continue
+            if str(relative) in MCP_TOOL_IDENTITY_TS_EXEMPTIONS:
+                continue
+            errors.append(
+                f"{relative}: {fragment!r} re-spells the MCP tool identity grammar "
+                f"owned by {MCP_TOOL_IDENTITY_TS_OWNER}; {remedy}, or record in "
+                "MCP_TOOL_IDENTITY_TS_EXEMPTIONS why this file must carry a second "
+                "spelling of the same identity"
+            )
+    return errors
+
 
 def check_mcp_tool_identity_is_owned(
     repo_root: Path = REPO_ROOT, crates: Path = CRATES
 ) -> list[str]:
-    """Only one module may spell the `mcp__<server>__<tool>` identity grammar."""
-    errors: list[str] = []
+    """Only one module *per side* may spell the `mcp__<server>__<tool>` grammar."""
+    errors: list[str] = check_mcp_tool_identity_is_owned_in_console(repo_root)
     for path in sorted(crates.glob("*/*/src/**/*.rs")):
         relative = path.relative_to(repo_root)
         if relative == MCP_TOOL_IDENTITY_OWNER:
@@ -942,6 +1012,98 @@ def selftest_mcp_tool_identity_ownership() -> None:
             encoding="utf-8",
         )
         assert check_mcp_tool_identity_is_owned(root, crates)  # P9
+
+
+def selftest_mcp_tool_identity_ownership_in_console() -> None:
+    """The console side of the same table, over every shape `web/src` holds.
+
+    Causes: T1 a component builds the id from a template literal; T2 it takes
+    the prefix apart with `startsWith`; T3 it measures the prefix with
+    `"mcp__".length`; T4 it matches `/^mcp__/`; T5 it splits on the separator;
+    T6 the fragment is in the owning module; T7 it is in a `*.test.ts` vector
+    file; T8 it is in a whole-line comment; T9 it is a placeholder or a
+    translated message that merely *names* an id; T10 the file carries a
+    recorded exemption; T11 it asks the owner instead. Effects: E1 reject;
+    E2 admit.
+
+    | Rule | shape            | in owner | test file | comment | exempt | Effect |
+    | T1   | `mcp__${`        | F        | F         | F       | F      | E1     |
+    | T2   | startsWith       | F        | F         | F       | F      | E1     |
+    | T3   | "mcp__".length   | F        | F         | F       | F      | E1     |
+    | T4   | /^mcp__/         | F        | F         | F       | F      | E1     |
+    | T5   | split("mcp__"    | F        | F         | F       | F      | E1     |
+    | T6   | `mcp__${`        | T        | F         | F       | F      | E2     |
+    | T7   | `mcp__${`        | F        | T         | F       | F      | E2     |
+    | T8   | startsWith       | F        | F         | T       | F      | E2     |
+    | T9   | a bare id string | F        | F         | F       | F      | E2     |
+    | T10  | startsWith       | F        | F         | F       | T      | E2     |
+    | T11  | owner call       | F        | F         | F       | F      | E2     |
+    """
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        component = root / "web/src/components/agent/Probe.tsx"
+        component.parent.mkdir(parents=True)
+
+        for fragment in (
+            'const id = `mcp__${server}__${tool}`;\n',                        # T1
+            'const owned = target.startsWith("mcp__");\n',                    # T2
+            'const rest = target.slice("mcp__".length);\n',                   # T3
+            'const owned = /^mcp__/.test(target);\n',                         # T4
+            'const parts = target.split("mcp__")[1];\n',                      # T5
+        ):
+            component.write_text(fragment, encoding="utf-8")
+            assert check_mcp_tool_identity_is_owned_in_console(root), fragment
+
+        component.unlink()
+        owner = root / MCP_TOOL_IDENTITY_TS_OWNER
+        owner.parent.mkdir(parents=True)
+        owner.write_text("const id = `mcp__${server}__${tool}`;\n", encoding="utf-8")
+        assert not check_mcp_tool_identity_is_owned_in_console(root)  # T6
+
+        vectors = root / "web/src/lib/mcp-tool-id.test.ts"
+        vectors.write_text(
+            'expect(mcpToolId("a", "b")).toBe(`mcp__${"a"}__${"b"}`);\n', encoding="utf-8"
+        )
+        assert not check_mcp_tool_identity_is_owned_in_console(root)  # T7
+
+        component.write_text(
+            '// the legacy shape was target.startsWith("mcp__")\n'
+            "export const Probe = () => null;\n",
+            encoding="utf-8",
+        )
+        assert not check_mcp_tool_identity_is_owned_in_console(root)  # T8
+
+        component.write_text(
+            'add("mcp__server__tool");\n'
+            't("Use mcp__server__tool so the runtime can match the discovered tool.");\n',
+            encoding="utf-8",
+        )
+        assert not check_mcp_tool_identity_is_owned_in_console(root)  # T9
+
+        component.write_text('const owned = target.startsWith("mcp__");\n', encoding="utf-8")
+        MCP_TOOL_IDENTITY_TS_EXEMPTIONS[str(component.relative_to(root))] = "probe"
+        try:
+            assert not check_mcp_tool_identity_is_owned_in_console(root)  # T10
+        finally:
+            del MCP_TOOL_IDENTITY_TS_EXEMPTIONS[str(component.relative_to(root))]
+
+        component.write_text(
+            'import { hasMcpToolNamespace } from "../../lib/mcp-tool-id";\n'
+            "const owned = hasMcpToolNamespace(target);\n",
+            encoding="utf-8",
+        )
+        assert not check_mcp_tool_identity_is_owned_in_console(root)  # T11
+
+    # Corpus assertion: the console owner exists and is the only file the rule
+    # exempts by identity, so the scan cannot pass by finding nothing.
+    assert (REPO_ROOT / MCP_TOOL_IDENTITY_TS_OWNER).is_file(), (
+        f"{MCP_TOOL_IDENTITY_TS_OWNER} is the console's identity owner and must exist"
+    )
+    assert any(
+        path.suffix in {".ts", ".tsx"}
+        for path in (REPO_ROOT / MCP_TOOL_IDENTITY_TS_ROOT).rglob("*")
+    ), f"{MCP_TOOL_IDENTITY_TS_ROOT} holds no TypeScript; the console scan would be vacuous"
 
 
 # ---------------------------------------------------------------------------
@@ -1750,6 +1912,7 @@ def main() -> int:
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
     selftest_mcp_tool_identity_ownership()
+    selftest_mcp_tool_identity_ownership_in_console()
     _crate_boundary_workspace.selftest()
     _crate_dependency_fitness.selftest()
     _arch_fitness.selftest()
@@ -1816,5 +1979,21 @@ def main() -> int:
     return 0
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for: that is how
+# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
+# and the self-test never once executed. ``allow_abbrev=False`` closes the
+# second half: without it ``--self-tes`` is also accepted, so the flag has no
+# single spelling.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_crate_boundaries.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument("paths", nargs="*", help="ignored; boundaries are derived from Cargo metadata")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    parse(sys.argv[1:])
     raise SystemExit(main())

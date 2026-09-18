@@ -29,6 +29,7 @@ this is the gate that keeps the promise.
 
 from __future__ import annotations
 
+import argparse
 import glob
 import re
 import sys
@@ -38,11 +39,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts/ci/check-rust.sh"
 
-# The one invocation that reaches every feature of every workspace member.
-# Written as the exact token sequence the gate must carry, so a narrowing edit
-# (dropping --all-features, scoping to -p, excluding a package) fails here
-# rather than silently shrinking the compile surface.
-MAXIMAL_COMPILE = "cargo check --workspace --all-features --all-targets"
+# The surface that reaches every feature of every workspace member. Written as
+# the exact token sequence the gate must carry after the Cargo subcommand, so a
+# narrowing edit (dropping --all-features, scoping to -p, excluding a package)
+# fails here rather than silently shrinking the compile surface.
+#
+# The subcommand is deliberately not pinned to `check`. `cargo clippy` compiles
+# exactly what `cargo check` compiles and additionally lints it, so a gate that
+# replaced the two separate commands with one clippy over the same surface has
+# not lost the compile obligation -- it has strengthened it. Pinning the word
+# `check` would have refused that convergence and kept the lint permanently
+# narrower than the compile.
+MAXIMAL_COMPILE_SURFACE = "--workspace --all-features --all-targets"
+MAXIMAL_COMPILE_SUBCOMMANDS = ("cargo check", "cargo clippy")
+MAXIMAL_COMPILE = f"{MAXIMAL_COMPILE_SUBCOMMANDS[0]} {MAXIMAL_COMPILE_SURFACE}"
+
+
+def compiles_maximal_graph(text: str) -> bool:
+    """Does this text run some Cargo command over the maximal feature graph?"""
+
+    return any(
+        f"{subcommand} {MAXIMAL_COMPILE_SURFACE}" in text
+        for subcommand in MAXIMAL_COMPILE_SUBCOMMANDS
+    )
 
 # Modes whose body must carry the maximal compile. --quick is deliberately
 # absent: it is the per-commit gate and stays fast; the maximal graph is a
@@ -111,17 +130,18 @@ def maximal_compile_errors(gate: str) -> list[str]:
     """
 
     errors: list[str] = []
-    if MAXIMAL_COMPILE not in gate:
+    if not compiles_maximal_graph(gate):
         errors.append(
-            f"scripts/ci/check-rust.sh no longer runs `{MAXIMAL_COMPILE}`; without it "
-            "a declared feature can stop compiling and no gate reports it"
+            f"scripts/ci/check-rust.sh no longer runs any of "
+            f"{' / '.join(f'`{s} {MAXIMAL_COMPILE_SURFACE}`' for s in MAXIMAL_COMPILE_SUBCOMMANDS)}"
+            "; without one a declared feature can stop compiling and no gate reports it"
         )
         return errors
     for mode in MAXIMAL_COMPILE_MODES:
         body = mode_body(gate, mode)
         if body is None:
             errors.append(f"scripts/ci/check-rust.sh has no {mode} branch to compile features in")
-        elif MAXIMAL_COMPILE not in body:
+        elif not compiles_maximal_graph(body):
             errors.append(
                 f"scripts/ci/check-rust.sh {mode} does not run `{MAXIMAL_COMPILE}`, so the "
                 f"features outside its own feature set are not compiled by {mode}"
@@ -236,7 +256,17 @@ def selftest() -> None:
     # A command in a neighbouring branch does not satisfy the branch that lost it.
     assert maximal_compile_errors(
         gate.replace("  --full)\n", "  --other)\n", 1)
-    ), "M3 branch bodies are read separately"
+    ), "M4 branch bodies are read separately"
+    # M5 the obligation is a compile surface, not a subcommand: `cargo clippy`
+    # over the same surface compiles everything `cargo check` does and lints it
+    # too, so replacing the two commands with one is admitted. M6 a clippy over
+    # a *narrower* surface is still refused.
+    assert not maximal_compile_errors(
+        gate.replace(MAXIMAL_COMPILE, f"cargo clippy {MAXIMAL_COMPILE_SURFACE}")
+    ), "M5 clippy over the maximal surface compiles the maximal graph"
+    assert maximal_compile_errors(
+        gate.replace(MAXIMAL_COMPILE, "cargo clippy --workspace --all-targets")
+    ), "M6 a narrower clippy is not the maximal graph"
 
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -276,8 +306,8 @@ def selftest() -> None:
     print("check_feature_matrix self-test: both decision tables hold")
 
 
-def main(argv: list[str]) -> int:
-    if "--self-test" in argv:
+def main(arguments: argparse.Namespace) -> int:
+    if arguments.self_test:
         selftest()
         return 0
     selftest()
@@ -302,5 +332,22 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for: that is how
+# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
+# and the self-test never once executed. ``allow_abbrev=False`` closes the
+# second half: without it ``--self-tes`` is also accepted, so the flag has no
+# single spelling.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_feature_matrix.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument(
+        "--self-test", action="store_true", help="run the decision table instead of the scan"
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main(parse(sys.argv[1:])))

@@ -471,7 +471,7 @@ def self_test() -> int:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("--require-fresh", action="store_true")
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--gates", default="")

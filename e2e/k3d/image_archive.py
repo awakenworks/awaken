@@ -91,7 +91,7 @@ def export_image(reference, platform, output):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument('--platform', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('reference')

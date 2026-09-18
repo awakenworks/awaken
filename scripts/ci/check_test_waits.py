@@ -30,15 +30,28 @@ The owners, one per side, are the only places a wait loop belongs:
 * TypeScript: `e2e/harness.mjs`'s `waitForValue` (bounded poll on a committed
   projection) and `waitForSessionEventReceipt`, which requires the anchoring
   command's own `processed_at` before consulting the caller's predicate.
+* Shell has no shared wait library to delegate to, so its owner is a shape
+  rather than a symbol: a named `wait_for_…` helper that polls a committed fact
+  and reports its own expiry. It therefore carries three of the four rules and
+  not `private-wait-loop`, which would otherwise name every correct poll.
 
-Three rules, each ratcheted per file so today's debt is frozen and tomorrow's
+Four rules, each ratcheted per file so today's debt is frozen and tomorrow's
 is refused. Genuine timing tests -- a timeout, a TTL, a lease expiry, a
 backoff -- are legitimate and stay; they say why through an `awaken-wait:`
 reason comment, which is a decision someone made and can be argued with.
+
+The corpus is the `INPUT_GLOBS` declaration, walked -- not a second list beside
+it. It was a second list, and the two disagreed: the globs covered `*.rs` and
+`*.mjs`, so fourteen shell suites and the console's Playwright specs were never
+read at all. Two of those suites fell out of a readiness poll with no failure
+branch and ran their load profile against a port nothing was listening on, and
+the rule that exists to refuse exactly that reported OK for as long as it had
+been written.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -46,12 +59,21 @@ from pathlib import Path
 
 # This checker reads the repository's test trees and its own baseline, so its
 # lefthook trigger is rendered from exactly that set.
+#
+# `sources()` reads exactly these patterns: the declaration is the scan scope,
+# not a second copy of it. A corpus that is tested but absent here -- the shell
+# e2e suites and the console's Playwright specs both were -- is a corpus where
+# the rule silently never ran.
 INPUT_GLOBS: tuple[str, ...] = (
     "crates/*/*/tests/**/*.rs",
     "crates/*/*/src/**/*.rs",
     "e2e/**/*.mjs",
     "e2e/**/*.ts",
     "e2e/**/*.js",
+    "e2e/**/*.sh",
+    "e2e/**/*.rs",
+    "web/e2e/**/*.ts",
+    "web/e2e/**/*.mjs",
     "scripts/ci/test_waits_baseline.json",
 )
 
@@ -67,6 +89,11 @@ BASELINE = Path(__file__).resolve().parent / "test_waits_baseline.json"
 
 RUST_OWNER = "awaken_protocol_managed::test_support::wait_for_session_events"
 TS_OWNER = "e2e/harness.mjs waitForValue / waitForSessionEventReceipt"
+# Shell suites have no cross-script library to own their waits, so the owner is
+# a shape rather than a symbol: one named `wait_for_…` helper per script that
+# polls a committed fact and reports its own expiry (`e2e/graceful_drain_e2e.sh`
+# `wait_for_assistants` is the worked example).
+SHELL_OWNER = "a named wait_for_… helper that polls a committed fact and fails at its deadline"
 
 # A wait that names one of these is reading a value some writer committed.
 # `run_id`/`id ==` count because equality against an exact identity the caller
@@ -132,7 +159,175 @@ WAIT_CALL = re.compile(
 REASON = re.compile(r"awaken-wait:\s*(?P<reason>.+?)\s*$")
 MIN_REASON = 20
 
+# ---------------------------------------------------------------------------
+# Shell. The same four rules, spelled in the grammar the e2e suites are written
+# in. `e2e/k3d/distributed_control_e2e.sh` alone held eight bare `sleep 1`s
+# between an action and the assertion about its effect; none of them was ever
+# read by this rule, because the rule's scope said `*.rs` and `*.mjs`.
+
+# A bare `sleep`, not `sleep_until()`, not `k3d_sleep`, not the word in prose.
+SHELL_SLEEP = re.compile(r"(?<![\w.$-])sleep\s+[\w.\"'${]")
+SHELL_SLEEP_DEFINITION = re.compile(r"^\s*(?:function\s+)?[\w-]*(?:sleep|delay)[\w-]*\s*\(\s*\)")
+# `[ … ]`, `[[ … ]]`, a `|| fail`, or a comparison against an expected count.
+SHELL_ASSERTION = re.compile(
+    r"^\s*\[\[?[\s(]|\|\|\s*(?:fail|die)\b|\|\|\s*(?:exit|return)\s+[1-9]|"
+    r"^\s*assert\w*\s|\btest\s+(?:-\w|\"\$)",
+)
+# A wait spins or counts down. Iterating a word list (`for d in ingress egress`),
+# an array (`for t in "${threads[@]}"`) or a command's output lines
+# (`while read -r …`) is a traversal, not a wait, so those are not loop heads.
+SHELL_LOOP_HEAD = re.compile(
+    r"^\s*(?:for\s*\(\(|for\s+\w+\s+in\s+(?:\{\d+\s*\.\.|\$\(\s*seq\b)|"
+    r"while(?!\s+read\b)[\s(]|until[\s(])",
+)
+# `name() {` — shell's only function form.
+SHELL_DEFINITION = re.compile(r"^\s*(?:function\s+)?(?P<name>[\w-]+)\s*\(\s*\)")
+# Only a loop that can run out can run out quietly: a `{1..N}` range, a counted
+# C-style loop, a `$(seq …)` list, or a wall-clock deadline comparison.
+SHELL_BOUNDED_LOOP = re.compile(
+    r"for\s+\w+\s+in\s+\{\d+\s*\.\.\s*\d+\}|"
+    r"for\s*\(\(\s*\w+\s*=\s*\d+\s*;|"
+    r"for\s+\w+\s+in\s+\$\(\s*seq\b|"
+    r"while\s*\(\(\s*\w+\s*[<>]|"
+    r"(?:while|until)\b.*(?:SECONDS|deadline|EPOCHSECONDS|date\s+\+%s)\b.*(?:-lt|-gt|-le|-ge|[<>])",
+)
+SHELL_LOOP_EXIT = re.compile(r"\bbreak\b|\breturn\b|\bexit\b")
+# Loud on expiry: `fail`/`err` (the suites' own reporters), a non-zero
+# exit/return, or a message on stderr.
+SHELL_LOUD_FAILURE = re.compile(
+    r"\bfail\b|\berr\b|\bdie\b|\bexit\s+[1-9]|\breturn\s+\"?\$?[1-9?]|>&\s*2|\bexit\s+\"?\$",
+)
+# Shell has no shared wait library; delegating to a named `wait_*` helper (or to
+# `timeout`, which fails by itself) is the shape that replaces one.
+SHELL_OWNED_WAIT = re.compile(r"\bwait_for_\w+|\b\w*_wait\b|\bwait_\w+\s*\(?|\btimeout\s+[\w\"$]")
+SHELL_WAIT_CALL = re.compile(r"\bwait_for_\w+\s")
+
 RULES = ("sleep-then-assert", "generic-settle", "private-wait-loop", "silent-timeout")
+
+
+class Dialect:
+    """One language's spelling of the four rules, plus its wait owner.
+
+    A dialect is selected by file suffix, and the suffixes a dialect claims are
+    the only ones `sources()` reads, so a corpus cannot be scanned without a
+    rule that understands it and a rule cannot be written for a corpus nothing
+    reads.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        suffixes: tuple[str, ...],
+        comments: tuple[str, ...],
+        closers: tuple[str, ...],
+        sleep: re.Pattern[str],
+        sleep_definition: re.Pattern[str],
+        assertion: re.Pattern[str],
+        loop_head: re.Pattern[str],
+        bounded_loop: re.Pattern[str],
+        loop_exit: re.Pattern[str],
+        loud_failure: re.Pattern[str],
+        owned_wait: re.Pattern[str],
+        wait_call: re.Pattern[str],
+        owner: str,
+        definition: re.Pattern[str] | None = None,
+        deadline_span: int = 6,
+        rules: tuple[str, ...] = RULES,
+    ) -> None:
+        self.name = name
+        self.suffixes = suffixes
+        self.comments = comments
+        self.closers = closers
+        self.sleep = sleep
+        self.sleep_definition = sleep_definition
+        self.assertion = assertion
+        self.loop_head = loop_head
+        self.bounded_loop = bounded_loop
+        self.loop_exit = loop_exit
+        self.loud_failure = loud_failure
+        self.owned_wait = owned_wait
+        self.wait_call = wait_call
+        self.owner = owner
+        # Set only where the owner is a *shape* rather than a shared symbol: a
+        # loop inside a function the dialect's `owned_wait` recognises is the
+        # owner's own loop, not a private one. Rust and TypeScript have one
+        # shared owner each, so a private `wait_for_x` there is the violation.
+        self.definition = definition
+        self.deadline_span = deadline_span
+        # Which of `RULES` this dialect carries. `private-wait-loop` exists
+        # because Rust and TypeScript each have one shared wait library; shell
+        # has none to delegate to, so "private" would name every correct poll in
+        # the suites and nothing else. Shell is protected instead by the two
+        # rules that describe a *wrong* shell wait: a bare sleep standing in for
+        # a fact, and a deadline nobody reports.
+        self.rules = rules
+
+
+RUST = Dialect(
+    name="rust",
+    suffixes=(".rs",),
+    comments=("//", "///", "#", "*"),
+    closers=("}",),
+    sleep=SLEEP,
+    sleep_definition=SLEEP_DEFINITION,
+    assertion=ASSERTION,
+    loop_head=LOOP_HEAD,
+    bounded_loop=BOUNDED_LOOP,
+    loop_exit=LOOP_EXIT,
+    loud_failure=LOUD_FAILURE,
+    owned_wait=OWNED_WAIT,
+    wait_call=WAIT_CALL,
+    owner=RUST_OWNER,
+)
+
+SCRIPT = Dialect(
+    name="typescript",
+    suffixes=(".ts", ".tsx", ".mjs", ".js"),
+    comments=("//", "///", "#", "*"),
+    closers=("}",),
+    sleep=SLEEP,
+    sleep_definition=SLEEP_DEFINITION,
+    assertion=ASSERTION,
+    loop_head=LOOP_HEAD,
+    bounded_loop=BOUNDED_LOOP,
+    loop_exit=LOOP_EXIT,
+    loud_failure=LOUD_FAILURE,
+    owned_wait=OWNED_WAIT,
+    wait_call=WAIT_CALL,
+    owner=TS_OWNER,
+)
+
+SHELL = Dialect(
+    name="shell",
+    suffixes=(".sh", ".bash"),
+    comments=("#",),
+    closers=("done", "fi", "}"),
+    sleep=SHELL_SLEEP,
+    sleep_definition=SHELL_SLEEP_DEFINITION,
+    assertion=SHELL_ASSERTION,
+    loop_head=SHELL_LOOP_HEAD,
+    bounded_loop=SHELL_BOUNDED_LOOP,
+    loop_exit=SHELL_LOOP_EXIT,
+    loud_failure=SHELL_LOUD_FAILURE,
+    owned_wait=SHELL_OWNED_WAIT,
+    wait_call=SHELL_WAIT_CALL,
+    owner=SHELL_OWNER,
+    definition=SHELL_DEFINITION,
+    # A shell deadline path is prose-shaped: the fall-through usually reads a
+    # last value, prints it, and only then decides. Twelve lines reaches that
+    # decision; six stops inside the read.
+    deadline_span=12,
+    rules=("sleep-then-assert", "generic-settle", "silent-timeout"),
+)
+
+# Suffix -> dialect. This mapping is also the corpus filter: `sources()` reads a
+# declared input only when some dialect claims its suffix.
+DIALECTS: dict[str, Dialect] = {
+    suffix: dialect
+    for dialect in (RUST, SCRIPT, SHELL)
+    for suffix in dialect.suffixes
+}
 
 MESSAGES = {
     "sleep-then-assert": (
@@ -164,20 +359,28 @@ MESSAGES = {
 
 
 def sources(root: Path) -> dict[str, str]:
-    """Every test source this rule governs, keyed by repository-relative path."""
+    """Every test source this rule governs, keyed by repository-relative path.
+
+    The corpus is the declared `INPUT_GLOBS`, walked. There is no second list:
+    the trigger `generate_hooks.py` renders, the scope this scan reads and the
+    scope the baseline is measured over are all the one declaration, so a corpus
+    added to the hook cannot be missing from the scan and vice versa.
+    """
 
     found: dict[str, str] = {}
-    for path in sorted(root.glob("crates/*/*/tests/**/*.rs")):
-        found[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
-    for path in sorted(root.glob("crates/*/*/src/**/*.rs")):
-        found[path.relative_to(root).as_posix()] = test_module_of(
-            path.read_text(encoding="utf-8")
-        )
-    for suffix in ("mjs", "ts", "js"):
-        for path in sorted(root.glob(f"e2e/**/*.{suffix}")):
-            if "node_modules" in path.parts:
+    for pattern in INPUT_GLOBS:
+        if Path(pattern).suffix not in DIALECTS:
+            continue  # a declared data input (the baseline), not a scanned corpus
+        for path in sorted(root.glob(pattern)):
+            if "node_modules" in path.parts or not path.is_file():
                 continue
-            found[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+            relative = path.relative_to(root).as_posix()
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            # Production Rust holds real poll loops and real backoffs; only the
+            # inline test module of a `src` file is a test.
+            if path.suffix == ".rs" and "/src/" in f"/{relative}":
+                text = test_module_of(text)
+            found[relative] = text
     return found
 
 
@@ -222,16 +425,16 @@ def _exempt(lines: list[str], index: int) -> str | None:
     return None
 
 
-def _in_poll_loop(lines: list[str], index: int) -> bool:
+def _in_poll_loop(lines: list[str], index: int, dialect: Dialect) -> bool:
     """Is line `index` inside a loop body (so the sleep is a poll interval)?"""
 
     for offset in range(max(0, index - 14), index):
-        if LOOP_HEAD.match(lines[offset]):
+        if dialect.loop_head.match(lines[offset]):
             return True
     return False
 
 
-def _loop_end(lines: list[str], index: int) -> int:
+def _loop_end(lines: list[str], index: int, dialect: Dialect) -> int:
     """The index of the line closing the loop opened at `index`."""
 
     indent = len(lines[index]) - len(lines[index].lstrip())
@@ -239,12 +442,12 @@ def _loop_end(lines: list[str], index: int) -> int:
         line = lines[offset]
         if not line.strip():
             continue
-        if len(line) - len(line.lstrip()) <= indent and line.strip().startswith(("}", "end")):
+        if len(line) - len(line.lstrip()) <= indent and line.strip().startswith(dialect.closers):
             return offset
     return min(len(lines) - 1, index + 60)
 
 
-def _fails_loudly_on_deadline(lines: list[str], index: int) -> bool:
+def _fails_loudly_on_deadline(lines: list[str], index: int, dialect: Dialect) -> bool:
     """Does the loop opened at `index` report its own expiry?
 
     The deadline path is whatever runs once the loop falls through. It is loud
@@ -252,22 +455,42 @@ def _fails_loudly_on_deadline(lines: list[str], index: int) -> bool:
     when the loop delegates to an owner whose timeout already fails.
     """
 
-    end = _loop_end(lines, index)
-    region = _code(lines, index, end - index + 1) + "\n" + _code(lines, end + 1, 6)
-    return bool(LOUD_FAILURE.search(region) or OWNED_WAIT.search(region))
+    end = _loop_end(lines, index, dialect)
+    region = (
+        _code(lines, index, end - index + 1, dialect)
+        + "\n"
+        + _code(lines, end + 1, dialect.deadline_span, dialect)
+    )
+    return bool(dialect.loud_failure.search(region) or dialect.owned_wait.search(region))
+
+
+def _inside_the_owner(lines: list[str], index: int, dialect: Dialect) -> bool:
+    """Is line `index` inside a function that *is* one of this dialect's waits?
+
+    Only dialects whose owner is a shape (shell) set `definition`; for those,
+    the wait helper's own poll loop is the owner, not a private copy of it.
+    """
+
+    if dialect.definition is None:
+        return False
+    for offset in range(index, max(-1, index - 80), -1):
+        match = dialect.definition.match(lines[offset])
+        if match:
+            return bool(dialect.owned_wait.search(match.group("name")))
+    return False
 
 
 def _window(lines: list[str], index: int, span: int = 40) -> str:
     return "\n".join(lines[index : index + span])
 
 
-def _code(lines: list[str], index: int, span: int) -> str:
+def _code(lines: list[str], index: int, span: int, dialect: Dialect) -> str:
     """`_window` with comment lines removed: prose about a wait is not a wait."""
 
     return "\n".join(
         line
         for line in lines[index : index + span]
-        if not line.strip().startswith(("//", "#", "*", "///"))
+        if not line.strip().startswith(dialect.comments)
     )
 
 
@@ -277,39 +500,68 @@ def _code(lines: list[str], index: int, span: int) -> str:
 CANDIDATE = re.compile(r"sleep|setTimeout|status")
 
 
+def _claimed_trees() -> set[str]:
+    """Directories a declared pattern claims whole: `<literal dir>/**/*.<ext>`.
+
+    Derived from `INPUT_GLOBS`, so adding a corpus adds its completeness check.
+    Patterns whose directory part is itself wildcarded (`crates/*/*/src/**`)
+    claim a shape inside a tree rather than the tree, and are excluded.
+    """
+
+    trees: set[str] = set()
+    for pattern in INPUT_GLOBS:
+        head, separator, tail = pattern.partition("/**/")
+        if not separator or "*" in head or Path(pattern).suffix not in DIALECTS:
+            continue
+        trees.add(head)
+    return trees
+
+
+def dialect_for(relative: str) -> Dialect:
+    """The dialect claiming `relative`'s suffix; Rust is the fallback."""
+
+    return DIALECTS.get(Path(relative).suffix, RUST)
+
+
 def file_violations(relative: str, text: str) -> list[tuple[str, int, str]]:
     """Every (rule, line number, source line) this file breaks."""
 
     if not CANDIDATE.search(text):
         return []
+    dialect = dialect_for(relative)
     lines = text.splitlines()
     found: list[tuple[str, int, str]] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith(("//", "#", "*", "///")):
+        if stripped.startswith(dialect.comments):
             continue
 
-        if LOOP_HEAD.match(line):
+        if dialect.loop_head.match(line):
             body = _window(lines, index, 20)
-            if SLEEP.search(body) and LOOP_EXIT.search(body) and not OWNED_WAIT.search(body):
+            if (
+                dialect.sleep.search(body)
+                and dialect.loop_exit.search(body)
+                and not dialect.owned_wait.search(body)
+                and not _inside_the_owner(lines, index, dialect)
+            ):
                 found.append(("private-wait-loop", index + 1, stripped))
             if (
-                SLEEP.search(body)
-                and BOUNDED_LOOP.search(line)
-                and not _fails_loudly_on_deadline(lines, index)
+                dialect.sleep.search(body)
+                and dialect.bounded_loop.search(line)
+                and not _fails_loudly_on_deadline(lines, index, dialect)
             ):
                 found.append(("silent-timeout", index + 1, stripped))
 
         if (
-            SLEEP.search(line)
-            and not SLEEP_DEFINITION.match(line)
-            and not _in_poll_loop(lines, index)
+            dialect.sleep.search(line)
+            and not dialect.sleep_definition.match(line)
+            and not _in_poll_loop(lines, index, dialect)
         ):
-            ahead = _code(lines, index + 1, 6)
-            if ASSERTION.search(ahead):
+            ahead = _code(lines, index + 1, 6, dialect)
+            if dialect.assertion.search(ahead):
                 found.append(("sleep-then-assert", index + 1, stripped))
 
-        if WAIT_CALL.search(line) or LOOP_HEAD.match(line):
+        if dialect.wait_call.search(line) or dialect.loop_head.match(line):
             body = _window(lines, index, 24)
             if LIFECYCLE.search(body) and not DURABLE.search(body):
                 found.append(("generic-settle", index + 1, stripped))
@@ -317,7 +569,7 @@ def file_violations(relative: str, text: str) -> list[tuple[str, int, str]]:
     return [
         (rule, number, source)
         for rule, number, source in found
-        if _exempt(lines, number - 1) is None
+        if rule in dialect.rules and _exempt(lines, number - 1) is None
     ]
 
 
@@ -332,7 +584,7 @@ def short_reasons(text: str) -> list[str]:
 
 
 def owner_for(relative: str) -> str:
-    return RUST_OWNER if relative.endswith(".rs") else TS_OWNER
+    return dialect_for(relative).owner
 
 
 def load_baseline(path: Path) -> tuple[dict[str, dict[str, int]], list[dict[str, str]]]:
@@ -387,7 +639,9 @@ def report(
 
 
 def selftest() -> None:
-    """Decision table for the three rules.
+    """Decision table for the four rules, once per dialect, plus the corpus.
+
+    Rust and TypeScript (`crates/**`, `e2e/**`):
 
     | Rule | Cause                                              | Effect |
     |------|----------------------------------------------------|--------|
@@ -404,10 +658,52 @@ def selftest() -> None:
     | S11  | bounded poll loop that just falls through           | reject |
     | S12  | same loop throwing, asserting, or panicking at exit | accept |
     | S13  | unbounded loop (a fake server, a producer)          | not S11 |
+
+    Shell (`e2e/**/*.sh`), same four rules in the other grammar:
+
+    | Rule | Cause                                                 | Effect |
+    |------|-------------------------------------------------------|--------|
+    | H1   | bare `sleep 2`, then `[ … ] || fail`                   | reject |
+    | H2   | same, carrying an `awaken-wait:` reason                | accept |
+    | H3   | `sleep 0.2` as a bounded loop's poll interval          | not H1 |
+    | H4   | `for i in {1..30}` poll that just falls through        | reject |
+    | H5   | same loop ending in `echo … >&2` / `return 2`          | accept |
+    | H6   | `while true` producer with a sleep                     | not H4 |
+    | H7   | private `while` poll with a sleep and a `break`        | accept |
+    | H8   | loop delegating to a named `wait_for_…` helper         | accept |
+    | H9   | a function *named* `sleep_until()`                     | accept |
+    | H10  | a `# sleep 1` comment describing a wait                | accept |
+    | H11  | wait settling on `status_idle` with no committed value | reject |
+    | H12  | `for d in ingress egress both` (a traversal)           | not H7 |
+    | H13  | `while read -r a b` over a command's lines             | not H7 |
+    | H14  | the poll loop *inside* a `wait_for_…` helper           | accept |
+    | H15  | that same helper falling through without reporting     | reject |
+    | H16  | shell carries no `private-wait-loop` rule at all        | by design |
+
+    Console Playwright specs (`web/e2e/**`) use the script dialect:
+
+    | Rule | Cause                                                  | Effect |
+    |------|--------------------------------------------------------|--------|
+    | W1   | `while (Date.now() < d)` + `setTimeout` + `break`       | reject |
+    | W2   | a `.spec.ts` under `web/e2e` is in the scanned corpus   | in scope |
+
+    And over the corpus itself, so a tree added tomorrow inherits the rule:
+
+    | Rule | Cause                                                  | Effect |
+    |------|--------------------------------------------------------|--------|
+    | C1   | every scanned suffix is claimed by some dialect         | holds  |
+    | C2   | every declared code pattern matches at least one file    | holds  |
+    | C3   | a file under a claimed tree whose suffix a dialect reads | scanned |
     """
 
     def rules(text: str) -> set[str]:
         return {rule for rule, _, _ in file_violations("a.rs", text)}
+
+    def shell_rules(text: str) -> set[str]:
+        return {rule for rule, _, _ in file_violations("e2e/probe.sh", text)}
+
+    def spec_rules(text: str) -> set[str]:
+        return {rule for rule, _, _ in file_violations("web/e2e/probe.spec.ts", text)}
 
     s1 = "    tokio::time::sleep(d).await;\n    assert_eq!(calls, 1);\n"
     assert "sleep-then-assert" in rules(s1), "S1"
@@ -537,6 +833,174 @@ def selftest() -> None:
     assert report(two, baseline, set())[0], "a new wait above the baseline is refused"
     assert report({}, baseline, set())[1], "ground gained must lower the baseline"
     assert report(two, baseline, {("a.rs", "sleep-then-assert")}) == ([], []), "registered"
+
+    h1 = (
+        "submit_background inflight 'x'\n"
+        "sleep 2\n"
+        'n="$(assistant_count inflight)"\n'
+        '[ "$n" -eq 1 ] || fail "inflight has $n replies"\n'
+    )
+    assert "sleep-then-assert" in shell_rules(h1), "H1"
+
+    h2 = (
+        "# awaken-wait: the drain grace period itself is the subject here\n"
+        "sleep 2\n"
+        'n="$(assistant_count inflight)"\n'
+        '[ "$n" -eq 1 ] || fail "inflight has $n replies"\n'
+    )
+    assert "sleep-then-assert" not in shell_rules(h2), "H2"
+
+    h3 = (
+        "for attempt in {1..50}; do\n"
+        '  observed=$(read_revision) || return "$?"\n'
+        '  [[ "$observed" != "2" ]] || return 0\n'
+        "  sleep 0.2\n"
+        "done\n"
+        'echo "the revision never advanced" >&2\n'
+        "return 2\n"
+    )
+    assert "sleep-then-assert" not in shell_rules(h3), "H3"
+    assert "silent-timeout" not in shell_rules(h3), "H5"
+
+    h4 = (
+        "for attempt in {1..30}; do\n"
+        "  ready=$(curl -sf \"$base/readyz\") && break\n"
+        "  sleep 1\n"
+        "done\n"
+        'echo "continuing"\n'
+    )
+    assert "silent-timeout" in shell_rules(h4), "H4"
+
+    h6 = (
+        "while true; do\n"
+        "  emit_heartbeat\n"
+        "  sleep 1\n"
+        "done\n"
+    )
+    assert "silent-timeout" not in shell_rules(h6), "H6"
+
+    h7 = (
+        "while read_pending; do\n"
+        "  [ -f \"$marker\" ] && break\n"
+        "  sleep 1\n"
+        "done\n"
+    )
+    assert "private-wait-loop" not in shell_rules(h7), "H7"
+    assert "private-wait-loop" not in SHELL.rules, "H16"
+    assert "private-wait-loop" in RUST.rules and "private-wait-loop" in SCRIPT.rules, "H16"
+
+    h8 = (
+        "for attempt in {1..3}; do\n"
+        "  wait_for_assistants inflight 1 20 && break\n"
+        "  sleep 1\n"
+        "done\n"
+    )
+    assert "private-wait-loop" not in shell_rules(h8), "H8"
+
+    h9 = (
+        "sleep_until() {\n"
+        '  local deadline="$1"\n'
+        "}\n"
+        '[ "$n" -eq 1 ] || fail "x"\n'
+    )
+    assert "sleep-then-assert" not in shell_rules(h9), "H9"
+
+    h10 = (
+        "# sleep 1 here would race the commit\n"
+        '[ "$n" -eq 1 ] || fail "x"\n'
+    )
+    assert not shell_rules(h10), "H10"
+
+    h11 = (
+        "for attempt in {1..30}; do\n"
+        '  last=$(curl -sf "$base/events" | jq -r ".data[-1].type")\n'
+        '  [ "$last" = "session.status_idle" ] && break\n'
+        "  sleep 1\n"
+        "done\n"
+        'echo "never idled" >&2\n'
+        "exit 1\n"
+    )
+    assert "generic-settle" in shell_rules(h11), "H11"
+
+    h12 = (
+        "for direction in ingress egress both; do\n"
+        "  apply_partition \"$direction\"\n"
+        "  sleep 1\n"
+        "  break\n"
+        "done\n"
+    )
+    assert not shell_rules(h12), "H12"
+
+    h13 = (
+        "while read -r sandbox node; do\n"
+        "  record \"$sandbox\" \"$node\"\n"
+        "  sleep 1\n"
+        "  break\n"
+        "done < <(list_failures)\n"
+    )
+    assert not shell_rules(h13), "H13"
+
+    h14 = (
+        "wait_for_assistants() {\n"
+        "  local deadline=$(( $(date +%s) + $3 ))\n"
+        "  while :; do\n"
+        '    n="$(assistant_count "$1")"\n'
+        '    [ "$n" -ge "$2" ] && return 0\n'
+        '    [ "$(date +%s)" -ge "$deadline" ] && fail "timed out; saw $n"\n'
+        "    sleep 0.2\n"
+        "  done\n"
+        "}\n"
+    )
+    assert "private-wait-loop" not in shell_rules(h14), "H14"
+
+    h15 = (
+        "wait_for_ready() {\n"
+        "  for _ in $(seq 1 100); do\n"
+        '    curl -sf "$BASE/readyz" >/dev/null && return 0\n'
+        "    sleep 0.1\n"
+        "  done\n"
+        "}\n"
+    )
+    assert "silent-timeout" in shell_rules(h15), "H15"
+
+    w1 = (
+        "  const deadline = Date.now() + 60_000;\n"
+        "  while (Date.now() < deadline) {\n"
+        "    await new Promise((r) => setTimeout(r, 2000));\n"
+        "    const seen = await read();\n"
+        "    if (seen) break;\n"
+        "  }\n"
+        "  expect(seen).toBe(true);\n"
+    )
+    assert "private-wait-loop" in spec_rules(w1), "W1"
+
+    scanned = sources(ROOT)
+    assert any(name.startswith("web/e2e/") and name.endswith(".spec.ts") for name in scanned), "W2"
+    assert any(name.startswith("e2e/") and name.endswith(".sh") for name in scanned), "H0"
+    # Corpus assertion: the declaration is the scope. Every suffix `sources()`
+    # returns is one a dialect claims, and every code pattern declared in
+    # INPUT_GLOBS contributed to the scan, so a corpus cannot be read without a
+    # rule that understands it, nor declared without being read.
+    assert {Path(name).suffix for name in scanned} <= set(DIALECTS), "every scanned suffix has a rule"
+    for pattern in INPUT_GLOBS:
+        if Path(pattern).suffix not in DIALECTS:
+            continue
+        assert any(ROOT.glob(pattern)), f"declared corpus {pattern} matched nothing"
+    # A pattern rooted at a literal directory claims that whole tree, so every
+    # file under it that some dialect can read must be read. This is the
+    # assertion that would have failed the day `e2e/**/*.mjs` was declared while
+    # `e2e/**/*.sh` was not, instead of the rule quietly skipping 14 suites.
+    for root_name in _claimed_trees():
+        for path in sorted((ROOT / root_name).rglob("*")):
+            if not path.is_file() or "node_modules" in path.parts:
+                continue
+            if path.suffix not in DIALECTS:
+                continue
+            relative = path.relative_to(ROOT).as_posix()
+            assert relative in scanned, (
+                f"{relative} is inside the claimed tree {root_name}/ and a dialect "
+                "reads its suffix, but no INPUT_GLOBS pattern covers it"
+            )
     print("check_test_waits selftest: the decision table holds")
 
 
@@ -589,10 +1053,32 @@ def write_baseline() -> int:
     return 0
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for: that is how
+# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
+# and the self-test never once executed. ``allow_abbrev=False`` closes the
+# second half: without it ``--self-tes`` is also accepted, so the flag has no
+# single spelling.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_test_waits.py", description=__doc__, allow_abbrev=False
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--self-test", action="store_true", help="run the decision table instead of the scan"
+    )
+    mode.add_argument(
+        "--write-baseline", action="store_true", help="rewrite the committed wait baseline"
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    if "--self-test" in sys.argv:
+    _arguments = parse(sys.argv[1:])
+    if _arguments.self_test:
         selftest()
         raise SystemExit(0)
-    if "--write-baseline" in sys.argv:
+    if _arguments.write_baseline:
         raise SystemExit(write_baseline())
     raise SystemExit(main())

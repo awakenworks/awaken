@@ -102,16 +102,33 @@ def expand(text: str) -> str:
 
 
 class Found:
-    """Where one declared tool is, or why it is not here."""
+    """Where one declared tool is, or why it is not here — in three outcomes.
+
+    "absent" and "undecidable" are different answers and a gate must not confuse
+    them. Absent is a fact about the machine: the binary is not on PATH, the
+    image is not cached, the toolchain is not installed. Undecidable is a fact
+    about the *probe*: a stopped Docker daemon, a `rustup` that could not list,
+    a query that could not run. Collapsing the second into the first is how a
+    stopped daemon read as "image absent", and an optional row that reads absent
+    turns into a successful skip — a gate reporting green about a substrate it
+    never observed. An undecidable probe therefore fails by name instead.
+    """
+
+    STATUSES = ("present", "builtin", "absent", "undecidable")
 
     def __init__(self, status: str, where: str = "", detail: str = "") -> None:
-        self.status = status  # present | absent | builtin
+        assert status in self.STATUSES, status
+        self.status = status
         self.where = where
         self.detail = detail
 
     @property
     def usable(self) -> bool:
         return self.status in ("present", "builtin")
+
+    @property
+    def undecidable(self) -> bool:
+        return self.status == "undecidable"
 
 
 def _on_path(command: str) -> str | None:
@@ -122,12 +139,16 @@ def _bundle_directories(tool: dict) -> list[str]:
     return [expand(directory) for directory in tool.get("directories", [])]
 
 
-def _kani_solver_directory() -> str | None:
-    """The released Kani bundle's bin directory, from the script that owns it."""
+def _kani_solver_directory() -> tuple[str | None, str | None]:
+    """The released Kani bundle's bin directory, from the script that owns it.
+
+    Returns (directory, undecidable_reason). A query that could not run says so;
+    it does not report the bundle as absent, because it did not look.
+    """
 
     script = ROOT / "scripts" / "ci" / "bootstrap_kani.sh"
     if not script.is_file():
-        return None
+        return None, None  # the bootstrap is genuinely not in this checkout
     try:
         result = subprocess.run(
             [str(script), "--solver-tools"],
@@ -136,11 +157,14 @@ def _kani_solver_directory() -> str | None:
             timeout=120,
             cwd=ROOT,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, f"the Kani bootstrap could not be queried for its bundle: {error}"
     if result.returncode != 0:
-        return None
-    return result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None
+        return None, (
+            "the Kani bootstrap exited "
+            f"{result.returncode} instead of naming its bundle directory"
+        )
+    return (result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None), None
 
 
 def _node_root_missing(relative: str) -> list[str]:
@@ -150,10 +174,27 @@ def _node_root_missing(relative: str) -> list[str]:
     return check_node_dependencies.dependency_errors(ROOT, (relative,))
 
 
-def _image_present(reference: str) -> bool:
+# What a container engine says when it looked and the image was not there. Any
+# other failure means it did not look: a stopped daemon, a permission denial, a
+# socket timeout. Those are undecidable, not absent.
+IMAGE_ABSENT_EVIDENCE = (
+    "no such image",
+    "no such object",
+    "manifest unknown",
+    "reference does not exist",
+    "failed to find image",
+    "image not known",
+)
+
+
+def _image_status(reference: str) -> Found:
     engine = _on_path("docker") or _on_path("podman")
     if engine is None:
-        return False
+        return Found(
+            "undecidable",
+            detail="no container engine is on PATH, so nothing here can say whether "
+            f"{reference} is cached; install docker or podman, or declare this gate unrunnable",
+        )
     try:
         result = subprocess.run(
             [engine, "image", "inspect", reference],
@@ -161,9 +202,25 @@ def _image_present(reference: str) -> bool:
             text=True,
             timeout=120,
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return Found(
+            "undecidable",
+            detail=f"{engine} image inspect did not answer within 120s; the daemon is not "
+            "responding, which is not the same as the image being absent",
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return Found("undecidable", detail=f"{engine} image inspect could not run: {error}")
+    if result.returncode == 0:
+        return Found("present", reference, "cached locally")
+    message = (result.stderr or result.stdout or "").lower()
+    if any(evidence in message for evidence in IMAGE_ABSENT_EVIDENCE):
+        return Found("absent")
+    first = (result.stderr or result.stdout or "").strip().splitlines()
+    return Found(
+        "undecidable",
+        detail=f"{engine} image inspect failed without saying the image is absent: "
+        + (first[0] if first else f"exit {result.returncode}"),
+    )
 
 
 def locate(tool: dict) -> Found:
@@ -196,7 +253,9 @@ def locate(tool: dict) -> Found:
         where = _on_path(name)
         if where:
             return Found("present", where)
-        directory = _kani_solver_directory()
+        directory, undecidable = _kani_solver_directory()
+        if undecidable:
+            return Found("undecidable", detail=undecidable)
         if directory:
             candidate = Path(directory) / name
             if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -208,13 +267,23 @@ def locate(tool: dict) -> Found:
     if kind == "rust-toolchain":
         rustup = _on_path("rustup")
         if rustup is None:
-            return Found("absent", detail="rustup itself is not here")
+            return Found(
+                "undecidable",
+                detail="rustup itself is not here, so nothing can list installed toolchains; "
+                f"whether {name} exists on this machine is unknown, not answered",
+            )
         try:
             result = subprocess.run(
                 [rustup, "toolchain", "list"], capture_output=True, text=True, timeout=120
             )
-        except (OSError, subprocess.SubprocessError):
-            return Found("absent", detail="rustup could not list toolchains")
+        except (OSError, subprocess.SubprocessError) as error:
+            return Found("undecidable", detail=f"rustup could not list toolchains: {error}")
+        if result.returncode != 0:
+            return Found(
+                "undecidable",
+                detail=f"rustup toolchain list exited {result.returncode}; the listing failed, "
+                "which is not evidence that the toolchain is absent",
+            )
         for line in result.stdout.splitlines():
             if line.split()[0].startswith(name) if line.split() else False:
                 return Found("present", line.split()[0])
@@ -223,9 +292,15 @@ def locate(tool: dict) -> Found:
         candidate = expand(tool["path"])
         return Found("present", candidate) if Path(candidate).is_file() else Found("absent")
     if kind == "container-image":
-        return Found("present", name, "cached locally") if _image_present(name) else Found("absent")
+        return _image_status(name)
     if kind == "node-root":
-        problems = _node_root_missing(name)
+        try:
+            problems = _node_root_missing(name)
+        except Exception as error:  # noqa: BLE001 - any failure here means we did not look
+            return Found(
+                "undecidable",
+                detail=f"the Node dependency checker could not answer for {name}: {error}",
+            )
         if problems:
             return Found("absent", detail=problems[0])
         return Found("present", str(ROOT / name) if name != "." else str(ROOT), "installed")
@@ -295,10 +370,16 @@ def describe(tool: dict) -> str:
 
 def command_report(manifest: dict) -> int:
     absent_required: list[str] = []
+    undecided: list[str] = []
     print(f"{'TOOL':<44} {'STATUS':<9} {'HOW IT IS FOUND':<16} GATES / EFFECT")
     for tool in manifest["tools"]:
         found = locate(tool)
-        status = {"present": "present", "builtin": "builtin", "absent": "ABSENT"}[found.status]
+        status = {
+            "present": "present",
+            "builtin": "builtin",
+            "absent": "ABSENT",
+            "undecidable": "UNDECIDED",
+        }[found.status]
         gates = " ".join(tool["gates"])
         print(f"{tool['name']:<44} {status:<9} {tool['locate']:<16} {gates}")
         if found.usable:
@@ -312,14 +393,20 @@ def command_report(manifest: dict) -> int:
         if found.detail:
             print(f"{'':<44} {'':<9} -- {found.detail}")
         print(f"{'':<44} {'':<9} -> install: {tool['install']}")
-        if tool["requirement"] == "required":
+        if found.undecidable:
+            undecided.append(f"{tool['name']} ({gates})")
+        elif tool["requirement"] == "required":
             absent_required.append(f"{tool['name']} ({gates})")
     print()
+    if undecided:
+        print(f"{len(undecided)} tool(s) could not be decided; their gates must not start:")
+        for entry in undecided:
+            print(f"  - {entry}")
     if absent_required:
         print(f"{len(absent_required)} required tool(s) absent; their gates cannot run:")
         for entry in absent_required:
             print(f"  - {entry}")
-    else:
+    if not undecided and not absent_required:
         print("every required tool of every gate is present on this machine.")
     return 0
 
@@ -330,6 +417,7 @@ def command_require(manifest: dict, gate: str) -> int:
         return 2
     missing: list[str] = []
     drifted: list[str] = []
+    undecided: list[str] = []
     notes: list[str] = []
     for tool in tools_for(manifest, gate):
         found = locate(tool)
@@ -339,6 +427,18 @@ def command_require(manifest: dict, gate: str) -> int:
                 drifted.append(problem)
             elif problem:
                 notes.append(f"warning: {problem}")
+            continue
+        if found.undecidable:
+            # The requirement level does not matter here. "Optional" buys a skip
+            # when the tool is known to be absent; it buys nothing when the probe
+            # failed, because then nobody knows what would have been skipped.
+            undecided.append(
+                f"undecidable tool for the {gate} gate: {tool['name']}"
+                f"\n    the probe did not answer: {found.detail or 'no detail was recorded'}"
+                f"\n    located by: {tool['locate']}"
+                f"\n    this is not an absent tool and must not become a skip; fix the probe's"
+                f"\n    environment (a stopped daemon, a missing lister) and re-run"
+            )
             continue
         if tool["requirement"] == "required":
             detail = f" ({found.detail})" if found.detail else ""
@@ -361,9 +461,11 @@ def command_require(manifest: dict, gate: str) -> int:
         print(note)
     for problem in drifted:
         print(f"ERROR: {problem}", file=sys.stderr)
+    for problem in undecided:
+        print(f"ERROR: {problem}", file=sys.stderr)
     for problem in missing:
         print(f"ERROR: {problem}", file=sys.stderr)
-    if missing or drifted:
+    if missing or drifted or undecided:
         print(
             f"the {gate} gate did not start: scripts/ci/doctor.sh reports every tool",
             file=sys.stderr,
@@ -539,6 +641,83 @@ def _quiet(call) -> int:
         return call()
 
 
+
+def _third_outcome_problems() -> list[str]:
+    """M10/M11: present, absent and undecidable are three answers, not two.
+
+    Decision table over one container-image row, which is where the collapse was
+    live: `_image_present()` returned a bool, so a stopped daemon and an uncached
+    image produced the same answer.
+
+    | Rule | engine on PATH | inspect says                    | outcome     | require |
+    |------|----------------|---------------------------------|-------------|---------|
+    | I1   | yes            | exit 0                          | present     | starts  |
+    | I2   | yes            | "No such image"                 | absent      | skips   |
+    | I3   | yes            | "Cannot connect to the daemon"  | undecidable | refuses |
+    | I4   | no             | (nothing ran)                   | undecidable | refuses |
+
+    I2 is the only row a gate may skip on, and only when the row is optional:
+    the engine looked and said no. I3 and I4 refuse whatever the requirement
+    level, because nobody knows what the skip would have been skipping.
+    """
+
+    import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
+
+    problems: list[str] = []
+    original_path = os.environ.get("PATH", "")
+    engines = {
+        "present": '#!/bin/sh\nexit 0\n',
+        "absent": '#!/bin/sh\necho "Error: No such image: fixture:1" >&2\nexit 1\n',
+        "undecidable": (
+            '#!/bin/sh\necho "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" >&2\n'
+            "exit 1\n"
+        ),
+    }
+    row = {
+        "name": "fixture:1",
+        "locate": "container-image",
+        "requirement": "optional",
+        "skip": "the fixture substrate",
+        "install": "docker pull fixture:1",
+        "gates": ["postgres"],
+    }
+    manifest = {"tools": [row], "disk_minimums": [], "cleanup_suggestions": []}
+    with tempfile.TemporaryDirectory() as temporary:
+        for expected, body in engines.items():
+            home = Path(temporary) / expected
+            home.mkdir()
+            executable = home / "docker"
+            executable.write_text(body, encoding="utf-8")
+            executable.chmod(0o755)
+            os.environ["PATH"] = str(home)
+            try:
+                found = locate(row)
+                if found.status != expected:
+                    problems.append(
+                        f"M10 a container engine that reports {expected!r} was read as "
+                        f"{found.status!r}"
+                    )
+                started = _quiet(lambda: command_require(manifest, "postgres")) == 0
+                # An optional row may buy a skip only on a decided absence.
+                if started != (expected in ("present", "absent")):
+                    problems.append(
+                        f"M11 an {expected} probe {'started' if started else 'refused'} the gate"
+                    )
+            finally:
+                os.environ["PATH"] = original_path
+        empty = Path(temporary) / "empty"
+        empty.mkdir()
+        os.environ["PATH"] = str(empty)
+        try:
+            if locate(row).status != "undecidable":
+                problems.append("M10 no container engine at all was read as a decided absence")
+            if _quiet(lambda: command_require(manifest, "postgres")) == 0:
+                problems.append("M11 a gate started with nothing able to answer for its substrate")
+        finally:
+            os.environ["PATH"] = original_path
+    return problems
+
+
 def self_test() -> int:
     """Prove the manifest against this machine.
 
@@ -553,6 +732,8 @@ def self_test() -> int:
     | M7   | a tiny disk threshold / a huge one                  | accept / refuse by name        |
     | M8   | a solver absent here                               | reports a skip, never a proof failure |
     | M9   | a version pin naming an owning shell constant      | both copies say the same thing |
+    | M10  | a probe that answered / that could not answer      | absent / undecidable, never confused |
+    | M11  | an undecidable probe                               | refuses the gate, never skips it |
     """
 
     manifest = load()
@@ -652,6 +833,8 @@ def self_test() -> int:
     if _quiet(lambda: command_solver_status(manifest, "no-such-solver")) != SOLVER_REFUSED:
         problems.append("M8 an undeclared solver was admitted instead of refused")
 
+    problems.extend(_third_outcome_problems())
+
     if problems:
         print("gate_tools self-test:", file=sys.stderr)
         for problem in problems:
@@ -665,7 +848,7 @@ def self_test() -> int:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(add_help=True, description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, add_help=True, description=__doc__)
     parser.add_argument("action", nargs="?", default="report")
     parser.add_argument("name", nargs="?")
     parser.add_argument("--gate")

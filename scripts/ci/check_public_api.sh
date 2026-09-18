@@ -12,9 +12,16 @@
 #   scripts/ci/check_public_api.sh          # check; fails on drift
 #   scripts/ci/check_public_api.sh --bless   # accept current surface as the snapshot
 #
-# Requires cargo-public-api (which uses a nightly rustdoc). Local checks may
-# explicitly observe a missing-tool skip; the release gate passes
-# ``--require-tools`` and fails closed.
+# Requires cargo-public-api (which uses a nightly rustdoc).
+#
+# Tool admission is fail-closed BY DEFAULT. It used to be fail-open: three
+# `exit 0` paths (tool absent, wrong tool version, nightly absent) reported
+# success, and only the one caller that remembered `--require-tools` demanded
+# otherwise. So the gate could report "public API" green having compared zero
+# crates, on a machine where nothing could compare any. A caller who genuinely
+# wants that has to say so now, with `--allow-absent-tools`, and gets a line
+# saying what the run did not check. `--require-tools` is retained because the
+# release manifest names it; it is the default and therefore a no-op.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
@@ -28,41 +35,63 @@ readonly PUBLIC_API_TOOL_VERSION="0.52.0"
 readonly PUBLIC_API_NIGHTLY="nightly-2026-07-14"
 
 bless=0
-require_tools=0
+require_tools=1
 for argument in "$@"; do
   case "$argument" in
     --bless) bless=1 ;;
     --require-tools) require_tools=1 ;;
-    *) echo "usage: scripts/ci/check_public_api.sh [--bless] [--require-tools]" >&2; exit 2 ;;
+    --allow-absent-tools) require_tools=0 ;;
+    *)
+      echo "usage: scripts/ci/check_public_api.sh [--bless] [--require-tools|--allow-absent-tools]" >&2
+      exit 2
+      ;;
   esac
 done
 
-if ! command -v cargo-public-api >/dev/null 2>&1; then
+# A probe has three outcomes, not two. "absent" is a fact about this machine and
+# a caller may choose to accept it; "undecidable" is a fact about the probe --
+# the tool is here but would not say what it is -- and no caller may accept
+# that, because it is not evidence of anything. Both are refusals by default.
+absent_tool() {  # absent_tool <what> <how to get it>
   if [ "$require_tools" -eq 1 ]; then
-    echo "cargo-public-api is required by the release gate" >&2
+    echo "$1 is required by this gate; pass --allow-absent-tools to accept an unchecked run" >&2
+    echo "    install: $2" >&2
     exit 1
   fi
-  echo "cargo-public-api not installed; skipping public API check (cargo install --locked cargo-public-api --version $PUBLIC_API_TOOL_VERSION)"
+  echo "SKIPPED: $1 is absent, so NO crate's public API was compared ($2)"
   exit 0
+}
+undecidable_tool() {  # undecidable_tool <what could not be decided>
+  echo "the public API gate could not decide its own tooling: $1" >&2
+  echo "    this is not an absent tool and --allow-absent-tools does not cover it;" >&2
+  echo "    a probe that will not answer is not evidence that anything was checked." >&2
+  exit 1
+}
+
+if ! command -v cargo-public-api >/dev/null 2>&1; then
+  absent_tool "cargo-public-api" \
+    "cargo install --locked cargo-public-api --version $PUBLIC_API_TOOL_VERSION"
 fi
 
-installed_public_api_version="$(cargo public-api --version 2>/dev/null | awk '{print $2}')"
+# The installed tool is here, so its version is a question it must answer. A
+# query that fails, or prints something this cannot parse, leaves the pinned
+# rendering undecided -- and the snapshots are an output of that exact version.
+if ! version_output="$(cargo public-api --version 2>&1)"; then
+  undecidable_tool "cargo public-api --version failed: $(printf '%s' "$version_output" | head -n 1)"
+fi
+installed_public_api_version="$(printf '%s\n' "$version_output" | awk '{print $2}' | head -n 1)"
+case "$installed_public_api_version" in
+  [0-9]*) ;;
+  *) undecidable_tool "cargo public-api --version printed no version: $(printf '%s' "$version_output" | head -n 1)" ;;
+esac
 if [ "$installed_public_api_version" != "$PUBLIC_API_TOOL_VERSION" ]; then
-  if [ "$require_tools" -eq 1 ]; then
-    echo "cargo-public-api $PUBLIC_API_TOOL_VERSION is required by the release gate; found ${installed_public_api_version:-unknown}" >&2
-    exit 1
-  fi
-  echo "cargo-public-api version mismatch; skipping public API check (expected $PUBLIC_API_TOOL_VERSION, found ${installed_public_api_version:-unknown})"
-  exit 0
+  absent_tool "cargo-public-api $PUBLIC_API_TOOL_VERSION (found $installed_public_api_version)" \
+    "cargo install --locked cargo-public-api --version $PUBLIC_API_TOOL_VERSION"
 fi
 
 if ! rustc +"$PUBLIC_API_NIGHTLY" --version >/dev/null 2>&1; then
-  if [ "$require_tools" -eq 1 ]; then
-    echo "$PUBLIC_API_NIGHTLY is required by the release gate" >&2
-    exit 1
-  fi
-  echo "$PUBLIC_API_NIGHTLY not installed; skipping public API check (rustup toolchain install $PUBLIC_API_NIGHTLY --profile minimal)"
-  exit 0
+  absent_tool "$PUBLIC_API_NIGHTLY" \
+    "rustup toolchain install $PUBLIC_API_NIGHTLY --profile minimal"
 fi
 
 if [ "$bless" = 1 ]; then
@@ -82,6 +111,7 @@ fail=0
 drifted=()      # crates whose surface changed
 compute_fail=0  # a crate whose surface could not be computed
 compare_fail=0  # a baseline whose comparison could not be observed
+compared=0      # crates whose surface was actually compared against a snapshot
 # Omit the compiler-derived impls (blanket, auto-trait, and auto-derived). These are
 # NOT part of the crate's authored surface and their rendering is NIGHTLY-VERSION
 # SENSITIVE (e.g. `impl UnsafeUnpin`, `impl Send/Sync/Unpin` blocks appear or vanish
@@ -110,6 +140,7 @@ for c in $crates; do
     drifted+=("$c")
     fail=1
   else
+    compared=$((compared + 1))
     if d=$(diff -u "$snap" <(printf '%s\n' "$cur")); then
       continue
     else
@@ -130,6 +161,20 @@ for c in $crates; do
   fi
 done
 
+# A run that compared nothing is not a passing run. The loop above can end with
+# fail=0 and an empty workspace, an empty crate list, or a `--bless` that only
+# wrote: none of those observed a surface, and all of them used to print the
+# same "snapshots match" line as a real comparison.
+if [ "$bless" = 0 ] && [ "$compared" -eq 0 ] && [ "$fail" -eq 0 ]; then
+  {
+    echo "❌ the public API gate compared 0 crates and would have reported success."
+    echo "   Workspace members enumerated: $(printf '%s\n' $crates | grep -c . || true)."
+    echo "   A gate that observed nothing has proved nothing; find out why the member"
+    echo "   list or the snapshot directory is empty before trusting this result."
+  } >&2
+  exit 1
+fi
+
 if [ "$fail" -ne 0 ]; then
   {
     echo ""
@@ -148,4 +193,8 @@ if [ "$fail" -ne 0 ]; then
   } >&2
   exit 1
 fi
-echo "✓ public API snapshots match"
+if [ "$bless" = 1 ]; then
+  echo "✓ public API snapshots blessed"
+else
+  echo "✓ public API snapshots match ($compared crates compared)"
+fi

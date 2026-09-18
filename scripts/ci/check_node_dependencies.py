@@ -22,6 +22,7 @@ is genuinely missing from a manifest.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -185,8 +186,8 @@ def selftest() -> None:
     print("check_node_dependencies self-test: the decision table and the advice hold")
 
 
-def main(argv: list[str]) -> int:
-    if "--self-test" in argv:
+def main(arguments: argparse.Namespace) -> int:
+    if arguments.self_test:
         selftest()
         return 0
     selftest()
@@ -199,5 +200,22 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for: that is how
+# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
+# and the self-test never once executed. ``allow_abbrev=False`` closes the
+# second half: without it ``--self-tes`` is also accepted, so the flag has no
+# single spelling.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_node_dependencies.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument(
+        "--self-test", action="store_true", help="run the decision table instead of the scan"
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main(parse(sys.argv[1:])))

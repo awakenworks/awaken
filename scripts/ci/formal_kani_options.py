@@ -239,6 +239,10 @@ def main() -> int:
             print(option)
         return 0
     except ValueError as error:
+        # Name the calling convention on every refusal. A helper that only says
+        # what it disliked leaves the caller guessing at the spelling, which is
+        # the same failure mode as accepting the wrong one.
+        print("usage: formal_kani_options.py PACKAGE SELECTION [SELECTION ...]", file=sys.stderr)
         print(f"formal Kani options: {error}", file=sys.stderr)
         return 2
 

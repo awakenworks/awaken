@@ -20,6 +20,7 @@ verifies the mechanical parts agents are likely to drift:
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
@@ -179,5 +180,20 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for: that is how
+# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
+# and the self-test never once executed. ``allow_abbrev=False`` closes the
+# second half: without it ``--self-tes`` is also accepted, so the flag has no
+# single spelling.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_wiki_okf.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument("paths", nargs="*", help="wiki Markdown files; empty rescans the wiki")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main(parse(sys.argv[1:]).paths))

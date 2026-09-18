@@ -35,6 +35,14 @@
 
 set -u
 
+
+# This runner takes no arguments. Accepting one silently is how a caller's
+# intent disappears into a run that answers a different question, and here it
+# is minutes of real cluster or server work; refuse before any of it.
+if [ "$#" -ne 0 ]; then
+  echo "usage: e2e/config_reload_e2e.sh" >&2
+  exit 2
+fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -217,6 +225,7 @@ pass "thread 'committed' survived the config-changing restart with exactly 1 rep
 # No run is lost across the upgrade: the in-flight run is driven exactly once.
 wait_for_assistants "$BASE_V2" inflight 1 "$RECOVERY_TIMEOUT"
 # Give any erroneous double-drive a window to also land, then assert it did NOT.
+# awaken-wait: a double-drive would commit a second reply, and only elapsed time can show that none arrived
 sleep 2
 n_inflight="$(assistant_count "$BASE_V2" inflight)"
 [ "$n_inflight" -eq 1 ] || fail "thread 'inflight' has $n_inflight replies (expected exactly 1: not lost, not double-driven)"
