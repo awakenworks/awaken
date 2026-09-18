@@ -23,6 +23,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+# `--open` was read once, at the very end of an instrumented coverage run, and
+# every other argument was discarded in silence. A caller who asked for
+# something this runner does not implement got a full run and no answer, which
+# is the same shape as a misspelled `--open`. Admit the one flag up front.
+case "${1:-}" in
+  ""|--open) ;;
+  *) echo "usage: scripts/ci/e2e-coverage.sh [--open]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: scripts/ci/e2e-coverage.sh [--open]" >&2
+  echo "       (unexpected extra arguments: ${*:2})" >&2
+  exit 2
+fi
+
 # Preserve only the two explicit live-suite inputs before the canonical
 # sanitizer removes every ambient provider API key from builds and hermetic
 # deterministic children. The opt-in real phase restores these values in its

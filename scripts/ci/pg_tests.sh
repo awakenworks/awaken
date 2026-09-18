@@ -30,6 +30,13 @@ PG_OPERATION_TIMEOUT_SECONDS="${AWAKEN_PG_OPERATION_TIMEOUT_SECONDS:-30}"
 PG_READY_TIMEOUT_SECONDS="${AWAKEN_PG_READY_TIMEOUT_SECONDS:-90}"
 PG_TEST_TIMEOUT_SECONDS="${AWAKEN_PG_TEST_TIMEOUT_SECONDS:-900}"
 PG_RECOVERY_TIMEOUT_SECONDS="${AWAKEN_PG_RECOVERY_TIMEOUT_SECONDS:-900}"
+# Per-command deadlines bound one command. They do not bound the gate: 47 Cargo
+# suites at 900s each is eleven hours of "still running", which is how a gate
+# once held CI for eight. The budget below is the whole gate's wall clock, and
+# it is checked before every stage rather than by a second timer, so the failure
+# names the stage that ran out instead of killing an unrelated child.
+PG_GATE_BUDGET_SECONDS="${AWAKEN_PG_GATE_BUDGET_SECONDS:-5400}"
+PG_GATE_STARTED=$SECONDS
 
 positive_seconds() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
@@ -42,8 +49,15 @@ pg_run_with_deadline() {
     echo "invalid PostgreSQL deadline for $stage: $seconds" >&2
     return 2
   }
+  local elapsed=$((SECONDS - PG_GATE_STARTED))
+  if [ "$elapsed" -ge "$PG_GATE_BUDGET_SECONDS" ]; then
+    echo "PostgreSQL gate exhausted its ${PG_GATE_BUDGET_SECONDS}s budget before $stage" >&2
+    echo "    (${elapsed}s elapsed; raise AWAKEN_PG_GATE_BUDGET_SECONDS only with a reason)" >&2
+    return 124
+  fi
   local started=$SECONDS
-  printf 'postgres stage=%s event=start budget_seconds=%s\n' "$stage" "$seconds" >&3
+  printf 'postgres stage=%s event=start budget_seconds=%s gate_elapsed_seconds=%s\n' \
+    "$stage" "$seconds" "$elapsed" >&3
   run_with_deadline "$seconds" "$@"
   local result=$?
   printf 'postgres stage=%s event=finish status=%s duration_seconds=%s\n' \
@@ -101,10 +115,39 @@ self_test() {
   # Gate-completeness rules: P9 every Cargo suite enters pg_test and therefore
   # has a per-command deadline; P10 the recovery drill has its independent
   # stage deadline. A bare command is a false-green/hang path, not compatibility.
-  if grep -Eq '^cargo test ' "$0"; then
+  # The old pattern was anchored at column zero and knew only `cargo test`, so
+  # an indented line, an environment prefix or `cargo nextest run` walked past
+  # it unbounded.
+  if grep -Eq '^[[:space:]]*(([A-Z][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)cargo[[:space:]]+(test|nextest[[:space:]]+run)\b' "$0"; then
     echo "Postgres gate contains an unbounded Cargo test" >&2
+    grep -nE '^[[:space:]]*(([A-Z][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)cargo[[:space:]]+(test|nextest[[:space:]]+run)\b' "$0" >&2
     return 1
   fi
+  # P14 the whole gate has a wall-clock budget, and a stage that starts after it
+  # is exhausted is refused rather than begun. Per-command deadlines alone let
+  # 47 suites take eleven hours while every single one stayed inside its bound.
+  # The stub must consume the deadline argument exactly as the real helper does.
+  # A stub that forwards it ran `1 bash -c ...`, got "command not found", and
+  # made this probe pass whether or not the budget was enforced -- the same
+  # shape of vacuous evidence this whole file exists to refuse.
+  (
+    PG_GATE_STARTED=$((SECONDS - PG_GATE_BUDGET_SECONDS - 1))
+    run_with_deadline() { local _seconds="$1"; shift; "$@"; }
+    ! pg_run_with_deadline exhausted 1 bash -c 'exit 0'
+  ) || {
+    echo "Postgres gate started a stage after its whole-gate budget was spent" >&2
+    return 1
+  }
+  # ... and the same stage inside the budget must still run, so the rule refuses
+  # an exhausted budget rather than refusing every stage.
+  (
+    PG_GATE_STARTED=$SECONDS
+    run_with_deadline() { local _seconds="$1"; shift; "$@"; }
+    pg_run_with_deadline within-budget 1 bash -c 'exit 0'
+  ) || {
+    echo "Postgres gate refused a stage that was inside its whole-gate budget" >&2
+    return 1
+  }
   grep -Fq 'pg_run_with_deadline recovery-drill "$PG_RECOVERY_TIMEOUT_SECONDS"' "$0" || {
     echo "Postgres recovery drill has no stage deadline" >&2
     return 1
@@ -239,7 +282,7 @@ case "${1:-}" in
 esac
 
 for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
-  "$PG_TEST_TIMEOUT_SECONDS" "$PG_RECOVERY_TIMEOUT_SECONDS"; do
+  "$PG_TEST_TIMEOUT_SECONDS" "$PG_RECOVERY_TIMEOUT_SECONDS" "$PG_GATE_BUDGET_SECONDS"; do
   positive_seconds "$deadline" || {
     echo "PostgreSQL deadlines must be positive integers" >&2
     exit 2

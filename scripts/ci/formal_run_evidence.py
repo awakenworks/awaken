@@ -245,7 +245,7 @@ def verify_artifacts(directory: Path, repository: Path) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("action", choices=("begin", "finish", "artifacts-begin", "artifacts-finish", "artifacts-verify"))
     parser.add_argument("--record", type=Path)
     parser.add_argument("--directory", type=Path)

@@ -589,7 +589,7 @@ def self_test() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--self-test", action="store_true", help="run the decision table")
     parser.add_argument("--report", action="store_true", help="print the per-crate measurement table")
     parser.add_argument("--write-baseline", action="store_true", help="record the current tree")

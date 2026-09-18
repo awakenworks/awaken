@@ -148,7 +148,7 @@ def load_classifications(valid_requirements: set[str]) -> dict[str, dict[str, ob
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--inventory-only",

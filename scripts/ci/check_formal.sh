@@ -20,12 +20,21 @@ awaken_append_repo_tools
 # VERIFICATION FAILED", and a full filesystem as a CBMC SIGABRT on a GOTO binary
 # that a short write truncated. scripts/ci/gate_tools.json declares both, and
 # owns the pinned versions this file also states as shell constants above.
-python3 scripts/ci/gate_tools.py require --gate formal
-python3 scripts/ci/gate_tools.py disk --stage formal
-
+# A misspelling here is the worst silent fall-through in this repository:
+# `--require-tool` left require_tools=0, so hours of proofs ran in permissive
+# mode and the release gate reported a green formal group it had never demanded
+# tools for. Admit exactly one spelling; refuse everything else before any
+# receipt is written.
 require_tools=0
-if [ "${1:-}" = "--require-tools" ]; then
-  require_tools=1
+case "${1:-}" in
+  "") ;;
+  --require-tools) require_tools=1 ;;
+  *) echo "usage: scripts/ci/check_formal.sh [--require-tools]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: scripts/ci/check_formal.sh [--require-tools]" >&2
+  echo "       (unexpected extra arguments: ${*:2})" >&2
+  exit 2
 fi
 
 # One invocation replaces any previous receipt with Running before executing.
@@ -112,6 +121,13 @@ kani_solver_tools="$(scripts/ci/bootstrap_kani.sh --solver-tools)"
 if [ -d "$kani_solver_tools" ] && [[ ":$PATH:" != *":$kani_solver_tools:"* ]]; then
   export PATH="$PATH:$kani_solver_tools"
 fi
+
+# Declared-environment preflight. It runs here, not at the top of the file:
+# argument validation above must fail without side effects, and tool selection
+# must stay the first physical step inside the receipt/EXIT lifecycle, so a
+# preflight failure retires a stale Passed like any other gate failure.
+python3 scripts/ci/gate_tools.py require --gate formal
+python3 scripts/ci/gate_tools.py disk --stage formal
 
 rust_trace_dir="$formal_artifact_dir/rust-traces"
 rendered_trace_dir="$formal_artifact_dir/rendered-traces"

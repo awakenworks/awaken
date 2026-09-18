@@ -1215,7 +1215,7 @@ def self_test() -> list[str]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     emit = subparsers.add_parser("emit", help="write one canonical release predicate")

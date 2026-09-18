@@ -7,6 +7,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 source "$REPO_ROOT/e2e/k3d/harness.sh"
+
 CLUSTER="${AWAKEN_K3D_CLUSTER:-awaken-adr71}"
 # Validate before tool admission and registration of destructive cleanup.
 k3d_validate_name "$CLUSTER" || exit 2
@@ -33,6 +34,21 @@ NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"
 export CARGO_CACHE_AUTOCLEAN=0
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
+
+# Placed below log(), which is exactly where distributed_control_contract_test.sh
+# stops evaluating this file's prefix: a guard above that line would inspect the
+# contract test's own positional instead of this runner's arguments.
+# --self-test is the only argument; anything else used to fall through to a real
+# five-role k3d rollout, which is minutes of cluster build for a run the caller
+# did not ask for. Refuse before the cluster name is even validated.
+case "${1:-}" in
+  ""|--self-test) ;;
+  *) echo "usage: e2e/k3d/distributed_control_e2e.sh [--self-test]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: e2e/k3d/distributed_control_e2e.sh [--self-test]" >&2
+  exit 2
+fi
 ok() { echo -e "\033[1;32m$*\033[0m"; }
 err() { echo -e "\033[1;31m$*\033[0m"; }
 
@@ -65,6 +81,12 @@ if [[ "${1:-}" = "--self-test" ]]; then
     fi
   done
   ok "role rollout failures propagate at every position"
+  # The deployment contract test is hermetic (it stubs docker/k3d/kubectl and
+  # evaluates this file's own initialization prefix), and formal/coverage.json
+  # names it as the evidence for the realization-scope requirement. Evidence a
+  # lane never runs is a claim nobody earned, so it runs here, beside the rollout
+  # table, in the same self-test check-all.sh already selects.
+  bash "$REPO_ROOT/e2e/k3d/distributed_control_contract_test.sh" || exit "$?"
   exit 0
 fi
 

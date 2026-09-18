@@ -189,6 +189,24 @@ def current_inputs() -> tuple[dict[str, object], str, set[str], dict[str, str]]:
     )
 
 
+# Stub cargo variants for the tool-query decision table: every other
+# subcommand must still succeed, so the gate reaches the query it is about.
+QUERY_FAILS_CARGO = """#!/usr/bin/env bash
+case "$*" in
+  "install --list") exit 3 ;;
+  *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
+    echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
+esac
+"""
+PARTIAL_LIST_CARGO = """#!/usr/bin/env bash
+case "$*" in
+  "install --list") echo 'cargo-mutants 1' ;;
+  *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
+    echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
+esac
+"""
+
+
 class ReliabilityCheckerTests(unittest.TestCase):
     def test_mutant_receipts_require_executed_tests_and_complete_coverage(self) -> None:
         # M1 complete nonempty batch + passing baseline + assertion failure for
@@ -287,6 +305,54 @@ esac
                 if case == "blocked":
                     self.assertEqual(output.read_text(), "owned file must remain unchanged")
 
+    def test_a_failed_tool_query_is_not_reported_as_a_missing_tool(self) -> None:
+        """Q1 the listing command fails; Q2 it succeeds but omits the tool.
+
+        Both used to read "cargo-fuzz is required": the listing was piped
+        straight into grep, so a pipeline that could not run at all (a failed
+        fork under load) accused an installed tool of being absent, and the
+        gate's verdict depended on machine load rather than on the machine.
+        """
+
+        for case, listing, expected in (
+            ("query-fails", QUERY_FAILS_CARGO, "could not list installed cargo tools"),
+            ("tool-absent", PARTIAL_LIST_CARGO, "cargo-fuzz is required"),
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                scripts = root / "scripts/ci"
+                scripts.mkdir(parents=True)
+                (root / "fuzz").mkdir()
+                for name in ("check-reliability.sh", "_cargo_target.sh", "_provider_environment.sh"):
+                    shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
+                binary = root / "bin"
+                binary.mkdir()
+                for name, body in {
+                    "cargo": listing,
+                    "python3": "#!/bin/sh\nexit 0\n",
+                    "rustup": "#!/bin/sh\necho nightly-test\n",
+                    "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n",
+                }.items():
+                    tool = binary / name
+                    tool.write_text(body)
+                    tool.chmod(0o755)
+                env = dict(
+                    os.environ,
+                    PATH=f"{binary}:{os.environ['PATH']}",
+                    CARGO_TARGET_DIR=str(root / "target"),
+                    AWAKEN_RELIABILITY_EVIDENCE_DIR=str(root / "evidence"),
+                    CALL_LOG=str(root / "calls"),
+                )
+                result = subprocess.run(
+                    ["bash", str(scripts / "check-reliability.sh"), "--require-tools"],
+                    env=env, capture_output=True, text=True, timeout=60,
+                )
+                self.assertNotEqual(result.returncode, 0, case)
+                self.assertIn(expected, result.stderr, case)
+                if case == "query-fails":
+                    self.assertNotIn("is required by the release reliability gate", result.stderr,
+                                     "Q1 a failed query must never accuse a tool")
+
     def test_tsan_requires_one_executed_passing_workload(self) -> None:
         # Cause/effect table: T1 exact target executes and passes => accept;
         # T2 renamed/filter-missed target executes zero => reject; T3 ignored,
@@ -349,7 +415,7 @@ esac
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--tsan-log", type=Path)
     parser.add_argument("--mutants", type=Path)

@@ -461,7 +461,7 @@ def check_staged(paths: list[str]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "--require-complete",
         action="store_true",

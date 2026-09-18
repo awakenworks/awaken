@@ -25,9 +25,15 @@ R3  No recovery-path file collapses an observation at the call site: an awaited
     checkpoint read, or an `Observed` expression, is consumed by `match`, never
     by ``.ok()`` / ``.unwrap_or_default()`` / ``.flatten()`` and friends.
 
-The allow-list below is deliberately short and named file by file: it is every
-file that produces or consumes a checkpoint observation. A file that starts
-reading checkpoints belongs in it.
+The corpus is *derived*, not listed. A hand-listed recovery path is a guard
+narrower than its subject: the nine files named here when the rule was written
+had already become thirty-one, and every file that had started reading
+checkpoints in between -- `awaken-dispatch/src/durable.rs`,
+`awaken-dispatch/src/worker.rs`, `awaken-session-executor/src/host/session/run_ingress.rs`
+among them -- was outside the scan while looking exactly like it was inside it.
+So the recovery path is now *every production Rust module that names
+`StreamCheckpoint` or `Observed`*: a file joins the rule by doing the thing the
+rule is about.
 """
 
 from __future__ import annotations
@@ -38,7 +44,18 @@ import sys
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _crate_boundary_workspace  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
+
+# This checker walks the workspace's production Rust and its own module, so its
+# lefthook trigger is rendered from exactly that set.
+INPUT_GLOBS: tuple[str, ...] = (
+    "crates/*/*/src/**/*.rs",
+    "crates/*/*/Cargo.toml",
+    "scripts/ci/_crate_boundary_workspace.py",
+)
 
 # Where the tri-state itself is defined. R1 is enforced here.
 OBSERVATION = "crates/contract/awaken-agent-contract/src/observation.rs"
@@ -46,20 +63,9 @@ OBSERVATION = "crates/contract/awaken-agent-contract/src/observation.rs"
 # The port whose read must stay tri-state. R2 is enforced here.
 PORT = "crates/contract/awaken-agent-contract/src/stream/checkpoint.rs"
 
-# Every file that produces or consumes a checkpoint observation: the port, its
-# backends, the adapters between them, and the runtime that acts on the answer.
-# R2 and R3 are enforced across all of them.
-RECOVERY_PATH = (
-    OBSERVATION,
-    PORT,
-    "crates/runtime/awaken-runtime/src/engine/model_operation.rs",
-    "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
-    "crates/runtime/awaken-store-inmem/src/lib.rs",
-    "crates/stores/awaken-store-fs/src/lib.rs",
-    "crates/server/awaken-dispatch/src/fenced_checkpoint.rs",
-    "crates/server/awaken-dispatch/src/postgres_checkpoint.rs",
-    "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-)
+# What puts a file on the recovery path: it names the observed value or the
+# tri-state that carries it. R2 and R3 are enforced across every such file.
+ON_THE_RECOVERY_PATH = re.compile(r"\bStreamCheckpoint\b|\bObserved\s*[<:]")
 
 # Methods that turn three outcomes into two. `Observed` defines none of them, so
 # a hit is either a newly added escape hatch or a revert to `Result<Option<_>>`.
@@ -98,6 +104,36 @@ ESCAPE_HATCHES = (
 
 # The old shape, in any declaration on the recovery path.
 OLD_SHAPE = re.compile(r"Result\s*<\s*Option\s*<\s*StreamCheckpoint\b")
+
+# Widening the corpus from nine hand-listed files to every file that reads a
+# checkpoint surfaced one shape the nine never showed: the *dispatch transport*,
+# which carries a checkpoint across a process boundary and whose error is a
+# transport error, not an observation. It keeps `Result<Option<_>>` on purpose,
+# and `FencedStreamCheckpointStore::get` turns it into the tri-state at exactly
+# one place. That is a decision, so it is written down -- and checked: each entry
+# names the file that performs the translation, and an entry whose translator
+# stopped translating, or whose file no longer carries the shape, fails here.
+TRANSLATED_TRANSPORT = {
+    "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs": (
+        "the DispatchQueue transport declares the remote checkpoint operations; its "
+        "Err is 'the transport failed', which is ignorance, and the translation below "
+        "is the only place that decides what that means"
+    ),
+    "crates/server/awaken-dispatch/src/any.rs": (
+        "the enum dispatcher forwards the transport declaration verbatim to whichever "
+        "backend is configured; changing the shape here would fork the transport port"
+    ),
+    "crates/server/awaken-coordinator-client/src/dispatch_client.rs": (
+        "the HTTP client implements that same transport declaration; its Err is an "
+        "HTTP failure, which the single translation turns into Unknown(Storage)"
+    ),
+}
+# The one place the transport's Result becomes an observation.
+TRANSLATOR = "crates/server/awaken-dispatch/src/fenced_checkpoint.rs"
+TRANSLATION = re.compile(
+    r"load_stream_checkpoint[\s\S]{0,400}?Ok\(None\)\s*=>\s*Observed::Absent[\s\S]{0,200}?"
+    r"Err\([^)]*\)\s*=>\s*Observed::Unknown"
+)
 
 # The declaration the port must keep.
 TRI_STATE_READ = re.compile(
@@ -217,11 +253,15 @@ def validation_errors(sources: dict[str, str]) -> list[str]:
     """Every rule violation in the given `path -> text` recovery-path corpus."""
     errors: list[str] = []
 
-    missing = [path for path in RECOVERY_PATH if path not in sources]
+    # The derivation cannot pass vacuously: the tri-state and its port are the
+    # two files the rule is *about*, so their absence is a moved definition, not
+    # a clean repository.
+    missing = [path for path in (OBSERVATION, PORT) if path not in sources]
     if missing:
         errors.append(
-            "recovery-path files are missing; update RECOVERY_PATH when code "
-            "moves: " + ", ".join(sorted(missing))
+            "the observation definition and its checkpoint port must be on the "
+            "derived recovery path; they are not, so the type moved and the scan "
+            "is looking at nothing: " + ", ".join(sorted(missing))
         )
 
     observation = strip_rust(sources.get(OBSERVATION, ""))
@@ -242,10 +282,29 @@ def validation_errors(sources: dict[str, str]) -> list[str]:
             "a Result/Option read lets a caller manufacture absence."
         )
 
-    for path in RECOVERY_PATH:
-        text = strip_rust(sources.get(path, ""))
+    # The registered transport declarations are only admitted while the single
+    # translation that justifies them is still there, and while each registered
+    # file still carries the shape it was registered for.
+    translator = strip_rust(sources.get(TRANSLATOR, ""))
+    if TRANSLATED_TRANSPORT and not TRANSLATION.search(translator):
+        errors.append(
+            f"{TRANSLATOR}: the dispatch transport is allowed to keep "
+            "Result<Option<StreamCheckpoint>> only because this file turns it into "
+            "Present/Absent/Unknown in one match. That translation is gone, so the "
+            "registered transport declarations are now an unguarded fail-open."
+        )
+    for path in sorted(TRANSLATED_TRANSPORT):
+        if path not in sources or not OLD_SHAPE.search(strip_rust(sources[path])):
+            errors.append(
+                f"{path} is registered as a transport declaration that keeps "
+                "Result<Option<StreamCheckpoint>>, but no longer carries it; drop the "
+                "stale entry so the exception does not outlive its reason"
+            )
+
+    for path in sorted(sources):
+        text = strip_rust(sources[path])
         hit = OLD_SHAPE.search(text)
-        if hit:
+        if hit and path not in TRANSLATED_TRANSPORT:
             errors.append(
                 f"{path}:{line_of(text, hit.start())}: a checkpoint read may not "
                 "return Result<Option<StreamCheckpoint>, _>; return "
@@ -263,21 +322,126 @@ def validation_errors(sources: dict[str, str]) -> list[str]:
 
 
 def current_sources(root: Path) -> dict[str, str]:
-    return {
-        path: (root / path).read_text(encoding="utf-8")
-        for path in RECOVERY_PATH
-        if (root / path).is_file()
-    }
+    """The derived recovery path: production modules that name the observation.
+
+    Reachability from the Cargo roots decides which modules are production, and
+    the `cfg(test) == false` projection then blanks inline test items, so a
+    `.unwrap()` written in a test fixture is not read as a collapsed recovery.
+    """
+
+    crates = root / "crates"
+    # Candidates first, from the raw text: a file that never spells the value or
+    # the tri-state cannot be on the path however it is projected. Module
+    # reachability is then computed only for the crates those candidates live
+    # in -- it is a per-crate walk from that crate's own Cargo roots, so the
+    # answer for a candidate is the same either way, and the check stays fast
+    # enough to run on every commit rather than only in the nightly gate.
+    candidates = [
+        path
+        for path in sorted(crates.glob("*/*/src/**/*.rs"))
+        if ON_THE_RECOVERY_PATH.search(path.read_text(encoding="utf-8", errors="ignore"))
+    ]
+    manifests = sorted({
+        crates / path.relative_to(crates).parts[0] / path.relative_to(crates).parts[1]
+        / "Cargo.toml"
+        for path in candidates
+    })
+    reachable = _crate_boundary_workspace.production_module_files(manifests)
+    found: dict[str, str] = {}
+    for path in candidates:
+        if path.resolve() not in reachable:
+            continue
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+        if ON_THE_RECOVERY_PATH.search(production):
+            found[path.relative_to(root).as_posix()] = production
+    return found
+
+
+def _probe_file(sources: dict[str, str]) -> str:
+    """A consumer on the derived path, i.e. not the tri-state or its port."""
+
+    return next(path for path in sorted(sources) if path not in (OBSERVATION, PORT))
 
 
 class ObservationCollapseTests(unittest.TestCase):
-    """Each rule must fail on a deliberately broken copy of the real corpus."""
+    """Each rule must fail on a deliberately broken copy of the real corpus.
+
+    Decision table, the derivation included:
+
+    | Rule | Cause                                                     | Effect |
+    |------|-----------------------------------------------------------|--------|
+    | R0   | the repository as it stands                                | accept |
+    | R0b  | an empty corpus (the definition moved)                     | reject |
+    | R1   | any escape hatch added to the tri-state                    | reject |
+    | R2   | the port reverted to `Result<Option<_>>`                   | reject |
+    | R3   | a call site collapsing an observation                      | reject |
+    | R3b  | the same text inside a comment or a string literal         | accept |
+    | R4   | a file that names a checkpoint is on the derived path      | in scope |
+    | R5   | a file that names neither is not                           | out of scope |
+    | R6   | a test-only module naming one                              | out of scope |
+    | R7   | a registered transport declaration keeping the old shape   | accept |
+    | R8   | the same, once its single translation is gone              | reject |
+    | R9   | a registered file that no longer carries the shape         | reject |
+    """
+
+    # The derivation walks the whole workspace, so it runs once for the class
+    # rather than once per probe; each probe copies the dict before breaking it.
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.derived = current_sources(ROOT)
 
     def setUp(self) -> None:
-        self.sources = current_sources(ROOT)
+        self.sources = dict(self.derived)
 
     def test_repository_is_clean(self) -> None:
         self.assertEqual(validation_errors(self.sources), [], "R0")
+
+    def test_the_derivation_covers_what_the_hand_list_missed(self) -> None:
+        # R4: membership is "this file reads a checkpoint", so the files that
+        # started doing so after the hand-written tuple was frozen are in scope.
+        for path in (
+            "crates/runtime/awaken-runtime/src/engine/resume.rs",
+            "crates/runtime/awaken-runtime/src/engine/inference.rs",
+            "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
+            "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+        ):
+            self.assertIn(path, self.sources, "R4")
+
+    def test_the_derivation_excludes_what_does_not_read_a_checkpoint(self) -> None:
+        # R5/R6: a file that names neither the value nor the tri-state is not on
+        # the path, and neither is one that only names it from a test module.
+        self.assertNotIn("crates/contract/awaken-agent-contract/src/lib.rs", self.sources, "R5")
+        for path in self.sources:
+            self.assertNotIn("/tests/", path, "R6")
+        self.assertTrue(
+            all(ON_THE_RECOVERY_PATH.search(text) for text in self.sources.values()), "R4"
+        )
+
+    def test_a_registered_transport_declaration_is_admitted(self) -> None:
+        # R7: the registry is not empty and the repository passes with it, so the
+        # exception is doing work rather than describing nothing.
+        self.assertTrue(TRANSLATED_TRANSPORT, "R7")
+        for path in TRANSLATED_TRANSPORT:
+            self.assertIn(path, self.sources, "R7")
+            self.assertTrue(OLD_SHAPE.search(strip_rust(self.sources[path])), "R7")
+
+    def test_losing_the_single_translation_revokes_the_exception(self) -> None:
+        # R8: the transport may keep `Result<Option<_>>` only while exactly one
+        # place turns it into the tri-state. Remove that and the exception dies.
+        broken = dict(self.sources)
+        broken[TRANSLATOR] = broken[TRANSLATOR].replace(
+            "Ok(None) => Observed::Absent,", "Ok(None) => Observed::Absent, // moved"
+        ).replace("Err(error) => Observed::Unknown", "Err(_error) => panic!")
+        self.assertTrue(validation_errors(broken), "R8")
+
+    def test_a_registered_file_that_dropped_the_shape_fails(self) -> None:
+        # R9: an exception that outlived its reason is itself a defect.
+        path = sorted(TRANSLATED_TRANSPORT)[0]
+        broken = dict(self.sources)
+        broken[path] = broken[path].replace("Result<Option<StreamCheckpoint>", "Observed<StreamCheckpoint")
+        self.assertTrue(validation_errors(broken), "R9")
 
     def test_escape_hatch_on_the_tri_state_fails(self) -> None:
         # R1: adding any way out of Unknown other than `match` is rejected.
@@ -318,14 +482,14 @@ class ObservationCollapseTests(unittest.TestCase):
             "let partial = Observed::Absent.unwrap_or_else(|| fresh());",
         ):
             broken = dict(self.sources)
-            broken[RECOVERY_PATH[2]] = broken[RECOVERY_PATH[2]] + "\n" + injected
+            broken[_probe_file(self.sources)] = broken[_probe_file(self.sources)] + "\n" + injected
             self.assertTrue(validation_errors(broken), f"R3: {injected}")
 
     def test_a_collapse_inside_a_comment_or_string_is_not_a_violation(self) -> None:
         # R3: prose and SQL text are not code; the check must not false-positive.
         clean = dict(self.sources)
-        clean[RECOVERY_PATH[2]] = (
-            clean[RECOVERY_PATH[2]]
+        clean[_probe_file(self.sources)] = (
+            clean[_probe_file(self.sources)]
             + '\n// never write checkpoints.get(id).await.ok().flatten()\n'
             + 'const SQL: &str = "get(x).await.unwrap_or_default()";\n'
         )
@@ -337,7 +501,7 @@ class ObservationCollapseTests(unittest.TestCase):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
@@ -357,8 +521,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     print(
-        f"OK - {len(RECOVERY_PATH)} recovery-path files keep observations "
-        "tri-state and uncollapsed."
+        f"OK - {len(current_sources(args.root))} derived recovery-path files keep "
+        "observations tri-state and uncollapsed."
     )
     return 0
 

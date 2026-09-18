@@ -582,7 +582,7 @@ class MutationOracleTests(unittest.TestCase):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     # One registry owns both accepted CLI flags and their execution handlers.
     model_checks = {
         "worker-registration-model-mutants": check_worker_registration_model_mutants,

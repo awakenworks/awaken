@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
+# This runner takes no arguments. Accepting one silently is how a caller's
+# intent disappears into a run that answers a different question, and here it
+# is minutes of real cluster or server work; refuse before any of it.
+if [ "$#" -ne 0 ]; then
+  echo "usage: e2e/k3d/product_backend_contract_test.sh" >&2
+  exit 2
+fi
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OVERLAY="$REPO_ROOT/deploy/k3d/product-backend"
 source "$REPO_ROOT/e2e/k3d/harness.sh"

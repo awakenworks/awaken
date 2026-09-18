@@ -1,5 +1,8 @@
-//! Real-Postgres e2e for `PgNotifyWake` (B-P2). Gated on `AWAKEN_TEST_PG_URL` —
-//! skips cleanly when no database is provided, runs against a live one in CI/local.
+//! Real-Postgres e2e for `PgNotifyWake` (B-P2). Gated on `AWAKEN_TEST_DATABASE_URL`,
+//! which is the one spelling `scripts/ci/pg_tests.sh` exports. It read
+//! `AWAKEN_TEST_PG_URL` instead, so the gate set one variable and this file read
+//! another: it printed `skip:` on every run this repository has ever made, and the
+//! Postgres gate stayed green having never once reached this code.
 
 use std::time::Duration;
 
@@ -7,7 +10,7 @@ use awaken_dispatch::{PgNotifyWake, WakeSignal};
 use sqlx::postgres::PgPoolOptions;
 
 fn pg_url() -> Option<String> {
-    std::env::var("AWAKEN_TEST_PG_URL").ok()
+    std::env::var("AWAKEN_TEST_DATABASE_URL").ok()
 }
 
 /// Every backend whose last statement was this channel's LISTEN.
@@ -68,7 +71,7 @@ async fn wait_for_listener(observer: &sqlx::PgPool, channel: &str, excluded: &[i
 #[tokio::test]
 async fn publish_wakes_a_waiter_on_another_connection() {
     let Some(url) = pg_url() else {
-        eprintln!("skip: AWAKEN_TEST_PG_URL unset");
+        eprintln!("skip: AWAKEN_TEST_DATABASE_URL unset");
         return;
     };
     let pool = PgPoolOptions::new()
@@ -101,7 +104,7 @@ async fn publish_wakes_a_waiter_on_another_connection() {
 #[tokio::test]
 async fn publish_is_ok_with_no_waiter() {
     let Some(url) = pg_url() else {
-        eprintln!("skip: AWAKEN_TEST_PG_URL unset");
+        eprintln!("skip: AWAKEN_TEST_DATABASE_URL unset");
         return;
     };
     let pool = PgPoolOptions::new()
@@ -122,7 +125,7 @@ async fn publish_is_ok_with_no_waiter() {
 #[tokio::test]
 async fn listener_reconnects_after_its_connection_is_dropped() {
     let Some(url) = pg_url() else {
-        eprintln!("skip: AWAKEN_TEST_PG_URL unset");
+        eprintln!("skip: AWAKEN_TEST_DATABASE_URL unset");
         return;
     };
     let pool = PgPoolOptions::new()

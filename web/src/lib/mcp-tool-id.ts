@@ -48,3 +48,23 @@ export function mcpToolNamespace(serverName: string): string | null {
   if (serverName === "") return null;
   return `mcp__${encodeMcpComponent(serverName)}__`;
 }
+
+/** Does `target` sit in the MCP namespace at all? */
+export function hasMcpToolNamespace(target: string): boolean {
+  return target.startsWith("mcp__");
+}
+
+/** Is `target` a complete `mcp__<server>__<tool>` id, both halves present?
+ *
+ * MCP tool ids are dynamic and therefore cannot be enumerated at config compile
+ * time, so an editor can only check the namespace shape; runtime discovery
+ * remains the authority. The check lives here rather than in the editor because
+ * a second place that takes the prefix apart is a second encoding, and the two
+ * diverge the moment either changes.
+ */
+export function isCanonicalMcpToolId(target: string): boolean {
+  if (!hasMcpToolNamespace(target)) return false;
+  const rest = target.slice("mcp__".length);
+  const separator = rest.indexOf("__");
+  return separator > 0 && separator < rest.length - 2;
+}

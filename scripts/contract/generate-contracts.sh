@@ -16,6 +16,18 @@ out_dir="$repo_root/contracts"
 schema_json="$out_dir/model-schemas.generated.json"
 openapi_json="$out_dir/openapi.generated.json"
 ts_out="$out_dir/model-config.d.ts"
+
+# `--check` was matched with a bare test and every other argument ignored, so a
+# misspelling silently REGENERATED the committed contracts instead of verifying
+# them -- the one outcome this gate exists to distinguish.
+case "${1:-}" in
+  ""|--check) ;;
+  *) echo "usage: scripts/contract/generate-contracts.sh [--check]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: scripts/contract/generate-contracts.sh [--check]" >&2
+  exit 2
+fi
 model_selection_ts="$out_dir/model-selection.generated.d.ts"
 managed_agents_json="$out_dir/anthropic-managed/canonical-wire.schemas.generated.json"
 check=0
