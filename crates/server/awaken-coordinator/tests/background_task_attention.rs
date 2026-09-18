@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
+use awaken_protocol_managed::test_support::DurableFact;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_runtime_contract::agent_bindings::{
     AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
@@ -246,7 +247,7 @@ async fn wait_for_completion(
     let uri = format!("/v1/sessions/{session_id}/events?limit=500");
     let app = app.clone();
     awaken_protocol_managed::test_support::wait_for_session_events(
-        Some(accepted_receipt),
+        DurableFact::command_processed(accepted_receipt),
         timeout,
         "BackgroundTask completion attention",
         move || {

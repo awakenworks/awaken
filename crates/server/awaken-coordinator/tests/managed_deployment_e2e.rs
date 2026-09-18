@@ -14,6 +14,7 @@ use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAge
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentSessionProfile,
 };
+use awaken_protocol_managed::test_support::DurableFact;
 use awaken_protocol_managed::{ManagedDeploymentSessionLauncher, deployments_router};
 use awaken_runtime_contract::snapshot::AgentId;
 use awaken_runtime_contract::{
@@ -344,7 +345,7 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     let events = wait_for_session_events(
         &app,
         &first_id,
-        None,
+        DurableFact::committed_event("user.message"),
         "the deployment's one initial user.message",
         |events| events.iter().any(|event| event["type"] == "user.message"),
     )
@@ -463,7 +464,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     let events = wait_for_session_events(
         &app,
         session_id,
-        None,
+        DurableFact::committed_event("system.message"),
         "the deployment system directive and seed Event",
         |events| {
             let rendered = serde_json::to_string(events).expect("render Event projection");

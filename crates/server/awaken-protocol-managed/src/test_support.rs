@@ -2,7 +2,9 @@
 
 #[path = "test_support/managed_event_observer.rs"]
 mod managed_event_observer;
-pub use managed_event_observer::wait_for_session_events;
+pub use managed_event_observer::{
+    DurableFact, wait_for_delivered_lifecycle_facts, wait_for_session_events,
+};
 
 use std::sync::Arc;
 

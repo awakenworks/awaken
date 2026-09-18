@@ -6,6 +6,7 @@
 mod provider_push;
 
 use async_trait::async_trait;
+use awaken_protocol_managed::test_support::DurableFact;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, DeltaSink, LlmExecutor, ToolCall,
 };
@@ -419,7 +420,7 @@ async fn send_and_wait_until(
     let app = app.clone();
     let path = format!("/v1/sessions/{session}/events?limit=500");
     let list = awaken_protocol_managed::test_support::wait_for_session_events(
-        Some(&receipt),
+        DurableFact::command_processed(&receipt),
         Duration::from_secs(120),
         "Zhike turn completes",
         move || {
@@ -431,16 +432,13 @@ async fn send_and_wait_until(
                 (s.as_u16(), v)
             }
         },
-        // The causal slice starts at this receipt's user.message. A concurrent
-        // background attention Run may publish idle after the receipt while
-        // this command is still queued; only its durable processed marker,
-        // committed with the Run's activity removal, proves this turn settled.
-        |events| {
-            events
-                .first()
-                .is_some_and(|accepted| accepted["processed_at"].is_string())
-                && settled(events)
-        },
+        // The settle condition is the `DurableFact::command_processed` above: a
+        // concurrent background attention Run may publish idle after this
+        // receipt while the command is still queued, so only the command's own
+        // processed marker -- committed with the Run's activity removal --
+        // proves this turn settled. `settled` narrows that fact to the shape
+        // this turn expects; it never replaces it.
+        settled,
     )
     .await;
     list["data"].as_array().unwrap().clone()
@@ -515,7 +513,7 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     let app_read = app.clone();
     let path = format!("/v1/sessions/{session}/events?limit=500");
     awaken_protocol_managed::test_support::wait_for_session_events(
-        None,
+        DurableFact::committed_event("agent.message"),
         Duration::from_secs(120),
         "connected notification produces greeting",
         move || {

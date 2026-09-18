@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
+use awaken_protocol_managed::test_support::DurableFact;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_runtime_contract::agent_bindings::{
     AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
@@ -134,7 +135,7 @@ async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Va
     wait_for_session_events(
         app,
         session,
-        Some(&receipt),
+        DurableFact::command_processed(&receipt),
         "the accepted user.message to reach an aggregate idle boundary",
         |events| {
             events
@@ -180,7 +181,7 @@ async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::
     wait_for_session_events(
         app,
         session,
-        Some(&receipt),
+        DurableFact::command_processed(&receipt),
         "the accepted tool confirmation to reach an aggregate idle boundary",
         |events| {
             events.iter().any(|event| {
@@ -365,7 +366,7 @@ async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json
     wait_for_session_events(
         app,
         session,
-        Some(&receipt),
+        DurableFact::command_processed(&receipt),
         "the accepted Outcome to become satisfied or await required action",
         |events| {
             events.iter().any(|event| {
@@ -551,7 +552,7 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
     let completed = wait_for_session_events(
         &app,
         &id,
-        Some(&deny_receipt),
+        DurableFact::command_processed(&deny_receipt),
         "the denied second tool call to commit the final Outcome answer and verdict",
         |events| {
             events.iter().any(|event| {
@@ -720,7 +721,7 @@ async fn custom_tool_use_through_real_kernel() {
     let list = wait_for_session_events(
         &app,
         &id,
-        Some(&result_receipt),
+        DurableFact::command_processed(&result_receipt),
         "the accepted custom tool result to reach the model answer and end_turn",
         |events| {
             events.iter().any(|event| {
@@ -844,7 +845,7 @@ async fn system_message_reaches_accompanying_and_later_runs() {
     let first = wait_for_session_events(
         &app,
         &id,
-        Some(&receipts),
+        DurableFact::command_processed(&receipts),
         "the accepted system.message to affect the accompanying Run",
         |events| {
             events.iter().any(|event| {
@@ -958,7 +959,7 @@ async fn custom_result_fails_closed_on_mismatch() {
     let list = wait_for_session_events(
         &app,
         &id,
-        Some(&result_receipt),
+        DurableFact::command_processed(&result_receipt),
         "the still-pending custom tool call to resume from its correctly bound result",
         |events| {
             events.iter().any(|event| {
@@ -1055,7 +1056,7 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
     let list = wait_for_session_events(
         &app,
         &id,
-        None,
+        DurableFact::committed_event("agent.thread_message_received"),
         "the committed child report and its one later root report Run",
         |events| {
             let child_report = events.iter().any(|event| {
@@ -1394,7 +1395,7 @@ async fn managed_user_interrupt_reports_interrupted() {
     let list = wait_for_session_events(
         &app,
         &id,
-        Some(&interrupt_receipt),
+        DurableFact::command_processed(&interrupt_receipt),
         "the accepted interrupt to commit the Outcome's interrupted verdict",
         |events| {
             events.iter().any(|event| {
