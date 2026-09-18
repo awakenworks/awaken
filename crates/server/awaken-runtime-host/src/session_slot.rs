@@ -17,7 +17,9 @@ mod execution_authority;
 mod projection_receipt;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
 mod realization_permit;
-pub(crate) use realization_permit::SessionRealizationPermit;
+/// The exclusion every realization phase driver must hold is contract-owned;
+/// this crate only supplies the Session slot allocation as its identity.
+pub(crate) use awaken_session_contract::SessionRealizationPermit;
 
 /// Host fixtures use the actual Control-clock coordinate for live replies.
 /// Deliberately rejects expired input: an expiry test must construct and age

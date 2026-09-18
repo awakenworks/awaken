@@ -599,8 +599,9 @@ impl SessionApplication {
     ) -> Result<PersistedSession, SessionRealizationError> {
         // One co-located phase driver per Session. The request path and the
         // recovery sweep share this process; letting both drive interleaves
-        // their phases and repeats the same external MCP effect.
-        let _local_driver = self.local_realization_locks().acquire(session_id).await;
+        // their phases and repeats the same external MCP effect. The permit is
+        // the only way to reach `drive_session_realization` below.
+        let permit = self.local_realization_locks().acquire(session_id).await;
         let request_started = self
             .runtime()
             .observe_realization_request()
@@ -623,7 +624,7 @@ impl SessionApplication {
             })
             .await
             .map_err(SessionRealizationError::Control)?;
-        self.drive_local_realization(session_id, directive, request_started)
+        self.drive_local_realization(&permit, directive, request_started)
             .await?;
         self.session_repository()
             .get(session_id)
@@ -634,13 +635,13 @@ impl SessionApplication {
 
     async fn drive_local_realization(
         &self,
-        session_id: &str,
+        permit: &awaken_session_contract::SessionRealizationPermit,
         directive: SessionRealizationDirective,
         request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
     ) -> Result<(), SessionRealizationError> {
         let control = RefreshedSessionRealizationControl(self);
         awaken_session_contract::drive_session_realization(
-            session_id,
+            permit,
             None,
             &control,
             &LocalProjectionSynchronizer {
