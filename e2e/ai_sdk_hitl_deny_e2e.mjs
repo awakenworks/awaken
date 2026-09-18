@@ -14,6 +14,7 @@ import {
   createCrossProtocolApplicationThread,
   pass,
   publishAlwaysAskManagementProbeAgent,
+  waitForChatSettled,
   withScenarioServer,
 } from './harness.mjs';
 
@@ -24,13 +25,6 @@ function replyText(chat) {
     .filter((part) => part.type === 'text')
     .map((part) => part.text)
     .join('');
-}
-
-async function settle(chat, effect) {
-  for (let i = 0; i < 50; i++) {
-    if (chat.status === 'ready' && effect()) return;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
 }
 
 async function main() {
@@ -75,7 +69,11 @@ async function main() {
       approved: false,
       reason: 'operator denied the write',
     });
-    await settle(chat, () => replyText(chat).includes('done'));
+    await waitForChatSettled(
+      chat,
+      () => replyText(chat).includes('done'),
+      "the denied tool's cancelled run never reached its terminal 'done' text",
+    );
     assert.ok(replyText(chat).includes('done'), `expected completion after deny: ${replyText(chat)}`);
     assert.ok(!replyText(chat).includes(NOTE), `deny must block the write: ${replyText(chat)}`);
     pass('ai-sdk HITL deny (await -> addToolApprovalResponse(false) -> blocked -> complete)');

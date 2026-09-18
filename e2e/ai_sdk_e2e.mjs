@@ -17,6 +17,7 @@ import {
   pass,
   publishAlwaysAskManagementProbeAgent,
   RED_PNG_DATA_URI,
+  waitForChatSettled,
   withRealServer,
   withScenarioServer,
 } from './harness.mjs';
@@ -34,16 +35,6 @@ function replyText(chat) {
     .filter((p) => p.type === 'text')
     .map((p) => p.text)
     .join('');
-}
-
-/// Wait for the Chat's deferred auto-send to both start and reach its expected
-/// effect. Testing `ready` alone races: addToolResult may resolve while the Chat
-/// is still ready, immediately before the SDK schedules its follow-up request.
-async function settle(chat, effect) {
-  for (let i = 0; i < 50; i++) {
-    if (chat.status === 'ready' && effect()) return;
-    await new Promise((r) => setTimeout(r, 100));
-  }
 }
 
 async function main() {
@@ -165,7 +156,11 @@ async function main() {
     // Decision rule HITL-R1 covers the allow edge here; the deny edge is owned by
     // ai_sdk_hitl_deny_e2e.mjs. The polling oracle requires both terminal status
     // and terminal effect, so pre-auto-send `ready` cannot masquerade as success.
-    await settle(chat, () => replyText(chat).includes('done'));
+    await waitForChatSettled(
+      chat,
+      () => replyText(chat).includes('done'),
+      "the approved tool's resumed run never reached its terminal 'done' text",
+    );
     assert.ok(replyText(chat).includes('done'), `expected completion after approval: ${replyText(chat)}`);
     pass('ai-sdk HITL approval (await -> addToolApprovalResponse -> complete)');
   });
