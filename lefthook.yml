@@ -126,6 +126,15 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/reclaim_build_space.py --self-test
 
+    # 3d. The record of the last green full gate is evidence, so a commit may not
+    #    leave it naming a commit that is gone, off main, or blessed by a partial
+    #    run. Staleness is a schedule and is reported by check-all, not here.
+    gate-freshness:
+      # >>> generated glob from check_gate_freshness.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/check-all.sh,scripts/ci/check_gate_freshness.py,scripts/ci/gate_record.json,scripts/ci/gate_tools.json}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_gate_freshness.py --self-test
+
     # 4. Rust checks are active as soon as a Cargo workspace exists.
     rustfmt:
       glob: "**/*.rs"

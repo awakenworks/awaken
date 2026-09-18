@@ -156,6 +156,13 @@ run static "gate tool manifest self-test" python3 scripts/ci/gate_tools.py --sel
 # reclaimer decides what is derived build output and what is a checkout; that
 # decision is what must stay proved, because it runs with --apply.
 run static "build-space reclamation self-test" python3 scripts/ci/reclaim_build_space.py --self-test
+# The full gate takes hours, so it is rarely run end to end; main once carried
+# four unrelated defects behind a gate that had never completed, each hiding the
+# next. This reports how far main has walked from the last recorded green full
+# gate. It warns here and fails only under --require-fresh, so an ordinary run is
+# never blocked by somebody else's schedule; docs/adr/0080 owns the policy.
+run static "full-gate freshness self-test" python3 scripts/ci/check_gate_freshness.py --self-test
+run static "full-gate freshness" python3 scripts/ci/check_gate_freshness.py
 run static "prerequisite doctor self-test" scripts/ci/doctor.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
 run static "sandbox image provenance self-test" python3 scripts/release/awaken_sandbox_image_provenance.py self-test
