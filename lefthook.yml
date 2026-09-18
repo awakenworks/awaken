@@ -137,6 +137,16 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_gate_arguments.py
 
+    # 3c-ter. An executable no lane runs still reads as coverage, still gets
+    #    cited as evidence, and rots in place. Three k3d runners sat unrun for
+    #    months and one of them is named in formal/coverage.json as the proof of
+    #    a requirement. Every executable is selected or registered with a reason.
+    lane-reachability:
+      # >>> generated glob from check_lane_reachability.py INPUT_GLOBS — do not edit
+      glob: "{deploy/**/*,e2e/**/*,formal/coverage.json,lefthook.yml,scripts/**/*}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_lane_reachability.py
+
     # 3d. The record of the last green full gate is evidence, so a commit may not
     #    leave it naming a commit that is gone, off main, or blessed by a partial
     #    run. Staleness is a schedule and is reported by check-all, not here.

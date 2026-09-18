@@ -24,6 +24,13 @@ if report := os.environ.get("AWAKEN_TEST_DOCKER_CALLS"):
         out.write(json.dumps(args) + "\\n")
 if args[0] in ("info", "rm"):
     sys.exit(0)
+if args[:2] == ["image", "inspect"]:
+    # The gate's tool precheck asks this before any phase runs. Answer it
+    # decisively: a probe that neither confirms nor denies the image is
+    # undecidable, and an undecidable probe now refuses the gate outright --
+    # correctly, but it would refuse before these startup phases could run.
+    print("[]")
+    sys.exit(0)
 if args[0] == "run":
     mount = next((value for value in args if value.endswith(":/recovery-base")), None)
     if mount is None:

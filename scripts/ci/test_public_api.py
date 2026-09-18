@@ -38,10 +38,19 @@ if name == "diff":
         sys.exit(2)
     os.execv(os.environ["API_TEST_REAL_DIFF"], ["diff", *args])
 if args == ["public-api", "--version"]:
+    if os.environ.get("API_TEST_VERSION_QUERY_ERROR"):
+        print("error: could not execute cargo-public-api", file=sys.stderr)
+        sys.exit(101)
+    if os.environ.get("API_TEST_VERSION_UNPARSEABLE"):
+        print("cargo-public-api")
+        sys.exit(0)
     print("cargo-public-api " + os.environ.get("API_TEST_VERSION", "0.52.0"))
 elif args == ["metadata", "--no-deps", "--format-version", "1"]:
     if os.environ.get("API_TEST_METADATA_ERROR"):
         sys.exit(73)
+    if os.environ.get("API_TEST_EMPTY_WORKSPACE"):
+        print(json.dumps({"packages": []}))
+        sys.exit(0)
     print(json.dumps({"packages": [{"name": "fixture"}]}))
 else:
     assert args == ["+nightly-2026-07-14", "public-api", "-p", "fixture",
@@ -117,20 +126,65 @@ else:
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 self.assertEqual(self.snapshot.read_bytes(), SURFACE if expected == 0 else baseline)
 
-    def test_unavailable_pinned_tools_never_run_generation_or_change_a_snapshot(self):
-        # T1 mismatched tool version / absent pinned nightly x strict/developer:
-        # strict fails; developer explicitly reports a skip. Neither can reach
-        # generation or write a baseline, even when --bless was requested.
+    def test_tool_admission_is_three_outcomes_and_fails_closed_by_default(self):
+        """Present / absent / undecidable, and only absence is ever waivable.
+
+        Causes: T1 the pinned tool version is wrong; T2 the pinned nightly is not
+        installed -- both are decided absences. T3 the version query itself fails;
+        T4 it succeeds but prints no version -- both leave the pinned rendering
+        undecided. Callers: A no flag (the default); B --require-tools (named by
+        the release manifest, and now the same thing); C --allow-absent-tools.
+
+        Effects: E1 refuse; E2 accept, saying that nothing was compared.
+        Rules: (T1|T2) x (A|B) => E1. (T1|T2) x C => E2. (T3|T4) x every caller
+        => E1, because --allow-absent-tools waives an absence and these are not
+        absences. No row may reach generation or write a baseline, even under
+        --bless.
+        """
+
         self.seed(b"preserved")
-        for conditions in ({"API_TEST_VERSION": "0.0.0"}, {"API_TEST_NO_NIGHTLY": "1"}):
-            for strict in (False, True):
-                with self.subTest(conditions=conditions, strict=strict):
-                    result = self.invoke("--bless", *(["--require-tools"] if strict else []), **conditions)
-                    self.assertEqual(result.returncode, int(strict), result.stdout + result.stderr)
+        rows = (
+            ("T1", {"API_TEST_VERSION": "0.0.0"}, True),
+            ("T2", {"API_TEST_NO_NIGHTLY": "1"}, True),
+            ("T3", {"API_TEST_VERSION_QUERY_ERROR": "1"}, False),
+            ("T4", {"API_TEST_VERSION_UNPARSEABLE": "1"}, False),
+        )
+        for rule, conditions, waivable in rows:
+            for caller, flags, expected in (
+                ("A default", (), 1),
+                ("B --require-tools", ("--require-tools",), 1),
+                ("C --allow-absent-tools", ("--allow-absent-tools",), 0 if waivable else 1),
+            ):
+                with self.subTest(rule=rule, caller=caller):
+                    result = self.invoke("--bless", *flags, **conditions)
+                    self.assertEqual(
+                        result.returncode, expected, result.stdout + result.stderr
+                    )
                     self.assertFalse((self.root / "computed").exists())
                     self.assertEqual(self.snapshot.read_bytes(), b"preserved")
-                    if not strict:
-                        self.assertIn("skipping public API check", result.stdout)
+                    if expected == 0:
+                        self.assertIn("NO crate's public API was compared", result.stdout)
+                    elif not waivable:
+                        self.assertIn("could not decide its own tooling", result.stderr)
+
+    def test_a_run_that_compared_nothing_is_not_a_passing_run(self):
+        """Z1 an empty workspace inventory yields zero comparisons => refuse.
+
+        The loop can reach its end with nothing wrong and nothing observed: an
+        empty member list produces no crate, no drift and no failure, and the
+        gate used to print the same "snapshots match" line it prints after a real
+        comparison. Z2 the normal single-crate workspace still passes, so this
+        refuses emptiness rather than refusing success.
+        """
+
+        self.seed(SURFACE)
+        empty = self.invoke("--require-tools", API_TEST_EMPTY_WORKSPACE="1")
+        self.assertNotEqual(empty.returncode, 0, empty.stdout + empty.stderr)
+        self.assertIn("compared 0 crates", empty.stderr)
+        self.assertFalse((self.root / "computed").exists())
+        populated = self.invoke("--require-tools")
+        self.assertEqual(populated.returncode, 0, populated.stdout + populated.stderr)
+        self.assertIn("1 crates compared", populated.stdout)
 
     def test_failed_inventory_cannot_become_an_empty_successful_workspace(self):
         # I1 Cargo metadata fails before any crate can be enumerated => nonzero,
