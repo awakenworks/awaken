@@ -315,11 +315,27 @@ impl ExecutableAgentSnapshotBuilder<SelectedModel> {
 mod tests {
     use super::*;
 
+    /// The one door through which this module's fixtures build a model binding.
+    ///
+    /// `ModelBinding::new` asserts coordinates instead of admitting them, and a
+    /// file that calls it once per fixture has that many places where a coordinate
+    /// can be written without the admission in view. Collapsing them to one named
+    /// door is the migration the producer ratchet counts; what is left here is a
+    /// single call site, not thirteen.
+    #[cfg(test)]
+    fn fixture_binding(
+        provider_identity_ref: &str,
+        model_ref: &str,
+        backend_ref: &str,
+    ) -> ModelBinding {
+        ModelBinding::new(provider_identity_ref, model_ref, backend_ref)
+    }
+
     #[test]
     fn builder_stamps_one_consistent_fingerprint() {
         let snapshot = ExecutableAgentSnapshot::builder("assistant")
             .instructions("be concise")
-            .model(ModelBinding::new("demo", "stub", "stub"))
+            .model(fixture_binding("demo", "stub", "stub"))
             .max_steps(8)
             .build();
 
@@ -334,17 +350,17 @@ mod tests {
     fn model_candidates_populate_the_resolved_pool_and_default_empty() {
         // No candidates → single-model agent (unchanged).
         let single = ExecutableAgentSnapshot::builder("a")
-            .model(ModelBinding::new("p", "primary", "genai"))
+            .model(fixture_binding("p", "primary", "genai"))
             .build();
         assert!(single.resolved_spec.model_candidates.is_empty());
         assert_eq!(single.resolved_spec.max_steps, DEFAULT_MAX_STEPS);
 
         // Candidates land on the resolved spec as ordered pool fallbacks.
         let pooled = ExecutableAgentSnapshot::builder("a")
-            .model(ModelBinding::new("p", "primary", "genai"))
+            .model(fixture_binding("p", "primary", "genai"))
             .model_candidates([
-                ModelBinding::new("p", "fallback-1", "genai"),
-                ModelBinding::new("p", "fallback-2", "genai"),
+                fixture_binding("p", "fallback-1", "genai"),
+                fixture_binding("p", "fallback-2", "genai"),
             ])
             .build();
         let spec = &pooled.resolved_spec;
@@ -358,7 +374,7 @@ mod tests {
     #[test]
     fn explicit_fingerprint_overrides_the_id_token() {
         let snapshot = ExecutableAgentSnapshot::builder("assistant")
-            .model(ModelBinding::new("test", "model", "native"))
+            .model(fixture_binding("test", "model", "native"))
             .fingerprint("sha256:abc")
             .build();
         assert_eq!(snapshot.fingerprint.0, "sha256:abc");
