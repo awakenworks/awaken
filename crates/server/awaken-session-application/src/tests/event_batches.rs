@@ -4776,7 +4776,13 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
     entered.wait().await;
     let mut replacement = repository.get(&SessionId::from(session_id)).await.unwrap();
     replacement.environment.set_resident("binding-b");
-    app.commit_session_snapshot("workspace", replacement, "test-binding-change", Vec::new())
+    let _fixture = app
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            replacement,
+            "test-binding-change",
+            Vec::new(),
+        )
         .await
         .expect("C3 commits the successor root");
     release.wait().await;

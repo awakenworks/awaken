@@ -702,10 +702,10 @@ impl SessionApplication {
         };
 
         persisted = match self
-            .commit_session_snapshot(&owner_scope, persisted, "activate", Vec::new())
+            .commit_session_snapshot_with_outcome(&owner_scope, persisted, "activate", Vec::new())
             .await
         {
-            Ok(session) => session,
+            Ok(commit) => commit.into_session(),
             Err(SessionMutationError::Conflict) => {
                 // The realization is complete, so a concurrent root writer (or
                 // a lost acknowledgement from this final CAS) cannot invalidate

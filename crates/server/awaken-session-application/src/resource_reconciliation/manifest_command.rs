@@ -185,10 +185,14 @@ impl SessionApplication {
 
         let command_receipt_key = command_record.as_ref().map(|record| record.key.clone());
         let (session, command_applied) = match command_record {
-            Some(record) => self
-                .commit_resource_snapshot_with_record(&owner_scope, session, record)
-                .await
-                .map_err(SessionResourceManifestError::mutation)?,
+            Some(record) => {
+                let commit = self
+                    .commit_resource_snapshot_with_record(&owner_scope, session, record)
+                    .await
+                    .map_err(SessionResourceManifestError::mutation)?;
+                let applied = commit.transitioned();
+                (commit.into_session(), applied)
+            }
             None if unchanged => {
                 let revision = session.revision;
                 return Ok(SessionResourceManifestOutcome {

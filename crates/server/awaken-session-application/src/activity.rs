@@ -512,7 +512,7 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok((session, _)) => return Ok(session),
+                Ok(commit) => return Ok(commit.into_session()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
@@ -716,7 +716,8 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok((session, true)) => {
+                Ok(commit) if commit.transitioned() => {
+                    let session = commit.into_session();
                     if session.revision.0 != epoch {
                         return Err(SessionActivityError::Unavailable(
                             "Session activity revision did not match its committed epoch".into(),
@@ -724,7 +725,8 @@ impl SessionApplication {
                     }
                     return Ok((session, epoch));
                 }
-                Ok((session, false)) => {
+                Ok(commit) => {
+                    let session = commit.into_session();
                     let epoch = self
                         .activity_operation_receipt(session_id, &record)
                         .await?
@@ -936,7 +938,7 @@ impl SessionApplication {
                 };
             let emitted_runtime_interval = !lifecycle_facts.is_empty();
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
                     if event_run_id.is_some() {
@@ -948,11 +950,11 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => {
+                Ok(commit) => {
                     if emitted_runtime_interval {
                         self.notify_lifecycle_fact();
                     }
-                    return Ok(session);
+                    return Ok(commit.into_session());
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;
@@ -1014,7 +1016,7 @@ impl SessionApplication {
                 ));
             }
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
                     "observe-runtime-boundary",
@@ -1022,7 +1024,7 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => return Ok(session),
+                Ok(commit) => return Ok(commit.into_session()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
                 Err(error) => return Err(SessionActivityError::mutation(error)),
             }

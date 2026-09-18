@@ -1232,14 +1232,15 @@ async fn disposal_failure_retries_without_recheckpointing() {
         epoch: 5,
         expires_at_unix_ms: 100_000,
     });
-    app.commit_session_snapshot(
-        "workspace",
-        failed_over,
-        "test-continuation-disposal-failover",
-        Vec::new(),
-    )
-    .await
-    .unwrap();
+    let _fixture = app
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            failed_over,
+            "test-continuation-disposal-failover",
+            Vec::new(),
+        )
+        .await
+        .unwrap();
     app.reconcile_environment_continuation(&SessionId::from("dispose-retry"), 2_000)
         .await
         .unwrap();
@@ -1302,14 +1303,15 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         .await
         .unwrap();
     renewed.realization.as_mut().unwrap().expires_at_unix_ms = 200_000;
-    app.commit_session_snapshot(
-        "workspace",
-        renewed,
-        "test-renew-before-source-preparation",
-        Vec::new(),
-    )
-    .await
-    .unwrap();
+    let _fixture = app
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            renewed,
+            "test-renew-before-source-preparation",
+            Vec::new(),
+        )
+        .await
+        .unwrap();
     repo.commit_then_conflict_once("environment-source-release-prepared");
     assert!(
         app.reconcile_environment_continuation(&SessionId::from("prep-response-loss"), 2_000)
@@ -1347,14 +1349,15 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         epoch: 5,
         expires_at_unix_ms: 300_000,
     });
-    app.commit_session_snapshot(
-        "workspace",
-        disposing,
-        "test-prepared-source-disposal-failover",
-        Vec::new(),
-    )
-    .await
-    .unwrap();
+    let _fixture = app
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            disposing,
+            "test-prepared-source-disposal-failover",
+            Vec::new(),
+        )
+        .await
+        .unwrap();
     app.reconcile_environment_continuation(&SessionId::from("prep-response-loss"), 2_000)
         .await
         .unwrap();
