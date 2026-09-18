@@ -47,12 +47,78 @@ fn unavailable_local(reason_code: &str) -> awaken_control::LocalRuntimeCapabilit
     }
 }
 
+/// Either live Worker evidence decides this row, or there is none of it. The
+/// absence of live evidence is not itself a diagnosis: startup host discovery
+/// already knows *why* a local runtime cannot run (no executable, incompatible
+/// version, unusable login, failed wrapper install, failed ACP handshake), and
+/// collapsing every one of those physical causes into `acp_runtime_unavailable`
+/// leaves the published capability row unactionable.
+enum LiveLocalEvidence {
+    Decided(awaken_control::LocalRuntimeCapability),
+    Absent,
+}
+
+/// Resolve the published local row. Live evidence always wins; the startup
+/// diagnosis only fills the silence left when there is none. `detected` is
+/// never restored from startup, because only a verified live handshake may
+/// claim an executable route.
+fn resolve_local(
+    live: LiveLocalEvidence,
+    observation: Option<&awaken_acp_application::AcpHostObservation>,
+    discovered: Option<&awaken_control::LocalRuntimeCapability>,
+) -> awaken_control::LocalRuntimeCapability {
+    match (live, observation, discovered) {
+        (LiveLocalEvidence::Decided(local), _, _) => local,
+        (LiveLocalEvidence::Absent, Some(observation), Some(discovered)) => {
+            startup_diagnosis(observation, discovered)
+                .unwrap_or_else(|| unavailable_local("acp_runtime_unavailable"))
+        }
+        (LiveLocalEvidence::Absent, _, _) => unavailable_local("acp_runtime_unavailable"),
+    }
+}
+
+/// The startup row explains a missing live route exactly when host discovery
+/// itself refused the runtime, or when its ACP handshake failed. A healthy
+/// startup row explains nothing about the absence of a Worker route, so it must
+/// not mask `acp_runtime_unavailable`.
+fn startup_diagnosis(
+    observation: &awaken_acp_application::AcpHostObservation,
+    discovered: &awaken_control::LocalRuntimeCapability,
+) -> Option<awaken_control::LocalRuntimeCapability> {
+    let refused = !observation.detected()
+        || observation.credential_state
+            != Some(awaken_runtime_contract::CredentialObservationState::Available);
+    if refused {
+        return Some(awaken_control::LocalRuntimeCapability {
+            detected: false,
+            negotiated: None,
+            ..discovered.clone()
+        });
+    }
+    if observation.capability_state == Some(awaken_acp_application::AcpCapabilityState::ProbeFailed)
+    {
+        // Discovery and login both succeeded; the backend handshake did not.
+        // That is a different physical cause from an absent runtime and keeps
+        // the observed version and login evidence beside it.
+        return Some(awaken_control::LocalRuntimeCapability {
+            detected: false,
+            reason_code: observation.capability_reason_code.clone(),
+            // The catalog owns remediation per discovery reason; a failed
+            // handshake has none beyond re-running discovery.
+            remediation: None,
+            negotiated: None,
+            ..discovered.clone()
+        });
+    }
+    None
+}
+
 fn live_acp_local(
     backend_ref: &str,
     workers: &[awaken_worker_contract::RegisteredWorker],
     credentials: &[awaken_credential_vault::CredentialSource],
     now_ms: u64,
-) -> awaken_control::LocalRuntimeCapability {
+) -> LiveLocalEvidence {
     let matching = credentials.iter().filter(|source| {
         source.status == awaken_credential_vault::CredentialStatus::Active
             && source.kind == awaken_credential_vault::CredentialKind::WorkerLocal
@@ -70,7 +136,7 @@ fn live_acp_local(
             now_ms,
         ) {
             awaken_worker_contract::VerifiedAcpCapabilitySelection::Available(only) => {
-                awaken_control::LocalRuntimeCapability {
+                LiveLocalEvidence::Decided(awaken_control::LocalRuntimeCapability {
                     detected: true,
                     version: Some(only.adapter_version),
                     // A capability-only handshake proves the backend protocol,
@@ -80,13 +146,13 @@ fn live_acp_local(
                     reason_code: None,
                     remediation: None,
                     negotiated: serde_json::to_value(only.negotiated).ok(),
-                }
+                })
             }
             awaken_worker_contract::VerifiedAcpCapabilitySelection::Unavailable => {
-                unavailable_local("acp_runtime_unavailable")
+                LiveLocalEvidence::Absent
             }
             awaken_worker_contract::VerifiedAcpCapabilitySelection::Incompatible => {
-                unavailable_local("acp_capability_ambiguous")
+                LiveLocalEvidence::Decided(unavailable_local("acp_capability_ambiguous"))
             }
         };
     }
@@ -114,22 +180,22 @@ fn live_acp_local(
                 }
             }
             awaken_worker_contract::VerifiedAcpCapabilitySelection::Incompatible => {
-                return unavailable_local("acp_capability_ambiguous");
+                return LiveLocalEvidence::Decided(unavailable_local("acp_capability_ambiguous"));
             }
             awaken_worker_contract::VerifiedAcpCapabilitySelection::Unavailable => {}
         }
     }
     match evidence.as_slice() {
-        [only] => awaken_control::LocalRuntimeCapability {
+        [only] => LiveLocalEvidence::Decided(awaken_control::LocalRuntimeCapability {
             detected: true,
             version: Some(only.adapter_version.clone()),
             login_state: Some("available".into()),
             reason_code: None,
             remediation: None,
             negotiated: serde_json::to_value(&only.negotiated).ok(),
-        },
-        [] => unavailable_local("acp_runtime_unavailable"),
-        _ => unavailable_local("acp_capability_ambiguous"),
+        }),
+        [] => LiveLocalEvidence::Absent,
+        _ => LiveLocalEvidence::Decided(unavailable_local("acp_capability_ambiguous")),
     }
 }
 
@@ -156,12 +222,18 @@ impl awaken_control::RuntimeCapabilitySource for LiveRuntimeCapabilities {
                     return capability;
                 }
                 let backend_ref = capability.id.clone();
+                let observation = capability
+                    .cli
+                    .as_deref()
+                    .and_then(|cli_id| self.initial.iter().find(|row| row.cli_id == cli_id));
                 let local = match (&workers, &credentials) {
                     (Err(_), _) => unavailable_local("worker_observations_unavailable"),
                     (_, Err(_)) => unavailable_local("credential_observations_unavailable"),
-                    (Ok(workers), Ok(credentials)) => {
-                        live_acp_local(&backend_ref, workers, credentials, now)
-                    }
+                    (Ok(workers), Ok(credentials)) => resolve_local(
+                        live_acp_local(&backend_ref, workers, credentials, now),
+                        observation,
+                        capability.local.as_ref(),
+                    ),
                 };
                 capability = capability.with_local(local);
                 capability
@@ -377,6 +449,21 @@ mod tests {
         );
     }
 
+    /// R1-R5 below concern live evidence alone. With no startup observation to
+    /// consult, the published row is exactly the live decision.
+    fn live_local(
+        backend_ref: &str,
+        workers: &[awaken_worker_contract::RegisteredWorker],
+        credentials: &[awaken_credential_vault::CredentialSource],
+        now_ms: u64,
+    ) -> awaken_control::LocalRuntimeCapability {
+        resolve_local(
+            live_acp_local(backend_ref, workers, credentials, now_ms),
+            None,
+            None,
+        )
+    }
+
     #[test]
     fn management_readiness_requires_coherent_worker_credential_and_capability_evidence() {
         // Cause/effect graph: C1 an active Worker-local source exists; C2 its
@@ -402,7 +489,7 @@ mod tests {
             "acp:claude",
             awaken_credential_vault::CredentialStatus::Active,
         );
-        let ready = live_acp_local(
+        let ready = live_local(
             "acp:claude",
             &[worker("ready", Some("credential-1"), Some("sha256:same"))],
             std::slice::from_ref(&active),
@@ -411,7 +498,7 @@ mod tests {
         assert!(ready.detected, "R1");
         assert_eq!(ready.login_state.as_deref(), Some("available"), "R1");
 
-        let split = live_acp_local(
+        let split = live_local(
             "acp:claude",
             &[
                 worker("credential", Some("credential-1"), None),
@@ -426,7 +513,7 @@ mod tests {
             Some("acp_runtime_unavailable")
         );
 
-        let incompatible = live_acp_local(
+        let incompatible = live_local(
             "acp:claude",
             &[
                 worker("first", Some("credential-1"), Some("sha256:first")),
@@ -442,7 +529,7 @@ mod tests {
             "R3"
         );
 
-        let provider_delivered = live_acp_local(
+        let provider_delivered = live_local(
             "acp:claude",
             &[worker("provider", None, Some("sha256:same"))],
             &[],
@@ -452,12 +539,208 @@ mod tests {
         assert_eq!(provider_delivered.login_state, None, "R4/E4");
         assert_eq!(provider_delivered.reason_code, None, "R4/E4");
 
-        let absent = live_acp_local("acp:claude", &[worker("absent", None, None)], &[], 150);
+        let absent = live_local("acp:claude", &[worker("absent", None, None)], &[], 150);
         assert!(!absent.detected, "R5");
         assert_eq!(
             absent.reason_code.as_deref(),
             Some("acp_runtime_unavailable"),
             "R5"
+        );
+    }
+
+    fn observed(
+        detection: awaken_acp_application::AcpDetectionState,
+        credential_state: Option<awaken_runtime_contract::CredentialObservationState>,
+        reason_code: &str,
+    ) -> awaken_acp_application::AcpHostObservation {
+        awaken_acp_application::AcpHostObservation {
+            cli_id: "codex".into(),
+            display_name: "Codex".into(),
+            detection,
+            version: Some("codex 9.9.9".into()),
+            credential_state,
+            reason_code: Some(reason_code.into()),
+            capability_state: None,
+            capability_fingerprint: None,
+            capability_reason_code: None,
+        }
+    }
+
+    /// Project one startup observation through the exact management edge used
+    /// in production when no Worker has published live ACP evidence.
+    fn published(
+        observation: &awaken_acp_application::AcpHostObservation,
+    ) -> awaken_control::LocalRuntimeCapability {
+        let capabilities = runtime_capabilities(std::slice::from_ref(observation));
+        let capability = capabilities
+            .iter()
+            .find(|row| row.id == "acp:codex")
+            .expect("the executable catalog publishes codex");
+        resolve_local(
+            LiveLocalEvidence::Absent,
+            Some(observation),
+            capability.local.as_ref(),
+        )
+    }
+
+    #[test]
+    fn every_physical_discovery_cause_publishes_its_own_capability_reason_code() {
+        use awaken_acp_application::AcpDetectionState;
+        use awaken_runtime_contract::CredentialObservationState;
+
+        // Without live Worker evidence the capability row is the *only* place an
+        // operator learns why a local runtime cannot run. Each physical cause
+        // therefore keeps its own code; `acp_runtime_unavailable` names exactly
+        // one cause — a healthy host with no published route — and never stands
+        // in for a startup refusal.
+        //
+        // Decision table (physical condition -> published login_state/reason_code):
+        // | Rule | physical condition                  | login_state   | reason_code |
+        // | T1 | CLI executable absent                  | none          | acp_agent_missing |
+        // | T2 | version command failed/timed out       | none          | acp_version_probe_failed |
+        // | T3 | version below the catalog minimum      | none          | acp_version_unsupported |
+        // | T4 | login command could not be run         | probe_failed  | acp_login_probe_failed |
+        // | T5 | login output matched no catalog rule   | probe_failed  | acp_login_probe_unrecognized |
+        // | T6 | CLI healthy, not logged in             | login_required| acp_login_required |
+        // | T7 | wrapper installer missing/failed       | probe_failed  | acp_wrapper_install_failed |
+        // | T8 | wrapper present, ACP handshake failed  | available     | acp_capability_probe_failed |
+        // | T9 | host healthy, no live route published  | unavailable   | acp_runtime_unavailable |
+        let mut handshake_failed = observed(
+            AcpDetectionState::Detected,
+            Some(CredentialObservationState::Available),
+            "acp_login_available",
+        );
+        handshake_failed.capability_state =
+            Some(awaken_acp_application::AcpCapabilityState::ProbeFailed);
+        handshake_failed.capability_reason_code = Some("acp_capability_probe_failed".into());
+        let mut healthy = observed(
+            AcpDetectionState::Detected,
+            Some(CredentialObservationState::Available),
+            "acp_login_available",
+        );
+        healthy.capability_state = Some(awaken_acp_application::AcpCapabilityState::Verified);
+
+        let table = [
+            (
+                "T1",
+                observed(AcpDetectionState::Missing, None, "acp_agent_missing"),
+                None,
+                "acp_agent_missing",
+            ),
+            (
+                "T2",
+                observed(
+                    AcpDetectionState::ProbeFailed,
+                    None,
+                    "acp_version_probe_failed",
+                ),
+                None,
+                "acp_version_probe_failed",
+            ),
+            (
+                "T3",
+                observed(
+                    AcpDetectionState::ProbeFailed,
+                    None,
+                    "acp_version_unsupported",
+                ),
+                None,
+                "acp_version_unsupported",
+            ),
+            (
+                "T4",
+                observed(
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::ProbeFailed),
+                    "acp_login_probe_failed",
+                ),
+                Some("probe_failed"),
+                "acp_login_probe_failed",
+            ),
+            (
+                "T5",
+                observed(
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::ProbeFailed),
+                    "acp_login_probe_unrecognized",
+                ),
+                Some("probe_failed"),
+                "acp_login_probe_unrecognized",
+            ),
+            (
+                "T6",
+                observed(
+                    AcpDetectionState::Detected,
+                    Some(CredentialObservationState::LoginRequired),
+                    "acp_login_required",
+                ),
+                Some("login_required"),
+                "acp_login_required",
+            ),
+            (
+                "T7",
+                observed(
+                    AcpDetectionState::ProbeFailed,
+                    Some(CredentialObservationState::ProbeFailed),
+                    "acp_wrapper_install_failed",
+                ),
+                Some("probe_failed"),
+                "acp_wrapper_install_failed",
+            ),
+            (
+                "T8",
+                handshake_failed,
+                Some("available"),
+                "acp_capability_probe_failed",
+            ),
+            (
+                "T9",
+                healthy,
+                Some("unavailable"),
+                "acp_runtime_unavailable",
+            ),
+        ];
+
+        let mut codes = std::collections::BTreeSet::new();
+        for (rule, observation, login_state, reason_code) in &table {
+            let local = published(observation);
+            assert!(
+                !local.detected,
+                "{rule}: no live evidence can claim a route"
+            );
+            assert_eq!(local.login_state.as_deref(), *login_state, "{rule}");
+            assert_eq!(local.reason_code.as_deref(), Some(*reason_code), "{rule}");
+            codes.insert(*reason_code);
+        }
+        // Mutation probe: conflating any two physical conditions onto one code
+        // collapses this set, so the count is what fails first.
+        assert_eq!(
+            codes.len(),
+            table.len(),
+            "each physical condition owns a distinct reason code"
+        );
+
+        // The catalog-owned remediation reaches the capability row, not only
+        // `doctor acp`; a conflated code silently drops it.
+        assert!(
+            published(&observed(
+                AcpDetectionState::Missing,
+                None,
+                "acp_agent_missing"
+            ))
+            .remediation
+            .is_some(),
+            "T1 remediation"
+        );
+        assert!(
+            published(&observed(
+                AcpDetectionState::Detected,
+                Some(CredentialObservationState::LoginRequired),
+                "acp_login_required",
+            ))
+            .remediation
+            .is_some(),
+            "T6 remediation"
         );
     }
 }
