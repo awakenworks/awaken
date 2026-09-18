@@ -362,7 +362,7 @@ def assert_generated_contract(schema_path: Path, typescript_path: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build = subparsers.add_parser("build")

@@ -4,6 +4,18 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../../.." && pwd)"
 source "$repo_root/scripts/ci/_deadline.sh"
 
+# Only --self-test is an argument here; everything else used to fall through to
+# a real image build, so a misspelled probe spent minutes in Docker and then
+# reported success for a run nobody asked for.
+case "${1:-}" in
+  ""|--self-test) ;;
+  *) echo "usage: deploy/images/sandbox/build.sh [--self-test]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: deploy/images/sandbox/build.sh [--self-test]" >&2
+  exit 2
+fi
+
 release_image_labels=()
 
 configure_release_image_labels() {

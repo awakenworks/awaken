@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+"""Refuse a gate entry point that accepts an argument it does not implement.
+
+`scripts/ci/check-all.sh` invoked `check_degrading_defaults.py --selftest` while
+that script's flag was `--self-test`. The script tested `"--selftest" in
+sys.argv`, found nothing, fell through to its ordinary whole-repo scan and
+exited zero. So the gate was green, the caller believed a self-test had run, and
+that self-test had in fact never executed. Nothing failed, because nothing
+refused.
+
+The shape is not one script's bug. A checker that decides what to do by asking
+whether one spelling is present has no way to say "I do not implement that", and
+a shell entry point that matches `"$1"` against one literal and continues has
+the same hole. The rule therefore runs over the *set* of gate entry points, so a
+checker added tomorrow inherits it:
+
+  A1  every entry point, given a flag it does not implement, exits non-zero and
+      prints a `usage:` line naming itself. Falling through to the default work
+      is refused; so is exiting zero; so is running long enough to hit the
+      probe deadline, because "it did not refuse" is the defect either way.
+  A2  one canonical spelling per flag. argparse accepts unambiguous prefixes
+      unless `allow_abbrev=False`, so `--self-tes` was a second spelling of
+      every flag in this repository. The construction is checked statically over
+      every parser, and the behaviour dynamically at one truncation per entry
+      point.
+  A3  a lane may only pass a flag its target declares. A1 turns a misspelled
+      call site into a red gate at run time; A3 names it in seconds, statically,
+      which is where `--selftest` should have been caught.
+
+The declared flag set is read back from the entry point's own refusal output, so
+this file holds no second copy of anybody's argument list to go stale.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+# Every file this checker reads: the entry points it probes and the lanes whose
+# call sites it compares against them. The lefthook trigger is rendered from
+# this declaration, so a checker added under scripts/ci re-runs the corpus rule
+# at the commit that introduces it.
+INPUT_GLOBS: tuple[str, ...] = (
+    "lefthook.yml",
+    "scripts/ci/*.py",
+    "scripts/ci/*.sh",
+    "scripts/contract/*.sh",
+    "scripts/e2e/*.sh",
+    "scripts/release/*.py",
+    "scripts/release/*.sh",
+    "e2e/*.sh",
+    "e2e/k3d/*.py",
+    "e2e/k3d/*.sh",
+    "e2e/k6/*.sh",
+    "deploy/images/sandbox/build.sh",
+    "deploy/k3d/test_image_contract.py",
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+
+# A flag no entry point implements. It is not `--help`: `--help` is implemented,
+# and an entry point that handles it proves nothing about what it refuses.
+PROBE_FLAG = "--awaken-gate-argument-probe"
+# Refusing an unimplemented flag is a parse-time decision and takes
+# milliseconds. This deadline is generous by two orders of magnitude on
+# purpose: anything that reaches it has started doing work, which is the defect.
+PROBE_TIMEOUT_SECONDS = 60
+
+# Directories whose executables are gate entry points. A file is an entry point
+# when it can be executed on its own: a `__main__` guard for Python, a main
+# guard or a plain top-level body for shell. Container payload scripts
+# (deploy/images/**) are excluded: they are invoked by a Dockerfile with a fixed
+# argument vector and are not reachable from any lane on this side of the image.
+ENTRY_POINT_DIRECTORIES = (
+    "scripts/ci",
+    "scripts/e2e",
+    "scripts/contract",
+    "scripts/release",
+    "e2e",
+    "e2e/k3d",
+    "e2e/k6",
+)
+
+# Entry points a lane invokes from outside those directories. Listed by path so
+# that adding one is a decision rather than a side effect of a glob.
+ADDITIONAL_ENTRY_POINTS = (
+    "deploy/images/sandbox/build.sh",
+    "deploy/k3d/test_image_contract.py",
+)
+
+# Lanes: the files that select what runs. Every flag they pass to a corpus entry
+# point is checked against that entry point's declared set (A3).
+LANE_FILES = (
+    "scripts/ci/check-all.sh",
+    "scripts/ci/check-rust.sh",
+    "scripts/ci/check-reliability.sh",
+    "scripts/ci/check_formal.sh",
+    "scripts/ci/check-docs.sh",
+    "lefthook.yml",
+)
+
+# Key: repository-relative path. Value: why this executable is not subject to
+# A1/A2. Only two reasons are admissible and both are structural.
+ENTRY_POINT_EXEMPTIONS: dict[str, str] = {
+    "scripts/ci/kani.sh": (
+        "A transparent argument passthrough: it ends in `exec cargo kani \"$@\"`, "
+        "so the argument vocabulary is Kani's and Kani refuses its own unknown "
+        "flags. A usage line here would have to restate a vocabulary this "
+        "repository does not own."
+    ),
+    "e2e/k3d/distributed_control_driver.ts": (
+        "Driven by `pnpm exec tsx` from distributed_control_e2e.sh with a fixed "
+        "argument vector; it is not independently invocable and has no lane."
+    ),
+}
+
+# Shell files that are sourced into another script rather than executed. They
+# have no argument vector of their own to admit or refuse.
+SOURCED_LIBRARY = re.compile(r"^_|/_")
+
+USAGE_LINE = re.compile(r"^\s*usage:", re.IGNORECASE | re.MULTILINE)
+LONG_FLAG = re.compile(r"--[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+PARSER_CONSTRUCTION = re.compile(r"argparse\.ArgumentParser\(([^)]*)\)", re.DOTALL)
+# A lane invocation: an optional `python3`/`bash` prefix, a repository path, and
+# whatever flags follow on the same logical line.
+LANE_INVOCATION = re.compile(
+    r"(?:python3|bash|sh|env\s+\S+)?\s*((?:scripts|e2e|deploy)/[\w./-]+\.(?:py|sh))((?:\s+[^\s|&;<>]+)*)"
+)
+
+
+class Probe:
+    """What one entry point did when handed a flag it does not implement."""
+
+    def __init__(self, relative: str, status: int, output: str) -> None:
+        self.relative = relative
+        self.status = status
+        self.output = output
+
+    @property
+    def refused(self) -> bool:
+        return self.status != 0
+
+    @property
+    def named_itself(self) -> bool:
+        name = Path(self.relative).name
+        return any(name in line for line in self.output.splitlines() if USAGE_LINE.match(line))
+
+    @property
+    def declared_flags(self) -> set[str]:
+        """Flags the entry point names in its own refusal output.
+
+        Read back rather than restated here, so this file cannot hold a stale
+        second copy of anybody's argument list.
+        """
+
+        found = set(LONG_FLAG.findall(self.output))
+        return {flag for flag in found if flag != PROBE_FLAG} - {"--help"}
+
+
+def is_entry_point(path: Path) -> bool:
+    if path.name.startswith("."):
+        return False
+    if SOURCED_LIBRARY.search("/" + path.name):
+        return False
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    if path.suffix == ".py":
+        return '__main__' in text
+    if path.suffix == ".sh":
+        return text.startswith("#!")
+    return False
+
+
+def corpus(root: Path) -> list[str]:
+    """Every gate entry point, in a stable order."""
+
+    found: list[str] = []
+    for directory in ENTRY_POINT_DIRECTORIES:
+        base = root / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.iterdir()):
+            if not path.is_file() or path.suffix not in (".py", ".sh"):
+                continue
+            if not is_entry_point(path):
+                continue
+            relative = path.relative_to(root).as_posix()
+            if relative in ENTRY_POINT_EXEMPTIONS or relative in found:
+                continue
+            found.append(relative)
+    for relative in ADDITIONAL_ENTRY_POINTS:
+        if (root / relative).is_file() and relative not in ENTRY_POINT_EXEMPTIONS:
+            found.append(relative)
+    return found
+
+
+def probe(root: Path, relative: str, flag: str = PROBE_FLAG) -> Probe:
+    path = root / relative
+    command = ["python3", str(path)] if path.suffix == ".py" else ["bash", str(path)]
+    try:
+        result = subprocess.run(
+            [*command, flag],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as expired:
+        # A deadline is not an inconclusive probe. Refusing an unimplemented
+        # flag is a parse-time decision; an entry point still running after the
+        # deadline has started doing work it was never asked to do.
+        captured = (expired.stdout or b"") + (expired.stderr or b"")
+        text = captured.decode("utf-8", errors="replace") if isinstance(captured, bytes) else str(captured)
+        return Probe(relative, 0, text)
+    return Probe(relative, result.returncode, result.stdout + result.stderr)
+
+
+def probe_all(root: Path, relatives: list[str]) -> dict[str, Probe]:
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(lambda relative: probe(root, relative), relatives))
+    return {result.relative: result for result in results}
+
+
+def refusal_errors(probes: dict[str, Probe]) -> list[str]:
+    """A1: an unimplemented flag is refused by name."""
+
+    errors: list[str] = []
+    for relative, result in sorted(probes.items()):
+        if not result.refused:
+            errors.append(
+                f"{relative}: exits {result.status} when given {PROBE_FLAG}, an argument it does "
+                "not implement; it ran its default work instead of refusing, so a misspelled "
+                "flag at a call site is silently ignored. Parse arguments strictly "
+                "(argparse with allow_abbrev=False, or a shell case whose default arm exits)."
+            )
+        elif not result.named_itself:
+            errors.append(
+                f"{relative}: refuses {PROBE_FLAG} but prints no `usage:` line naming itself, so "
+                "the caller learns that something was wrong and not which spellings exist"
+            )
+    return errors
+
+
+def abbreviation_construction_errors(sources: dict[str, str]) -> list[str]:
+    """A2, statically: every parser states that a flag has one spelling."""
+
+    errors: list[str] = []
+    for relative, text in sorted(sources.items()):
+        for arguments in PARSER_CONSTRUCTION.findall(text):
+            if "allow_abbrev" not in arguments:
+                errors.append(
+                    f"{relative}: an argparse parser is constructed without allow_abbrev=False, "
+                    "so every unambiguous prefix of every flag is a second accepted spelling of "
+                    "it and a truncated flag cannot be told from the intended one"
+                )
+    return errors
+
+
+def abbreviation_behaviour_errors(root: Path, probes: dict[str, Probe]) -> list[str]:
+    """A2, dynamically: one truncation per entry point is actually refused."""
+
+    truncations: list[tuple[str, str]] = []
+    for relative, result in sorted(probes.items()):
+        declared = result.declared_flags
+        if not declared:
+            continue
+        longest = max(declared, key=len)
+        if len(longest) < 6:
+            continue
+        truncated = longest[:-1]
+        if truncated in declared:
+            continue
+        truncations.append((relative, truncated))
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        outcomes = list(pool.map(lambda pair: probe(root, pair[0], pair[1]), truncations))
+    errors = []
+    for (relative, truncated), outcome in zip(truncations, outcomes):
+        if not outcome.refused:
+            errors.append(
+                f"{relative}: accepts {truncated}, an abbreviation of a declared flag, so that "
+                "flag has more than one spelling and a typo is indistinguishable from intent"
+            )
+    return errors
+
+
+def lane_call_site_errors(lanes: dict[str, str], declared: dict[str, set[str]]) -> list[str]:
+    """A3: a lane may only pass a flag its target declares."""
+
+    errors: list[str] = []
+    for lane, text in sorted(lanes.items()):
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            for match in LANE_INVOCATION.finditer(stripped):
+                target = match.group(1)
+                if target not in declared:
+                    continue
+                for flag in LONG_FLAG.findall(match.group(2)):
+                    if flag in declared[target]:
+                        continue
+                    known = ", ".join(sorted(declared[target])) or "(none)"
+                    errors.append(
+                        f"{lane}: invokes {target} {flag}, which {target} does not declare; "
+                        f"it declares {known}"
+                    )
+    return errors
+
+
+def python_sources(root: Path) -> dict[str, str]:
+    """Every Python file in the corpus directories, entry point or helper.
+
+    The spelling rule is over parser *construction*, not over entry points: a
+    helper module that builds a parser hands its abbreviations to whatever
+    imports it.
+    """
+
+    sources = {}
+    for directory in ENTRY_POINT_DIRECTORIES:
+        base = root / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.glob("*.py")):
+            sources[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+    for relative in ADDITIONAL_ENTRY_POINTS:
+        path = root / relative
+        if path.suffix == ".py" and path.is_file():
+            sources[relative] = path.read_text(encoding="utf-8")
+    return sources
+
+
+def validate(root: Path) -> list[str]:
+    relatives = corpus(root)
+    if len(relatives) < 30:
+        return [
+            f"gate argument corpus collapsed to {len(relatives)} entry points; a rule over the "
+            "set is worthless when the set is empty, so discovery failing is itself a failure"
+        ]
+    probes = probe_all(root, relatives)
+    declared = {relative: result.declared_flags for relative, result in probes.items()}
+    lanes = {
+        relative: (root / relative).read_text(encoding="utf-8")
+        for relative in LANE_FILES
+        if (root / relative).is_file()
+    }
+    errors = refusal_errors(probes)
+    errors += abbreviation_construction_errors(python_sources(root))
+    errors += abbreviation_behaviour_errors(root, probes)
+    errors += lane_call_site_errors(lanes, declared)
+    for relative, reason in sorted(ENTRY_POINT_EXEMPTIONS.items()):
+        if not (root / relative).exists():
+            errors.append(
+                f"{relative}: ENTRY_POINT_EXEMPTIONS names a file that no longer exists; drop the "
+                f"stale exemption ({reason.split('.')[0]})"
+            )
+    return errors
+
+
+def self_test() -> None:
+    """Decision table, one row per shape the survey of this repository found.
+
+    Causes, over an entry point given a flag it does not implement:
+      C1 it exits non-zero and prints a `usage:` line naming itself
+      C2 it exits zero, having fallen through to its default work
+      C3 it exits non-zero but prints no usage line
+      C4 it never returns within the probe deadline
+      C5 it is a declared exemption (an argument passthrough)
+    Causes, over spelling:
+      C6 an argparse parser passes allow_abbrev=False
+      C7 an argparse parser omits it
+      C8 a truncated declared flag is refused
+      C9 a truncated declared flag is accepted
+    Causes, over lanes:
+      C10 a lane passes a flag the target declares
+      C11 a lane passes a flag the target does not declare
+      C12 a lane passes no flag at all
+    Effects: E1 admitted, E2 rejected by name.
+    Rules: A1 = C1|C5 => E1; C2|C3|C4 => E2.
+           A2 = C6|C8 => E1; C7|C9 => E2.
+           A3 = C10|C12 => E1; C11 => E2.
+    """
+
+    import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
+
+    strict = (
+        "#!/usr/bin/env bash\n"
+        'case "${1:-}" in\n  ""|--self-test) ;;\n'
+        '  *) echo "usage: strict.sh [--self-test]" >&2; exit 2 ;;\nesac\n'
+        'echo ran\n'
+    )
+    falls_through = '#!/usr/bin/env bash\nif [ "${1:-}" = "--self-test" ]; then exit 0; fi\necho ran\n'
+    silent_refusal = '#!/usr/bin/env bash\nexit 3\n'
+    never_returns = "#!/usr/bin/env bash\nsleep 600\n"
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        directory = root / "scripts/ci"
+        directory.mkdir(parents=True)
+        for name, body in (
+            ("strict.sh", strict),
+            ("falls_through.sh", falls_through),
+            ("silent_refusal.sh", silent_refusal),
+        ):
+            (directory / name).write_text(body, encoding="utf-8")
+        probes = probe_all(root, ["scripts/ci/strict.sh", "scripts/ci/falls_through.sh", "scripts/ci/silent_refusal.sh"])
+        errors = refusal_errors(probes)
+        assert not [e for e in errors if "strict.sh" in e], "C1/E1"
+        assert [e for e in errors if "falls_through.sh" in e], "C2/E2"
+        assert [e for e in errors if "silent_refusal.sh" in e], "C3/E2"
+
+        # C4: the deadline is a refusal failure, not an inconclusive probe.
+        (directory / "never_returns.sh").write_text(never_returns, encoding="utf-8")
+        global PROBE_TIMEOUT_SECONDS
+        original_timeout = PROBE_TIMEOUT_SECONDS
+        PROBE_TIMEOUT_SECONDS = 1
+        try:
+            slow = probe_all(root, ["scripts/ci/never_returns.sh"])
+            assert refusal_errors(slow), "C4/E2 a probe deadline is a refusal failure"
+        finally:
+            PROBE_TIMEOUT_SECONDS = original_timeout
+
+        # C5: an exemption removes a file from the corpus, and a stale one is
+        # itself an error.
+        assert "scripts/ci/strict.sh" in corpus(root), "C5 baseline"
+        ENTRY_POINT_EXEMPTIONS["scripts/ci/strict.sh"] = "fixture"
+        try:
+            assert "scripts/ci/strict.sh" not in corpus(root), "C5/E1"
+        finally:
+            del ENTRY_POINT_EXEMPTIONS["scripts/ci/strict.sh"]
+
+        # C6/C7: the spelling rule over parser construction.
+        # Assembled rather than written as literals: this checker scans its own
+        # directory, and a fixture spelled out here would be found by the rule
+        # it is a fixture for.
+        construction = "argparse.ArgumentParser("
+        assert not abbreviation_construction_errors(
+            {"a.py": construction + "allow_abbrev=False, description=__doc__)"}
+        ), "C6/E1"
+        assert abbreviation_construction_errors(
+            {"a.py": construction + "description=__doc__)"}
+        ), "C7/E2"
+
+        # C8/C9: the spelling rule as behaviour. `strict.sh` declares
+        # --self-test and refuses --self-tes; the abbreviating fixture accepts it.
+        abbreviating = (
+            "#!/usr/bin/env bash\n"
+            'case "${1:-}" in\n  --self-tes*) exit 0 ;;\n'
+            '  *) echo "usage: abbreviating.sh [--self-test]" >&2; exit 2 ;;\nesac\n'
+        )
+        (directory / "abbreviating.sh").write_text(abbreviating, encoding="utf-8")
+        spelling = probe_all(root, ["scripts/ci/strict.sh", "scripts/ci/abbreviating.sh"])
+        behaviour = abbreviation_behaviour_errors(root, spelling)
+        assert not [e for e in behaviour if "strict.sh" in e], "C8/E1"
+        assert [e for e in behaviour if "abbreviating.sh" in e], "C9/E2"
+
+        # C10/C11/C12: the lane rule, including the exact defect this file was
+        # written for -- a lane that spells the flag its target does not have.
+        declared = {"scripts/ci/strict.sh": {"--self-test"}}
+        assert not lane_call_site_errors(
+            {"lane.sh": "run static x scripts/ci/strict.sh --self-test\n"}, declared
+        ), "C10/E1"
+        assert lane_call_site_errors(
+            {"lane.sh": "run static x scripts/ci/strict.sh --selftest\n"}, declared
+        ), "C11/E2 the reported defect"
+        assert not lane_call_site_errors(
+            {"lane.sh": "run static x scripts/ci/strict.sh\n"}, declared
+        ), "C12/E1"
+        assert not lane_call_site_errors(
+            {"lane.sh": "# scripts/ci/strict.sh --selftest\n"}, declared
+        ), "C12/E1 a comment is documentation, not a call site"
+
+    print("check_gate_arguments self-test: the decision table holds")
+
+
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_gate_arguments.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument(
+        "--self-test", action="store_true", help="run the decision table instead of the corpus"
+    )
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    if parse(sys.argv[1:]).self_test:
+        self_test()
+        raise SystemExit(0)
+    problems = validate(ROOT)
+    for problem in problems:
+        print(f"ERROR: {problem}", file=sys.stderr)
+    if problems:
+        raise SystemExit(1)
+    print(
+        f"OK - {len(corpus(ROOT))} gate entry points refuse an argument they do not implement, "
+        "each flag has one spelling, and every lane spells its call sites as declared."
+    )

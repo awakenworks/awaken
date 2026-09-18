@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Require an architecture plan for every Rust or Web product-only surface."""
 
+import argparse
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,5 +63,21 @@ def main() -> None:
     print(f"proof boundaries: {len(actual)}/{len(expected)} residual requirements documented, 0 missing, 0 extra")
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for: that is how
+# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
+# and the self-test never once executed. ``allow_abbrev=False`` closes the
+# second half: without it ``--self-tes`` is also accepted, so the flag has no
+# single spelling.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_proof_boundaries.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument("paths", nargs="*", help="ignored; the residual-boundary ledger is read whole")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    parse(sys.argv[1:])
     main()

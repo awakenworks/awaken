@@ -783,7 +783,7 @@ def source_commit(repository: Path) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     generate = subparsers.add_parser("generate")
     generate.add_argument("--artifact", type=Path, required=True)

@@ -133,7 +133,7 @@ def functional_coverage_rows(relative: str) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "--require-complete",
         action="store_true",

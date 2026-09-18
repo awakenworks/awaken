@@ -19,6 +19,19 @@
 # Requires: k3d, kubectl, docker (daemon up), rustc 1.96 (host build), node (e2e/).
 # Usage: e2e/k3d/cold_start_race_e2e.sh [M]   (default M=12, from repo root)
 set -euo pipefail
+
+# The concurrent-run count is the only argument. It used to be read as
+# `${1:-12}`, so a flag or a typo became the default silently and the run
+# reported on a burst size nobody chose.
+case "${1:-}" in
+  "") ;;
+  [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+  *) echo "usage: e2e/k3d/cold_start_race_e2e.sh [<concurrent runs 1..999>]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: e2e/k3d/cold_start_race_e2e.sh [<concurrent runs 1..999>]" >&2
+  exit 2
+fi
 export CARGO_CACHE_AUTOCLEAN=0
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

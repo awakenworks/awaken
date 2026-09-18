@@ -42,7 +42,7 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(allow_abbrev=False)
 parser.add_argument("--json", action="store_true")
 parser.add_argument(
     "--require-complete",

@@ -39,6 +39,7 @@ reason comment, which is a decision someone made and can be argued with.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -589,10 +590,32 @@ def write_baseline() -> int:
     return 0
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for: that is how
+# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
+# and the self-test never once executed. ``allow_abbrev=False`` closes the
+# second half: without it ``--self-tes`` is also accepted, so the flag has no
+# single spelling.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="check_test_waits.py", description=__doc__, allow_abbrev=False
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--self-test", action="store_true", help="run the decision table instead of the scan"
+    )
+    mode.add_argument(
+        "--write-baseline", action="store_true", help="rewrite the committed wait baseline"
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    if "--self-test" in sys.argv:
+    _arguments = parse(sys.argv[1:])
+    if _arguments.self_test:
         selftest()
         raise SystemExit(0)
-    if "--write-baseline" in sys.argv:
+    if _arguments.write_baseline:
         raise SystemExit(write_baseline())
     raise SystemExit(main())

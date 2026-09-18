@@ -7,6 +7,18 @@
 #   e2e/k6/run.sh stress       # ramping-VUs load test
 #   VUS=50 e2e/k6/run.sh stress # override the target VU count
 set -euo pipefail
+
+# The profile is the only argument, and there are exactly two. It used to be
+# read as `${1:-smoke}`, so `e2e/k6/run.sh stres` silently ran the smoke
+# profile and reported a functional pass for a load test that never happened.
+case "${1:-}" in
+  ""|smoke|stress) ;;
+  *) echo "usage: e2e/k6/run.sh [smoke|stress]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: e2e/k6/run.sh [smoke|stress]" >&2
+  exit 2
+fi
 cd "$(dirname "$0")/../.."
 
 PROFILE="${1:-smoke}"

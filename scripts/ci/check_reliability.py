@@ -415,7 +415,7 @@ esac
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--tsan-log", type=Path)
     parser.add_argument("--mutants", type=Path)

@@ -1109,7 +1109,7 @@ def self_test(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     if not WORKFLOW.is_file() or not BUILD_SCRIPT.is_file():

@@ -102,7 +102,7 @@ def export_groups(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--profile-directory", required=True, type=pathlib.Path)
     parser.add_argument("--output-directory", required=True, type=pathlib.Path)
     parser.add_argument("--ignore-filename-regex")

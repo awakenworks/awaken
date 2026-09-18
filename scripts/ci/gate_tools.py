@@ -665,7 +665,7 @@ def self_test() -> int:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(add_help=True, description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, add_help=True, description=__doc__)
     parser.add_argument("action", nargs="?", default="report")
     parser.add_argument("name", nargs="?")
     parser.add_argument("--gate")

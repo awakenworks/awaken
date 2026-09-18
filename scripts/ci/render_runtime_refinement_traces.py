@@ -600,7 +600,7 @@ def render_observations(trace_dir: Path, output: Path, repository: Path, manifes
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--projection", choices=["thread-commit", "session-observations"], default="thread-commit")
     parser.add_argument("trace_dir", type=Path)
     parser.add_argument("output_dir", type=Path)

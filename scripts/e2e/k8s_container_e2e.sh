@@ -11,6 +11,14 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+
+# This runner takes no arguments; it used to accept and discard them, so a
+# caller's flag disappeared into a full cluster build. Refuse before any tool
+# admission or cluster creation.
+if [ "$#" -ne 0 ]; then
+  echo "usage: scripts/e2e/k8s_container_e2e.sh" >&2
+  exit 2
+fi
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 . e2e/k3d/harness.sh

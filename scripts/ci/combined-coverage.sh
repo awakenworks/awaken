@@ -12,6 +12,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+
+# This gate takes no arguments. Accepting one silently is how a caller's
+# intent ("only the links", "--quick") disappears into a full run that
+# answers a different question; refuse before any work.
+if [ "$#" -ne 0 ]; then
+  echo "usage: scripts/ci/combined-coverage.sh" >&2
+  exit 2
+fi
 source scripts/ci/_provider_environment.sh
 awaken_unset_ambient_api_keys
 

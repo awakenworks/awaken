@@ -7,6 +7,18 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 source "$REPO_ROOT/e2e/k3d/harness.sh"
+
+# --self-test is the only argument; anything else used to fall through to a real
+# five-role k3d rollout, which is minutes of cluster build for a run the caller
+# did not ask for. Refuse before the cluster name is even validated.
+case "${1:-}" in
+  ""|--self-test) ;;
+  *) echo "usage: e2e/k3d/distributed_control_e2e.sh [--self-test]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: e2e/k3d/distributed_control_e2e.sh [--self-test]" >&2
+  exit 2
+fi
 CLUSTER="${AWAKEN_K3D_CLUSTER:-awaken-adr71}"
 # Validate before tool admission and registration of destructive cleanup.
 k3d_validate_name "$CLUSTER" || exit 2

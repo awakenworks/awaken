@@ -3,7 +3,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+# Admit the mode before doing anything. The `case` at the bottom refuses an
+# unknown mode too, but only after package-manager detection and an install
+# check have already run and printed; and neither guard saw a second argument
+# at all, so `--quick --watch` silently ran `--quick`.
 mode="${1:---full}"
+case "$mode" in
+  --quick|--full) ;;
+  *) echo "usage: scripts/ci/check-frontend.sh [--quick|--full]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: scripts/ci/check-frontend.sh [--quick|--full]" >&2
+  echo "       (this gate takes exactly one mode; '${*:2}' is not part of it)" >&2
+  exit 2
+fi
 
 if [ ! -f package.json ]; then
   echo "OK - no package.json; skipping frontend checks."

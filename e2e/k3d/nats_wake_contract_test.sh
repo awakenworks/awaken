@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Exercise the canonical runner's predicates and cleanup, without a live cluster.
 set -euo pipefail
+
+# This runner takes no arguments. Accepting one silently is how a caller's
+# intent disappears into a run that answers a different question, and here it
+# is minutes of real cluster or server work; refuse before any of it.
+if [ "$#" -ne 0 ]; then
+  echo "usage: e2e/k3d/nats_wake_contract_test.sh" >&2
+  exit 2
+fi
 source "$(dirname "$0")/nats_wake_e2e.sh"
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf -- "$TEST_ROOT"' EXIT

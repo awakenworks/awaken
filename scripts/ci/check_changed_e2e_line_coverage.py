@@ -273,7 +273,7 @@ def coverage_exclusions(manifest: str = "scripts/ci/e2e_unreachable.toml") -> st
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--print-ignore-filename-regex", action="store_true")
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--minimum", type=float, default=0.95)

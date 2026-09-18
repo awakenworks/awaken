@@ -138,9 +138,16 @@ run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "formal-product-ledger" python3 scripts/ci/check_feature_coverage.py --require-complete
 run static "managed-wire-naming self-test" python3 scripts/ci/check_managed_wire_naming.py --self-test
 run static "managed-wire-naming" python3 scripts/ci/check_managed_wire_naming.py
-run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --selftest
+# A checker that accepts an argument it does not implement runs something other
+# than what this file asked for, and still exits zero — which is how the
+# degrading-defaults self-test below was invoked as `--selftest` for years while
+# that script's flag was `--self-test`, so it never once ran. The rule is over
+# the whole set of gate entry points, so a checker added tomorrow inherits it.
+run static "gate-argument hygiene self-test" python3 scripts/ci/check_gate_arguments.py --self-test
+run static "gate-argument hygiene" python3 scripts/ci/check_gate_arguments.py
+run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --self-test
 run static "dependency-gates" python3 scripts/ci/check_dependency_gates.py
-run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_defaults.py --selftest
+run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_defaults.py --self-test
 run static "degrading-defaults" python3 scripts/ci/check_degrading_defaults.py
 run static "contract-shape self-test" python3 scripts/ci/check_contract_shape.py --self-test
 run static "contract-shape" python3 scripts/ci/check_contract_shape.py

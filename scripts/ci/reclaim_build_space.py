@@ -637,7 +637,7 @@ def self_test() -> int:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("--apply", action="store_true", help="remove the reclaimable paths")
     parser.add_argument("--dry-run", action="store_true", help="the default; report only")
     parser.add_argument("--summary", action="store_true", help="one line per category")

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Static contract for the combined K3D product runtime image."""
 
+import argparse
+import sys
 from pathlib import Path
 
 
@@ -231,5 +233,17 @@ def main() -> None:
     print("OK - K3D product image contains Sandbox, TLS, and Skill runtime dependencies.")
 
 
+# One canonical spelling per flag, and nothing else admitted. A checker that
+# accepted an unknown argument and fell through to its normal scan exited zero
+# having run something other than what the caller asked for.
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="test_image_contract.py", description=__doc__, allow_abbrev=False
+    )
+    parser.add_argument("paths", nargs="*", help="ignored; the image contract is read whole")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    parse(sys.argv[1:])
     main()

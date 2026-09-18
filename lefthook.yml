@@ -126,6 +126,17 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/reclaim_build_space.py --self-test
 
+    # 3c-bis. A gate entry point that accepts an argument it does not implement
+    #    runs something other than what the caller asked for and still exits
+    #    zero. check-all.sh invoked `--selftest` for years against a script whose
+    #    flag was `--self-test`, so that self-test never once ran. The rule is
+    #    over the whole set of entry points, so a new checker inherits it.
+    gate-arguments:
+      # >>> generated glob from check_gate_arguments.py INPUT_GLOBS — do not edit
+      glob: "{deploy/images/sandbox/build.sh,deploy/k3d/test_image_contract.py,e2e/*.sh,e2e/k3d/*.py,e2e/k3d/*.sh,e2e/k6/*.sh,lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/contract/*.sh,scripts/e2e/*.sh,scripts/release/*.py,scripts/release/*.sh}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_gate_arguments.py
+
     # 3d. The record of the last green full gate is evidence, so a commit may not
     #    leave it naming a commit that is gone, off main, or blessed by a partial
     #    run. Staleness is a schedule and is reported by check-all, not here.

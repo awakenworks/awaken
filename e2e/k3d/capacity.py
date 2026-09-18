@@ -215,7 +215,7 @@ class CapacityTests(unittest.TestCase):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("--nodes", type=int)
     parser.add_argument("--eviction-threshold")
     parser.add_argument("--self-test", action="store_true")

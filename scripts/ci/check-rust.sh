@@ -13,7 +13,25 @@ awaken_configure_cargo_target "$PWD"
 awaken_unset_ambient_api_keys
 awaken_append_repo_tools
 
+# Argument admission happens here, before a single check runs. A misspelled
+# mode used to reach the `case` at the bottom of this file, so `--ful` first
+# executed every static scan and both neutral-graph compiles and only then
+# refused; a caller reading the tail of that output saw work, not a rejection.
+# Extra arguments were discarded outright, so `--full --require-tools` ran
+# `--full` and silently dropped the second word.
 mode="${1:---full}"
+case "$mode" in
+  --quick|--push|--full|--self-test) ;;
+  *)
+    echo "usage: scripts/ci/check-rust.sh [--quick|--push|--full|--self-test]" >&2
+    exit 2
+    ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: scripts/ci/check-rust.sh [--quick|--push|--full|--self-test]" >&2
+  echo "       (this gate takes exactly one mode; '${*:2}' is not part of it)" >&2
+  exit 2
+fi
 
 if [ ! -f Cargo.toml ]; then
   echo "OK - no Cargo.toml; skipping Rust checks."
