@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::clock::system_clock;
+
 use awaken_service_lifecycle::StartupComponent;
 
 use crate::config;
@@ -203,16 +205,17 @@ pub(super) async fn open_environment_work(
     ensure_store_parent(backend)?;
     match backend {
         StoreBackend::Sqlite(path) => Ok(Arc::new(
-            awaken_work_store::SqliteWorkQueue::open(&path.to_string_lossy())
+            awaken_work_store::SqliteWorkQueue::open(&path.to_string_lossy(), system_clock())
                 .map_err(|error| format!("open work queue SQLite: {error}"))?,
         )),
         StoreBackend::Postgres(url) => Ok(Arc::new(
             match postgres_schema {
                 PostgresSchemaMode::Migrate => {
-                    awaken_work_store::PostgresWorkQueue::connect(url).await
+                    awaken_work_store::PostgresWorkQueue::connect(url, system_clock()).await
                 }
                 PostgresSchemaMode::Verify => {
-                    awaken_work_store::PostgresWorkQueue::connect_existing(url).await
+                    awaken_work_store::PostgresWorkQueue::connect_existing(url, system_clock())
+                        .await
                 }
             }
             .map_err(|error| format!("connect work queue Postgres: {error}"))?,

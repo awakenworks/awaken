@@ -10,10 +10,10 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4761,
+      "production_lines": 4898,
       "catch_all_errors": 5,
       "growth_reasons": {
-        "production_lines": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)"
+        "production_lines": "the UTC calendar codec moved from awaken-session-contract into the clock port's own crate so every context spells a clock reading identically"
       }
     },
     "awaken-authorization-contract": {
@@ -84,7 +84,7 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 17130,
+      "production_lines": 17030,
       "catch_all_errors": 11,
       "capability_defaults": 49,
       "growth_reasons": {

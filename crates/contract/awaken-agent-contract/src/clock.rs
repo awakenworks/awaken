@@ -4,9 +4,24 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod utc;
+
 /// A source of wall-clock time in epoch milliseconds.
 pub trait Clock: Send + Sync {
     fn now_ms(&self) -> u64;
+
+    /// This clock's current reading, spelled as the RFC-3339 UTC instant a
+    /// durable record carries in an observation field (`created_at`,
+    /// `started_at`, `archived_at`, ...).
+    ///
+    /// The rendering is a total function of [`Self::now_ms`], so an owner that
+    /// stamps a record and an owner that does lease arithmetic from the same
+    /// reading cannot disagree. Overriding it can only change the spelling, not
+    /// the fact: there is no weaker sibling for an implementation to fall back
+    /// to, which is why this default is a rendering and not a degrade.
+    fn observed_at(&self) -> String {
+        utc::epoch_millis_to_rfc3339(self.now_ms())
+    }
 }
 
 /// The real system clock.
@@ -20,6 +35,16 @@ impl Clock for SystemClock {
             .map(|d| d.as_millis().min(i64::MAX as u128) as u64)
             .unwrap_or(0)
     }
+}
+
+/// The real system clock as an injectable handle.
+///
+/// A composition root calls this once per store it builds; nothing below the
+/// root reaches for the system clock, which is what keeps every `*_at` a value
+/// a test can name.
+#[must_use]
+pub fn system_clock() -> std::sync::Arc<dyn Clock> {
+    std::sync::Arc::new(SystemClock)
 }
 
 /// A hand-driven clock for deterministic tests.

@@ -42,6 +42,7 @@ mod worker_transport_security;
 
 use std::sync::Arc;
 
+use awaken_agent_contract::clock::system_clock;
 use awaken_config_service::ManagementAuditPlane;
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -493,8 +494,11 @@ async fn open_process_stores(
         Some(match &cfg.environment {
             StoreBackend::Sqlite(environment_path) => (
                 Arc::new(
-                    awaken_env_store::SqliteEnvRegistry::open(&path(environment_path))
-                        .map_err(|error| format!("open environments SQLite: {error}"))?,
+                    awaken_env_store::SqliteEnvRegistry::open(
+                        &path(environment_path),
+                        system_clock(),
+                    )
+                    .map_err(|error| format!("open environments SQLite: {error}"))?,
                 ) as Arc<dyn awaken_environment_contract::EnvRegistry>,
                 Arc::new(
                     awaken_sandbox_policy_store::SqliteSandboxExecutionPolicyStore::open(&path(
@@ -507,10 +511,11 @@ async fn open_process_stores(
             StoreBackend::Postgres(url) => {
                 let environments = match postgres_schema {
                     PostgresSchemaMode::Migrate => {
-                        awaken_env_store::PostgresEnvRegistry::connect(url).await
+                        awaken_env_store::PostgresEnvRegistry::connect(url, system_clock()).await
                     }
                     PostgresSchemaMode::Verify => {
-                        awaken_env_store::PostgresEnvRegistry::connect_existing(url).await
+                        awaken_env_store::PostgresEnvRegistry::connect_existing(url, system_clock())
+                            .await
                     }
                 }
                 .map_err(|error| format!("connect environments Postgres: {error}"))?;

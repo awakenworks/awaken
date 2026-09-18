@@ -12,8 +12,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use awaken_agent_contract::clock::{Clock, SystemClock};
 use awaken_session_contract::work_queue::{
-    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats, SessionAccessDigest,
+    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkLeaseMutationAdmission,
     WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError, WorkSessionAccess, WorkState,
     session_work_release_admission, work_lease_mutation_admission,
@@ -29,6 +30,10 @@ const HEARTBEAT_TTL_SECONDS: u64 = 60;
 pub struct InMemoryWorkQueue {
     authority: Mutex<InMemoryQueueAuthority>,
     seq: AtomicU64,
+    /// The one source of every observation timestamp this reference backend
+    /// writes — the same seam the durable siblings carry, so a conformance test
+    /// can drive all three from one [`ManualClock`](awaken_agent_contract::clock::ManualClock).
+    clock: std::sync::Arc<dyn Clock>,
 }
 
 /// All queue state, lease and token accesses share this one commit boundary.
@@ -78,9 +83,16 @@ impl Default for InMemoryWorkQueue {
 impl InMemoryWorkQueue {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_clock(std::sync::Arc::new(SystemClock))
+    }
+
+    /// The reference queue reading a caller-supplied clock.
+    #[must_use]
+    pub fn with_clock(clock: std::sync::Arc<dyn Clock>) -> Self {
         Self {
             authority: Mutex::new(InMemoryQueueAuthority::default()),
             seq: AtomicU64::new(0),
+            clock,
         }
     }
 
@@ -111,6 +123,7 @@ impl InMemoryWorkQueue {
                 },
                 metadata: BTreeMap::new(),
                 state: WorkState::Queued,
+                created_at: self.clock.observed_at(),
                 acknowledged_at: None,
                 latest_heartbeat_at: None,
                 started_at: None,
@@ -134,6 +147,7 @@ impl InMemoryWorkQueue {
                 data,
                 metadata: BTreeMap::new(),
                 state: WorkState::Queued,
+                created_at: self.clock.observed_at(),
                 acknowledged_at: None,
                 latest_heartbeat_at: None,
                 started_at: None,
@@ -206,7 +220,9 @@ impl InMemoryWorkQueue {
             .map_err(|error| WorkQueueError::Storage(error.into()))?;
         let work = works.get_mut(&wid).expect("just found");
         work.state = WorkState::Active;
-        work.started_at = Some(OBJECT_AT.to_string());
+        work.started_at = Some(awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(
+            now_ms,
+        ));
         work.latest_heartbeat_at = None;
         let session_access = session_access
             .filter(|_| matches!(work.data, WorkPayload::Session { .. }))
@@ -270,6 +286,7 @@ impl WorkQueue for InMemoryWorkQueue {
                 },
                 metadata: BTreeMap::new(),
                 state: WorkState::Queued,
+                created_at: self.clock.observed_at(),
                 acknowledged_at: None,
                 latest_heartbeat_at: None,
                 started_at: None,
@@ -313,6 +330,7 @@ impl WorkQueue for InMemoryWorkQueue {
                 data: WorkPayload::HealthCheck { id: id.clone() },
                 metadata: BTreeMap::new(),
                 state: WorkState::Queued,
+                created_at: self.clock.observed_at(),
                 acknowledged_at: None,
                 latest_heartbeat_at: None,
                 started_at: None,
@@ -438,7 +456,7 @@ impl WorkQueue for InMemoryWorkQueue {
         if !book.is_owned_at_epoch(&access.work_id, &access.lease_owner, access.lease_epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        work.acknowledged_at = Some(OBJECT_AT.to_string());
+        work.acknowledged_at = Some(self.clock.observed_at());
         work.state = work.state.after_ack();
         Ok(WorkMutationResult::accepted(work.clone()))
     }
@@ -504,8 +522,9 @@ impl WorkQueue for InMemoryWorkQueue {
         if !book.is_owned_at_epoch(&access.work_id, &access.lease_owner, access.lease_epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        work.stop_requested_at = Some(OBJECT_AT.to_string());
-        work.stopped_at = Some(OBJECT_AT.to_string());
+        let stopped_at = self.clock.observed_at();
+        work.stop_requested_at = Some(stopped_at.clone());
+        work.stopped_at = Some(stopped_at);
         work.state = work.state.after_stop();
         let out = work.clone();
         book.release(&access.work_id);
@@ -530,7 +549,7 @@ impl WorkQueue for InMemoryWorkQueue {
         if !book.is_owned_by(wid, worker_id) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        work.acknowledged_at = Some(OBJECT_AT.to_string());
+        work.acknowledged_at = Some(self.clock.observed_at());
         work.state = work.state.after_ack();
         Ok(WorkMutationResult::accepted(work.clone()))
     }
@@ -598,8 +617,9 @@ impl WorkQueue for InMemoryWorkQueue {
         if !book.is_owned_by(wid, worker_id) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        work.stop_requested_at = Some(OBJECT_AT.to_string());
-        work.stopped_at = Some(OBJECT_AT.to_string());
+        let stopped_at = self.clock.observed_at();
+        work.stop_requested_at = Some(stopped_at.clone());
+        work.stopped_at = Some(stopped_at);
         work.state = work.state.after_stop();
         let out = work.clone();
         book.release(wid);
@@ -649,8 +669,9 @@ impl WorkQueue for InMemoryWorkQueue {
         }) else {
             return Ok(None);
         };
-        work.stop_requested_at = Some(OBJECT_AT.to_string());
-        work.stopped_at = Some(OBJECT_AT.to_string());
+        let stopped_at = self.clock.observed_at();
+        work.stop_requested_at = Some(stopped_at.clone());
+        work.stopped_at = Some(stopped_at);
         work.state = WorkState::Stopped;
         let item = work.clone();
         book.release(wid);
@@ -683,8 +704,9 @@ impl WorkQueue for InMemoryWorkQueue {
             SessionWorkReleaseAdmission::Reject => return Ok(false),
             SessionWorkReleaseAdmission::Apply => {}
         }
-        work.stop_requested_at = Some(OBJECT_AT.to_string());
-        work.stopped_at = Some(OBJECT_AT.to_string());
+        let stopped_at = self.clock.observed_at();
+        work.stop_requested_at = Some(stopped_at.clone());
+        work.stopped_at = Some(stopped_at);
         work.state = WorkState::Stopped;
         book.release(&lease.work_id);
         session_token_sha256.remove(&lease.work_id);
@@ -740,7 +762,9 @@ impl WorkQueue for InMemoryWorkQueue {
             book.claim_for(&work_id, worker_owner, now_ms, LEASE_TTL_MS)
                 .map_err(|error| WorkQueueError::Storage(error.into()))?;
             work.state = WorkState::Active;
-            work.started_at = Some(OBJECT_AT.to_string());
+            work.started_at = Some(awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(
+                now_ms,
+            ));
             work.latest_heartbeat_at = None;
         }
         Ok(authority.current_session_lease(env_id, session_id, now_ms))
@@ -793,14 +817,32 @@ impl WorkQueue for InMemoryWorkQueue {
         // (the SDK's ~30s semantics), tracked from the `worker_id` each poll carries —
         // not the 0/1 active-item proxy the clockless build was limited to.
         let workers_polling = book.workers_polling(env_id, now_ms);
-        // `oldest_queued_at` is the oldest item still QUEUED or being PROCESSED (the
-        // SDK's semantics), so it stays set once a worker claims the last queued item —
-        // not just while `depth > 0`. Only a fully drained queue (all stopped) is null.
-        let has_unfinished = queued > 0 || pending > 0;
+        // `oldest_queued_at` is the acceptance instant of the oldest item still
+        // QUEUED or being PROCESSED (the SDK's semantics), so it stays set once a
+        // worker claims the last queued item — not just while `depth > 0`. Only a
+        // fully drained queue (all stopped) has no such row, and then the absence
+        // is the answer.
+        let oldest_queued_at = in_env
+            .iter()
+            .filter(|w| {
+                matches!(
+                    w.state,
+                    WorkState::Queued
+                        | WorkState::Starting
+                        | WorkState::Active
+                        | WorkState::Stopping
+                )
+            })
+            .min_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+            .map(|w| w.created_at.clone());
         Ok(QueueStats {
             depth: queued,
             pending,
-            oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),
+            oldest_queued_at,
             workers_polling,
         })
     }

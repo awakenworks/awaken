@@ -111,10 +111,6 @@ pub enum InvalidEnvironmentConfig {
     PackagesRequirePackageManager,
 }
 
-/// The frozen presence timestamp stamped on a record (parity with the work queue).
-/// The Managed wire adapter reuses it in its `BetaEnvironment` projection.
-pub const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-
 /// Installation-global identity of the immutable built-in local Environment.
 /// Every ingress, Session default, and executable projection must reuse this
 /// value instead of maintaining a parallel literal convention.
@@ -292,6 +288,18 @@ pub struct EnvItem {
     /// the executable projection; Coordinator never opens the policy store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<EnvironmentSandboxPolicyRef>,
+    /// When the registry accepted this Environment, read from the store's
+    /// injected wall-clock port inside the create transaction and never
+    /// rewritten afterwards.
+    ///
+    /// `None` only for a projection that was never registered — the built-in
+    /// local Environment exists by installation, so there is no acceptance
+    /// event to report and the absence is stated rather than invented.
+    pub created_at: Option<String>,
+    /// When the registry last committed a revision of this Environment (the
+    /// create, each update, and the archive). Same clock, same transaction,
+    /// and `None` for the same reason as [`Self::created_at`].
+    pub updated_at: Option<String>,
     pub archived_at: Option<String>,
 }
 
@@ -918,6 +926,8 @@ mod tests {
             },
             sandbox_policy: None,
             archived_at: None,
+            created_at: Some("2026-02-03T04:05:06.007Z".into()),
+            updated_at: Some("2026-02-03T04:05:06.007Z".into()),
         };
         let before = item.clone();
         assert_eq!(

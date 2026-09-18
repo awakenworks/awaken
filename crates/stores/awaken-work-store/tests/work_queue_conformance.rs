@@ -12,6 +12,7 @@
 //! another); making it a checked contract forces the backends to agree by construction.
 //! Postgres joins the same suite behind its DB harness (`pg_tests.sh`).
 
+use awaken_agent_contract::clock::system_clock;
 use awaken_session_contract::SessionId;
 use awaken_session_contract::work_queue::{
     HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
@@ -660,7 +661,7 @@ fn in_memory_backend_conforms() {
 #[test]
 fn sqlite_backend_conforms() {
     block(run_suite(async || {
-        SqliteWorkQueue::open_in_memory().expect("sqlite in-memory queue")
+        SqliteWorkQueue::open_in_memory(system_clock()).expect("sqlite in-memory queue")
     }));
 }
 
@@ -708,7 +709,7 @@ async fn postgres_backend_conforms() {
             .connect(&url)
             .await
             .expect("schema pool");
-        PostgresWorkQueue::with_pool(pool)
+        PostgresWorkQueue::with_pool(pool, system_clock())
             .await
             .expect("queue schema migrations")
     })
