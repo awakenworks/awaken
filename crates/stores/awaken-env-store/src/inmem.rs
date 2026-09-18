@@ -6,8 +6,8 @@
 //! `awaken-environment-contract`.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 #[cfg(test)]
@@ -15,13 +15,18 @@ use awaken_environment_contract::EnvironmentConfig;
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
     EnvRegistry, EnvUpdate, EnvironmentRegistrationIntent, EnvironmentRegistrationIntentFilter,
-    EnvironmentRevision, EnvironmentStoreError, OBJECT_AT,
+    EnvironmentRevision, EnvironmentStoreError,
 };
+
+use awaken_agent_contract::clock::{Clock, SystemClock};
 
 pub struct InMemoryEnvRegistry {
     state: Mutex<InMemoryEnvRegistryState>,
     fail_acknowledgements: AtomicUsize,
     intent_filters: Mutex<Vec<EnvironmentRegistrationIntentFilter>>,
+    /// The one source of every observation timestamp this reference registry
+    /// writes — the same seam the durable siblings carry.
+    clock: Arc<dyn Clock>,
 }
 
 #[derive(Default)]
@@ -42,10 +47,17 @@ impl Default for InMemoryEnvRegistry {
 impl InMemoryEnvRegistry {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(SystemClock))
+    }
+
+    /// The reference registry reading a caller-supplied clock.
+    #[must_use]
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
             state: Mutex::new(InMemoryEnvRegistryState::default()),
             fail_acknowledgements: AtomicUsize::new(0),
             intent_filters: Mutex::new(Vec::new()),
+            clock,
         }
     }
 
@@ -76,6 +88,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
         command.config.validate()?;
+        let committed_at = self.clock.observed_at();
         let fingerprint = command.fingerprint();
         let mut state = self
             .state()
@@ -106,6 +119,8 @@ impl EnvRegistry for InMemoryEnvRegistry {
             scope: command.scope,
             config: command.config,
             sandbox_policy: command.sandbox_policy,
+            created_at: Some(committed_at.clone()),
+            updated_at: Some(committed_at),
             archived_at: None,
         };
         state.envs.insert(id, item.clone());
@@ -162,6 +177,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
         expected_revision: EnvironmentRevision,
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
+        let committed_at = self.clock.observed_at();
         let mut state = self.state()?;
         let Some(item) = state.envs.get_mut(id) else {
             return Ok(None);
@@ -175,6 +191,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
         if !item.apply(patch)? {
             return Ok(Some(item.clone()));
         }
+        item.updated_at = Some(committed_at);
         let item = item.clone();
         state
             .revisions
@@ -187,6 +204,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
     }
 
     async fn archive(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
+        let committed_at = self.clock.observed_at();
         let mut state = self.state()?;
         let Some(item) = state.envs.get_mut(id) else {
             return Ok(None);
@@ -194,7 +212,8 @@ impl EnvRegistry for InMemoryEnvRegistry {
         if item.archived_at.is_some() {
             return Ok(Some(item.clone()));
         }
-        item.archived_at = Some(OBJECT_AT.to_string());
+        item.archived_at = Some(committed_at.clone());
+        item.updated_at = Some(committed_at);
         item.revision = EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
             EnvironmentStoreError::Backend("Environment revision exhausted".into())
         })?);

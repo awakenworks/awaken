@@ -425,6 +425,10 @@ pub fn builtin_local_environment() -> EnvItem {
         scope: None,
         config: EnvironmentConfig::SelfHosted,
         sandbox_policy: None,
+        // The built-in local Environment exists by installation: nothing
+        // registered it, so there is no acceptance or commit instant to report.
+        created_at: None,
+        updated_at: None,
         archived_at: None,
     }
 }

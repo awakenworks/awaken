@@ -10,8 +10,6 @@ use awaken_session_contract::work_queue::{
 use rusqlite::{Connection, OptionalExtension};
 use sqlx::postgres::PgPool;
 
-/// Frozen presence timestamp used by the open-tier Managed projection.
-pub(super) const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 pub(super) const HEARTBEAT_TTL_SECONDS: u64 = 60;
 pub(super) const NS: &str = "work_queue";
 pub(super) const BUNDLE_ID: &str = "awaken.work_queue";
@@ -28,10 +26,11 @@ pub(super) enum PublishedWorkStream {
 pub(super) fn work_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         BUNDLE_ID,
-        vec![Migration::new(
-            1,
-            "current self-hosted work queue authority",
-            "CREATE TABLE {prefix}_item (\
+        vec![
+            Migration::new(
+                1,
+                "current self-hosted work queue authority",
+                "CREATE TABLE {prefix}_item (\
              work_id             TEXT PRIMARY KEY, \
              seq                 BIGINT NOT NULL CHECK (seq >= 0), \
              environment_id      TEXT NOT NULL CHECK (length(environment_id) > 0), \
@@ -51,7 +50,31 @@ pub(super) fn work_bundle() -> Result<MigrationBundle, MigrationError> {
              session_token_sha256 TEXT); \
              CREATE UNIQUE INDEX {prefix}_session_projection_unique \
              ON {prefix}_item (environment_id, data_type, data_id)",
-        )?],
+            )?,
+            observation_column(2)?,
+        ],
+    )
+}
+
+/// The durable acceptance instant, added to both published streams.
+///
+/// Rows written before this column existed never recorded when they were
+/// accepted, so there is no earlier fact to recover. The migration writes the
+/// only real one it has — the instant the column was added on this install —
+/// instead of a constant that would claim every install accepted its Work on
+/// the same day. New rows are stamped by the queue's injected clock inside the
+/// enqueue transaction, and the database-side default is dropped where the
+/// dialect allows it so a future insert cannot acquire a time by omission.
+fn observation_column(version: i64) -> Result<Migration, MigrationError> {
+    Migration::per_dialect(
+        version,
+        "record when the queue accepted each Work item",
+        "ALTER TABLE {prefix}_item ADD COLUMN created_at TEXT NOT NULL \
+         DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'); \
+         ALTER TABLE {prefix}_item ALTER COLUMN created_at DROP DEFAULT",
+        "ALTER TABLE {prefix}_item ADD COLUMN created_at TEXT NOT NULL DEFAULT ''; \
+         UPDATE {prefix}_item SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE created_at = ''",
     )
 }
 
@@ -129,6 +152,7 @@ fn legacy_work_bundle() -> Result<MigrationBundle, MigrationError> {
         POSTGRES_UPGRADE,
         SQLITE_UPGRADE,
     )?);
+    migrations.push(observation_column(7)?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -257,7 +281,7 @@ fn data_of(data_type: &str, data_id: String) -> Result<WorkPayload, String> {
 }
 
 pub(super) const COLS: &str = "work_id, environment_id, data_type, data_id, metadata_json, state, \
-     acknowledged_at, latest_heartbeat_at, started_at, stop_requested_at, stopped_at";
+     acknowledged_at, latest_heartbeat_at, started_at, stop_requested_at, stopped_at, created_at";
 
 pub(super) fn metadata_str(metadata: &BTreeMap<String, String>) -> String {
     serde_json::to_string(metadata).expect("work metadata serializes")
@@ -305,6 +329,7 @@ pub(super) fn build_item(
     started_at: Option<String>,
     stop_requested_at: Option<String>,
     stopped_at: Option<String>,
+    created_at: String,
 ) -> Result<WorkItem, String> {
     let metadata = serde_json::from_str(metadata_json)
         .map_err(|error| format!("invalid persisted work metadata: {error}"))?;
@@ -314,6 +339,7 @@ pub(super) fn build_item(
         data: data_of(data_type, data_id)?,
         metadata,
         state: state_from_wire(state)?,
+        created_at,
         acknowledged_at,
         latest_heartbeat_at,
         started_at,
@@ -336,6 +362,7 @@ pub(super) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem>
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
+        row.get(11)?,
     )
     .map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -494,7 +521,7 @@ mod tests {
         );
         let (stream, legacy) = selected_work_bundle(Some(LEGACY_V1_CHECKSUM)).expect("H3");
         assert_eq!(stream, PublishedWorkStream::Legacy, "H3");
-        assert_eq!(legacy.migrations().last().unwrap().version(), 6, "E2");
+        assert_eq!(legacy.migrations().last().unwrap().version(), 7, "E2");
         assert_eq!(
             legacy.migrations()[0].checksum_for(Dialect::Sqlite),
             LEGACY_V1_CHECKSUM,

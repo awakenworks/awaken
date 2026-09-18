@@ -4,8 +4,12 @@
 //! portable migration bundle.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::clock::Clock;
+#[cfg(test)]
+use awaken_agent_contract::clock::system_clock;
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
     EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRegistrationIntent,
@@ -25,8 +29,6 @@ mod inmem;
 #[cfg(any(test, feature = "test-support"))]
 pub use inmem::InMemoryEnvRegistry;
 
-/// The frozen presence timestamp the managed wire uses (parity with the registry).
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 /// The store's table namespace / bundle prefix (`env_registry_env`).
 const NS: &str = "env_registry";
 
@@ -119,12 +121,45 @@ fn env_bundle() -> Result<MigrationBundle, MigrationError> {
                  CASE WHEN archived_at IS NULL THEN 'register' ELSE 'withdraw' END, 0 \
                  FROM {prefix}_revision",
             )?,
+            observation_columns(11, "env")?,
+            observation_columns(12, "revision")?,
         ],
     )
 }
 
+/// The durable acceptance and last-commit instants of one Environment.
+///
+/// Rows written before these columns existed never recorded either fact, so
+/// there is nothing earlier to recover. The migration writes the only real
+/// instant it has — when the columns were added on this install — rather than a
+/// constant that would claim every install registered its Environments on the
+/// same day. Afterwards the registry's injected clock stamps both inside the
+/// transaction that commits the revision, and the database-side default is
+/// dropped where the dialect allows it so an insert cannot acquire a time by
+/// omission.
+fn observation_columns(version: i64, table: &str) -> Result<Migration, MigrationError> {
+    const PG_NOW: &str = "to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')";
+    const SQLITE_NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+    Migration::per_dialect(
+        version,
+        format!("record when each Environment {table} row was committed"),
+        format!(
+            "ALTER TABLE {{prefix}}_{table} ADD COLUMN created_at TEXT NOT NULL DEFAULT {PG_NOW}, \
+             ADD COLUMN updated_at TEXT NOT NULL DEFAULT {PG_NOW}; \
+             ALTER TABLE {{prefix}}_{table} ALTER COLUMN created_at DROP DEFAULT, \
+             ALTER COLUMN updated_at DROP DEFAULT"
+        ),
+        format!(
+            "ALTER TABLE {{prefix}}_{table} ADD COLUMN created_at TEXT NOT NULL DEFAULT ''; \
+             ALTER TABLE {{prefix}}_{table} ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''; \
+             UPDATE {{prefix}}_{table} SET created_at = {SQLITE_NOW}, updated_at = {SQLITE_NOW} \
+             WHERE created_at = ''"
+        ),
+    )
+}
+
 /// The columns an env row projects to an [`EnvItem`], in `SELECT` order.
-const COLS: &str = "env_id, name, description, metadata_json, config_json, archived_at, revision, scope, sandbox_policy_json";
+const COLS: &str = "env_id, name, description, metadata_json, config_json, archived_at, revision, scope, sandbox_policy_json, created_at, updated_at";
 
 fn metadata_str(m: &BTreeMap<String, String>) -> Result<String, EnvironmentStoreError> {
     serde_json::to_string(m).map_err(environment_store)
@@ -173,6 +208,8 @@ struct PersistedEnvRow {
     revision: i64,
     scope: Option<String>,
     sandbox_policy_json: Option<String>,
+    created_at: String,
+    updated_at: String,
 }
 
 impl PersistedEnvRow {
@@ -194,6 +231,8 @@ impl PersistedEnvRow {
                 .sandbox_policy_json
                 .map(|json| serde_json::from_str(&json).map_err(environment_store))
                 .transpose()?,
+            created_at: Some(self.created_at),
+            updated_at: Some(self.updated_at),
             archived_at: self.archived_at,
         })
     }
@@ -229,6 +268,8 @@ fn sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersistedEnvRow> {
         revision: row.get(6)?,
         scope: row.get(7)?,
         sandbox_policy_json: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
@@ -243,6 +284,8 @@ fn pg_row(row: &PgRow) -> Result<EnvItem, EnvironmentStoreError> {
         revision: row.get("revision"),
         scope: row.get("scope"),
         sandbox_policy_json: row.get("sandbox_policy_json"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
     }
     .try_into_item()
 }
@@ -250,27 +293,31 @@ fn pg_row(row: &PgRow) -> Result<EnvItem, EnvironmentStoreError> {
 /// SQLite persistence for the environment registry.
 pub struct SqliteEnvRegistry {
     conn: SharedSqliteConnection,
+    /// The one source of every observation timestamp this registry writes.
+    clock: Arc<dyn Clock>,
 }
 
 impl SqliteEnvRegistry {
-    pub fn open(path: &str) -> Result<Self, String> {
+    pub fn open(path: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
         Self::from_connection(
             SqliteConnectionFactory::file(path)
                 .open()
                 .map_err(|e| e.to_string())?,
+            clock,
         )
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, String> {
+    pub fn open_in_memory(clock: Arc<dyn Clock>) -> Result<Self, String> {
         Self::from_connection(
             SqliteConnectionFactory::memory()
                 .open()
                 .map_err(|e| e.to_string())?,
+            clock,
         )
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, String> {
+    fn from_connection(conn: Connection, clock: Arc<dyn Clock>) -> Result<Self, String> {
         let bundle = env_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|e| e.to_string())?
@@ -278,6 +325,7 @@ impl SqliteEnvRegistry {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             conn: SharedSqliteConnection::new(conn),
+            clock,
         })
     }
 
@@ -306,8 +354,8 @@ impl SqliteEnvRegistry {
     fn insert_revision(tx: &Transaction<'_>, item: &EnvItem) -> Result<(), EnvironmentStoreError> {
         tx.execute(
             "INSERT INTO env_registry_revision \
-             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 item.id,
                 item.revision.0,
@@ -318,6 +366,8 @@ impl SqliteEnvRegistry {
                 item.archived_at,
                 item.scope,
                 sandbox_policy_str(&item.sandbox_policy)?,
+                item.created_at,
+                item.updated_at,
             ],
         )
         .map_err(environment_store)?;
@@ -349,6 +399,7 @@ impl EnvRegistry for SqliteEnvRegistry {
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
         command.config.validate()?;
+        let committed_at = self.clock.observed_at();
         awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
             let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -381,8 +432,8 @@ impl EnvRegistry for SqliteEnvRegistry {
         let id = format!("env_{next:016}");
         tx.execute(
             "INSERT INTO env_registry_env \
-                (env_id, seq, name, description, metadata_json, config_json, scope, sandbox_policy_json) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                (env_id, seq, name, description, metadata_json, config_json, scope, sandbox_policy_json, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             params![
                 id,
                 next,
@@ -395,6 +446,7 @@ impl EnvRegistry for SqliteEnvRegistry {
                 command.scope,
                 sandbox_policy_str(&command.sandbox_policy)
                     .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
+                committed_at,
             ],
         )
         .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
@@ -412,6 +464,8 @@ impl EnvRegistry for SqliteEnvRegistry {
             scope: command.scope,
             config: command.config,
             sandbox_policy: command.sandbox_policy,
+            created_at: Some(committed_at.clone()),
+            updated_at: Some(committed_at),
             archived_at: None,
         };
         Self::insert_revision(&tx, &item)
@@ -496,6 +550,7 @@ impl EnvRegistry for SqliteEnvRegistry {
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
         let id = id.to_string();
+        let committed_at = self.clock.observed_at();
         self.with_connection(move |conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -512,9 +567,11 @@ impl EnvRegistry for SqliteEnvRegistry {
             if !item.apply(patch)? {
                 return Ok(Some(item));
             }
+            item.updated_at = Some(committed_at);
             tx.execute(
                 "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
-                 config_json = ?4, revision = ?5, scope = ?6, sandbox_policy_json = ?7 WHERE env_id = ?8",
+                 config_json = ?4, revision = ?5, scope = ?6, sandbox_policy_json = ?7, \
+                 updated_at = ?9 WHERE env_id = ?8",
                 params![
                     item.name,
                     encode_description(&item.description),
@@ -523,7 +580,8 @@ impl EnvRegistry for SqliteEnvRegistry {
                     item.revision.0,
                     item.scope,
                     sandbox_policy_str(&item.sandbox_policy)?,
-                    id
+                    id,
+                    item.updated_at,
                 ],
             )
             .map_err(environment_store)?;
@@ -537,6 +595,7 @@ impl EnvRegistry for SqliteEnvRegistry {
 
     async fn archive(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
         let id = id.to_string();
+        let committed_at = self.clock.observed_at();
         self.with_connection(move |conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -547,14 +606,16 @@ impl EnvRegistry for SqliteEnvRegistry {
             if item.archived_at.is_some() {
                 return Ok(Some(item));
             }
-            item.archived_at = Some(OBJECT_AT.to_string());
+            item.archived_at = Some(committed_at.clone());
+            item.updated_at = Some(committed_at);
             item.revision =
                 EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
                     EnvironmentStoreError::Backend("Environment revision exhausted".into())
                 })?);
             tx.execute(
-                "UPDATE env_registry_env SET archived_at = ?1, revision = ?2 WHERE env_id = ?3",
-                params![OBJECT_AT, item.revision.0, id],
+                "UPDATE env_registry_env SET archived_at = ?1, revision = ?2, updated_at = ?1 \
+                 WHERE env_id = ?3",
+                params![item.archived_at, item.revision.0, id],
             )
             .map_err(environment_store)?;
             Self::insert_revision(&tx, &item).map_err(environment_store)?;
@@ -666,25 +727,27 @@ impl EnvRegistry for SqliteEnvRegistry {
 /// Postgres persistence for the environment registry (distributed deployments).
 pub struct PostgresEnvRegistry {
     pool: PgPool,
+    /// The one source of every observation timestamp this registry writes.
+    clock: Arc<dyn Clock>,
 }
 
 impl PostgresEnvRegistry {
-    pub async fn connect(url: &str) -> Result<Self, String> {
+    pub async fn connect(url: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
         let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
-        Self::with_pool(pool).await
+        Self::with_pool(pool, clock).await
     }
 
-    pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
+    pub async fn with_pool(pool: PgPool, clock: Arc<dyn Clock>) -> Result<Self, String> {
         let bundle = env_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(|e| e.to_string())?
             .run_bundle(&bundle)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(Self { pool })
+        Ok(Self { pool, clock })
     }
 
-    pub async fn connect_existing(url: &str) -> Result<Self, String> {
+    pub async fn connect_existing(url: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
         let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
         let bundle = env_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
@@ -692,7 +755,7 @@ impl PostgresEnvRegistry {
             .verify_bundle(&bundle)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(Self { pool })
+        Ok(Self { pool, clock })
     }
 
     async fn read(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
@@ -715,6 +778,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
         command.config.validate()?;
+        let committed_at = self.clock.observed_at();
         let mut tx = self
             .pool
             .begin()
@@ -762,8 +826,8 @@ impl EnvRegistry for PostgresEnvRegistry {
         let id = format!("env_{next:016}");
         sqlx::query(
             "INSERT INTO env_registry_env \
-                (env_id, seq, name, description, metadata_json, config_json, scope, sandbox_policy_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                (env_id, seq, name, description, metadata_json, config_json, scope, sandbox_policy_json, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)",
         )
         .bind(&id)
         .bind(next)
@@ -782,6 +846,7 @@ impl EnvRegistry for PostgresEnvRegistry {
             sandbox_policy_str(&command.sandbox_policy)
                 .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
         )
+        .bind(&committed_at)
         .execute(&mut *tx)
         .await
         .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
@@ -797,12 +862,14 @@ impl EnvRegistry for PostgresEnvRegistry {
             scope: command.scope,
             config: command.config,
             sandbox_policy: command.sandbox_policy,
+            created_at: Some(committed_at.clone()),
+            updated_at: Some(committed_at),
             archived_at: None,
         };
         sqlx::query(
             "INSERT INTO env_registry_revision \
-             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&item.id)
         .bind(
@@ -825,6 +892,8 @@ impl EnvRegistry for PostgresEnvRegistry {
             sandbox_policy_str(&item.sandbox_policy)
                 .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
         )
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
         .execute(&mut *tx)
         .await
         .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
@@ -926,10 +995,12 @@ impl EnvRegistry for PostgresEnvRegistry {
         if !item.apply(patch)? {
             return Ok(Some(item));
         }
+        item.updated_at = Some(self.clock.observed_at());
         let revision = i64::try_from(item.revision.0).map_err(environment_store)?;
         sqlx::query(
             "UPDATE env_registry_env SET name = $1, description = $2, metadata_json = $3, \
-             config_json = $4, revision = $5, scope = $6, sandbox_policy_json = $7 WHERE env_id = $8",
+             config_json = $4, revision = $5, scope = $6, sandbox_policy_json = $7, \
+             updated_at = $9 WHERE env_id = $8",
         )
         .bind(&item.name)
         .bind(encode_description(&item.description))
@@ -939,13 +1010,14 @@ impl EnvRegistry for PostgresEnvRegistry {
         .bind(&item.scope)
         .bind(sandbox_policy_str(&item.sandbox_policy)?)
         .bind(id)
+        .bind(&item.updated_at)
         .execute(&mut *tx)
         .await
         .map_err(environment_store)?;
         sqlx::query(
             "INSERT INTO env_registry_revision \
-             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&item.id)
         .bind(revision)
@@ -956,6 +1028,8 @@ impl EnvRegistry for PostgresEnvRegistry {
         .bind(&item.archived_at)
         .bind(&item.scope)
         .bind(sandbox_policy_str(&item.sandbox_policy)?)
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
         .execute(&mut *tx)
         .await
         .map_err(environment_store)?;
@@ -992,15 +1066,18 @@ impl EnvRegistry for PostgresEnvRegistry {
             tx.commit().await.map_err(environment_store)?;
             return Ok(Some(item));
         }
-        item.archived_at = Some(OBJECT_AT.to_string());
+        let committed_at = self.clock.observed_at();
+        item.archived_at = Some(committed_at.clone());
+        item.updated_at = Some(committed_at);
         item.revision = EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
             EnvironmentStoreError::Backend("Environment revision exhausted".into())
         })?);
         let revision = i64::try_from(item.revision.0).map_err(environment_store)?;
         sqlx::query(
-            "UPDATE env_registry_env SET archived_at = $1, revision = $2 WHERE env_id = $3",
+            "UPDATE env_registry_env SET archived_at = $1, revision = $2, updated_at = $1 \
+             WHERE env_id = $3",
         )
-        .bind(OBJECT_AT)
+        .bind(&item.archived_at)
         .bind(revision)
         .bind(id)
         .execute(&mut *tx)
@@ -1008,8 +1085,8 @@ impl EnvRegistry for PostgresEnvRegistry {
         .map_err(environment_store)?;
         sqlx::query(
             "INSERT INTO env_registry_revision \
-             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&item.id)
         .bind(revision)
@@ -1020,6 +1097,8 @@ impl EnvRegistry for PostgresEnvRegistry {
         .bind(&item.archived_at)
         .bind(&item.scope)
         .bind(sandbox_policy_str(&item.sandbox_policy)?)
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
         .execute(&mut *tx)
         .await
         .map_err(environment_store)?;
@@ -1191,6 +1270,8 @@ mod tests {
             revision: 1,
             scope: None,
             sandbox_policy_json: None,
+            created_at: "2026-02-03T04:05:06.007Z".into(),
+            updated_at: "2026-02-03T04:05:06.007Z".into(),
         };
         assert_eq!(
             row.try_into_item().unwrap_err(),
@@ -1244,15 +1325,42 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [9, 10],
+            [9, 10, 11, 12],
             "M1/M2"
         );
         assert!(
             runner.run_bundle(&connection, &full).unwrap().is_empty(),
             "M3"
         );
+        // M4: rows that predate the observation columns carry the only real
+        // instant available — when this install added them — never the empty
+        // placeholder the ALTER needed and never a frozen literal.
+        for table in ["env", "revision"] {
+            let stamps: Vec<(String, String)> = connection
+                .prepare(&format!(
+                    "SELECT created_at, updated_at FROM env_registry_{table}"
+                ))
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert!(!stamps.is_empty(), "M4 {table} rows");
+            for (created, updated) in stamps {
+                assert_eq!(created, updated, "M4 {table} backfill is one reading");
+                assert!(
+                    awaken_agent_contract::clock::utc::rfc3339_to_epoch_millis(&created)
+                        .is_some_and(|millis| millis > 0),
+                    "M4 {table} backfilled a real instant, got {created:?}"
+                );
+                assert_ne!(
+                    created, "2026-01-01T00:00:00Z",
+                    "M4 {table} not the frozen literal"
+                );
+            }
+        }
 
-        let registry = SqliteEnvRegistry::from_connection(connection).unwrap();
+        let registry = SqliteEnvRegistry::from_connection(connection, system_clock()).unwrap();
         let intents = registry
             .registration_intents(EnvironmentRegistrationIntentFilter::All)
             .await
@@ -1330,7 +1438,7 @@ mod tests {
     }
 
     fn r() -> SqliteEnvRegistry {
-        SqliteEnvRegistry::open_in_memory().unwrap()
+        SqliteEnvRegistry::open_in_memory(system_clock()).unwrap()
     }
 
     /// Failure-mode rule: losing the SQLite connection lock is an adapter error,
@@ -1591,7 +1699,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("env-cov-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("env.db");
-        let r = SqliteEnvRegistry::open(path.to_str().unwrap()).expect("open file db");
+        let r =
+            SqliteEnvRegistry::open(path.to_str().unwrap(), system_clock()).expect("open file db");
         let e = r
             .create("e".into(), String::new(), BTreeMap::new(), config())
             .await
@@ -1599,7 +1708,7 @@ mod tests {
         assert!(r.exists(&e.id).await.expect("read SQLite Environment"));
         std::fs::remove_dir_all(&dir).ok();
         if let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL")
-            && let Ok(r) = PostgresEnvRegistry::connect(&url).await
+            && let Ok(r) = PostgresEnvRegistry::connect(&url, system_clock()).await
         {
             let e = r
                 .create("c".into(), String::new(), BTreeMap::new(), config())
@@ -1643,7 +1752,9 @@ mod tests {
             .connect(&url)
             .await
             .expect("schema pool");
-        let r = PostgresEnvRegistry::with_pool(pool).await.expect("store");
+        let r = PostgresEnvRegistry::with_pool(pool, system_clock())
+            .await
+            .expect("store");
 
         // The shared cause/effect rules above run unchanged against PostgreSQL;
         // this is adapter parity, not a PostgreSQL-specific reinterpretation.

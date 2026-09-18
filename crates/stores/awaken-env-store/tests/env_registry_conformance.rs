@@ -9,6 +9,7 @@
 //! record `get` should still return — is a real cross-deployment inconsistency, caught
 //! here as a contract violation. Postgres joins behind its DB harness.
 
+use awaken_agent_contract::clock::system_clock;
 use awaken_env_store::{InMemoryEnvRegistry, SqliteEnvRegistry};
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvRegistry,
@@ -659,6 +660,6 @@ fn in_memory_backend_conforms() {
 #[test]
 fn sqlite_backend_conforms() {
     block(run_suite(|| {
-        SqliteEnvRegistry::open_in_memory().expect("sqlite in-memory registry")
+        SqliteEnvRegistry::open_in_memory(system_clock()).expect("sqlite in-memory registry")
     }));
 }

@@ -10,21 +10,15 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-
-/// The frozen object timestamp the managed wire uses (single-machine builds have
-/// no real clock in the *projection*; wire timestamps carry presence, not wall
-/// time). Real wall time enters only as the `now_ms` argument the routes pass to
-/// the lease/poll bookkeeping — never onto the wire — so the wire shape is
-/// unchanged while leases can expire and pollers can be counted.
-pub const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-
-// The existing UTC wire vocabulary has four-digit years. Raw durable clocks
-// retain their wider SQL domain; only calendar projection saturates here.
-pub(crate) const MAX_RFC3339_NANOS: i128 = 253_402_300_799_999_999_999;
-
-pub(crate) fn bounded_rfc3339_nanos(value: i128) -> i128 {
-    value.clamp(0, MAX_RFC3339_NANOS)
-}
+// The UTC calendar codec is owned by the wall-clock port, so a Work receipt and
+// an Environment record spell the same reading identically.
+#[cfg(kani)]
+use awaken_agent_contract::clock::utc::bounded_rfc3339_nanos;
+pub(crate) use awaken_agent_contract::clock::utc::{
+    MAX_RFC3339_NANOS, format_rfc3339_utc_nanos, parse_rfc3339_utc_nanos,
+};
+#[cfg(test)]
+use awaken_agent_contract::clock::utc::{civil_from_days, days_from_civil, days_in_month};
 
 /// Produce the opaque RFC-3339 receipt returned by a successful heartbeat.
 ///
@@ -46,111 +40,6 @@ pub fn next_heartbeat_receipt(now_ms: u64, previous: Option<&str>) -> String {
     }
     .min(MAX_RFC3339_NANOS);
     format_rfc3339_utc_nanos(next)
-}
-
-pub(crate) fn parse_rfc3339_utc_nanos(value: &str) -> Option<i128> {
-    let body = value.strip_suffix('Z')?;
-    let (whole, fraction) = match body.split_once('.') {
-        Some((_, "")) => return None,
-        Some(parts) => parts,
-        None => (body, ""),
-    };
-    let bytes = whole.as_bytes();
-    if bytes.len() != 19
-        || bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || bytes[10] != b'T'
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-    {
-        return None;
-    }
-    let year = decimal(&bytes[0..4])? as i64;
-    let month = decimal(&bytes[5..7])?;
-    let day = decimal(&bytes[8..10])?;
-    let hour = decimal(&bytes[11..13])?;
-    let minute = decimal(&bytes[14..16])?;
-    let second = decimal(&bytes[17..19])?;
-    if year < 1970
-        || !(1..=12).contains(&month)
-        || !(1..=days_in_month(year, month)).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 59
-        || fraction.len() > 9
-    {
-        return None;
-    }
-    let mut subsecond = 0_i128;
-    for byte in fraction.bytes() {
-        if !byte.is_ascii_digit() {
-            return None;
-        }
-        subsecond = subsecond * 10 + i128::from(byte - b'0');
-    }
-    for _ in fraction.len()..9 {
-        subsecond *= 10;
-    }
-    let days = days_from_civil(year, month, day);
-    let seconds = i128::from(days) * 86_400
-        + i128::from(hour) * 3_600
-        + i128::from(minute) * 60
-        + i128::from(second);
-    Some(seconds * 1_000_000_000 + subsecond)
-}
-
-fn decimal(bytes: &[u8]) -> Option<u32> {
-    bytes.iter().try_fold(0_u32, |value, byte| {
-        byte.is_ascii_digit()
-            .then(|| value * 10 + u32::from(*byte - b'0'))
-    })
-}
-
-const fn days_in_month(year: i64, month: u32) -> u32 {
-    match month {
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let year = year - i64::from(month <= 2);
-    let era = year.div_euclid(400);
-    let year_of_era = year - era * 400;
-    let shifted_month = i64::from(month) + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * shifted_month + 2) / 5 + i64::from(day) - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
-}
-
-pub(crate) fn format_rfc3339_utc_nanos(total_nanos: i128) -> String {
-    let total_nanos = bounded_rfc3339_nanos(total_nanos);
-    let seconds = total_nanos / 1_000_000_000;
-    let subsecond = total_nanos % 1_000_000_000;
-    let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
-    let seconds_of_day = i64::try_from(seconds % 86_400).unwrap_or_default();
-    let (year, month, day) = civil_from_days(days);
-    let hour = seconds_of_day / 3_600;
-    let minute = (seconds_of_day / 60) % 60;
-    let second = seconds_of_day % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{subsecond:09}Z")
-}
-
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
-    let month = (month_prime + if month_prime < 10 { 3 } else { -9 }) as u32;
-    year += i64::from(month <= 2);
-    (year, month, day)
 }
 
 /// A work item's payload (the domain shape). The Managed wire adapter maps this onto
@@ -304,6 +193,11 @@ pub struct WorkItem {
     pub data: WorkPayload,
     pub metadata: BTreeMap<String, String>,
     pub state: WorkState,
+    /// When the queue accepted this item, read from the store's injected
+    /// [`Clock`](awaken_agent_contract::clock::Clock) inside the enqueue
+    /// transaction. It is a durable column, not a projection: the wire value a
+    /// client reads is the instant the row was written.
+    pub created_at: String,
     pub acknowledged_at: Option<String>,
     pub latest_heartbeat_at: Option<String>,
     pub started_at: Option<String>,

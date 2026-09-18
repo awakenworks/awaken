@@ -30,6 +30,9 @@ impl SqliteWorkQueue {
         age_ms: Option<u64>,
         session_access: Option<SessionAccessDigest>,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
+        // `started_at` is the very reading the lease arithmetic below uses, so a
+        // claim's durable start and its lease window cannot disagree.
+        let started_at = awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(now_ms);
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
@@ -87,7 +90,7 @@ impl SqliteWorkQueue {
                  lease_refreshed_ms = ?4, latest_heartbeat_at = NULL, \
                  session_token_sha256 = ?5 WHERE work_id = ?6",
             params![
-                OBJECT_AT,
+                started_at,
                 next_authority.owner.as_deref(),
                 next_authority.expires_at,
                 next_authority.refreshed_at,
@@ -139,6 +142,7 @@ impl SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
         expected_epoch: Option<u64>,
+        acknowledged_at: String,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -152,7 +156,7 @@ impl SqliteWorkQueue {
         let next = ack_next_state(&current);
         tx.execute(
             "UPDATE work_queue_item SET acknowledged_at = ?1, state = ?2 WHERE work_id = ?3",
-            params![OBJECT_AT, next, wid],
+            params![acknowledged_at, next, wid],
         )
         .map_err(storage)?;
         let item = Self::owned(&tx, env_id, wid)?;
@@ -233,6 +237,7 @@ impl SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
         expected_epoch: Option<u64>,
+        stopped_at: String,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -262,7 +267,7 @@ impl SqliteWorkQueue {
              lease_refreshed_ms = ?4, session_token_sha256 = NULL \
              WHERE work_id = ?5",
             params![
-                OBJECT_AT,
+                stopped_at,
                 next_authority.owner,
                 next_authority.expires_at,
                 next_authority.refreshed_at,
@@ -287,8 +292,10 @@ impl SqliteWorkQueue {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
         let worker_owner = worker_owner.to_string();
+        let created_at = self.clock.observed_at();
+        let started_at = awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(now_ms);
         self.with_connection(move |conn| {
-            let work_id = Self::insert(conn, &env_id, "session", Some(&session_id))?;
+            let work_id = Self::insert(conn, &env_id, "session", Some(&session_id), created_at)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
@@ -342,7 +349,7 @@ impl SqliteWorkQueue {
                     "UPDATE work_queue_item SET state = 'active', started_at = ?1, \
                      lease_owner = ?2, lease_epoch = ?3, lease_expires_ms = ?4, \
                      lease_refreshed_ms = ?5, latest_heartbeat_at = NULL WHERE work_id = ?6",
-                    params![OBJECT_AT, next.owner, epoch_db, next.expires_at, next.refreshed_at, work_id],
+                    params![started_at, next.owner, epoch_db, next.expires_at, next.refreshed_at, work_id],
                 ).map_err(storage)?;
                 next.epoch
             };
@@ -447,7 +454,9 @@ impl PostgresWorkQueue {
                  lease_refreshed_ms = $4, latest_heartbeat_at = NULL, \
                  session_token_sha256 = $5 WHERE work_id = $6",
         )
-        .bind(OBJECT_AT)
+        .bind(awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(
+            now_ms,
+        ))
         .bind(next_authority.owner)
         .bind(next_authority.expires_at)
         .bind(next_authority.refreshed_at)
@@ -507,7 +516,7 @@ impl PostgresWorkQueue {
             "UPDATE work_queue_item SET acknowledged_at = $1, state = $2 \
              WHERE work_id = $3 AND environment_id = $4",
         )
-        .bind(OBJECT_AT)
+        .bind(self.clock.observed_at())
         .bind(next)
         .bind(wid)
         .bind(env_id)
@@ -650,7 +659,7 @@ impl PostgresWorkQueue {
              lease_refreshed_ms = $4, session_token_sha256 = NULL \
              WHERE work_id = $5 AND environment_id = $6",
         )
-        .bind(OBJECT_AT)
+        .bind(self.clock.observed_at())
         .bind(next_authority.owner)
         .bind(next_authority.expires_at)
         .bind(next_authority.refreshed_at)
@@ -679,7 +688,7 @@ mod epoch_tests {
     // Rejected transactions retain queued state, epoch, and absent bearer hash.
     #[tokio::test]
     async fn sqlite_session_claim_fences_epoch_exhaustion() {
-        let queue = SqliteWorkQueue::open_in_memory().unwrap();
+        let queue = SqliteWorkQueue::open_in_memory(system_clock()).unwrap();
         for epoch in [i64::MAX, i64::MAX - 1] {
             let env = format!("epoch-{epoch}");
             let work = queue
@@ -751,7 +760,9 @@ mod epoch_tests {
             .connect(&url)
             .await
             .unwrap();
-        let queue = PostgresWorkQueue::with_pool(pool.clone()).await.unwrap();
+        let queue = PostgresWorkQueue::with_pool(pool.clone(), system_clock())
+            .await
+            .unwrap();
         for epoch in [i64::MAX, i64::MAX - 1] {
             let env = format!("epoch-{epoch}");
             let work = queue

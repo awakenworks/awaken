@@ -13,8 +13,12 @@
 //! list/retrieve projections never expose it again.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::clock::Clock;
+#[cfg(test)]
+use awaken_agent_contract::clock::system_clock;
 use awaken_session_contract::work_queue::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkMutationResult,
@@ -63,16 +67,19 @@ pub fn test_session_access_digest(seed: u64) -> SessionAccessDigest {
 pub struct SqliteWorkQueue {
     conn: SharedSqliteConnection,
     book: LeaseBook,
+    /// The one source of every observation timestamp this backend writes.
+    clock: Arc<dyn Clock>,
 }
 
 impl SqliteWorkQueue {
     /// A private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, String> {
+    pub fn open_in_memory(clock: Arc<dyn Clock>) -> Result<Self, String> {
         Self::from_connection(
             awaken_sqlite_pool::SqliteConnectionFactory::memory()
                 .open()
                 .map_err(|error| error.to_string())?,
+            clock,
         )
     }
 }
@@ -86,8 +93,11 @@ impl WorkQueue for SqliteWorkQueue {
     ) -> Result<String, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
-        self.with_connection(move |conn| Self::insert(conn, &env_id, "session", Some(&session_id)))
-            .await
+        let created_at = self.clock.observed_at();
+        self.with_connection(move |conn| {
+            Self::insert(conn, &env_id, "session", Some(&session_id), created_at)
+        })
+        .await
     }
 
     async fn wake_session(
@@ -97,8 +107,9 @@ impl WorkQueue for SqliteWorkQueue {
     ) -> Result<String, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
+        let created_at = self.clock.observed_at();
         self.with_connection(move |conn| {
-            let work_id = Self::insert(conn, &env_id, "session", Some(&session_id))?;
+            let work_id = Self::insert(conn, &env_id, "session", Some(&session_id), created_at)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
@@ -119,12 +130,16 @@ impl WorkQueue for SqliteWorkQueue {
 
     async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
         let env_id = env_id.to_string();
-        self.with_connection(move |conn| Self::insert(conn, &env_id, "healthcheck", None))
-            .await
+        let created_at = self.clock.observed_at();
+        self.with_connection(move |conn| {
+            Self::insert(conn, &env_id, "healthcheck", None, created_at)
+        })
+        .await
     }
 
     async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
         let env_id = env_id.to_string();
+        let created_at = self.clock.observed_at();
         self.with_connection(move |conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -150,8 +165,8 @@ impl WorkQueue for SqliteWorkQueue {
                 .map_err(storage)?;
             let work_id = format!("work_{next:016}");
             tx.execute(
-                "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued')",
-                params![work_id, next, env_id],
+                "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued', ?4)",
+                params![work_id, next, env_id, created_at],
             )
             .map_err(storage)?;
             tx.commit().map_err(storage)?;
@@ -278,8 +293,11 @@ impl WorkQueue for SqliteWorkQueue {
         let env_id = env_id.to_string();
         let wid = wid.to_string();
         let worker_id = worker_id.to_string();
-        self.with_connection(move |conn| Self::ack_inner(conn, &env_id, &wid, &worker_id, None))
-            .await
+        let acknowledged_at = self.clock.observed_at();
+        self.with_connection(move |conn| {
+            Self::ack_inner(conn, &env_id, &wid, &worker_id, None, acknowledged_at)
+        })
+        .await
     }
 
     async fn ack_with_session_access(
@@ -287,6 +305,7 @@ impl WorkQueue for SqliteWorkQueue {
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let access = access.clone();
+        let acknowledged_at = self.clock.observed_at();
         self.with_connection(move |conn| {
             Self::ack_inner(
                 conn,
@@ -294,6 +313,7 @@ impl WorkQueue for SqliteWorkQueue {
                 &access.work_id,
                 &access.lease_owner,
                 Some(access.lease_epoch),
+                acknowledged_at,
             )
         })
         .await
@@ -346,8 +366,11 @@ impl WorkQueue for SqliteWorkQueue {
         let env_id = env_id.to_string();
         let wid = wid.to_string();
         let worker_id = worker_id.to_string();
-        self.with_connection(move |conn| Self::stop_inner(conn, &env_id, &wid, &worker_id, None))
-            .await
+        let stopped_at = self.clock.observed_at();
+        self.with_connection(move |conn| {
+            Self::stop_inner(conn, &env_id, &wid, &worker_id, None, stopped_at)
+        })
+        .await
     }
 
     async fn stop_with_session_access(
@@ -355,6 +378,7 @@ impl WorkQueue for SqliteWorkQueue {
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let access = access.clone();
+        let stopped_at = self.clock.observed_at();
         self.with_connection(move |conn| {
             Self::stop_inner(
                 conn,
@@ -362,6 +386,7 @@ impl WorkQueue for SqliteWorkQueue {
                 &access.work_id,
                 &access.lease_owner,
                 Some(access.lease_epoch),
+                stopped_at,
             )
         })
         .await
@@ -395,6 +420,7 @@ impl WorkQueue for SqliteWorkQueue {
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
+        let stopped_at = self.clock.observed_at();
         self.with_connection(move |conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -417,7 +443,7 @@ impl WorkQueue for SqliteWorkQueue {
                  state = 'stopped', lease_owner = ?2, lease_expires_ms = ?3, \
                  lease_refreshed_ms = ?4, session_token_sha256 = NULL WHERE work_id = ?5",
                 params![
-                    OBJECT_AT,
+                    stopped_at,
                     cleared.owner,
                     cleared.expires_at,
                     cleared.refreshed_at,
@@ -434,6 +460,7 @@ impl WorkQueue for SqliteWorkQueue {
 
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
         let lease = lease.clone();
+        let stopped_at = self.clock.observed_at();
         self.with_connection(move |conn| {
             let epoch = i64::try_from(lease.epoch).map_err(storage)?;
             let tx = conn
@@ -476,7 +503,7 @@ impl WorkQueue for SqliteWorkQueue {
                  lease_refreshed_ms = ?4, session_token_sha256 = NULL \
                  WHERE work_id = ?5 AND environment_id = ?6",
                     params![
-                        OBJECT_AT,
+                        stopped_at,
                         next_authority.owner,
                         next_authority.expires_at,
                         next_authority.refreshed_at,
@@ -533,7 +560,7 @@ impl WorkQueue for SqliteWorkQueue {
 
     async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
         let owned_env_id = env_id.to_string();
-        let (depth, pending) = self
+        let (depth, pending, oldest_queued_at) = self
             .with_connection(move |conn| {
                 let count = |state_clause: &str| -> Result<usize, WorkQueueError> {
                     conn.query_row(
@@ -546,20 +573,34 @@ impl WorkQueue for SqliteWorkQueue {
                     .map(|count| count as usize)
                     .map_err(storage)
                 };
+                // The oldest unfinished item's own durable acceptance instant.
+                // A drained queue has no such row, so the absence is the answer
+                // rather than something to stand in for.
+                let oldest_queued_at: Option<String> = conn
+                    .query_row(
+                        "SELECT created_at FROM work_queue_item \
+                         WHERE environment_id = ?1 \
+                           AND state IN ('queued', 'starting', 'active', 'stopping') \
+                         ORDER BY created_at ASC, seq ASC LIMIT 1",
+                        params![owned_env_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(storage)?;
                 Ok((
                     count("state = 'queued'")?,
                     count("state IN ('starting', 'active', 'stopping')")?,
+                    oldest_queued_at,
                 ))
             })
             .await?;
         // Parity with the in-memory queue: oldest stays set while an item is still
         // processing (queued OR pending), and pollers are counted from the liveness
         // book, not proxied from the active count.
-        let has_unfinished = depth > 0 || pending > 0;
         Ok(QueueStats {
             depth,
             pending,
-            oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),
+            oldest_queued_at,
             workers_polling: self.book.workers_polling(env_id, now_ms),
         })
     }
@@ -608,6 +649,7 @@ fn pg_row_to_item(row: &PgRow) -> Result<WorkItem, WorkQueueError> {
         row.get("started_at"),
         row.get("stop_requested_at"),
         row.get("stopped_at"),
+        row.get("created_at"),
     )
     .map_err(storage)
 }
@@ -619,6 +661,8 @@ fn pg_row_to_item(row: &PgRow) -> Result<WorkItem, WorkQueueError> {
 pub struct PostgresWorkQueue {
     pool: PgPool,
     book: LeaseBook,
+    /// The one source of every observation timestamp this backend writes.
+    clock: Arc<dyn Clock>,
 }
 
 #[async_trait]
@@ -683,8 +727,8 @@ impl WorkQueue for PostgresWorkQueue {
                 .await
                 .map_err(storage)?;
         let work_id = format!("work_{next:016}");
-        sqlx::query("INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES ($1, $2, $3, 'healthcheck', $1, '{}', 'queued')")
-            .bind(&work_id).bind(next).bind(env_id)
+        sqlx::query("INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) VALUES ($1, $2, $3, 'healthcheck', $1, '{}', 'queued', $4)")
+            .bind(&work_id).bind(next).bind(env_id).bind(self.clock.observed_at())
             .execute(&mut *tx).await.map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(work_id)
@@ -900,7 +944,7 @@ impl WorkQueue for PostgresWorkQueue {
              state = 'stopped', lease_owner = $2, lease_expires_ms = $3, \
              lease_refreshed_ms = $4, session_token_sha256 = NULL WHERE work_id = $5 AND environment_id = $6",
         )
-        .bind(OBJECT_AT)
+        .bind(self.clock.observed_at())
         .bind(cleared.owner)
         .bind(cleared.expires_at)
         .bind(cleared.refreshed_at)
@@ -960,7 +1004,7 @@ impl WorkQueue for PostgresWorkQueue {
              lease_refreshed_ms = $4, session_token_sha256 = NULL \
              WHERE work_id = $5 AND environment_id = $6",
         )
-        .bind(OBJECT_AT)
+        .bind(self.clock.observed_at())
         .bind(next_authority.owner)
         .bind(next_authority.expires_at)
         .bind(next_authority.refreshed_at)
@@ -1089,7 +1133,9 @@ impl WorkQueue for PostgresWorkQueue {
                  lease_owner = $2, lease_epoch = $3, lease_expires_ms = $4, \
                  lease_refreshed_ms = $5, latest_heartbeat_at = NULL WHERE work_id = $6",
             )
-            .bind(OBJECT_AT)
+            .bind(awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(
+                now_ms,
+            ))
             .bind(next_authority.owner)
             .bind(epoch_db)
             .bind(next_authority.expires_at)
@@ -1151,13 +1197,23 @@ impl WorkQueue for PostgresWorkQueue {
         };
         let depth = count("state = 'queued'").await?;
         let pending = count("state IN ('starting', 'active', 'stopping')").await?;
-        // Parity with the in-memory queue: oldest persists while processing, and
-        // pollers come from the liveness book (not the active-count proxy).
-        let has_unfinished = depth > 0 || pending > 0;
+        // Parity with the in-memory queue: oldest is the oldest unfinished item's
+        // own durable acceptance instant, and pollers come from the liveness book
+        // (not the active-count proxy).
+        let oldest_queued_at: Option<String> = sqlx::query_scalar(
+            "SELECT created_at FROM work_queue_item \
+             WHERE environment_id = $1 \
+               AND state IN ('queued', 'starting', 'active', 'stopping') \
+             ORDER BY created_at ASC, seq ASC LIMIT 1",
+        )
+        .bind(env_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
         Ok(QueueStats {
             depth,
             pending,
-            oldest_queued_at: has_unfinished.then(|| OBJECT_AT.to_string()),
+            oldest_queued_at,
             workers_polling: self.book.workers_polling(env_id, now_ms),
         })
     }
@@ -1195,7 +1251,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn q() -> SqliteWorkQueue {
-        SqliteWorkQueue::open_in_memory().unwrap()
+        SqliteWorkQueue::open_in_memory(system_clock()).unwrap()
     }
 
     /// Work-store scheduler cause/effect graph: C1 a synchronous inspector owns
@@ -1460,7 +1516,7 @@ mod tests {
         let path = dir.join("queue.db");
         let path = path.to_str().unwrap();
         {
-            let q = SqliteWorkQueue::open(path).expect("open first store");
+            let q = SqliteWorkQueue::open(path, system_clock()).expect("open first store");
             q.enqueue_session("env", &awaken_session_contract::SessionId::from("session"))
                 .await
                 .expect("enqueue");
@@ -1472,7 +1528,7 @@ mod tests {
             );
         }
         {
-            let reopened = SqliteWorkQueue::open(path).expect("reopen store");
+            let reopened = SqliteWorkQueue::open(path, system_clock()).expect("reopen store");
             assert!(
                 reopened
                     .claim("env", "worker-b", LEASE_TTL_MS - 1)
@@ -1516,7 +1572,7 @@ mod tests {
         let path = dir.join("queue.db");
         let path = path.to_str().unwrap();
         let (work_id, token, first_access) = {
-            let q = SqliteWorkQueue::open(path).expect("open first store");
+            let q = SqliteWorkQueue::open(path, system_clock()).expect("open first store");
             let health = q.enqueue_healthcheck("env").await.unwrap();
             q.enqueue_session("env", &awaken_session_contract::SessionId::from("sesn_1"))
                 .await
@@ -1563,7 +1619,7 @@ mod tests {
             );
             (claimed.item.id, token, first_access)
         };
-        let reopened = SqliteWorkQueue::open(path).expect("reopen store");
+        let reopened = SqliteWorkQueue::open(path, system_clock()).expect("reopen store");
         assert!(
             reopened
                 .authenticate_session_access(&token, LEASE_TTL_MS)
@@ -1735,7 +1791,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wq-cov-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wq.db");
-        let q = SqliteWorkQueue::open(path.to_str().unwrap()).expect("open file db");
+        let q =
+            SqliteWorkQueue::open(path.to_str().unwrap(), system_clock()).expect("open file db");
         let id = q
             .enqueue_session("e", &awaken_session_contract::SessionId::from("s"))
             .await
@@ -1744,7 +1801,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         // The `connect(url)` path over a live Postgres (skips when unreachable).
         if let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL")
-            && let Ok(q) = PostgresWorkQueue::connect(&url).await
+            && let Ok(q) = PostgresWorkQueue::connect(&url, system_clock()).await
         {
             let id = q.enqueue_healthcheck("cov_env").await.expect("enqueue");
             assert!(q.get("cov_env", &id).await.expect("get").is_some());
@@ -1791,7 +1848,11 @@ mod tests {
             .connect(&url)
             .await
             .expect("schema pool");
-        let q = Arc::new(PostgresWorkQueue::with_pool(pool).await.expect("store"));
+        let q = Arc::new(
+            PostgresWorkQueue::with_pool(pool, system_clock())
+                .await
+                .expect("store"),
+        );
 
         // One queued item, N workers race to claim it concurrently.
         q.enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
