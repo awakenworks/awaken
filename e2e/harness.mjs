@@ -977,6 +977,35 @@ export function waitForSessionCustomToolBoundary(
   );
 }
 
+// Canonical settle for an AI SDK `Chat`'s deferred auto-send, shared by every
+// HITL scenario rather than copied per file. Causes: C1 the Chat reports
+// `ready`; C2 the scenario's terminal effect is present in the committed
+// message. Effects: E1 return once both hold; E2 fail with the last observed
+// status and reply when they do not. Rules: A1 !C1||!C2=>retry; A2 C1+C2=>E1;
+// A3 deadline=>E2.
+//
+// Testing C1 alone races: `addToolApprovalResponse` resolves while the Chat is
+// still `ready`, immediately before the SDK schedules its follow-up request.
+// Returning quietly at the deadline is worse than either -- the scenario then
+// asserts against a half-finished Chat, and the message blames the effect
+// rather than the wait that never happened. `waitForValue` owns the bound, so
+// the timeout names what was awaited and shows what was observed instead.
+export function waitForChatSettled(chat, effect, description, options = {}) {
+  return waitForValue(
+    () => ({
+      status: chat.status,
+      reply: (chat.lastMessage?.parts ?? [])
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text)
+        .join(''),
+      parts: (chat.lastMessage?.parts ?? []).map((part) => part.type),
+    }),
+    (observed) => observed.status === 'ready' && effect(),
+    description,
+    { timeoutMs: 20_000, pollMs: 100, ...options },
+  );
+}
+
 export function childDirectories(parent) {
   return fs.existsSync(parent)
     ? fs.readdirSync(parent, { withFileTypes: true })

@@ -46,6 +46,7 @@ import {
   initializeE2EInstallation,
   stopServer,
   waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -244,15 +245,22 @@ async function capability(cli) {
   return value.runtimes.find((runtime) => runtime.id === `acp:${cli}`);
 }
 
-async function waitForCapability(cli, predicate, timeoutMs = 15_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last;
-  while (Date.now() < deadline) {
-    last = await capability(cli);
-    if (last && predicate(last)) return last;
-    await sleep(100);
-  }
-  return last;
+// Discovery is asynchronous: the capability row for an ACP CLI is republished
+// as probe and acquisition evidence commits. Causes: C1 the row exists; C2 it
+// carries the awaited committed evidence. Effects: E1 return that exact row;
+// E2 fail naming `awaited` and showing the last row. Rules: D1 !C1||!C2=>retry;
+// D2 C1+C2=>E1; D3 deadline=>E2.
+//
+// Returning the last row at the deadline instead of failing is what made this
+// file's L3 rule assert against a row that never reached the awaited state, and
+// report the stale field rather than the wait that expired.
+async function waitForCapability(cli, predicate, awaited, timeoutMs = 15_000) {
+  return waitForValue(
+    () => capability(cli),
+    (row) => Boolean(row) && predicate(row),
+    `the acp:${cli} capability never published ${awaited}`,
+    { timeoutMs, pollMs: 100 },
+  );
 }
 
 async function assertPublicationRejected(id, model, reason) {
@@ -431,7 +439,11 @@ esac
   try {
     await ready(server);
     adminToken = fs.readFileSync(path.join(DATA, 'admin-token'), 'utf8').trim();
-    const codex = await waitForCapability('codex', (row) => row.local.detected);
+    const codex = await waitForCapability(
+      'codex',
+      (row) => row.local.detected,
+      'a detected local wrapper',
+    );
     assert.equal(codex.local.detected, true, 'L1');
     assert.equal(codex.local.login_state, 'available', 'L1');
     assert.deepEqual(fs.readFileSync(NPM_LOG, 'utf8').trim().split('\n'), [
@@ -556,7 +568,13 @@ esac
     await ready(server);
     adminToken = fs.readFileSync(path.join(DATA, 'admin-token'), 'utf8').trim();
     assert.equal(
-      (await waitForCapability('codex', (row) => row.local.detected)).local.detected,
+      (
+        await waitForCapability(
+          'codex',
+          (row) => row.local.detected,
+          'a detected local wrapper after the offline restart',
+        )
+      ).local.detected,
       true,
       'L2',
     );
@@ -576,6 +594,7 @@ esac
     const codex = await waitForCapability(
       'codex',
       (row) => row.local.reason_code === 'acp_wrapper_install_failed',
+      "reason_code 'acp_wrapper_install_failed'",
     );
     assert.equal(codex.local.detected, false, 'L3');
     assert.equal(codex.local.login_state, 'probe_failed', 'L3');
