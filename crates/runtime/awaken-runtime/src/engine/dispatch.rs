@@ -425,7 +425,7 @@ pub(super) async fn run_tool_calls(
             }
         };
 
-        record_fresh_output(
+        record_tool_output(
             runtime,
             env,
             run_id,
@@ -437,6 +437,7 @@ pub(super) async fn run_tool_calls(
             output,
             entered_executor,
             delegation_started,
+            BatchPersistence::WhenIncomplete,
             &mut batch,
             ledger,
             store,
@@ -724,7 +725,7 @@ async fn run_concurrent_tool_calls(
                     }
                 }
             };
-            record_fresh_output(
+            record_tool_output(
                 runtime,
                 env,
                 run_id,
@@ -736,6 +737,7 @@ async fn run_concurrent_tool_calls(
                 output,
                 entered_executor[position],
                 delegation_started[position],
+                BatchPersistence::WhenIncomplete,
                 &mut batch,
                 ledger,
                 store,
@@ -757,8 +759,39 @@ enum ConcurrentInvocation {
     Delegation(Option<std::result::Result<DelegationInvocation, DelegationExecutionError>>),
 }
 
+/// The step index a recovered attempt cannot reconstruct. Recovery resumes one
+/// durable batch whose originating step is not part of that batch, and tool
+/// reactions are keyed by call, not by step, so the recorded coordinate is
+/// stated here once instead of appearing as a bare `0` at three call sites.
+const RECOVERED_STEP: usize = 0;
+
+/// When the batch reaches durable storage after one call's terminal outcome.
+///
+/// This is one of the exactly two coordinates on which fresh dispatch and
+/// recovery legitimately differ, so it is a named argument of the one recorder
+/// rather than a reason to keep two copies of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BatchPersistence {
+    /// Fresh dispatch: the enclosing loop finalizes and persists a complete
+    /// batch itself, so persisting here would write the same rows twice.
+    WhenIncomplete,
+    /// Recovery: every reconstructed outcome is persisted as it is decided, so
+    /// a second crash cannot lose the work this attempt already redid.
+    Always,
+}
+
+/// Record one call's terminal outcome into the open batch: spill the output,
+/// complete the call, apply its state, collect reactions and reminders, and
+/// persist.
+///
+/// Fresh dispatch and recovery once had a copy of this body each. They drifted
+/// by construction: any reaction, reminder or state rule added to one was
+/// silently absent from the other, and the recovered branch is the one no
+/// ordinary run exercises. There is now one body, and the two coordinates the
+/// paths really differ on — the step index a recovered attempt cannot
+/// reconstruct, and when the batch is persisted — are arguments.
 #[allow(clippy::too_many_arguments)]
-async fn record_fresh_output(
+async fn record_tool_output(
     runtime: &Runtime,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
@@ -770,6 +803,7 @@ async fn record_fresh_output(
     output: ToolOutput,
     entered_executor: bool,
     delegation_started: bool,
+    persistence: BatchPersistence,
     batch: &mut ToolBatch,
     ledger: &mut StepLedger,
     store: &mut Store,
@@ -805,7 +839,7 @@ async fn record_fresh_output(
     batch
         .set_result_state(&call.call_id, result_state)
         .map_err(|error| Error::Execution(error.to_string()))?;
-    if !batch.is_complete() {
+    if persistence == BatchPersistence::Always || !batch.is_complete() {
         persist_batch(batch, ledger, store, context, thread_id, run_id).await?;
     }
     Ok(())
@@ -969,26 +1003,43 @@ pub(super) async fn recover_tool_batch(
             ledger.audit.extend(gate.audit);
             match gate.outcome {
                 GateOutcome::Block { reason } => {
-                    record_recovered_output(
+                    record_tool_output(
+                        runtime,
                         env,
                         run_id,
+                        thread_id,
+                        context,
+                        RECOVERED_STEP,
                         &call,
                         &call,
                         ToolOutput::error(&call.call_id, format!("blocked: {reason}")),
                         false,
+                        false,
+                        BatchPersistence::Always,
                         &mut batch,
                         ledger,
                         store,
-                        context,
-                        thread_id,
                     )
                     .await?;
                     continue;
                 }
                 GateOutcome::SetResult(output) => {
-                    record_recovered_output(
-                        env, run_id, &call, &call, output, false, &mut batch, ledger, store,
-                        context, thread_id,
+                    record_tool_output(
+                        runtime,
+                        env,
+                        run_id,
+                        thread_id,
+                        context,
+                        RECOVERED_STEP,
+                        &call,
+                        &call,
+                        output,
+                        false,
+                        false,
+                        BatchPersistence::Always,
+                        &mut batch,
+                        ledger,
+                        store,
                     )
                     .await?;
                     continue;
@@ -1158,21 +1209,22 @@ pub(super) async fn recover_tool_batch(
                 }
             }
         };
-        if delegation_started {
-            stage_delegation_completed(runtime, run_id, &call, store, &mut ledger.staged_state)?;
-        }
-        record_recovered_output(
+        record_tool_output(
+            runtime,
             env,
             run_id,
+            thread_id,
+            context,
+            RECOVERED_STEP,
             &call,
             &reaction_call,
             output,
             true,
+            delegation_started,
+            BatchPersistence::Always,
             &mut batch,
             ledger,
             store,
-            context,
-            thread_id,
         )
         .await?;
     }
@@ -1222,51 +1274,6 @@ async fn execute_regular_or_unavailable_advisor(
         state,
     )
     .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn record_recovered_output(
-    env: &ResolvedExecutionEnv,
-    run_id: &RunId,
-    call: &ToolCall,
-    reaction_call: &ToolCall,
-    output: ToolOutput,
-    entered_executor: bool,
-    batch: &mut ToolBatch,
-    ledger: &mut StepLedger,
-    store: &mut Store,
-    context: &RuntimeRunContext,
-    thread_id: &ThreadId,
-) -> Result<()> {
-    let output = spill_tool_output(context, run_id, output).await?;
-    if entered_executor {
-        batch
-            .complete(output.clone())
-            .map_err(|error| Error::Execution(error.to_string()))?;
-    } else {
-        batch
-            .complete_immediate(output.clone())
-            .map_err(|error| Error::Execution(error.to_string()))?;
-    }
-    for command in &output.state {
-        store.apply(command);
-    }
-    let (reactions, reminders) =
-        collect_tool_reactions(env, run_id, 0, reaction_call, &output, store, context).await;
-    for command in &reactions {
-        store.apply(command);
-    }
-    let mut result_state = output.state.clone();
-    result_state.extend(reactions);
-    let mut messages = vec![tool_result_message(call, &output)];
-    messages.extend(reminders);
-    batch
-        .set_result_messages(&call.call_id, messages)
-        .map_err(|error| Error::Execution(error.to_string()))?;
-    batch
-        .set_result_state(&call.call_id, result_state)
-        .map_err(|error| Error::Execution(error.to_string()))?;
-    persist_batch(batch, ledger, store, context, thread_id, run_id).await
 }
 
 fn recovery_capability(
@@ -1411,6 +1418,147 @@ mod execution_target_recovery_tests {
                 routed_recovery_capability(target, tool, executor),
                 expected,
                 "{case}"
+            );
+        }
+    }
+}
+
+/// Fresh dispatch and durable recovery are twins that cannot be collapsed into
+/// one function: one compiles a batch out of a model's tool calls, the other
+/// resumes a batch that already exists durably. Everything they share has been
+/// pulled into a kernel they both call, and this registry is what keeps that
+/// true — a rule added to one member and not the other, or a third entry point
+/// added beside them, is what the twin defects in this file have always been.
+///
+/// The registry is deliberately *small*: registering a pair is the fallback for
+/// a twin that cannot be eliminated, not a place to record ones that can.
+#[cfg(test)]
+mod twin_registry {
+    /// This module reads its own file at compile time, so the registry can
+    /// never observe a stale copy of what it guards. Only the part before this
+    /// module is the subject: the registry's own prose names the symbols it
+    /// guards and must not count as a use of them.
+    const WHOLE_FILE: &str = include_str!("dispatch.rs");
+    const REGISTRY_MARKER: &str = "mod twin_registry {";
+
+    fn dispatch() -> &'static str {
+        let end = WHOLE_FILE
+            .find(REGISTRY_MARKER)
+            .expect("the registry declares itself in the file it guards");
+        &WHOLE_FILE[..end]
+    }
+
+    /// The one registered twin pair: (fresh dispatch, durable recovery).
+    const TWIN_PAIR: (&str, &str) = ("run_tool_calls", "recover_tool_batch");
+
+    /// Entry points that only select a batch and hand it to a registered
+    /// member, mapped to the member they must delegate to.
+    const DELEGATORS: &[(&str, &str)] = &[("recover_pending_tool_batch", "recover_tool_batch")];
+
+    /// Every shared kernel both members of the pair must route through. A rule
+    /// that belongs to both paths lives in one of these, never inline in one.
+    const SHARED_KERNELS: &[&str] = &[
+        "executable_tool_descriptors",
+        "gate_decision",
+        "record_tool_output",
+        "persist_batch",
+    ];
+
+    /// The signature coordinate that makes a function a tool-dispatch entry
+    /// point rather than a helper: it advances the run's tool discovery state.
+    const ENTRY_POINT_MARKER: &str = "discovery: &mut ToolDiscoveryState";
+
+    /// Body of one top-level function, which rustfmt guarantees ends at the
+    /// first closing brace in column zero.
+    fn body(name: &str) -> &'static str {
+        let needle = format!("fn {name}(");
+        let dispatch = dispatch();
+        let start = dispatch
+            .find(&needle)
+            .unwrap_or_else(|| panic!("registered twin `{name}` is not declared in dispatch.rs"));
+        let end = start
+            + dispatch[start..]
+                .find("\n}\n")
+                .expect("a top-level function closes in column zero");
+        &dispatch[start..end]
+    }
+
+    /// Names of every `pub(super) async fn` in this file that carries the
+    /// entry-point marker.
+    fn declared_entry_points() -> Vec<&'static str> {
+        dispatch()
+            .lines()
+            .filter_map(|line| line.strip_prefix("pub(super) async fn "))
+            .filter_map(|rest| rest.split('(').next())
+            .filter(|name| body(name).contains(ENTRY_POINT_MARKER))
+            .collect()
+    }
+
+    #[test]
+    fn both_members_of_the_registered_pair_route_through_every_shared_kernel() {
+        // C1 a shared rule exists as a named kernel; C2 a member calls it.
+        // E1 admit. R1 = C1 & C2 for both members => E1; a member that grows
+        // its own inline copy of a shared rule stops calling the kernel and is
+        // refused here.
+        let (fresh, recovered) = TWIN_PAIR;
+        for kernel in SHARED_KERNELS {
+            for member in [fresh, recovered] {
+                assert!(
+                    body(member).contains(&format!("{kernel}(")),
+                    "R1 twin `{member}` no longer routes through the shared kernel `{kernel}`; \
+                     either restore the call or move the rule out of the kernel deliberately"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_tool_output_recorder_has_exactly_one_body() {
+        // The eliminated twin. `record_fresh_output`/`record_recovered_output`
+        // were line-for-line copies that differed only in the step index and
+        // when the batch was persisted; a reaction or reminder rule added to
+        // one was silently missing from the recovered path. C1 a function
+        // collects tool reactions; E1 it is the one recorder.
+        // R2 exactly one caller of `collect_tool_reactions` => E1.
+        let callers = dispatch().matches("collect_tool_reactions(").count();
+        assert_eq!(
+            callers, 1,
+            "R2 tool reactions are collected in {callers} places; there is one recorder \
+             (`record_tool_output`) and a second copy of it is the twin defect this file had"
+        );
+        assert!(
+            body("record_tool_output").contains("collect_tool_reactions("),
+            "R2 the single reaction collector is the registered recorder"
+        );
+    }
+
+    #[test]
+    fn every_tool_dispatch_entry_point_is_registered() {
+        // Completeness: a new entry point beside the pair is a new twin, and it
+        // cannot be added silently. C1 a `pub(super) async fn` advances tool
+        // discovery; C2 it is a registered pair member or a registered
+        // delegator. E1 admit, E2 refuse. R3 = C1 & !C2 => E2.
+        let (fresh, recovered) = TWIN_PAIR;
+        let mut registered = vec![fresh, recovered];
+        registered.extend(DELEGATORS.iter().map(|(entry, _)| *entry));
+        registered.sort_unstable();
+        let mut declared = declared_entry_points();
+        declared.sort_unstable();
+        assert_eq!(
+            declared, registered,
+            "R3 the tool-dispatch entry points and the twin registry disagree; register the new \
+             entry point in TWIN_PAIR or DELEGATORS (and say which twin it must stay level with), \
+             or give it a signature that is not a dispatch entry point"
+        );
+    }
+
+    #[test]
+    fn every_registered_delegator_reaches_its_member() {
+        // R4 a delegator that stops delegating has become a third twin.
+        for (entry, member) in DELEGATORS {
+            assert!(
+                body(entry).contains(&format!("{member}(")),
+                "R4 delegator `{entry}` no longer hands its batch to `{member}`"
             );
         }
     }
