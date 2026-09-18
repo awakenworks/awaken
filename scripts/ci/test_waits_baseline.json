@@ -133,6 +133,22 @@
       "e2e/stage_change_coverage_e2e.ts": 1,
       "e2e/trace_backends_e2e.mjs": 1,
       "e2e/worker_resource_manifest_e2e.ts": 2
+    },
+    "silent-timeout": {
+      "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs": 1,
+      "crates/server/awaken-protocol-ag-ui/tests/streaming.rs": 1,
+      "crates/server/awaken-protocol-ai-sdk/tests/interrupt.rs": 1,
+      "crates/server/awaken-protocol-ai-sdk/tests/streaming.rs": 1,
+      "crates/server/awaken-dispatch/tests/pool_memory.rs": 2,
+      "crates/server/awaken-dispatch/tests/resilience_and_metrics.rs": 1,
+      "crates/server/awaken-dispatch/tests/service_memory.rs": 1,
+      "e2e/dispatch_metrics_export_e2e.mjs": 1,
+      "e2e/durable_cross_protocol_resume_e2e.mjs": 1,
+      "e2e/managed_full_chain_e2e.mjs": 1,
+      "e2e/managed_memory_e2e.mjs": 1,
+      "e2e/managed_memory_extraction_durable_e2e.mjs": 1,
+      "e2e/metrics_export_e2e.mjs": 2,
+      "e2e/remote_worker_recovery_e2e.ts": 1
     }
   },
   "allow": []
