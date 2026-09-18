@@ -12,7 +12,10 @@
 //! another); making it a checked contract forces the backends to agree by construction.
 //! Postgres joins the same suite behind its DB harness (`pg_tests.sh`).
 
-use awaken_agent_contract::clock::system_clock;
+use std::sync::Arc;
+
+use awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339;
+use awaken_agent_contract::clock::{Clock, ManualClock, system_clock};
 use awaken_session_contract::SessionId;
 use awaken_session_contract::work_queue::{
     HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
@@ -635,8 +638,141 @@ async fn reclaim_age_boundary_cases(q: &impl WorkQueue) {
     q.remove_env(environment).await.unwrap();
 }
 
-/// Run the whole contract against a freshly-built backend `Q`.
-async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(fresh: impl Fn() -> F) {
+/// Every observation timestamp a backend writes is a reading of the clock it was
+/// built with — never a constant, and never the host's wall clock.
+///
+/// Decision table. Causes: C1 the queue accepts an item; C2 a claim carries its
+/// own sampled `now_ms`; C3 an acknowledgement, which carries none; C4 a stop,
+/// which carries none; C5 the store is asked for queue stats; C6 the queue is
+/// drained. Effects: E1 `created_at` is the injected reading at acceptance;
+/// E2 `started_at` is the claim's own `now_ms`, so the durable start and the
+/// lease window cannot disagree; E3/E4 the acknowledgement and stop instants are
+/// the injected reading *at that moment*, which is how advancing the clock
+/// between commands is observable; E5 `oldest_queued_at` is the oldest
+/// unfinished item's own `created_at`; E6 a drained queue reports absence rather
+/// than a stand-in. Rules R1..R6 pair C1..C6 with E1..E6.
+///
+/// Diffusion: the sibling objects in the same store — the Environment's
+/// healthcheck item and a second Session item accepted later — are checked too,
+/// so a fix that reached only the one converted path fails here.
+async fn observation_timestamps_are_the_injected_clock<Q: WorkQueue>(q: &Q, clock: &ManualClock) {
+    const ACCEPTED: u64 = 1_700_000_000_000;
+    const LATER: u64 = ACCEPTED + 5_000;
+    const CLAIMED: u64 = ACCEPTED + 9_000;
+    const ACKED: u64 = ACCEPTED + 11_000;
+    const STOPPED: u64 = ACCEPTED + 17_000;
+
+    clock.set(ACCEPTED);
+    let first = SessionId::from("obs-first");
+    let work_id = q.enqueue_session("obs-env", &first).await.expect("R1");
+    q.enqueue_healthcheck("obs-env").await.expect("R1 sibling");
+    clock.set(LATER);
+    let second = SessionId::from("obs-second");
+    q.enqueue_session("obs-env", &second)
+        .await
+        .expect("R1 later");
+
+    let listed = q.list("obs-env").await.expect("R1 list");
+    assert_eq!(listed.len(), 3, "R1 fixture");
+    for item in &listed {
+        let expected = match &item.data {
+            awaken_session_contract::work_queue::WorkPayload::Session { id } if id == &second => {
+                LATER
+            }
+            _ => ACCEPTED,
+        };
+        assert_eq!(
+            item.created_at,
+            epoch_millis_to_rfc3339(expected),
+            "R1 {:?} carries the reading at its own acceptance",
+            item.data
+        );
+    }
+
+    assert_eq!(
+        q.stats("obs-env", CLAIMED)
+            .await
+            .expect("R5")
+            .oldest_queued_at,
+        Some(epoch_millis_to_rfc3339(ACCEPTED)),
+        "R5 oldest unfinished item's own acceptance instant"
+    );
+
+    // R2: the claim samples its own instant; the clock is deliberately parked
+    // somewhere else so a backend that reached for the ambient reading is caught.
+    clock.set(ACCEPTED);
+    let claimed = q
+        .claim("obs-env", "obs-worker", CLAIMED)
+        .await
+        .expect("R2")
+        .expect("R2 lease");
+    assert_eq!(claimed.id, work_id, "R2 oldest first");
+    assert_eq!(
+        claimed.started_at,
+        Some(epoch_millis_to_rfc3339(CLAIMED)),
+        "R2 started_at is the claim's own now_ms"
+    );
+    assert_eq!(
+        claimed.created_at,
+        epoch_millis_to_rfc3339(ACCEPTED),
+        "R2 acceptance is not rewritten by a claim"
+    );
+
+    clock.set(ACKED);
+    let acked = q.ack("obs-env", &work_id, "obs-worker").await.expect("R3");
+    let WorkMutationResult::Accepted(acked) = acked else {
+        panic!("R3 acknowledgement accepted");
+    };
+    assert_eq!(
+        acked.acknowledged_at,
+        Some(epoch_millis_to_rfc3339(ACKED)),
+        "R3 acknowledged_at is the injected reading at acknowledgement"
+    );
+
+    clock.set(STOPPED);
+    let stopped = q.stop("obs-env", &work_id, "obs-worker").await.expect("R4");
+    let WorkMutationResult::Accepted(stopped) = stopped else {
+        panic!("R4 stop accepted");
+    };
+    assert_eq!(
+        stopped.stopped_at,
+        Some(epoch_millis_to_rfc3339(STOPPED)),
+        "R4 stopped_at is the injected reading at stop"
+    );
+    assert_eq!(
+        stopped.stop_requested_at, stopped.stopped_at,
+        "R4 one reading, two fields"
+    );
+    assert_ne!(
+        stopped.acknowledged_at, stopped.stopped_at,
+        "R3/R4 advancing the clock between commands is observable"
+    );
+
+    // R6: drain everything; absence is then the answer, not a stand-in value.
+    for item in q.list("obs-env").await.expect("R6 list") {
+        if item.state != WorkState::Stopped {
+            q.claim("obs-env", "obs-worker", STOPPED)
+                .await
+                .expect("R6 claim");
+            let _ = q
+                .stop("obs-env", &item.id, "obs-worker")
+                .await
+                .expect("R6 stop");
+        }
+    }
+    let drained = q.stats("obs-env", STOPPED).await.expect("R6");
+    assert_eq!(drained.depth, 0, "R6 drained");
+    assert_eq!(drained.pending, 0, "R6 drained");
+    assert_eq!(drained.oldest_queued_at, None, "R6 absence is stated");
+    q.remove_env("obs-env").await.expect("R6 cleanup");
+}
+
+/// Run the whole contract against a freshly-built backend `Q`. The factory takes
+/// the clock so the observation rules can name the instants they expect.
+async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(
+    fresh_with: impl Fn(Arc<dyn Clock>) -> F,
+) {
+    let fresh = || fresh_with(system_clock());
     single_active_cap(&fresh().await).await;
     reclaim_at_ttl(&fresh().await).await;
     requested_reclaim_uses_refresh_clock(&fresh().await).await;
@@ -649,19 +785,24 @@ async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(fresh: impl
     graceful_owner_release_is_exact(&fresh().await).await;
     reclaim_age_boundary_cases(&fresh().await).await;
     work_queue_conformance::session_access::capability_and_metadata_contract(&fresh().await).await;
+    let clock = Arc::new(ManualClock::new(0));
+    let queue = fresh_with(clock.clone()).await;
+    observation_timestamps_are_the_injected_clock(&queue, &clock).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────
 
 #[test]
 fn in_memory_backend_conforms() {
-    block(run_suite(async || InMemoryWorkQueue::new()));
+    block(run_suite(async |clock| {
+        InMemoryWorkQueue::with_clock(clock)
+    }));
 }
 
 #[test]
 fn sqlite_backend_conforms() {
-    block(run_suite(async || {
-        SqliteWorkQueue::open_in_memory(system_clock()).expect("sqlite in-memory queue")
+    block(run_suite(async |clock| {
+        SqliteWorkQueue::open_in_memory(clock).expect("sqlite in-memory queue")
     }));
 }
 
@@ -691,7 +832,7 @@ async fn postgres_backend_conforms() {
             .as_nanos()
     );
     let sequence = AtomicUsize::new(0);
-    run_suite(async || {
+    run_suite(async |clock| {
         let index = sequence.fetch_add(1, Ordering::Relaxed);
         let schema = format!("{prefix}_{index}");
         admin
@@ -709,7 +850,7 @@ async fn postgres_backend_conforms() {
             .connect(&url)
             .await
             .expect("schema pool");
-        PostgresWorkQueue::with_pool(pool, system_clock())
+        PostgresWorkQueue::with_pool(pool, clock)
             .await
             .expect("queue schema migrations")
     })

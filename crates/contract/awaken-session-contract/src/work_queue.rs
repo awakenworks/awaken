@@ -778,8 +778,15 @@ pub trait WorkQueue: Send + Sync {
         worker_id: &str,
         now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
-    /// Claim with an optional caller-requested reclaim age. Backends that cannot
-    /// tune lease clocks may conservatively delegate to [`Self::claim`].
+    /// Claim with an optional caller-requested reclaim age, recording the poll
+    /// under `poller_id`.
+    ///
+    /// Required, with no default. The default this replaced dropped both
+    /// qualifiers and delegated to [`Self::claim`]: a backend that did not
+    /// override it accepted a reclaim age and never applied it, and never
+    /// recorded the poll, so `workers_polling` undercounted and a lapsed lease
+    /// outlived the age its caller asked for — while the call reported success.
+    /// Every backend implements it, so there is nothing for a default to buy.
     async fn claim_with_reclaim(
         &self,
         env_id: &str,
@@ -787,16 +794,20 @@ pub trait WorkQueue: Send + Sync {
         poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
-        let _ = reclaim_older_than_ms;
-        let _ = poller_id;
-        self.claim(env_id, lease_owner, now_ms).await
-    }
+    ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Claim through the public self-hosted Worker protocol. When the selected
     /// item is Session work, the caller's pre-minted `session_access` digest is
     /// persisted in the same transaction that writes the new lease epoch and is
     /// echoed in [`WorkClaim::session_access`]; otherwise it is discarded. The
     /// queue never generates or sees the bearer itself.
+    ///
+    /// The default fails closed. The one it replaced dropped `session_access`
+    /// and returned the claim anyway: the caller had already minted a bearer and
+    /// was told the claim succeeded, while the digest it must be compared
+    /// against was never persisted — every later request under that bearer then
+    /// failed authentication against a lease that looked healthy. An
+    /// implementation that cannot bind the digest must say so, not hand back a
+    /// lease that silently has none.
     async fn claim_with_session_access(
         &self,
         env_id: &str,
@@ -806,20 +817,17 @@ pub trait WorkQueue: Send + Sync {
         reclaim_older_than_ms: Option<u64>,
         session_access: &SessionAccessDigest,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
-        let _ = session_access;
-        Ok(self
-            .claim_with_reclaim(
-                env_id,
-                lease_owner,
-                poller_id,
-                now_ms,
-                reclaim_older_than_ms,
-            )
-            .await?
-            .map(|item| WorkClaim {
-                item,
-                session_access: None,
-            }))
+        let _ = (
+            env_id,
+            lease_owner,
+            poller_id,
+            now_ms,
+            reclaim_older_than_ms,
+            session_access,
+        );
+        Err(WorkQueueError::Storage(
+            "this WorkQueue backend cannot bind a Session-access digest to a claim".into(),
+        ))
     }
     /// Resolve one bearer digest against the current live Work lease. Expired,
     /// reclaimed, stopped, retired, or replaced leases return `None`.
@@ -930,6 +938,178 @@ mod tests {
         WorkLeaseMutationAdmission, next_heartbeat_receipt, session_work_release_admission,
         work_lease_mutation_admission,
     };
+
+    /// A backend that does not bind the digest refuses the claim.
+    ///
+    /// Decision table for the `claim_with_session_access` default. Causes:
+    /// D1 an implementation that overrides nothing; D2 the same call on an
+    /// implementation that binds the digest. Effects: E1 a refusal naming the
+    /// missing capability; E2 a claim whose `session_access` carries the exact
+    /// digest presented. Rules D1 => E1, D2 => E2.
+    ///
+    /// E1 is the conversion: the replaced default answered `Ok(Some(claim))`
+    /// with `session_access: None`, so a caller that had already minted a bearer
+    /// was told its claim succeeded while nothing to compare that bearer against
+    /// had been written.
+    #[tokio::test]
+    async fn a_backend_that_cannot_bind_the_digest_refuses_the_claim() {
+        use super::*;
+        use std::collections::BTreeMap;
+
+        struct Unbinding;
+
+        #[async_trait::async_trait]
+        impl WorkQueue for Unbinding {
+            async fn enqueue_session(
+                &self,
+                _: &str,
+                _: &crate::SessionId,
+            ) -> Result<String, WorkQueueError> {
+                Ok("work_1".into())
+            }
+            async fn wake_session(
+                &self,
+                _: &str,
+                _: &crate::SessionId,
+            ) -> Result<String, WorkQueueError> {
+                Ok("work_1".into())
+            }
+            async fn enqueue_healthcheck(&self, _: &str) -> Result<String, WorkQueueError> {
+                Ok("work_1".into())
+            }
+            async fn ensure_healthcheck(&self, _: &str) -> Result<String, WorkQueueError> {
+                Ok("work_1".into())
+            }
+            async fn list(&self, _: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
+                Ok(Vec::new())
+            }
+            async fn get(&self, _: &str, _: &str) -> Result<Option<WorkItem>, WorkQueueError> {
+                Ok(None)
+            }
+            async fn claim(
+                &self,
+                _: &str,
+                _: &str,
+                _: u64,
+            ) -> Result<Option<WorkItem>, WorkQueueError> {
+                Ok(Some(item()))
+            }
+            async fn claim_with_reclaim(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: u64,
+                _: Option<u64>,
+            ) -> Result<Option<WorkItem>, WorkQueueError> {
+                Ok(Some(item()))
+            }
+            async fn ack(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<WorkMutationResult, WorkQueueError> {
+                Ok(WorkMutationResult::NotFound)
+            }
+            async fn heartbeat(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: u64,
+                _: LeaseHeartbeat,
+            ) -> Result<HeartbeatResult, WorkQueueError> {
+                Ok(HeartbeatResult::NotFound)
+            }
+            async fn stop(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<WorkMutationResult, WorkQueueError> {
+                Ok(WorkMutationResult::NotFound)
+            }
+            async fn release_owner(&self, _: &str) -> Result<usize, WorkQueueError> {
+                Ok(0)
+            }
+            async fn retire_session(
+                &self,
+                _: &str,
+                _: &crate::SessionId,
+            ) -> Result<Option<WorkItem>, WorkQueueError> {
+                Ok(None)
+            }
+            async fn acquire_session(
+                &self,
+                _: &str,
+                _: &crate::SessionId,
+                _: &str,
+                _: u64,
+            ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+                Ok(None)
+            }
+            async fn update_metadata(
+                &self,
+                _: &str,
+                _: &str,
+                _: BTreeMap<String, Option<String>>,
+            ) -> Result<Option<WorkItem>, WorkQueueError> {
+                Ok(None)
+            }
+            async fn stats(&self, _: &str, _: u64) -> Result<QueueStats, WorkQueueError> {
+                Ok(QueueStats {
+                    depth: 0,
+                    pending: 0,
+                    oldest_queued_at: None,
+                    workers_polling: 0,
+                })
+            }
+            async fn remove_env(&self, _: &str) -> Result<(), WorkQueueError> {
+                Ok(())
+            }
+        }
+
+        fn item() -> WorkItem {
+            WorkItem {
+                id: "work_1".into(),
+                environment_id: "env".into(),
+                data: WorkPayload::Session {
+                    id: "sesn_1".into(),
+                },
+                metadata: BTreeMap::new(),
+                state: WorkState::Active,
+                created_at: "2026-02-03T04:05:06.007Z".into(),
+                acknowledged_at: None,
+                latest_heartbeat_at: None,
+                started_at: None,
+                stop_requested_at: None,
+                stopped_at: None,
+            }
+        }
+
+        let digest = SessionAccessDigest::from_hex("a".repeat(64)).expect("D1 digest");
+        let refused = Unbinding
+            .claim_with_session_access("env", "owner", "poller", 0, None, &digest)
+            .await;
+        let Err(WorkQueueError::Storage(detail)) = refused else {
+            panic!("D1/E1: the default must refuse, not hand back a digest-less claim");
+        };
+        assert!(
+            detail.contains("Session-access digest"),
+            "D1/E1 the refusal names the missing capability, got {detail:?}"
+        );
+        // D2/E2: the unqualified sibling still answers, so the refusal is about
+        // the qualifier and not about claiming at all.
+        assert!(
+            Unbinding
+                .claim_with_reclaim("env", "owner", "poller", 0, None)
+                .await
+                .expect("D2")
+                .is_some(),
+            "D2/E2"
+        );
+    }
 
     #[test]
     fn session_work_effect_admission_follows_the_complete_authority_table() {

@@ -1786,6 +1786,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepted_instant_survives_reopening_the_durable_file() {
+        // Round trip. Causes: C1 a row accepted while the store reads clock A;
+        // C2 the same database reopened behind a different clock B. Effects:
+        // E1 the read-back acceptance instant is A's reading; E2 it is not B's,
+        // so the value is persisted rather than recomputed on read. Rule
+        // R1 = C1 + C2 => E1 + E2. Diffusion: a sibling accepted one second
+        // later keeps its own distinct instant across the same reopen.
+        use awaken_agent_contract::clock::ManualClock;
+
+        const WRITE_MS: u64 = 1_600_000_000_000;
+        const SIBLING_MS: u64 = WRITE_MS + 1_000;
+        const REOPEN_MS: u64 = 1_900_000_000_000;
+
+        let dir = std::env::temp_dir().join(format!("wq-roundtrip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("roundtrip.db");
+        let _ = std::fs::remove_file(&path);
+
+        let writing = Arc::new(ManualClock::new(WRITE_MS));
+        let queue = SqliteWorkQueue::open(path.to_str().unwrap(), writing.clone())
+            .expect("open durable file");
+        let first = queue
+            .enqueue_session("rt-env", &awaken_session_contract::SessionId::from("rt-a"))
+            .await
+            .expect("C1");
+        writing.set(SIBLING_MS);
+        let sibling = queue
+            .enqueue_session("rt-env", &awaken_session_contract::SessionId::from("rt-b"))
+            .await
+            .expect("C1 sibling");
+        drop(queue);
+
+        let reopened = SqliteWorkQueue::open(
+            path.to_str().unwrap(),
+            Arc::new(ManualClock::new(REOPEN_MS)),
+        )
+        .expect("C2");
+        let expected = awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(WRITE_MS);
+        let read = reopened
+            .get("rt-env", &first)
+            .await
+            .expect("read back")
+            .expect("row survives");
+        assert_eq!(read.created_at, expected, "E1");
+        assert_ne!(
+            read.created_at,
+            awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(REOPEN_MS),
+            "E2 the reopening clock must not supply the value"
+        );
+        let sibling = reopened
+            .get("rt-env", &sibling)
+            .await
+            .expect("read back sibling")
+            .expect("sibling survives");
+        assert_eq!(
+            sibling.created_at,
+            awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(SIBLING_MS),
+            "E1 diffusion: the sibling keeps its own instant"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
     async fn file_open_and_pg_connect_entry_points() {
         // The file-backed `open` (not just `open_in_memory`).
         let dir = std::env::temp_dir().join(format!("wq-cov-{}", std::process::id()));

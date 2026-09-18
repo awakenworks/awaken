@@ -1413,6 +1413,20 @@ mod tests {
         async fn get(&self, env: &str, work: &str) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.get(env, work).await
         }
+        async fn claim_with_reclaim(
+            &self,
+            env: &str,
+            lease_owner: &str,
+            poller_id: &str,
+            now: u64,
+            reclaim_older_than_ms: Option<u64>,
+        ) -> Result<Option<WorkItem>, WorkQueueError> {
+            // The port requires this: a decorator that forwarded only `claim`
+            // would drop the reclaim age and the poll record silently.
+            self.inner
+                .claim_with_reclaim(env, lease_owner, poller_id, now, reclaim_older_than_ms)
+                .await
+        }
         async fn claim(
             &self,
             env: &str,

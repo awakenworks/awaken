@@ -314,14 +314,14 @@ pub awaken_protocol_managed::types::environment::DeletedEnvironment::object_type
 pub struct awaken_protocol_managed::types::environment::Environment
 pub awaken_protocol_managed::types::environment::Environment::archived_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::environment::Environment::config: awaken_environment_contract::EnvironmentConfig
-pub awaken_protocol_managed::types::environment::Environment::created_at: alloc::string::String
+pub awaken_protocol_managed::types::environment::Environment::created_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::environment::Environment::description: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::environment::Environment::id: alloc::string::String
 pub awaken_protocol_managed::types::environment::Environment::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::environment::Environment::name: alloc::string::String
 pub awaken_protocol_managed::types::environment::Environment::object_type: &'static str
 pub awaken_protocol_managed::types::environment::Environment::scope: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::environment::Environment::updated_at: alloc::string::String
+pub awaken_protocol_managed::types::environment::Environment::updated_at: core::option::Option<alloc::string::String>
 pub struct awaken_protocol_managed::types::environment::EnvironmentCreateParams
 pub awaken_protocol_managed::types::environment::EnvironmentCreateParams::config: core::option::Option<awaken_protocol_managed::types::environment::EnvironmentConfigParams>
 pub awaken_protocol_managed::types::environment::EnvironmentCreateParams::description: core::option::Option<alloc::string::String>
