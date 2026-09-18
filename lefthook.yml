@@ -104,9 +104,29 @@ pre-commit:
     #     in main came from that one shape; the ratchet freezes today's debt.
     test-waits:
       # >>> generated glob from check_test_waits.py INPUT_GLOBS — do not edit
-      glob: "{crates/*/*/src/**/*.rs,crates/*/*/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json}"
+      glob: "{crates/*/*/src/**/*.rs,crates/*/*/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_waits.py
+
+    # 3b. A failed read of durable state may never become an absence. The
+    #     recovery path is derived -- every production module that names a
+    #     checkpoint or the tri-state -- so a file joins the rule by doing the
+    #     thing the rule is about, and the trigger follows the same declaration.
+    observation-collapse:
+      # >>> generated glob from check_observation_collapse.py INPUT_GLOBS — do not edit
+      glob: "{crates/*/*/Cargo.toml,crates/*/*/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_observation_collapse.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_observation_collapse.py
+
+    # 3c. A guard's scope must be derived from its subject, never written out a
+    #     second time by hand. The checkers are themselves the corpus here: a new
+    #     literal list of paths among them is refused, and today's are registered
+    #     with the reason each cannot be derived.
+    scan-scope:
+      # >>> generated glob from check_scan_scope.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/scan_scope_registry.json}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_scan_scope.py
 
     # 3b. The one declaration of every external tool a gate needs. Its self-test
     #    proves each row can still be located by the method it states, so a row

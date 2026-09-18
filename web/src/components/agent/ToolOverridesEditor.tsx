@@ -10,6 +10,9 @@ import { useId } from "react";
 import { TextField } from "../ui";
 import type { ToolOverride } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
+// The `mcp__<server>__<tool>` grammar has one owner per side; the editor asks it
+// rather than parsing the prefix a second time.
+import { hasMcpToolNamespace, isCanonicalMcpToolId } from "../../lib/mcp-tool-id";
 
 export default function ToolOverridesEditor({
   tools,
@@ -99,7 +102,7 @@ export default function ToolOverridesEditor({
               <X />
             </Button>
           </div>
-          {r.target.startsWith("mcp__") && (
+          {hasMcpToolNamespace(r.target) && (
             <span className={isCanonicalMcpToolId(r.target) ? "mut" : "err"} style={{ display: "block", marginTop: 4, fontSize: 11 }}>
               {isCanonicalMcpToolId(r.target)
                 ? app.t("Runtime-discovered MCP tool; resolved when the server connects.", "运行时发现的 MCP 工具；服务器连接后解析。")
@@ -122,15 +125,6 @@ export default function ToolOverridesEditor({
       )}
     </>
   );
-}
-
-/** MCP tool ids are dynamic and therefore cannot be enumerated at config compile.
- * The editor checks only the namespace shape; runtime discovery remains authority. */
-export function isCanonicalMcpToolId(target: string): boolean {
-  if (!target.startsWith("mcp__")) return false;
-  const rest = target.slice("mcp__".length);
-  const separator = rest.indexOf("__");
-  return separator > 0 && separator < rest.length - 2;
 }
 
 export function updateBackgroundEligibility(current: string[], target: string, enabled: boolean): string[] {

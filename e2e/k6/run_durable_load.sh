@@ -34,10 +34,12 @@ cleanup() { kill "$SERVER" 2>/dev/null || true; rm -rf "$STORE_DIR"; }
 trap cleanup EXIT
 
 # Wait for the port to accept connections.
+LISTENING=0
 for _ in $(seq 1 120); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then exec 3>&- 3<&-; break; fi
+  if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then exec 3>&- 3<&-; LISTENING=1; break; fi
   sleep 0.5
 done
+[ "$LISTENING" = 1 ] || { echo "server never accepted a connection on 127.0.0.1:$PORT within 60s" >&2; exit 1; }
 
 echo "== run k6 load =="
 BASE_URL="http://127.0.0.1:$PORT" VUS="${VUS:-20}" ITERS="${ITERS:-10}" \

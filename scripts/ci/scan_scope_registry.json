@@ -1,0 +1,187 @@
+{
+  "comment": [
+    "Every hand-written scope inside scripts/ci, with the reason it is not derived.",
+    "",
+    "scripts/ci/check_scan_scope.py is the only reader. A scope list that can be",
+    "derived from its subject must be derived instead of registered here; an entry",
+    "is a statement that the subject genuinely has no machine-readable extent -- a",
+    "frozen historical inventory, a taxonomy that assigns meaning rather than",
+    "membership, or a named authority whose identity is the rule.",
+    "",
+    "Both sections are complete and ratcheted: a new member of either subject set",
+    "fails the gate, and an entry naming something that no longer exists fails too,",
+    "so the baselines only go down."
+  ],
+  "baseline": {
+    "scope_lists": 28,
+    "scanners_without_input_globs": 20
+  },
+  "scope_lists": {
+    "_coordinator_authority_fitness.py:ATTEMPT_BACKENDS": {
+      "reason": "the five dispatch-attempt backends are named authorities; a walk of run-ingress would also collect the ports and adapters that must not implement the arithmetic"
+    },
+    "_execution_ownership_fitness.py:PUBLIC_ROUTE_ROOTS": {
+      "reason": "these are the discovery roots that make the inventory above complete; they name which trees serve public ingress, which no file in those trees states about itself"
+    },
+    "_execution_ownership_fitness.py:RAW_TOOL_REGISTRY_CONSUMERS": {
+      "reason": "the three crates permitted to hold a raw tool registry are a stated exception list; deriving it from who holds one would make the rule agree with whatever exists"
+    },
+    "_execution_ownership_fitness.py:ROUTE_OWNER_FILES": {
+      "reason": "the inventory is already paired with a discovery walk over PUBLIC_ROUTE_ROOTS, which is the completeness assertion: a new router source cannot escape it silently"
+    },
+    "_migration_fitness.py:PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS": {
+      "reason": "the exact per-owner counts those frozen receipts are allowed to declare; a count cannot be derived from the code it is meant to pin"
+    },
+    "_migration_fitness.py:PUBLISHED_LEGACY_SQL_AUTHORITIES": {
+      "reason": "frozen receipts of migrations already published to operators; a closed historical inventory that must never grow, so derivation from the tree would defeat its purpose"
+    },
+    "_realization_permit_fitness.py:LOCAL_REALIZATION_REGISTRY_HOLDERS": {
+      "reason": "the one owner, one re-export and one composition-root field of the registry type; a second holder is a second exclusion and must fail, not be discovered"
+    },
+    "_realization_permit_fitness.py:REALIZATION_DRIVER_ENTRIES": {
+      "reason": "the two permitted entry points into the phase driver, each paired with the accessor it must take its permit from; a walk would admit any new caller"
+    },
+    "_realization_permit_fitness.py:REALIZATION_PERMIT_MINTERS": {
+      "reason": "the two exclusion identity sources are the rule itself: a third minter is the defect, so the set cannot be read back from whoever mints one"
+    },
+    "_resource_plane_fitness.py:MEMORY_STORE_DRIVING_ADAPTERS": {
+      "reason": "the two driving adapters allowed to read memory-store identity through the port; a third would be discovered rather than refused if this were derived"
+    },
+    "_resource_plane_fitness.py:RESOURCE_APPLICATION_SOURCES": {
+      "reason": "resource adapters living inside mixed-role crates, whose owning crate is legitimately broader; nothing in the tree distinguishes them from their siblings"
+    },
+    "_resource_plane_fitness.py:RESOURCE_HTTP_SOURCES": {
+      "reason": "the HTTP handlers that must extract the workspace stamp; membership is an architectural role, not a directory, and the surrounding crate holds both kinds"
+    },
+    "_service_data_ownership_fitness.py:CREDENTIAL_REFRESH_SOURCES": {
+      "reason": "the three modules permitted to refresh a credential; the rule exists precisely so a fourth cannot be added by writing one"
+    },
+    "_session_state_ownership_fitness.py:SESSION_MUTATION_ROOTS": {
+      "reason": "the three crate roots allowed to mutate session state; which trees may is an ownership decision no file in them declares about itself"
+    },
+    "_sqlite_scheduler_fitness.py:ASYNC_SQLITE_ADAPTERS": {
+      "reason": "the two adapters that drive sqlite from async code and therefore need the scheduler rule; a third is the defect the rule is written to catch"
+    },
+    "check_authority_arithmetic.py:RULES": {
+      "reason": "each entry pairs an authority file with the arithmetic it must not re-derive, so the list carries the rule and not merely the scope"
+    },
+    "check_dependency_gates.py:SILENT_SKIP_EXEMPTIONS": {
+      "reason": "two files whose short-circuit on an absent dependency is sound; soundness is a judgement about the test, not a property any walk can read"
+    },
+    "check_file_limits.py:CODE_SUFFIXES": {
+      "reason": "a taxonomy, not a scope: the suffix decides which line budget applies, and no directory walk can say whether a new extension is code, doc or config"
+    },
+    "check_file_limits.py:CONFIG_SUFFIXES": {
+      "reason": "same taxonomy: these suffixes select the configuration budget, which nothing in the repository tree states about a file"
+    },
+    "check_file_limits.py:DOC_SUFFIXES": {
+      "reason": "same taxonomy: these suffixes select the documentation budget rather than the code one, which is a decision and not a discoverable fact"
+    },
+    "check_observation_collapse.py:TRANSLATED_TRANSPORT": {
+      "reason": "three dispatch-transport declarations that keep Result<Option<StreamCheckpoint>> because one named file translates it into the tri-state; the checker verifies that translation still exists and that each file still carries the shape, so the list cannot outlive its reason"
+    },
+    "check_reliability.py:REQUIRED_SURFACES": {
+      "reason": "an inventory of surfaces that must exist; deriving it from the tree would make the rule agree with whatever is present and assert nothing"
+    },
+    "check_repository_hygiene.py:DOC_NAME_EXCEPTIONS": {
+      "reason": "three documents allowed to carry an otherwise forbidden name; each is a decision someone made and can be argued with, not a discoverable property"
+    },
+    "check_repository_hygiene.py:GENERATED_SUFFIXES": {
+      "reason": "a taxonomy of generated artefacts that may never be committed; being generated is not something the file itself records"
+    },
+    "check_repository_hygiene.py:TEXT_SUFFIXES": {
+      "reason": "a taxonomy selecting which files the text hygiene rules can read at all; a walk cannot tell text from binary by extension without this judgement"
+    },
+    "check_secrets.py:CODE_SUFFIXES": {
+      "reason": "the module already scans every staged file by declaring INPUT_GLOBS ('**/*'); this taxonomy only chooses which of them get the code-shaped secret rules"
+    },
+    "check_test_orchestration.py:SECONDARY_RUNNERS": {
+      "reason": "the two coverage runners allowed beside the deterministic one; a third runner is the drift the rule exists to refuse, so it may not be discovered"
+    },
+    "check_test_orchestration.py:STORE_BACKEND_TESTS": {
+      "reason": "the four store backends whose conformance suite must be wired; derivable from a crate walk, but this module is being changed in another lane, so it is registered rather than edited here"
+    }
+  },
+  "scanners_without_input_globs": {
+    "_realization_permit_fitness.py": {
+      "runner": null,
+      "reason": "a helper module imported by check_crate_boundaries.py, whose __main__ exists only for running the fitness function standalone; its inputs are the importer's"
+    },
+    "_session_effect_fitness.py": {
+      "runner": null,
+      "reason": "a helper module imported by check_crate_boundaries.py, whose __main__ exists only for running the fitness function standalone; its inputs are the importer's"
+    },
+    "check_authority_arithmetic.py": {
+      "runner": "scripts/ci/check-rust.sh",
+      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker"
+    },
+    "check_crate_boundaries.py": {
+      "runner": "scripts/ci/check-rust.sh",
+      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker"
+    },
+    "check_degrading_defaults.py": {
+      "runner": "scripts/ci/check-all.sh",
+      "reason": "runs only in the static group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render"
+    },
+    "check_dependency_gates.py": {
+      "runner": "scripts/ci/check-all.sh",
+      "reason": "runs only in the static group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render"
+    },
+    "check_dependency_sources.py": {
+      "runner": "scripts/ci/check-rust.sh",
+      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker"
+    },
+    "check_feature_matrix.py": {
+      "runner": "scripts/ci/check-rust.sh",
+      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker"
+    },
+    "check_formal_mutations.py": {
+      "runner": "scripts/ci/check_formal.sh",
+      "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds"
+    },
+    "check_formal_web_surface.py": {
+      "runner": "scripts/ci/check_formal.sh",
+      "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds"
+    },
+    "check_managed_wire_naming.py": {
+      "runner": "scripts/ci/check-all.sh",
+      "reason": "has a pre-commit command whose glob is still hand-written; declaring inputs here belongs with the hook-hygiene work, not with this scope change"
+    },
+    "check_node_dependencies.py": {
+      "runner": "scripts/ci/check-all.sh",
+      "reason": "has a pre-commit command whose glob is still hand-written; declaring inputs here belongs with the hook-hygiene work, not with this scope change"
+    },
+    "check_product_release.py": {
+      "runner": "scripts/ci/check-all.sh",
+      "reason": "runs only in the docs group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render"
+    },
+    "check_test_orchestration.py": {
+      "runner": "scripts/ci/check-all.sh",
+      "reason": "has a pre-commit command whose glob is still hand-written, and the module is being changed in another lane, so its declaration is deferred rather than raced"
+    },
+    "export_homogeneous_lcov.py": {
+      "runner": "scripts/ci/e2e-coverage.sh",
+      "reason": "a coverage export tool rather than a gate: it reads profraw output produced by the run that invokes it, not a set of repository files"
+    },
+    "formal_run_evidence.py": {
+      "runner": "scripts/ci/check_formal.sh",
+      "reason": "an evidence writer rather than a gate: it walks the artefact directory the proof run just produced, which is not a repository input at all"
+    },
+    "render_runtime_refinement_traces.py": {
+      "runner": "scripts/ci/check-reliability.sh",
+      "reason": "a renderer rather than a gate: it walks the trace directory the reliability run just produced, which is not a repository input at all"
+    },
+    "test_bootstrap_kani.py": {
+      "runner": "scripts/ci/check_formal.sh",
+      "reason": "a self-test of the solver bootstrap; it walks the temporary trees its own fixtures build, so it has no repository input set to declare"
+    },
+    "test_formal_run_evidence.py": {
+      "runner": "scripts/ci/check_formal.sh",
+      "reason": "a self-test whose corpus is the dependency closure of the entry scripts it copies, derived at run time rather than declared"
+    },
+    "test_postgres_recovery_root.py": {
+      "runner": "scripts/ci/postgres_recovery_drill.sh",
+      "reason": "a self-test of the recovery drill; it walks the temporary trees its own fixtures build, so it has no repository input set to declare"
+    }
+  }
+}

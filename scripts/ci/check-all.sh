@@ -179,6 +179,8 @@ run static "file-limits self-test" python3 scripts/ci/check_file_limits.py --sel
 run static "file-limits" python3 scripts/ci/check_file_limits.py
 run static "test-wait self-test" python3 scripts/ci/check_test_waits.py --self-test
 run static "test waits name a durable fact" python3 scripts/ci/check_test_waits.py
+run static "scan-scope self-test" python3 scripts/ci/check_scan_scope.py --self-test
+run static "a guard's scope is derived, not hand-written" python3 scripts/ci/check_scan_scope.py
 run static "commit-message self-test" python3 scripts/ci/check_commit_message.py --self-test
 run static "release-package self-test" python3 scripts/release/package.py --self-test
 run static "product release checker self-test" python3 scripts/ci/check_product_release.py --self-test

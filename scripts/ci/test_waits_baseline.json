@@ -54,7 +54,10 @@
       "e2e/managed_dream_real_eval_e2e.mjs": 1,
       "e2e/managed_memory_extraction_stage_recovery_e2e.mjs": 1,
       "e2e/management_sessions_family_e2e.mjs": 1,
-      "e2e/remote_attempt_lifecycle_e2e.ts": 1
+      "e2e/remote_attempt_lifecycle_e2e.ts": 1,
+      "web/e2e/assistant-real.spec.ts": 1,
+      "web/e2e/real-llm.spec.ts": 1,
+      "web/e2e/state-machine-real.spec.ts": 1
     },
     "private-wait-loop": {
       "crates/bin/awaken-cli/tests/resource_scheduling.rs": 1,
@@ -131,7 +134,11 @@
       "e2e/resource_scope_boundary_e2e.mjs": 1,
       "e2e/stage_change_coverage_e2e.ts": 1,
       "e2e/trace_backends_e2e.mjs": 1,
-      "e2e/worker_resource_manifest_e2e.ts": 2
+      "e2e/worker_resource_manifest_e2e.ts": 2,
+      "web/e2e/assistant-real.spec.ts": 3,
+      "web/e2e/real-llm.spec.ts": 1,
+      "web/e2e/state-machine-real.spec.ts": 1,
+      "web/e2e/synthetic-model.ts": 1
     },
     "silent-timeout": {
       "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs": 1,

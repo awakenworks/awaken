@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { encodeMcpComponent, mcpToolId, mcpToolNamespace } from "./mcp-tool-id";
+import {
+  encodeMcpComponent,
+  hasMcpToolNamespace,
+  isCanonicalMcpToolId,
+  mcpToolId,
+  mcpToolNamespace,
+} from "./mcp-tool-id";
 
 // These vectors are copied from the Rust owner's tests
 // (crates/contract/awaken-agent-contract/src/mcp_tool_id.rs). If the two
@@ -52,5 +58,22 @@ describe("mcpToolId", () => {
     expect(mcpToolId("", "search")).toBeNull();
     expect(mcpToolId("srv", "")).toBeNull();
     expect(mcpToolNamespace("")).toBeNull();
+  });
+});
+
+describe("namespace recognition", () => {
+  it("accepts a runtime MCP namespace without requiring a static catalog entry", () => {
+    expect(isCanonicalMcpToolId("mcp__github__create_issue")).toBe(true);
+  });
+
+  it("rejects incomplete namespaces", () => {
+    expect(isCanonicalMcpToolId("mcp__github")).toBe(false);
+    expect(isCanonicalMcpToolId("mcp____tool")).toBe(false);
+  });
+
+  it("separates membership of the namespace from being a complete id", () => {
+    expect(hasMcpToolNamespace("mcp__github")).toBe(true);
+    expect(isCanonicalMcpToolId("mcp__github")).toBe(false);
+    expect(hasMcpToolNamespace("bash")).toBe(false);
   });
 });
