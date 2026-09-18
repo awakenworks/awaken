@@ -129,8 +129,8 @@
     }
   ],
   "session_observations": {
-    "projection_id": "session-observations-v3",
-    "schema_version": 3,
+    "projection_id": "session-observations-v4",
+    "schema_version": 4,
     "scope": "Executed production-call traces of durable observations, not universal implementation refinement. Models own the relations; this manifest owns field erasure and mandatory scenario coverage.",
     "erased_fields": [
       "Session payloads and repository engine internals; root traces retain revision, existence and times.",
