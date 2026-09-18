@@ -13,7 +13,6 @@
       "crates/server/awaken-dispatch/tests/crash_before_settle.rs": 1,
       "crates/server/awaken-dispatch/tests/lease_semantics.rs": 2,
       "crates/server/awaken-dispatch/tests/nats.rs": 1,
-      "crates/server/awaken-dispatch/tests/pg_notify_wake.rs": 4,
       "crates/server/awaken-dispatch/tests/pool_memory.rs": 8,
       "crates/server/awaken-dispatch/tests/service_memory.rs": 1,
       "crates/server/awaken-session-executor/src/background.rs": 1,
