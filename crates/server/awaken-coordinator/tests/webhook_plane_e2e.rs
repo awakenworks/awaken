@@ -131,6 +131,9 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
     let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    // The same repository read back as the lifecycle-outbox authority: its
+    // pending rows are the durable fact each delivery assertion settles on.
+    let facts: Arc<dyn awaken_session_contract::ManagedSessionRepository> = sessions.clone();
     let state = Arc::new(
         ManagedState::new(CoordinatedRuntimeFake::default()).with_session_repo(sessions.clone()),
     );
@@ -198,13 +201,17 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         .await
         .expect("W1 create Session and commit lifecycle fact");
 
-    // 5. The receiver got exactly one signed, correctly-scoped delivery.
-    for _ in 0..100 {
-        if !inbox.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    // 5. The receiver got exactly one signed, correctly-scoped delivery. The
+    // settle condition is the committed outbox, not the arrival count: an
+    // outbox row completes only after its delivery succeeded, so an empty
+    // outbox is the exact evidence that nothing more is in flight and `== 1`
+    // is a check rather than a race.
+    awaken_protocol_managed::test_support::wait_for_delivered_lifecycle_facts(
+        facts.as_ref(),
+        std::time::Duration::from_secs(2),
+        "the created Session's lifecycle fact to be delivered",
+    )
+    .await;
     let got = inbox.lock().unwrap().clone();
     assert_eq!(got.len(), 1, "exactly one delivery reached the receiver");
     let (body, headers) = &got[0];
@@ -275,12 +282,12 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         .expect("W4 claim and finish the due run");
     assert_eq!(runs.len(), 1, "W4 one due occurrence");
 
-    for _ in 0..150 {
-        if inbox.lock().unwrap().len() >= 4 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    awaken_protocol_managed::test_support::wait_for_delivered_lifecycle_facts(
+        facts.as_ref(),
+        std::time::Duration::from_secs(3),
+        "both Deployment lifecycle facts to be delivered",
+    )
+    .await;
     let all = inbox.lock().unwrap().clone();
     assert_eq!(
         all.len(),
