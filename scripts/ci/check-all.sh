@@ -16,13 +16,32 @@ awaken_append_repo_tools
 
 groups=(static docs rust api contracts formal reliability postgres kubernetes k3d frontend e2e sandbox)
 requested_group=all
+# `--full-gate` is the scheduled entry point: every group, a log, and a summary.
+# `--record` additionally blesses scripts/ci/gate_record.json — but only after
+# the run below finds nothing failed, because a record written by a partial run
+# is exactly the claim nobody earned. docs/adr/0080 owns the policy.
+full_gate=0
+record_full_gate=0
+original_arguments=("$@")
+usage() {
+  echo "usage: scripts/ci/check-all.sh [--group <name>|--list-groups|--full-gate [--record]]" >&2
+  exit 2
+}
 case "${1:-}" in
   "") ;;
+  --full-gate)
+    full_gate=1
+    shift
+    if [ "${1:-}" = "--record" ]; then
+      record_full_gate=1
+      shift
+    fi
+    [ "$#" -eq 0 ] || usage
+    ;;
   --group)
     requested_group="${2:-}"
     if [ -z "$requested_group" ]; then
-      echo "usage: scripts/ci/check-all.sh [--group <name>|--list-groups]" >&2
-      exit 2
+      usage
     fi
     valid=0
     for group in "${groups[@]}"; do
@@ -38,10 +57,21 @@ case "${1:-}" in
     exit 0
     ;;
   *)
-    echo "usage: scripts/ci/check-all.sh [--group <name>|--list-groups]" >&2
-    exit 2
+    usage
     ;;
 esac
+
+# A scheduled run needs a file to read afterwards, and a run that takes hours
+# needs one even when a terminal goes away. Re-enter once with output teed; the
+# marker variable is what stops that from recursing.
+if [ "$full_gate" -eq 1 ] && [ -z "${AWAKEN_FULL_GATE_LOG:-}" ]; then
+  full_gate_log_directory="${AWAKEN_FULL_GATE_LOG_DIR:-target/test-timings}"
+  mkdir -p "$full_gate_log_directory"
+  full_gate_log="$full_gate_log_directory/full-gate-$(date -u +%Y%m%dT%H%M%SZ).log"
+  echo "full gate log: $full_gate_log"
+  AWAKEN_FULL_GATE_LOG="$full_gate_log" "$0" "${original_arguments[@]}" 2>&1 | tee "$full_gate_log"
+  exit "${PIPESTATUS[0]}"
+fi
 
 failed=()   # labels of checks that failed
 repro=()    # standalone reproduce command, parallel to `failed`
@@ -205,3 +235,20 @@ if [ "${#failed[@]}" -ne 0 ]; then
 fi
 echo "✅ repository check group '$requested_group' passed"
 echo "   timings: $timing_file"
+if [ "$full_gate" -eq 1 ]; then
+  echo ""
+  echo "full gate summary:"
+  if command -v column >/dev/null 2>&1; then
+    column -t -s "$(printf '\t')" "$timing_file"
+  else
+    cat "$timing_file"
+  fi
+  if [ -n "${AWAKEN_FULL_GATE_LOG:-}" ]; then
+    echo "   log: $AWAKEN_FULL_GATE_LOG"
+  fi
+fi
+# Reached only when every group above passed, so this is the one place a record
+# can be written and the only run that is entitled to write one.
+if [ "$record_full_gate" -eq 1 ]; then
+  python3 scripts/ci/check_gate_freshness.py --record --gates "${groups[*]}" || exit 1
+fi
