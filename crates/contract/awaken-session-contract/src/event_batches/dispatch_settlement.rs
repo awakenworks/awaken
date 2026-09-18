@@ -79,6 +79,101 @@ pub const fn session_event_dispatch_settlement_plan(
     }
 }
 
+/// Derive the input-actionability fact the closing decision consumes.
+///
+/// This is deliberately a named production kernel rather than an expression
+/// inlined at the call site: it is the predicate a real defect lived in (an
+/// Awaiting Run that queued a later ordinary User was held Running, hiding the
+/// very approval that would unblock it), and an inlined `let` cannot be reached
+/// by a proof. Retained input permits idling when either every admitted Event
+/// is already processed, or the Run is Awaiting and every still-pending Event
+/// is an ordinary User command -- whose admission is not physical activity --
+/// or the System command frozen into such a pending User's own reservation.
+/// The three classes of retained Event the idling predicate distinguishes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetainedInputClass {
+    /// An ordinary User command. Its unprocessed admission is queued work, not
+    /// physical activity, so it cannot by itself hold the Session Running.
+    OrdinaryUser,
+    /// A System command frozen into the preceding User Run's own reservation.
+    ReservedSystem,
+    /// Every other retained command kind, which does keep the existing
+    /// reconciliation gate closed until it is processed.
+    Other,
+}
+
+impl SessionEventCommand {
+    /// Classify this command for the retained-input idling decision. Adding a
+    /// command variant forces an arm here rather than silently falling into an
+    /// inert class.
+    #[must_use]
+    pub(crate) const fn retained_input_class(&self) -> RetainedInputClass {
+        match self {
+            Self::UserMessage { .. } => RetainedInputClass::OrdinaryUser,
+            Self::SystemMessage { .. } => RetainedInputClass::ReservedSystem,
+            Self::DefineOutcome { .. } | Self::ToolReply { .. } | Self::Interrupt { .. } => {
+                RetainedInputClass::Other
+            }
+        }
+    }
+}
+
+/// Whether one retained Event leaves the Session free to idle.
+///
+/// This is the predicate a real defect lived in: an Awaiting Run that had
+/// queued a later ordinary User was held Running, which hid the very approval
+/// that would unblock it. A System command is inert only while the User whose
+/// reservation froze it is itself still pending -- a System standing alone is
+/// real pending work.
+#[must_use]
+pub(crate) const fn retained_event_is_inert(
+    processed: bool,
+    class: RetainedInputClass,
+    previous: Option<(RetainedInputClass, bool)>,
+) -> bool {
+    if processed {
+        return true;
+    }
+    match class {
+        RetainedInputClass::OrdinaryUser => true,
+        RetainedInputClass::ReservedSystem => {
+            matches!(previous, Some((RetainedInputClass::OrdinaryUser, false)))
+        }
+        RetainedInputClass::Other => false,
+    }
+}
+
+/// Derive the input-actionability fact the closing decision consumes.
+///
+/// This is deliberately a named production kernel rather than an expression
+/// inlined at the call site: an inlined `let` cannot be reached by a proof at
+/// all. Retained input permits idling when either every admitted Event is
+/// already processed, or the Run is Awaiting and every still-pending Event is
+/// inert by [`retained_event_is_inert`].
+#[must_use]
+pub(crate) fn session_inputs_allow_idle(
+    batches: &[SessionEventBatch],
+    boundary: crate::SessionAgentRunBoundary,
+) -> bool {
+    let all_events_processed = batches.iter().all(SessionEventBatch::is_complete);
+    let only_blocked_users = boundary == crate::SessionAgentRunBoundary::Awaiting
+        && batches.iter().all(|batch| {
+            batch.events.iter().enumerate().all(|(index, entry)| {
+                retained_event_is_inert(
+                    entry.processed,
+                    entry.event.retained_input_class(),
+                    index
+                        .checked_sub(1)
+                        .and_then(|previous| batch.events.get(previous))
+                        .map(|previous| {
+                            (previous.event.retained_input_class(), previous.processed)
+                        }),
+                )
+            })
+        });
+    all_events_processed || only_blocked_users
+}
+
 /// Decide whether the applied aggregate mutation may close Running. This does
 /// not model the database or queue: it joins the exact production plan result
 /// with the same root's activity-removal and input-actionability facts.
@@ -218,6 +313,11 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
         !(valid && (first || resumed))
             && !(valid && existing == Some(incoming) && processed && !active)
     );
+    // R4's fourth conjunct is the fact the aggregate DERIVES from its retained
+    // input. It is proved as its own theorem in
+    // `retained_input_idling_is_exactly_settled_or_only_blocked_users` below,
+    // over the real kernel and a bounded representative batch; quantifying over
+    // it here is sound only because that sibling constrains it.
     let exact_activity_removed = kani::any();
     let last_active = kani::any();
     let inputs_allow_idle = kani::any();
@@ -233,6 +333,119 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
             && last_active
             && inputs_allow_idle
     );
+}
+
+/// The retained-input half of R4, proved over the production predicate rather
+/// than over a free symbol.
+///
+/// Causes: the Event's processed marker, its class, and the class and marker of
+/// its immediate predecessor (absent for the first). Effects: R1 any processed
+/// Event is inert; R2 a pending ordinary User is inert, whatever precedes it --
+/// this is the rule whose absence held an Awaiting Session Running behind its
+/// own queued User; R3 a pending System is inert only while the User that froze
+/// it is itself still pending, so a System standing alone is real work; R4 every
+/// other pending kind blocks idling unconditionally.
+///
+/// Bounds: this proves the per-Event rule and the class each real command maps
+/// to. The fold that applies it -- `Iterator::all` over the entries of each
+/// batch and over the batches of a Session, disjoined with
+/// `all_events_processed` -- is NOT proved here: a non-empty
+/// `Vec<SessionEventEntry>` does not complete under Kani in this crate (a bare
+/// command is 0.15s, the same command inside one `Vec` does not finish in
+/// 400s), which is the same wall `terminal_batch_resolution_empty` documents.
+/// The fold is covered by the executable decision tables in this module and in
+/// `crate::tests::event_batches`.
+#[cfg(kani)]
+#[kani::proof]
+fn retained_input_idling_is_exactly_settled_or_only_blocked_users() {
+    let class = proof_class(kani::any());
+    let previous = kani::any::<bool>().then(|| (proof_class(kani::any()), kani::any::<bool>()));
+
+    // R1: a processed Event never blocks, in any class or position.
+    assert!(retained_event_is_inert(true, class, previous));
+
+    let pending = retained_event_is_inert(false, class, previous);
+    // R2 and R4: an ordinary User is inert and any other non-System kind is not,
+    // independently of what precedes them.
+    if class == RetainedInputClass::OrdinaryUser {
+        assert!(
+            pending,
+            "a queued ordinary User must not hold the Session Running"
+        );
+    }
+    if class == RetainedInputClass::Other {
+        assert!(
+            !pending,
+            "every other pending command keeps the gate closed"
+        );
+    }
+    // R3: a pending System is inert exactly while its own pending User precedes it.
+    if class == RetainedInputClass::ReservedSystem {
+        assert_eq!(
+            pending,
+            previous == Some((RetainedInputClass::OrdinaryUser, false)),
+            "a System is inert only inside its own User's reservation"
+        );
+    }
+    // Processing an Event can never turn an inert one back into a blocker.
+    assert!(!(pending && !retained_event_is_inert(true, class, previous)));
+
+    // The classification is the derivation's other half: every real command
+    // variant maps to exactly one class, over values built by the real type.
+    let operation_id = String::new;
+    assert_eq!(
+        SessionEventCommand::UserMessage {
+            operation_id: operation_id(),
+            run_id: RunId(String::new()),
+            content: Vec::new(),
+            data_subject_id: None,
+        }
+        .retained_input_class(),
+        RetainedInputClass::OrdinaryUser
+    );
+    assert_eq!(
+        SessionEventCommand::SystemMessage {
+            operation_id: operation_id(),
+            content: Vec::new(),
+        }
+        .retained_input_class(),
+        RetainedInputClass::ReservedSystem
+    );
+    assert_eq!(
+        SessionEventCommand::Interrupt {
+            operation_id: operation_id(),
+            interrupt: crate::SessionEventInterrupt {
+                requested_target: None,
+                targets: Vec::new(),
+            },
+        }
+        .retained_input_class(),
+        RetainedInputClass::Other
+    );
+    assert_eq!(
+        SessionEventCommand::DefineOutcome {
+            operation_id: operation_id(),
+            outcome_id: String::new(),
+            description: String::new(),
+            rubric: crate::SessionOutcomeRubric::Text {
+                content: String::new(),
+            },
+            max_iterations: None,
+        }
+        .retained_input_class(),
+        RetainedInputClass::Other
+    );
+}
+
+/// The three retained-input classes as a symbolic choice, without building a
+/// command: the mapping from commands to classes is asserted separately above.
+#[cfg(kani)]
+fn proof_class(tag: u8) -> RetainedInputClass {
+    match tag % 3 {
+        0 => RetainedInputClass::OrdinaryUser,
+        1 => RetainedInputClass::ReservedSystem,
+        _ => RetainedInputClass::Other,
+    }
 }
 
 #[cfg(test)]
