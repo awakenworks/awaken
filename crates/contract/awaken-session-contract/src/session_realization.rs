@@ -1125,9 +1125,12 @@ pub async fn drive_session_realization(
             // policy/credential payloads are outside this trace contract.
             let action = match &directive.action {
                 SessionRealizationAction::Stage { mcp_stages, .. } => serde_json::json!({
-                    "phase": "stage", "generations": mcp_stages.iter().map(|r| &r.generation).collect::<Vec<_>>() }),
+                    "phase": "stage",
+                    "generations": mcp_stages.iter().map(|r| crate::realization_observation::observed_generation(&r.generation)).collect::<Vec<_>>() }),
                 SessionRealizationAction::Publish { publish, drain } => serde_json::json!({
-                    "phase": "publish", "publish": publish, "drain": drain }),
+                    "phase": "publish",
+                    "publish": publish.iter().map(crate::realization_observation::observed_generation).collect::<Vec<_>>(),
+                    "drain": drain.iter().map(crate::realization_observation::observed_generation).collect::<Vec<_>>() }),
                 SessionRealizationAction::Complete => serde_json::json!({"phase": "complete"}),
             };
             crate::realization_observation::checkpoint(
@@ -1175,7 +1178,8 @@ pub async fn drive_session_realization(
                 }
                 #[cfg(feature = "test-support")]
                 crate::realization_observation::checkpoint("stage", session_id,
-                    serde_json::json!({"lease": directive.authority.lease, "generations": receipts.iter().map(|r| &r.generation).collect::<Vec<_>>()})).await;
+                    serde_json::json!({"lease": directive.authority.lease,
+                        "generations": receipts.iter().map(|r| crate::realization_observation::observed_generation(&r.generation)).collect::<Vec<_>>()})).await;
                 request_started = synchronizer.observe_realization_request()?;
                 directive = match control
                     .activate_session_realization(ActivateSessionRealization {
@@ -1204,7 +1208,9 @@ pub async fn drive_session_realization(
                         crate::realization_observation::checkpoint(
                             "publish-one",
                             session_id,
-                            serde_json::json!({"generation": generation}),
+                            serde_json::json!({
+                                "generation": crate::realization_observation::observed_generation(generation)
+                            }),
                         )
                         .await;
                     }
@@ -1214,7 +1220,9 @@ pub async fn drive_session_realization(
                         crate::realization_observation::checkpoint(
                             "drain-one",
                             session_id,
-                            serde_json::json!({"generation": generation}),
+                            serde_json::json!({
+                                "generation": crate::realization_observation::observed_generation(generation)
+                            }),
                         )
                         .await;
                     }
@@ -1236,7 +1244,9 @@ pub async fn drive_session_realization(
                 }
                 #[cfg(feature = "test-support")]
                 crate::realization_observation::checkpoint("published", session_id,
-                    serde_json::json!({"lease": directive.authority.lease, "published": publish, "drained": drain})).await;
+                    serde_json::json!({"lease": directive.authority.lease,
+                        "published": publish.iter().map(crate::realization_observation::observed_generation).collect::<Vec<_>>(),
+                        "drained": drain.iter().map(crate::realization_observation::observed_generation).collect::<Vec<_>>()})).await;
                 request_started = synchronizer.observe_realization_request()?;
                 directive = control
                     .acknowledge_session_realization(AcknowledgeSessionRealization {

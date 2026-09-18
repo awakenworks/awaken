@@ -224,7 +224,7 @@ legacy unknown metadata, crash-discarded caches and exact recovered prefixes.
 Stage receipt partition. Existing TLAPS root-kernel proofs do not automatically
 prove these new TLC observer axes.
 
-The existing Rust-to-TLA runner consumes `session-observations-v3` from
+The existing Rust-to-TLA runner consumes `session-observations-v4` from
 `runtime-refinement-manifest.json`. The manifest requires every named decision
 rule, not merely each scenario file. Measured cardinality, predecessor sets,
 lease expiries, clock partitions and crash boundaries bind the relevant labels
