@@ -108,6 +108,33 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_test_waits.py
 
+    # 3b. The one declaration of every external tool a gate needs. Its self-test
+    #    proves each row can still be located by the method it states, so a row
+    #    that stopped describing reality fails here rather than inside a proof.
+    gate-tools:
+      # >>> generated glob from gate_tools.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/_provider_environment.sh,scripts/ci/check-all.sh,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/gate_tools.py --self-test
+
+    # 3c. Build output is derived and grows without bound; a checkout is not and
+    #    must never be touched. This proves that distinction still holds before
+    #    anyone runs the reclaimer with --apply.
+    reclaim-build-space:
+      # >>> generated glob from reclaim_build_space.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/reclaim_build_space.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/reclaim_build_space.py --self-test
+
+    # 3d. The record of the last green full gate is evidence, so a commit may not
+    #    leave it naming a commit that is gone, off main, or blessed by a partial
+    #    run. Staleness is a schedule and is reported by check-all, not here.
+    gate-freshness:
+      # >>> generated glob from check_gate_freshness.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/check-all.sh,scripts/ci/check_gate_freshness.py,scripts/ci/gate_record.json,scripts/ci/gate_tools.json}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_gate_freshness.py --self-test
+
     # 4. Rust checks are active as soon as a Cargo workspace exists.
     rustfmt:
       glob: "**/*.rs"
