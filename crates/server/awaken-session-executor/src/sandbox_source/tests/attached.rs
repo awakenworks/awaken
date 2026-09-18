@@ -238,13 +238,13 @@ async fn source_binds_the_exact_socket_and_reaps_tools_once_after_primary_exit()
             false,
         );
         let (source, exporter) = source(sandbox.clone(), false);
-        let session = source
-            .open(
-                &acp_activation("acp:claude"),
-                &awaken_runtime_contract::RuntimeRunContext::new(),
-            )
-            .await
-            .unwrap();
+        let session = awaken_run_executor_acp::open_agent_session(
+            &source,
+            &acp_activation("acp:claude"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .unwrap();
         let server = &session.mcp_session_servers[0];
         assert_eq!(server.command.as_deref(), Some("/sandbox-helper"));
         {
@@ -287,12 +287,12 @@ async fn startup_failure_and_cancellation_reap_without_starting_or_leaking_prima
         let sandbox = Sandbox::new(ready, row == 8, false);
         let (source, exporter) = source(sandbox.clone(), row == 7);
         let task = tokio::spawn(async move {
-            source
-                .open(
-                    &acp_activation("acp:claude"),
-                    &awaken_runtime_contract::RuntimeRunContext::new(),
-                )
-                .await
+            awaken_run_executor_acp::open_agent_session(
+                &source,
+                &acp_activation("acp:claude"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
         });
         if row == 9 {
             while sandbox.commands.lock().unwrap().is_empty() {
@@ -333,13 +333,13 @@ async fn forced_stop_escalates_an_unresponsive_helper_and_duplicate_names_fail_b
         true,
     );
     let (source, exporter) = source(sandbox.clone(), false);
-    let session = source
-        .open(
-            &acp_activation("acp:claude"),
-            &awaken_runtime_contract::RuntimeRunContext::new(),
-        )
-        .await
-        .unwrap();
+    let session = awaken_run_executor_acp::open_agent_session(
+        &source,
+        &acp_activation("acp:claude"),
+        &awaken_runtime_contract::RuntimeRunContext::new(),
+    )
+    .await
+    .unwrap();
     session.process.signal(pc::Signal::Kill).await.unwrap();
     assert_eq!(
         *sandbox.helper.signals.lock().unwrap(),
@@ -358,13 +358,13 @@ async fn forced_stop_escalates_an_unresponsive_helper_and_duplicate_names_fail_b
             auth: None,
         });
     assert!(
-        source
-            .open(
-                &acp_activation("acp:claude"),
-                &awaken_runtime_contract::RuntimeRunContext::new()
-            )
-            .await
-            .is_err()
+        awaken_run_executor_acp::open_agent_session(
+            &source,
+            &acp_activation("acp:claude"),
+            &awaken_runtime_contract::RuntimeRunContext::new()
+        )
+        .await
+        .is_err()
     );
     assert!(sandbox.commands.lock().unwrap().is_empty());
     assert_eq!(exporter.calls.load(Ordering::SeqCst), 0);
@@ -385,12 +385,12 @@ async fn unsupported_environment_adapter_and_exporter_fail_closed() {
     let sandbox = Arc::new(CapturingAgentSandbox::default());
     let source =
         bound_projecting_source(sandbox.clone(), "claude").with_attached_tools(Some(tools.clone()));
-    let result = source
-        .open(
-            &acp_activation("acp:claude"),
-            &awaken_runtime_contract::RuntimeRunContext::new(),
-        )
-        .await;
+    let result = awaken_run_executor_acp::open_agent_session(
+        &source,
+        &acp_activation("acp:claude"),
+        &awaken_runtime_contract::RuntimeRunContext::new(),
+    )
+    .await;
     assert!(
         matches!(result, Err(error) if error.to_string().contains("no attached channel helper"))
     );
@@ -400,12 +400,12 @@ async fn unsupported_environment_adapter_and_exporter_fail_closed() {
     let (mut source, _) = self::source(sandbox.clone(), false);
     source.launch =
         LaunchSource::Fixed(Box::new(AcpLaunch::custom(vec!["fixture".into()], vec![])));
-    let result = source
-        .open(
-            &acp_activation("acp:claude"),
-            &awaken_runtime_contract::RuntimeRunContext::new(),
-        )
-        .await;
+    let result = awaken_run_executor_acp::open_agent_session(
+        &source,
+        &acp_activation("acp:claude"),
+        &awaken_runtime_contract::RuntimeRunContext::new(),
+    )
+    .await;
     assert!(matches!(result, Err(error) if error.to_string().contains("catalog ACP adapter")));
     assert!(sandbox.commands.lock().unwrap().is_empty());
 
@@ -416,12 +416,12 @@ async fn unsupported_environment_adapter_and_exporter_fail_closed() {
     );
     let source =
         bound_projecting_source(sandbox.clone(), "claude").with_attached_tools(Some(tools));
-    let result = source
-        .open(
-            &acp_activation("acp:claude"),
-            &awaken_runtime_contract::RuntimeRunContext::new(),
-        )
-        .await;
+    let result = awaken_run_executor_acp::open_agent_session(
+        &source,
+        &acp_activation("acp:claude"),
+        &awaken_runtime_contract::RuntimeRunContext::new(),
+    )
+    .await;
     assert!(
         matches!(result, Err(error) if error.to_string().contains("does not support attached channels"))
     );

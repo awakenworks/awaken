@@ -464,6 +464,7 @@ impl AgentChannelSource for ScriptedSource {
         &self,
         _activation: &RunActivation,
         _context: &RuntimeRunContext,
+        _door: ChannelOpenDoor,
     ) -> std::result::Result<AgentSession, OpenError> {
         if let Some(e) = &self.open_error {
             return Err(OpenError(e.clone()));
@@ -584,6 +585,7 @@ impl AgentChannelSource for CountingSource {
         &self,
         _activation: &RunActivation,
         _context: &RuntimeRunContext,
+        _door: ChannelOpenDoor,
     ) -> std::result::Result<AgentSession, OpenError> {
         self.opens.fetch_add(1, Ordering::SeqCst);
         let (ours, mut theirs) = tokio::io::duplex(4096);
@@ -2256,7 +2258,7 @@ async fn opening_a_session_retains_the_attempt_observer_until_the_typed_owner_re
         open_error: None,
     }));
     let context = RuntimeRunContext::new();
-    let session = open_session(
+    let session = crate::open_agent_session(
         successful.source.as_ref(),
         &activation_without_session_home(),
         &context,
@@ -2272,7 +2274,7 @@ async fn opening_a_session_retains_the_attempt_observer_until_the_typed_owner_re
     }));
     let context = RuntimeRunContext::new();
     assert!(
-        open_session(
+        crate::open_agent_session(
             failed.source.as_ref(),
             &activation_without_session_home(),
             &context,
@@ -2290,6 +2292,7 @@ async fn opening_a_session_retains_the_attempt_observer_until_the_typed_owner_re
             &self,
             _activation: &RunActivation,
             _context: &RuntimeRunContext,
+            _door: ChannelOpenDoor,
         ) -> std::result::Result<AgentSession, OpenError> {
             self.0.store(true, Ordering::SeqCst);
             std::future::pending().await
@@ -2336,8 +2339,9 @@ impl AgentChannelSource for RecoverableSource {
         &self,
         activation: &RunActivation,
         context: &RuntimeRunContext,
+        _door: ChannelOpenDoor,
     ) -> std::result::Result<AgentSession, OpenError> {
-        let mut session = self.script.open(activation, context).await?;
+        let mut session = self.script.open(activation, context, _door).await?;
         session.process = Arc::new(CountingProcess {
             polls: Arc::new(AtomicUsize::new(0)),
             observation: self.observation.clone(),
@@ -2410,8 +2414,9 @@ async fn retained_cleanup_drains_the_original_channel_until_exit() {
     };
     let quiescence = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
     let mut scope = CleanupScope::new(quiescence.clone());
-    let mut session = source
-        .open(&activation(), &RuntimeRunContext::new())
+    // The one door: `open` itself is unreachable without a `ChannelOpenDoor`,
+    // which only `open_agent_session` can mint.
+    let mut session = crate::open_agent_session(&source, &activation(), &RuntimeRunContext::new())
         .await
         .unwrap();
     let (ours, mut peer) = tokio::io::duplex(32);
@@ -2636,6 +2641,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
             &self,
             _a: &RunActivation,
             _context: &RuntimeRunContext,
+            _door: ChannelOpenDoor,
         ) -> std::result::Result<AgentSession, OpenError> {
             let (ours, mut theirs) = tokio::io::duplex(4096);
             let marker = self.dir.join("projects/marker");
@@ -3362,6 +3368,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             &self,
             _activation: &RunActivation,
             _context: &RuntimeRunContext,
+            _door: ChannelOpenDoor,
         ) -> std::result::Result<AgentSession, OpenError> {
             let tool_name = self.tool_name;
             let settling_sibling = self.settling_sibling;
@@ -4394,6 +4401,7 @@ async fn acp_relaunches_the_cli_every_run_so_a_model_switch_takes_effect() {
             &self,
             _a: &RunActivation,
             _context: &RuntimeRunContext,
+            _door: ChannelOpenDoor,
         ) -> std::result::Result<AgentSession, OpenError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             let (ours, mut theirs) = tokio::io::duplex(4096);
@@ -4859,6 +4867,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
             &self,
             _a: &RunActivation,
             _context: &RuntimeRunContext,
+            _door: ChannelOpenDoor,
         ) -> std::result::Result<AgentSession, OpenError> {
             let (ours, mut theirs) = tokio::io::duplex(4096);
             tokio::spawn(async move {
@@ -5086,6 +5095,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
             &self,
             _a: &RunActivation,
             _context: &RuntimeRunContext,
+            _door: ChannelOpenDoor,
         ) -> std::result::Result<AgentSession, OpenError> {
             let n = self.0.fetch_add(1, Ordering::SeqCst);
             if n >= 1 {
