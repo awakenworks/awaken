@@ -448,30 +448,100 @@ pub async fn acquire_session_work_receipt(
     ))
 }
 
+/// One-byte distinguishable spellings of a Work lease coordinate. Which
+/// spelling each coordinate carries is the symbolic choice; the comparison
+/// itself stays the production `String`/`SessionId` equality, so the proof
+/// constrains how [`SessionWorkAuthorityReceipt::matches_observation`] derives
+/// its six facts and not only how it combines them.
+#[cfg(kani)]
+fn proof_representative_lease(
+    session: bool,
+    owner: bool,
+    work: bool,
+    environment: bool,
+    epoch: bool,
+    expiry: bool,
+) -> SessionWorkLease {
+    SessionWorkLease {
+        work_id: if work { "k" } else { "K" }.to_string(),
+        environment_id: if environment { "e" } else { "E" }.to_string(),
+        session_id: crate::SessionId::from(if session { "s" } else { "S" }),
+        owner: if owner { "w" } else { "W" }.to_string(),
+        epoch: u64::from(epoch),
+        expires_at_unix_ms: if expiry { 10 } else { 20 },
+    }
+}
+
 #[cfg(kani)]
 #[kani::proof]
 fn exact_session_work_receipt_rejects_every_changed_coordinate() {
+    // The receipt is minted through the one production door from a bounded
+    // representative acquisition, and compared against a fresh observation that
+    // independently chooses each coordinate's spelling. Causes: acquired and
+    // observed authority kind, and per-coordinate agreement of Session, owner,
+    // Work id, Environment and epoch, plus a changed expiry. Effect: the
+    // receipt matches exactly when both sides are the same authority kind and,
+    // when leased, every compared coordinate agrees -- expiry never enters.
+    //
+    // Bounds: which *kind* each side carries stays concrete. A symbolic
+    // `SessionWorkOwnership` variant makes CBMC carry the String-bearing
+    // `Leased` payload through every branch and the harness stops terminating,
+    // so the cross-kind rows below are enumerated as concrete witnesses while
+    // the coordinate comparison -- the part a code change can get wrong -- is
+    // fully symbolic.
     let session_matches: bool = kani::any();
     let owner_matches: bool = kani::any();
-    let scope_matches: bool = kani::any();
     let work_matches: bool = kani::any();
     let environment_matches: bool = kani::any();
     let epoch_matches: bool = kani::any();
+    let expiry_matches: bool = kani::any();
+
+    let acquired = SessionWorkOwnership::Leased(proof_representative_lease(
+        true, true, true, true, true, true,
+    ));
+    let receipt = SessionWorkAuthorityReceipt::from_acquired("s", "w", &acquired)
+        .expect("an exactly owned acquisition mints a receipt");
+    let observation = SessionWorkOwnership::Leased(proof_representative_lease(
+        session_matches,
+        owner_matches,
+        work_matches,
+        environment_matches,
+        epoch_matches,
+        expiry_matches,
+    ));
     assert_eq!(
-        exact_session_work_coordinate(
-            session_matches,
-            owner_matches,
-            scope_matches,
-            work_matches,
-            environment_matches,
-            epoch_matches,
-        ),
-        session_matches
-            && owner_matches
-            && scope_matches
-            && work_matches
-            && environment_matches
-            && epoch_matches
+        receipt.matches_observation(&observation),
+        session_matches && owner_matches && work_matches && environment_matches && epoch_matches,
+        "every stable coordinate must agree, and a renewed expiry must not matter"
+    );
+
+    // Cross-kind rows: a leased receipt never matches a Work-free or unowned
+    // observation, and a NotRequired receipt matches only its own kind.
+    assert!(!receipt.matches_observation(&SessionWorkOwnership::NotRequired));
+    assert!(!receipt.matches_observation(&SessionWorkOwnership::Unowned));
+    let free =
+        SessionWorkAuthorityReceipt::from_acquired("s", "w", &SessionWorkOwnership::NotRequired)
+            .expect("a Work-free acquisition mints a receipt");
+    assert!(free.matches_observation(&SessionWorkOwnership::NotRequired));
+    assert!(!free.matches_observation(&SessionWorkOwnership::Unowned));
+    assert!(!free.matches_observation(&acquired));
+
+    // The minting door is part of the same derivation: unowned Work mints no
+    // authority, and a foreign Session or owner cannot mint one either.
+    assert!(
+        SessionWorkAuthorityReceipt::from_acquired("s", "w", &SessionWorkOwnership::Unowned)
+            .is_none(),
+        "unowned Work mints no authority"
+    );
+    assert_eq!(
+        SessionWorkAuthorityReceipt::from_acquired(
+            if session_matches { "s" } else { "S" },
+            if owner_matches { "w" } else { "W" },
+            &acquired,
+        )
+        .is_some(),
+        session_matches && owner_matches,
+        "a leased acquisition mints authority only for its exact Session and owner"
     );
 }
 
@@ -1251,25 +1321,33 @@ mod verification {
 
     #[kani::proof]
     fn session_work_effect_requires_not_required_scope_or_exact_owner() {
-        // Complete policy domain: every closed Work-authority class crossed
-        // with both exact-owner facts. The production wrapper above performs
-        // String equality once and feeds that fact to this sole policy owner;
-        // native and real-router tests cross-check the wrapper with non-empty
-        // exact and foreign owners. No assumption or stub removes a rule.
-        let authority = match kani::any::<u8>() % 3 {
-            0 => SessionWorkEffectAuthority::NotRequired,
-            1 => SessionWorkEffectAuthority::Unowned,
-            _ => SessionWorkEffectAuthority::Leased,
-        };
+        // Complete policy domain, entered through the production wrapper so the
+        // owner fact is the one the code derives rather than a free symbol:
+        // every closed observed Work-authority class crossed with an exact and
+        // a foreign owner spelling. Causes: observed ownership kind and whether
+        // the authenticated owner is the lease's own. Effect: only a Work-free
+        // scope, or a lease whose owner is exactly the authenticated one,
+        // permits a realization effect.
+        // Bounds: the observed ownership *kind* is enumerated concretely for the
+        // same reason as the receipt harness -- a symbolic variant carrying a
+        // String payload does not terminate -- while the owner comparison the
+        // wrapper actually performs stays symbolic.
         let owner_matches: bool = kani::any();
-        let actual = session_work_effect_policy(authority, owner_matches);
-        let expected = matches!(authority, SessionWorkEffectAuthority::NotRequired)
-            || (matches!(authority, SessionWorkEffectAuthority::Leased) && owner_matches);
-
+        let leased = SessionWorkOwnership::Leased(proof_representative_lease(
+            true,
+            owner_matches,
+            true,
+            true,
+            true,
+            true,
+        ));
         assert_eq!(
-            actual, expected,
-            "effects require a Work-free scope or the exact current Work owner"
+            leased.permits_effect_for("w"),
+            owner_matches,
+            "a lease permits effects only for its exact current owner"
         );
+        assert!(SessionWorkOwnership::NotRequired.permits_effect_for("w"));
+        assert!(!SessionWorkOwnership::Unowned.permits_effect_for("w"));
     }
 
     fn symbolic_state(tag: u8) -> WorkState {

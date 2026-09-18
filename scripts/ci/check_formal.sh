@@ -530,6 +530,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_event_batch_admission_resolution_is_total_closed_and_append_once \
     --harness session_agent_boundary_requires_a_visible_committed_target \
     --harness user_event_processing_requires_exact_applied_dispatch_and_activity_settlement \
+    --harness retained_input_idling_is_exactly_settled_or_only_blocked_users \
     --harness terminal_resource_projection_retains_the_exact_desired_generation \
     --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \
     --harness session_run_reservation_binds_exactly_one_nonzero_activity_receipt \
