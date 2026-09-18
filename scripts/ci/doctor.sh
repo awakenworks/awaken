@@ -33,8 +33,14 @@ tool_groups() { python3 scripts/ci/gate_tools.py gates-of "$1"; }
 report() {
   python3 scripts/ci/gate_tools.py report
   echo ""
+  # Disk is a prerequisite like any other. It filled twice in one session and
+  # arrived at the formal gate as a SIGABRT on a truncated GOTO binary, so the
+  # headroom and what could be reclaimed belong in the same report as the tools.
+  python3 scripts/ci/reclaim_build_space.py --summary
+  echo ""
   echo "run scripts/ci/check-all.sh --list-groups to see every group."
   echo "run scripts/ci/gate_tools.py require --gate <group> to precheck one group."
+  echo "run scripts/ci/reclaim_build_space.py to see every reclaimable path, --apply to free them."
 }
 
 self_test() {
@@ -44,6 +50,7 @@ self_test() {
   # | T3   | a row carries a conditional qualifier    | the group name survives alone |
   # | T4   | every row is well formed                 | three fields, no empty field  |
   # | T5   | the manifest is this report's only table | the reader's own proof passes |
+  # | T6   | the report also names disk headroom      | the reclamation proof passes  |
   local row name groups hint
   [ "$(tool_groups docker)" = "postgres kubernetes k3d sandbox e2e" ] || {
     echo "T1 a known tool must report the groups it gates" >&2
@@ -67,6 +74,11 @@ self_test() {
   done < <(python3 scripts/ci/gate_tools.py rows)
   python3 scripts/ci/gate_tools.py --self-test >/dev/null || {
     echo "T5 the tool manifest does not describe this machine" >&2
+    return 1
+  }
+  # | T6 | the report names disk headroom | the reclamation tool's own proof passes |
+  python3 scripts/ci/reclaim_build_space.py --self-test >/dev/null || {
+    echo "T6 the build-space report cannot decide what is safe to reclaim" >&2
     return 1
   }
   echo "doctor self-test: every tool row names a group and a way to get it"

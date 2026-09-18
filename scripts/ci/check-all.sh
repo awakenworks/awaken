@@ -152,6 +152,10 @@ run static "Kani bootstrap publication rules" python3 scripts/ci/test_bootstrap_
 # so a missing tool is reported as a missing tool and never as a proof failure,
 # a broken import, or a container pull error.
 run static "gate tool manifest self-test" python3 scripts/ci/gate_tools.py --self-test
+# Disk is a prerequisite like any other, and it filled twice in one session. The
+# reclaimer decides what is derived build output and what is a checkout; that
+# decision is what must stay proved, because it runs with --apply.
+run static "build-space reclamation self-test" python3 scripts/ci/reclaim_build_space.py --self-test
 run static "prerequisite doctor self-test" scripts/ci/doctor.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
 run static "sandbox image provenance self-test" python3 scripts/release/awaken_sandbox_image_provenance.py self-test

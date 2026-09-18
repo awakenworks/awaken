@@ -117,6 +117,15 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/gate_tools.py --self-test
 
+    # 3c. Build output is derived and grows without bound; a checkout is not and
+    #    must never be touched. This proves that distinction still holds before
+    #    anyone runs the reclaimer with --apply.
+    reclaim-build-space:
+      # >>> generated glob from reclaim_build_space.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/reclaim_build_space.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/reclaim_build_space.py --self-test
+
     # 4. Rust checks are active as soon as a Cargo workspace exists.
     rustfmt:
       glob: "**/*.rs"
