@@ -20,7 +20,8 @@ use std::sync::Arc;
 
 mod cleanup;
 pub mod host;
-use cleanup::{CleanupScope, open_session, preserve_terminal_outcome};
+pub use cleanup::{ChannelOpenDoor, open_session as open_agent_session};
+use cleanup::{CleanupScope, preserve_terminal_outcome};
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
@@ -102,12 +103,20 @@ pub struct AgentSession {
 /// Opens an [`AgentSession`] for a run. The one seam the host wires: local =
 /// sandbox launch (provisioning), remote = connection dial. Injected so the
 /// executor never depends on either directly.
+///
+/// `open` has exactly one legitimate caller, [`open_agent_session`], because a
+/// launch that is not wrapped in the attempt's return observer can strand a
+/// started process. The [`ChannelOpenDoor`] argument is how that is enforced
+/// rather than documented: only that function can build one, so an
+/// implementation can forward its door to an inner source and nothing else can
+/// call `open` at all.
 #[async_trait]
 pub trait AgentChannelSource: Send + Sync {
     async fn open(
         &self,
         activation: &RunActivation,
         context: &RuntimeRunContext,
+        door: ChannelOpenDoor,
     ) -> std::result::Result<AgentSession, OpenError>;
 }
 
@@ -716,18 +725,25 @@ impl AcpRunExecutor {
 
         // The host opens the channel (sandbox launch / remote dial). A failure here
         // is a launch/config fault → classify at the Initialize stage.
-        cleanup.session = Some(match open_session(source, &activation, context).await {
-            Ok(session) => session,
-            Err(open) => {
-                notify(
-                    launch_sink,
-                    AcpLaunchEvent::with_detail(AcpLaunchStage::Failed, open.0.clone()),
-                );
-                let failure = classify_error(Stage::Initialize, &RawAcpError::message(open.0));
-                return finish_failure(context, &activation, &failure, permission_resume.as_ref())
+        cleanup.session = Some(
+            match open_agent_session(source, &activation, context).await {
+                Ok(session) => session,
+                Err(open) => {
+                    notify(
+                        launch_sink,
+                        AcpLaunchEvent::with_detail(AcpLaunchStage::Failed, open.0.clone()),
+                    );
+                    let failure = classify_error(Stage::Initialize, &RawAcpError::message(open.0));
+                    return finish_failure(
+                        context,
+                        &activation,
+                        &failure,
+                        permission_resume.as_ref(),
+                    )
                     .await;
-            }
-        });
+                }
+            },
+        );
         cleanup.complete = false;
         let session = cleanup.session.as_mut().expect("opened ACP session");
         self.apply_session_mcp_projection(session);
@@ -981,7 +997,7 @@ impl AcpRunExecutor {
                             "ACP handshake interrupted; relaunching once",
                         ),
                     );
-                    *session = match open_session(source, &activation, context).await {
+                    *session = match open_agent_session(source, &activation, context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
@@ -1207,7 +1223,7 @@ impl AcpRunExecutor {
                     committed.extend(fold);
                     // Relaunch the CLI for the next Step (ACP is per-Step).
                     verify_attempt_ownership(context.ownership.as_deref()).await?;
-                    *session = match open_session(source, &activation, context).await {
+                    *session = match open_agent_session(source, &activation, context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
