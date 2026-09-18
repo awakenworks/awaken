@@ -13,6 +13,9 @@ authority = "env"
 # The EnvRegistry port + neutral EnvItem this crate implements a durable backend for
 # (SQLite embedded / Postgres distributed, at parity).
 awaken-environment-contract.workspace = true
+# The shared wall-clock port: every observation timestamp this store writes is a
+# reading of an injected `Clock`, rendered by the port's own UTC codec.
+awaken-agent-contract.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 rusqlite = { workspace = true }

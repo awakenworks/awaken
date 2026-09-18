@@ -1072,6 +1072,7 @@ name = "awaken-env-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-environment-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",

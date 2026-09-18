@@ -283,8 +283,11 @@ pub struct Environment {
     #[serde(rename = "type")]
     pub object_type: &'static str,
     pub archived_at: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    /// The registry's own durable instants. `null` only for the built-in local
+    /// Environment, which nothing registered: an absent observation is reported
+    /// as absent rather than filled in.
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
     pub name: String,
     pub description: Option<String>,
     pub metadata: BTreeMap<String, String>,
@@ -503,8 +506,8 @@ mod tests {
             id: "env_1".into(),
             object_type: "environment",
             archived_at: None,
-            created_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
+            created_at: Some("2026-01-01T00:00:00Z".into()),
+            updated_at: Some("2026-01-01T00:00:00Z".into()),
             name: "browser".into(),
             description: Some("managed environment".into()),
             metadata: BTreeMap::new(),

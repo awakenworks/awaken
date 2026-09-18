@@ -170,6 +170,8 @@ mod tests {
             scope: None,
             config: EnvironmentConfig::SelfHosted,
             sandbox_policy: None,
+            created_at: Some("2026-02-03T04:05:06.007Z".into()),
+            updated_at: Some("2026-02-03T04:05:06.007Z".into()),
             archived_at: None,
         }
     }

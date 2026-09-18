@@ -9,19 +9,25 @@ use super::*;
 
 impl SqliteWorkQueue {
     /// Open (or create) the work-queue database at `path` and apply migrations.
-    pub fn open(path: &str) -> Result<Self, String> {
+    ///
+    /// The wall clock is a constructor argument, not something the queue reaches
+    /// for: every `*_at` this backend writes is a reading of exactly this clock,
+    /// so a test can name the instant a record must carry.
+    pub fn open(path: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
         Self::from_connection(
             awaken_sqlite_pool::SqliteConnectionFactory::file(path)
                 .open()
                 .map_err(|error| error.to_string())?,
+            clock,
         )
     }
 
-    pub(super) fn from_connection(conn: Connection) -> Result<Self, String> {
+    pub(super) fn from_connection(conn: Connection, clock: Arc<dyn Clock>) -> Result<Self, String> {
         apply_sqlite_migrations(&conn)?;
         Ok(Self {
             conn: SharedSqliteConnection::new(conn),
             book: LeaseBook::default(),
+            clock,
         })
     }
 
@@ -67,6 +73,7 @@ impl SqliteWorkQueue {
         environment_id: &str,
         data_type: &str,
         session_id: Option<&str>,
+        created_at: String,
     ) -> Result<String, WorkQueueError> {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -97,9 +104,9 @@ impl SqliteWorkQueue {
         let data_id = session_id.unwrap_or(&work_id);
         tx.execute(
             "INSERT INTO work_queue_item \
-                (work_id, seq, environment_id, data_type, data_id, metadata_json, state) \
-             VALUES (?1, ?2, ?3, ?4, ?5, '{}', 'queued')",
-            params![work_id, next, environment_id, data_type, data_id],
+                (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, '{}', 'queued', ?6)",
+            params![work_id, next, environment_id, data_type, data_id, created_at],
         )
         .map_err(storage)?;
         tx.commit().map_err(storage)?;
@@ -125,24 +132,25 @@ impl SqliteWorkQueue {
 
 impl PostgresWorkQueue {
     /// Connect and apply the work-queue migrations under the `work_queue` namespace.
-    pub async fn connect(url: &str) -> Result<Self, String> {
+    pub async fn connect(url: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| error.to_string())?;
-        Self::with_pool(pool).await
+        Self::with_pool(pool, clock).await
     }
 
     /// Build from an existing pool and apply the work-queue migrations.
-    pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
+    pub async fn with_pool(pool: PgPool, clock: Arc<dyn Clock>) -> Result<Self, String> {
         apply_postgres_migrations(&pool).await?;
         Ok(Self {
             pool,
             book: LeaseBook::default(),
+            clock,
         })
     }
 
     /// Connect only when the published schema is already present and exact.
-    pub async fn connect_existing(url: &str) -> Result<Self, String> {
+    pub async fn connect_existing(url: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| error.to_string())?;
@@ -150,6 +158,7 @@ impl PostgresWorkQueue {
         Ok(Self {
             pool,
             book: LeaseBook::default(),
+            clock,
         })
     }
 
@@ -188,14 +197,15 @@ impl PostgresWorkQueue {
         let data_id = session_id.unwrap_or(&work_id).to_string();
         sqlx::query(
             "INSERT INTO work_queue_item \
-                (work_id, seq, environment_id, data_type, data_id, metadata_json, state) \
-             VALUES ($1, $2, $3, $4, $5, '{}', 'queued')",
+                (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) \
+             VALUES ($1, $2, $3, $4, $5, '{}', 'queued', $6)",
         )
         .bind(&work_id)
         .bind(next)
         .bind(env_id)
         .bind(data_type)
         .bind(&data_id)
+        .bind(self.clock.observed_at())
         .execute(&mut *tx)
         .await
         .map_err(storage)?;

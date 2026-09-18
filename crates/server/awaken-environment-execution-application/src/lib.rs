@@ -793,6 +793,8 @@ mod tests {
                 config,
                 sandbox_policy: None,
                 archived_at: None,
+                created_at: Some("2026-02-03T04:05:06.007Z".into()),
+                updated_at: Some("2026-02-03T04:05:06.007Z".into()),
             },
             None,
         )
