@@ -99,6 +99,15 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_file_limits.py --staged
 
+    # 3b. A test must settle on a value the product committed, never on a
+    #     lifecycle signal, a fixture counter, or elapsed time. Two regressions
+    #     in main came from that one shape; the ratchet freezes today's debt.
+    test-waits:
+      # >>> generated glob from check_test_waits.py INPUT_GLOBS — do not edit
+      glob: "{crates/*/*/src/**/*.rs,crates/*/*/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_test_waits.py
+
     # 4. Rust checks are active as soon as a Cargo workspace exists.
     rustfmt:
       glob: "**/*.rs"
