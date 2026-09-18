@@ -592,7 +592,12 @@ impl SessionApplication {
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
             session.event_batches.push(batch.clone());
             match self
-                .commit_session_snapshot(&owner, session, "append-event-batch", Vec::new())
+                .commit_session_snapshot_with_outcome(
+                    &owner,
+                    session,
+                    "append-event-batch",
+                    Vec::new(),
+                )
                 .await
             {
                 Ok(_) => {
@@ -831,7 +836,7 @@ impl SessionApplication {
                 return Ok(true);
             }
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
                     "resolve-terminal-event-batches",
@@ -1367,7 +1372,7 @@ impl SessionApplication {
                 return Ok(session);
             }
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner,
                     session,
                     match observation {
@@ -1378,7 +1383,7 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => return Ok(session),
+                Ok(commit) => return Ok(commit.into_session()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
                 Err(error) => return Err(mutation_run_error(error)),
             }

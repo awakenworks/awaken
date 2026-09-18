@@ -9,17 +9,72 @@ use awaken_session_contract::{
 };
 
 use super::{
-    SessionApplication, SessionMutationError, SessionPreparationError,
+    SessionApplication, SessionMutationError, SessionPreparationError, SnapshotCommit,
     activity::{now_unix_ms, runtime_interval_fact},
     mutation::repository_failure,
     resource_reconciliation::mutation_failure,
 };
 
+/// One durable disposition transition and whether *this* call committed it.
+///
+/// `transitioned` is private and has exactly two doors, because it is not a
+/// fact the command path may assert: [`Self::committed`] takes the sealed
+/// [`SnapshotCommit`] the root CAS returned, so the bit is whatever the CAS
+/// decided; [`Self::unchanged`] is for the paths that reach an absorbing
+/// outcome *without* attempting a commit at all. Writing `transitioned: true`
+/// beside a commit — the shape that made a concurrent archive replay report
+/// itself as an application — is a compile error:
+///
+/// ```compile_fail,E0451
+/// use awaken_session_application::SessionDispositionMutation;
+///
+/// fn fabricate(session: awaken_session_contract::PersistedSession) {
+///     let _ = SessionDispositionMutation {
+///         owner_scope: "workspace".into(),
+///         session,
+///         transitioned: true,
+///     };
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct SessionDispositionMutation {
     pub owner_scope: String,
     pub session: PersistedSession,
-    pub transitioned: bool,
+    transitioned: bool,
+}
+
+impl SessionDispositionMutation {
+    /// Report the outcome the root CAS actually reached. The bit can only come
+    /// from the commit, so a replay that lost the CAS cannot be published as an
+    /// application.
+    #[must_use]
+    pub fn committed(owner_scope: String, commit: SnapshotCommit) -> Self {
+        Self {
+            owner_scope,
+            transitioned: commit.transitioned(),
+            session: commit.into_session(),
+        }
+    }
+
+    /// An absorbing outcome reached without attempting a root CAS: the
+    /// disposition is already terminal, an exact command receipt is durable, or
+    /// the aggregate refused to produce a transition. No commit happened, so
+    /// there is no outcome to carry.
+    #[must_use]
+    pub fn unchanged(owner_scope: String, session: PersistedSession) -> Self {
+        Self {
+            owner_scope,
+            session,
+            transitioned: false,
+        }
+    }
+
+    /// Whether this call committed the transition. `false` is an absorbing
+    /// replay: the durable root already carried it.
+    #[must_use]
+    pub fn transitioned(&self) -> bool {
+        self.transitioned
+    }
 }
 
 /// Protocol-neutral selector for the one writable Repository binding whose
@@ -248,11 +303,7 @@ impl SessionApplication {
                     }
                 })?;
             if !changed {
-                transition = Some(SessionDispositionMutation {
-                    owner_scope,
-                    session,
-                    transitioned: false,
-                });
+                transition = Some(SessionDispositionMutation::unchanged(owner_scope, session));
                 break;
             }
             let mut facts = session
@@ -264,7 +315,7 @@ impl SessionApplication {
                 .collect::<Vec<_>>();
             facts.push(command.lifecycle_fact.clone());
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
                     "archive-with-repository-publication",
@@ -272,12 +323,8 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => {
-                    transition = Some(SessionDispositionMutation {
-                        owner_scope,
-                        session,
-                        transitioned: true,
-                    });
+                Ok(commit) => {
+                    transition = Some(SessionDispositionMutation::committed(owner_scope, commit));
                     break;
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
@@ -565,11 +612,7 @@ impl SessionApplication {
             // payload validation. A later retry may carry a different display
             // timestamp, but it cannot reopen or rewrite the archived root.
             if matches!(session.disposition, SessionDisposition::Archived { .. }) {
-                return Ok(SessionDispositionMutation {
-                    owner_scope,
-                    session,
-                    transitioned: false,
-                });
+                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
             }
             if let Some(receipt) = self
                 .session_repository()
@@ -583,11 +626,7 @@ impl SessionApplication {
                         "Session archive command identity was reused with another payload".into(),
                     ));
                 }
-                return Ok(SessionDispositionMutation {
-                    owner_scope,
-                    session,
-                    transitioned: false,
-                });
+                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
             }
             if session.is_hidden() {
                 return Err(SessionPreparationError::NotFound);
@@ -631,12 +670,8 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok((session, transitioned)) => {
-                    return Ok(SessionDispositionMutation {
-                        owner_scope,
-                        session,
-                        transitioned,
-                    });
+                Ok(commit) => {
+                    return Ok(SessionDispositionMutation::committed(owner_scope, commit));
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;
@@ -672,11 +707,7 @@ impl SessionApplication {
                 .request_delete(&owner_scope, command.requested_at_unix_s)
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
             else {
-                return Ok(SessionDispositionMutation {
-                    owner_scope,
-                    session,
-                    transitioned: false,
-                });
+                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
             };
             if session.has_incomplete_event_batches() {
                 self.wake_lifecycle_supervisor();
@@ -692,12 +723,8 @@ impl SessionApplication {
                 .commit_session_snapshot_with_outcome(&owner_scope, session, "delete-intent", facts)
                 .await
             {
-                Ok((session, transitioned)) => {
-                    return Ok(SessionDispositionMutation {
-                        owner_scope,
-                        session,
-                        transitioned,
-                    });
+                Ok(commit) => {
+                    return Ok(SessionDispositionMutation::committed(owner_scope, commit));
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;

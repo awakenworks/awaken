@@ -327,7 +327,7 @@ impl SessionApplication {
                 ));
             }
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
                     "retry-mcp-update-realization",
@@ -335,7 +335,7 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => return Ok(session),
+                Ok(commit) => return Ok(commit.into_session()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
@@ -835,7 +835,7 @@ impl SessionApplication {
         {
             session = match command_record {
                 Some(record) => {
-                    let (committed, applied) = self
+                    let commit = self
                         .commit_session_snapshot_with_record(
                             &owner_scope,
                             session,
@@ -844,13 +844,19 @@ impl SessionApplication {
                         )
                         .await
                         .map_err(SessionUpdateError::mutation)?;
-                    command_applied = applied;
-                    committed
+                    command_applied = commit.transitioned();
+                    commit.into_session()
                 }
                 None => self
-                    .commit_session_snapshot(&owner_scope, session, "update", Vec::new())
+                    .commit_session_snapshot_with_outcome(
+                        &owner_scope,
+                        session,
+                        "update",
+                        Vec::new(),
+                    )
                     .await
-                    .map_err(SessionUpdateError::mutation)?,
+                    .map_err(SessionUpdateError::mutation)?
+                    .into_session(),
             };
         }
         let command_revision = if command_applied {

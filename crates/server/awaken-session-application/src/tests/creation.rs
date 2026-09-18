@@ -2214,25 +2214,27 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         key: "time-mutation".into(),
         payload_hash: "time-mutation".into(),
     };
-    let (updated, applied) = application
+    let commit = application
         .commit_session_snapshot_with_record(&owner, changed.clone(), receipt.clone(), vec![])
         .await
         .unwrap();
-    assert!(applied, "T3");
+    assert!(commit.transitioned(), "T3");
+    let updated = commit.into_session();
     assert_eq!(updated.created_at_unix_ms, created.created_at_unix_ms);
     assert_eq!(updated.updated_at_unix_ms, Some(1_800_000_010_123));
     clock.advance(10_000);
-    let (replayed, applied) = application
+    let commit = application
         .commit_session_snapshot_with_record(&owner, changed, receipt, vec![])
         .await
         .unwrap();
-    assert!(!applied, "T4");
-    assert_eq!(replayed, updated);
+    assert!(!commit.transitioned(), "T4");
+    assert_eq!(commit.into_session(), updated);
     clock.set(1);
     let rollback = application
-        .commit_session_snapshot(&owner, updated.clone(), "clock-rollback", vec![])
+        .commit_session_snapshot_with_outcome(&owner, updated.clone(), "clock-rollback", vec![])
         .await
-        .unwrap();
+        .unwrap()
+        .into_session();
     assert_eq!(
         rollback.updated_at_unix_ms, updated.updated_at_unix_ms,
         "T5"

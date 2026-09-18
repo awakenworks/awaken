@@ -251,9 +251,9 @@ async fn persist_batch_projection_anchors(
         .owner(&SessionId::from(session_id))
         .await
         .expect("owner");
-    state
+    let _fixture = state
         .application
-        .commit_session_snapshot(
+        .commit_session_snapshot_with_outcome(
             &owner,
             session,
             &format!("test-projection-anchor-{batch_id}"),

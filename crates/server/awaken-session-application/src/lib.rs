@@ -175,7 +175,7 @@ impl SessionRecoveryCandidates {
 
 mod mutation;
 mod recovery_sweep;
-pub use mutation::SessionMutationError;
+pub use mutation::{SessionMutationError, SnapshotCommit};
 mod session_services;
 pub use session_services::{
     CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,

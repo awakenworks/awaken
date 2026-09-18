@@ -98,7 +98,7 @@ impl SessionApplication {
                 Vec::new()
             };
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
                     "reconcile-managed-budget-usage",
@@ -106,12 +106,12 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => {
+                Ok(commit) => {
                     if reached_now {
                         self.notify_lifecycle_fact();
                     }
                     return Ok(BudgetSettlementOutcome {
-                        session,
+                        session: commit.into_session(),
                         reached_now,
                     });
                 }

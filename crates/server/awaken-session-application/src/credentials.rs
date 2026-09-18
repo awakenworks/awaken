@@ -171,7 +171,7 @@ impl SessionApplication {
             }
             let session_id = session.session_id.clone();
             match self
-                .commit_session_snapshot(
+                .commit_session_snapshot_with_outcome(
                     owner_scope,
                     session,
                     "repository-credential-pin-migration",
@@ -179,7 +179,7 @@ impl SessionApplication {
                 )
                 .await
             {
-                Ok(session) => return Ok(session),
+                Ok(commit) => return Ok(commit.into_session()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     session = self
                         .session_repository()
