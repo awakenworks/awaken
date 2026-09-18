@@ -120,6 +120,7 @@ pub awaken_session_contract::work_queue::WorkClaim::item: awaken_session_contrac
 pub awaken_session_contract::work_queue::WorkClaim::session_access: core::option::Option<awaken_session_contract::work_queue::SessionAccessDigest>
 pub struct awaken_session_contract::work_queue::WorkItem
 pub awaken_session_contract::work_queue::WorkItem::acknowledged_at: core::option::Option<alloc::string::String>
+pub awaken_session_contract::work_queue::WorkItem::created_at: alloc::string::String
 pub awaken_session_contract::work_queue::WorkItem::data: awaken_session_contract::work_queue::WorkPayload
 pub awaken_session_contract::work_queue::WorkItem::environment_id: alloc::string::String
 pub awaken_session_contract::work_queue::WorkItem::id: alloc::string::String
@@ -136,7 +137,6 @@ pub awaken_session_contract::work_queue::WorkSessionAccess::lease_epoch: u64
 pub awaken_session_contract::work_queue::WorkSessionAccess::lease_owner: alloc::string::String
 pub awaken_session_contract::work_queue::WorkSessionAccess::session_id: awaken_session_contract::SessionId
 pub awaken_session_contract::work_queue::WorkSessionAccess::work_id: alloc::string::String
-pub const awaken_session_contract::work_queue::OBJECT_AT: &str
 pub trait awaken_session_contract::work_queue::SessionWorkLeaseAuthority: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::work_queue::SessionWorkLeaseAuthority::acquire_session_work<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::SessionId, &'life2 str, u64, awaken_session_contract::work_queue::SessionWorkAcquisition) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::work_queue::SessionWorkOwnership, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::work_queue::SessionWorkLeaseAuthority::release_session_work<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::work_queue::SessionWorkLease) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

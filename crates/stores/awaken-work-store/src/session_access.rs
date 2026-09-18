@@ -554,10 +554,13 @@ impl PostgresWorkQueue {
             return Ok(HeartbeatResult::NotFound);
         };
         let current = pg_row_to_item(&row)?;
-        let owner: Option<String> = row.try_get(11).map_err(storage)?;
-        let epoch = u64::try_from(row.try_get::<i64, _>(12).map_err(storage)?).map_err(storage)?;
-        let refreshed: Option<i64> = row.try_get(13).map_err(storage)?;
-        let expires: Option<i64> = row.try_get(14).map_err(storage)?;
+        // By name, not by position: the projection's column list grows, and an
+        // ordinal that silently shifts decodes the wrong column.
+        let owner: Option<String> = row.try_get("lease_owner").map_err(storage)?;
+        let epoch = u64::try_from(row.try_get::<i64, _>("lease_epoch").map_err(storage)?)
+            .map_err(storage)?;
+        let refreshed: Option<i64> = row.try_get("lease_refreshed_ms").map_err(storage)?;
+        let expires: Option<i64> = row.try_get("lease_expires_ms").map_err(storage)?;
         let admission = awaken_session_contract::work_queue::work_lease_mutation_admission(
             true,
             owner.as_deref() == Some(worker_id)
