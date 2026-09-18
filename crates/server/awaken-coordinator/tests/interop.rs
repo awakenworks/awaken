@@ -38,6 +38,7 @@
 
 mod support;
 
+use awaken_protocol_managed::test_support::DurableFact;
 use awaken_scenario_host::{build_custom_router, build_echo_router};
 use axum::Router;
 use axum::body::Body;
@@ -273,7 +274,7 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     wait_for_session_events(
         &app,
         &thread,
-        Some(&receipt),
+        DurableFact::command_processed(&receipt),
         "the Managed c1=42 result to commit its same-Thread answer",
         |events| {
             events.iter().any(|event| {
@@ -411,7 +412,7 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     wait_for_session_events(
         &app,
         &thread,
-        Some(&receipt),
+        DurableFact::command_processed(&receipt),
         "the Managed c1=42 result to commit its AG-UI-originated same-Thread answer",
         |events| {
             events.iter().any(|event| {

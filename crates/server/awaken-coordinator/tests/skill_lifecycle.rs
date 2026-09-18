@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
 use awaken_coordinator::SkillSpec;
+use awaken_protocol_managed::test_support::DurableFact;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -82,7 +83,7 @@ async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Va
     wait_for_session_events(
         app,
         session,
-        Some(&receipt),
+        DurableFact::command_processed(&receipt),
         "the skill lifecycle's terminal Session event",
         |events| {
             events

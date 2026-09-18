@@ -1,3 +1,4 @@
+use awaken_protocol_managed::test_support::DurableFact;
 use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
@@ -6,15 +7,16 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 /// Wait for one read-only Managed event projection without becoming another
-/// execution driver. When a POST receipt is available, only events at or after
-/// its last accepted Event may satisfy the predicate, so a terminal Event from
-/// an earlier Run cannot produce a false positive.
+/// execution driver. The settle condition is the caller's `DurableFact` -- a
+/// committed value, never "an Event arrived" -- and `refinement` only narrows
+/// it, so a terminal Event from a concurrent Run cannot produce a false
+/// positive.
 pub async fn wait_for_session_events(
     app: &Router,
     session_id: &str,
-    accepted_receipt: Option<&Value>,
+    fact: DurableFact<'_>,
     expectation: &str,
-    predicate: impl Fn(&[Value]) -> bool,
+    refinement: impl Fn(&[Value]) -> bool,
 ) -> Value {
     // Causes: C1 the lifecycle supervisor has not projected the accepted command
     // yet; C2 one GET returns the exact committed-prefix conflict; C3 it has
@@ -28,7 +30,7 @@ pub async fn wait_for_session_events(
     let uri = format!("/v1/sessions/{session_id}/events?limit=500");
     let app = app.clone();
     awaken_protocol_managed::test_support::wait_for_session_events(
-        accepted_receipt,
+        fact,
         std::time::Duration::from_secs(10),
         expectation,
         move || {
@@ -60,7 +62,7 @@ pub async fn wait_for_session_events(
                 (status, latest)
             }
         },
-        predicate,
+        refinement,
     )
     .await
 }

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use awaken_cli::build_all_in_one_router_with_model;
+use awaken_protocol_managed::test_support::DurableFact;
 use awaken_scenario_host::EchoModel;
 use axum::Router;
 use axum::body::Body;
@@ -96,7 +97,7 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
 
     let uri = format!("/v1/sessions/{session_id}/events");
     let observed = awaken_protocol_managed::test_support::wait_for_session_events(
-        None,
+        DurableFact::committed_event("agent.message"),
         std::time::Duration::from_secs(10),
         "Deployment initial Event response",
         || async {

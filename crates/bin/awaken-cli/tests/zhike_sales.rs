@@ -6,6 +6,7 @@
 mod provider_push;
 
 use async_trait::async_trait;
+use awaken_protocol_managed::test_support::DurableFact;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, DeltaSink, LlmExecutor, ToolCall,
 };
@@ -419,7 +420,7 @@ async fn send_and_wait_until(
     let app = app.clone();
     let path = format!("/v1/sessions/{session}/events?limit=500");
     let list = awaken_protocol_managed::test_support::wait_for_session_events(
-        Some(&receipt),
+        DurableFact::command_processed(&receipt),
         Duration::from_secs(120),
         "Zhike turn completes",
         move || {
@@ -515,7 +516,7 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     let app_read = app.clone();
     let path = format!("/v1/sessions/{session}/events?limit=500");
     awaken_protocol_managed::test_support::wait_for_session_events(
-        None,
+        DurableFact::committed_event("agent.message"),
         Duration::from_secs(120),
         "connected notification produces greeting",
         move || {
