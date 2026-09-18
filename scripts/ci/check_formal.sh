@@ -747,7 +747,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness projection_install_reconciliation_preserves_cursor_and_monotonic_authority \
     --harness projection_refresh_domain_permit_is_exclusive
   run_kani awaken-session-contract \
-    --harness executable_projection_admission_requires_both_ordered_refreshes
+    --harness executable_projection_admission_requires_both_ordered_refreshes \
+    --harness session_realization_permit_admits_only_a_current_acquired_slot
   run_kani awaken-credential-contract --solver minisat \
     --harness managed_rollout_identity_requires_every_payload_field
   run_kani awaken-credential-contract \
@@ -976,7 +977,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-session-executor \
     --harness recovery_projection_cannot_mint_committed_authority \
     --harness session_agent_message_admission_requires_every_committed_field \
-    --harness session_realization_permit_admits_only_a_current_acquired_slot \
     --harness session_realization_control_permit_ownership_release_is_total_and_exact \
     --harness acp_mcp_projection_has_one_exact_authority \
     --harness acp_tool_export_requires_claim_execution_environment \

@@ -21,6 +21,11 @@ pub use agent_publication_projection::{
 mod repository_publication_projection;
 pub use repository_publication_projection::SessionRepositoryPublicationProjection;
 mod control_failure;
+mod exclusion;
+pub use exclusion::{
+    SessionRealizationExclusionDecision, SessionRealizationPermit,
+    session_realization_exclusion_admits,
+};
 mod generation_authority;
 pub use generation_authority::realization_generation_authorizes;
 mod lease_receipt;
@@ -1074,7 +1079,7 @@ async fn fail_realization_effect(
 }
 
 pub async fn drive_session_realization(
-    session_id: &str,
+    permit: &SessionRealizationPermit,
     source_run_id: Option<awaken_agent_contract::agent::run::Id>,
     control: &dyn SessionRealizationControl,
     synchronizer: &dyn SessionProjectionSynchronizer,
@@ -1082,6 +1087,9 @@ pub async fn drive_session_realization(
     mut directive: SessionRealizationDirective,
     mut request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
 ) -> Result<(), SessionRealizationDriveError> {
+    // The Session is taken from the exclusion the caller holds, never passed
+    // beside it: a permit for another Session cannot drive this one.
+    let session_id = permit.session_id();
     loop {
         let previous = directive.clone();
         let prepare_session = match &directive.action {

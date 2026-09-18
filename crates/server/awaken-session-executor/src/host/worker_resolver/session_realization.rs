@@ -30,7 +30,6 @@ impl HostWorkerResolver {
         );
         Self::drive_session_realization_with_synchronizer(
             control,
-            session_id,
             directive,
             synchronizer,
             awaken_local_process::authority_proof_started()
@@ -62,7 +61,6 @@ impl HostWorkerResolver {
         );
         Self::drive_session_realization_with_synchronizer(
             control,
-            session_id,
             directive,
             synchronizer,
             request_started,
@@ -76,15 +74,14 @@ impl HostWorkerResolver {
     /// test-only projection seam differ only in how they construct this adapter.
     async fn drive_session_realization_with_synchronizer(
         control: &dyn awaken_session_contract::SessionRealizationControl,
-        session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
         synchronizer: WorkerProjectionSynchronizer<'_>,
         request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
-        _realization: &crate::session_slot::SessionRealizationPermit,
+        realization: &crate::session_slot::SessionRealizationPermit,
     ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
         let host = synchronizer.host;
         awaken_session_contract::drive_session_realization(
-            session_id,
+            realization,
             synchronizer.claim.map(|claim| claim.run_id.clone()),
             control,
             &synchronizer,
@@ -722,7 +719,6 @@ mod tests {
             WorkerProjectionSynchronizer::for_directive(host, &directive, None, None, false, None);
         HostWorkerResolver::drive_session_realization_with_synchronizer(
             control,
-            session_id,
             directive,
             synchronizer,
             awaken_local_process::authority_proof_started().unwrap(),
