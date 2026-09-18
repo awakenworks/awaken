@@ -13,7 +13,6 @@
       "crates/server/awaken-run-ingress/tests/crash_before_settle.rs": 1,
       "crates/server/awaken-run-ingress/tests/lease_semantics.rs": 2,
       "crates/server/awaken-run-ingress/tests/nats.rs": 1,
-      "crates/server/awaken-run-ingress/tests/pg_notify_wake.rs": 4,
       "crates/server/awaken-run-ingress/tests/pool_memory.rs": 8,
       "crates/server/awaken-run-ingress/tests/service_memory.rs": 1,
       "crates/server/awaken-runtime-host/src/background.rs": 1,
