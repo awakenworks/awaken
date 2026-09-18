@@ -20,7 +20,7 @@ use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::activation::RunActivation;
 use tokio::process::Command;
 
-use crate::{AcpCli, AgentChannelSource, AgentSession, OpenError, ResolvedModel};
+use crate::{AcpCli, AgentChannelSource, AgentSession, ChannelOpenDoor, OpenError, ResolvedModel};
 
 #[cfg(test)]
 #[path = "subprocess/host_identity_tests.rs"]
@@ -344,6 +344,7 @@ impl AgentChannelSource for SubprocessChannelSource {
         &self,
         _activation: &RunActivation,
         _context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+        _door: ChannelOpenDoor,
     ) -> std::result::Result<AgentSession, OpenError> {
         spawn(&self.launch, self.codec, self.secret_broker.as_ref()).await
     }
@@ -632,6 +633,7 @@ impl AgentChannelSource for ProjectingChannelSource {
         &self,
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+        _door: ChannelOpenDoor,
     ) -> std::result::Result<AgentSession, OpenError> {
         // A real CLI speaks official ACP JSON-RPC.
         let launch = self.plan(activation, context).await?;

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
-use awaken_run_executor_acp::{AgentChannelSource, AgentSession, OpenError};
+use awaken_run_executor_acp::{AgentChannelSource, AgentSession, ChannelOpenDoor, OpenError};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_sandbox_local::NamespaceProvider;
 
@@ -128,6 +128,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
         &self,
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+        _door: ChannelOpenDoor,
     ) -> Result<AgentSession, OpenError> {
         let resolved = self
             .launch
@@ -751,13 +752,13 @@ mod tests {
         let sandbox = Arc::new(CapturingAgentSandbox::default());
         let source = bound_projecting_source(sandbox.clone(), "claude");
 
-        source
-            .open(
-                &acp_activation("acp:claude"),
-                &awaken_runtime_contract::RuntimeRunContext::new(),
-            )
-            .await
-            .expect("open the bound container agent");
+        awaken_run_executor_acp::open_agent_session(
+            &source,
+            &acp_activation("acp:claude"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .expect("open the bound container agent");
 
         let command = sandbox.command.lock().unwrap();
         assert_eq!(
@@ -801,13 +802,13 @@ mod tests {
             mcp_servers: Vec::new(),
             attached_tools: None,
         };
-        let session = source
-            .open(
-                &acp_activation("acp:codex"),
-                &awaken_runtime_contract::RuntimeRunContext::new(),
-            )
-            .await
-            .expect("configured cwd");
+        let session = awaken_run_executor_acp::open_agent_session(
+            &source,
+            &acp_activation("acp:codex"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .expect("configured cwd");
         let expected = "/workspace/repo/src";
         assert_eq!(session.workspace_cwd.as_deref(), Some(expected), "E2/E3");
         assert_eq!(
@@ -828,13 +829,13 @@ mod tests {
         let sandbox = Arc::new(CapturingAgentSandbox::local());
         let source = bound_projecting_source(sandbox.clone(), "gemini");
 
-        source
-            .open(
-                &acp_activation("acp:gemini"),
-                &awaken_runtime_contract::RuntimeRunContext::new(),
-            )
-            .await
-            .expect("open the bound local agent");
+        awaken_run_executor_acp::open_agent_session(
+            &source,
+            &acp_activation("acp:gemini"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .expect("open the bound local agent");
 
         let command = sandbox.command.lock().unwrap();
         let command = command.as_ref().expect("agent was spawned");
@@ -888,13 +889,13 @@ mod tests {
                 "/untrusted/upstream-state".to_string(),
             )],
         );
-        let session = source
-            .open(
-                &acp_activation("acp:codex"),
-                &awaken_runtime_contract::RuntimeRunContext::new(),
-            )
-            .await
-            .expect("H1");
+        let session = awaken_run_executor_acp::open_agent_session(
+            &source,
+            &acp_activation("acp:codex"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .expect("H1");
         let selection = session.session_config_options.first().expect("H1");
         assert_eq!(selection.config_id, "model", "H1");
         assert_eq!(selection.value, "gpt-exact", "H1");
@@ -933,14 +934,14 @@ mod tests {
                 awaken_runtime_contract::resolved::BackendModelSelection::Default,
                 "",
             );
-            let error = source
-                .open(
-                    &acp_activation("acp:codex"),
-                    &awaken_runtime_contract::RuntimeRunContext::new(),
-                )
-                .await
-                .err()
-                .unwrap_or_else(|| panic!("{rule}: expected rejection"));
+            let error = awaken_run_executor_acp::open_agent_session(
+                &source,
+                &acp_activation("acp:codex"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{rule}: expected rejection"));
             assert!(error.0.contains("Workdir isolation tier"), "{rule}");
             assert!(sandbox.command.lock().unwrap().is_none(), "{rule}");
             assert!(sandbox.materialized.lock().unwrap().is_empty(), "{rule}");
@@ -970,13 +971,13 @@ mod tests {
             attached_tools: None,
         };
 
-        source
-            .open(
-                &acp_activation("acp:codex"),
-                &awaken_runtime_contract::RuntimeRunContext::new(),
-            )
-            .await
-            .expect("provision Codex credential artifact");
+        awaken_run_executor_acp::open_agent_session(
+            &source,
+            &acp_activation("acp:codex"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .expect("provision Codex credential artifact");
 
         let files = sandbox.materialized.lock().unwrap();
         let (_, bytes) = files
@@ -1054,13 +1055,13 @@ mod tests {
                     mcp_servers: Vec::new(),
                     attached_tools: None,
                 };
-                source
-                    .open(
-                        &acp_activation("acp:fixture"),
-                        &awaken_runtime_contract::RuntimeRunContext::new(),
-                    )
-                    .await
-                    .expect("capture the fixed launch");
+                awaken_run_executor_acp::open_agent_session(
+                    &source,
+                    &acp_activation("acp:fixture"),
+                    &awaken_runtime_contract::RuntimeRunContext::new(),
+                )
+                .await
+                .expect("capture the fixed launch");
                 let command = sandbox.command.lock().unwrap();
                 assert_eq!(
                     command.as_ref().unwrap().argv,
@@ -1121,13 +1122,13 @@ mod tests {
                 mcp_servers: mcp_servers.clone(),
                 attached_tools: None,
             };
-            let session = source
-                .open(
-                    &acp_activation("acp:fixture"),
-                    &awaken_runtime_contract::RuntimeRunContext::new(),
-                )
-                .await
-                .expect("open fixed launch");
+            let session = awaken_run_executor_acp::open_agent_session(
+                &source,
+                &acp_activation("acp:fixture"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
+            .expect("open fixed launch");
             assert_eq!(session.mcp_session_servers.len(), expected_routes);
         }
     }
@@ -1165,13 +1166,13 @@ mod tests {
         .mcp_servers;
         source.mcp_servers = awaken_run_executor_acp::mcp_session_servers_from_routes(&routes);
 
-        let session = source
-            .open(
-                &activation,
-                &awaken_runtime_contract::RuntimeRunContext::new(),
-            )
-            .await
-            .expect("open bound ACP agent");
+        let session = awaken_run_executor_acp::open_agent_session(
+            &source,
+            &activation,
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .expect("open bound ACP agent");
         assert_eq!(
             session.workspace_cwd.as_deref(),
             Some(SANDBOX_WORKSPACE),
@@ -1210,14 +1211,14 @@ mod tests {
         let mut source = bound_projecting_source(sandbox.clone(), "claude");
         source.backend = awaken_runtime_contract::resolved::Backend::from_ref("acp:codex");
 
-        let error = source
-            .open(
-                &acp_activation("acp:codex"),
-                &awaken_runtime_contract::RuntimeRunContext::new(),
-            )
-            .await
-            .err()
-            .expect("a mismatched CLI must fail closed");
+        let error = awaken_run_executor_acp::open_agent_session(
+            &source,
+            &acp_activation("acp:codex"),
+            &awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .err()
+        .expect("a mismatched CLI must fail closed");
 
         assert!(error.0.contains("acp:codex") && error.0.contains("acp:claude"));
         assert!(

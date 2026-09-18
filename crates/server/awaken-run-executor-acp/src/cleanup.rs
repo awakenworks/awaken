@@ -7,19 +7,41 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::runtime_context::{AttemptQuiescence, RuntimeRunContext};
 use std::time::Duration;
 
-pub(super) async fn open_session(
+/// Proof that a channel open was reached through [`open_session`], the one door
+/// that wraps the launch in the attempt's canonical return observer.
+///
+/// The tuple field is private, so the only expression anywhere that can build a
+/// door is the one inside [`open_session`] below. That is what turns "call
+/// `open` only through the cleanup door" from a comment into a rule: an
+/// implementor of [`AgentChannelSource`] can receive a door and forward it to an
+/// inner source, and nobody else can conjure one.
+///
+/// ```compile_fail,E0603
+/// use awaken_run_executor_acp::ChannelOpenDoor;
+///
+/// let _ = ChannelOpenDoor(());
+/// ```
+#[derive(Debug)]
+pub struct ChannelOpenDoor(());
+
+/// Open one agent channel. **The only caller of [`AgentChannelSource::open`].**
+///
+/// `open` crosses the provider launch boundary. A cancelled caller can drop that
+/// Future after the provider started a process but before its handle reached
+/// `CleanupScope`, so the launch must be wrapped in the attempt's canonical
+/// return observer for such a lost launch observer to permanently veto an ACK.
+/// A second caller that skipped the observer would strand exactly that process,
+/// which is why the door above makes a second caller unwritable rather than
+/// merely discouraged.
+pub async fn open_session(
     source: &dyn AgentChannelSource,
     activation: &RunActivation,
     context: &RuntimeRunContext,
 ) -> std::result::Result<AgentSession, OpenError> {
-    // `AgentChannelSource::open` crosses the provider launch boundary. A
-    // cancelled caller can drop that Future after the provider started a
-    // process but before its handle reached `CleanupScope`. Reuse the attempt's
-    // canonical return observer so such a lost launch observer permanently
-    // vetoes an ACK. Normal return transfers the typed owner to the scope below.
+    // Normal return transfers the typed owner to the scope below.
     context
         .physical_quiescence
-        .observe_return(source.open(activation, context))
+        .observe_return(source.open(activation, context, ChannelOpenDoor(())))
         .await
 }
 
