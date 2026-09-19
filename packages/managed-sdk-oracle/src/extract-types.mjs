@@ -256,6 +256,7 @@ export function managedWireContract(moduleName) {
     'resources/beta/sessions/events.d.ts',
   );
   const beta = declarationSource(sdk.root, 'resources/beta/beta.d.ts');
+  const pagination = declarationContext(sdk.root, 'core/pagination.d.ts');
   const managedBetas = new Set();
   for (const { text } of [beta, events]) {
     for (const match of text.matchAll(/managed-agents-\d{4}-\d{2}-\d{2}/gu)) {
@@ -271,6 +272,15 @@ export function managedWireContract(moduleName) {
     },
     events: literalEventTypes(sdk.root, 'resources/beta/sessions/events.d.ts'),
     managed_betas: [...managedBetas].sort(),
+    // The list-envelope and list-query shapes every Managed collection shares.
+    // Keyed by the SDK interface each Rust wire type mirrors, so a field the
+    // SDK adds, drops, or makes optional reaches the conformance test as a
+    // named difference rather than a silent client parse failure.
+    pagination: {
+      PageCursorResponse: interfaceProperties(pagination, 'PageCursorResponse'),
+      PageCursorParams: interfaceProperties(pagination, 'PageCursorParams'),
+      PageResponse: interfaceProperties(pagination, 'PageResponse'),
+    },
     resource_params: {
       file: interfaceProperties(sessions, 'BetaManagedAgentsFileResourceParams'),
       github_repository: interfaceProperties(
