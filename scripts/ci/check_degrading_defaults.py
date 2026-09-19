@@ -45,11 +45,13 @@ with a different one under the same name. Ignoring a parameter is not the
 defect -- a test double ignores everything and lies to no one. Discarding it and
 binding its own value of the same name is, because the signature now means two
 things: whatever the honouring implementations do with it, and whatever this one
-substitutes. `lease_renewal_on_postgres` is what that costs: the same lease call
-is evaluated against the caller's clock on two backends and the database clock
-on the third, so a shared property can hold for two and be unprovable for the
-third. Which authority is right is a port decision; a signature that implies
-both is not a decision, it is a silence.
+substitutes. `lease_renewal_on_postgres` is what that cost: the same lease call
+was evaluated against the caller's clock on two backends and the database clock
+on the third, so a shared property held for two and was unprovable for the
+third, and the test failed about one run in ten on a loaded machine. Which
+authority is right is a port decision; a signature that implies both is not a
+decision, it is a silence. That one was settled by taking the parameter off the
+port, which is why this count now sits at zero rather than at eight.
 
 Whole-repo scan plus an exemption registry, never a file allow-list: a list
 freezes today's instances, a scan also refuses tomorrow's.
@@ -154,24 +156,31 @@ FAIL_OPEN_READ_RATCHET = {
 # is a note that the port change is owed, not that the shape is fine.
 SUBSTITUTED_INPUT_EXEMPTIONS: dict[str, str] = {}
 
-# The Postgres dispatch backend is one decision, not eight: a lease is a
-# mutual-exclusion primitive, and its expiry must be judged by the one process
-# every contender talks to, so this backend reads `clock_timestamp()` and the
-# caller's `now_ms` is dead weight in all eight. The fix is to take the
-# parameter off the port (the store owns its clock) rather than to make Postgres
-# trust a worker's clock -- a claimant that times its own lease can extend it
-# without bound, which is the split-brain the lease exists to prevent. That is a
-# contract change across `awaken-dispatch-contract`, so it is ratcheted here
-# until it lands: the eight may not become nine.
-SUBSTITUTED_INPUT_BASELINE = 8
+# Zero, and it stays zero. The eight instances this rule was written for were
+# all one decision in the Postgres dispatch backend: a lease is a
+# mutual-exclusion primitive, its expiry must be judged by the one process every
+# contender talks to, so that backend read `clock_timestamp()` and answered with
+# it under the caller's parameter name. The fix was to take `now_ms` off the
+# `DispatchQueue` port entirely -- the store owns its clock -- rather than to
+# make Postgres trust a worker's clock, because a claimant that times its own
+# lease can extend it without bound, which is the split-brain the lease exists
+# to prevent.
+#
+# One parameter survived that sweep and is the reason this rule is worth
+# keeping: `quarantine_retry_exhausted` still takes a caller-supplied time,
+# because an operator picks it ("quarantine what was already expired at T"). It
+# is now named `expired_before_ms`. Under its old name, `now_ms`, one backend
+# had quietly substituted its own "now" for the operator's cutoff -- a different
+# question, answered without anyone being told. A name that says what a value is
+# is what makes that substitution visible.
+SUBSTITUTED_INPUT_BASELINE = 0
 SUBSTITUTED_INPUT_RATCHET = {
     "owner": "chaizhenhua",
     "expires": "2026-12-31",
     "reason": (
-        "Removing `now_ms` from the queue port changes every method, every "
-        "backend and the shared harness, which must then drive each backend's "
-        "own clock. It lands as one reviewed contract change with the lease "
-        "property proved per backend, not as eight separate edits."
+        "Nothing is owed: the shape is gone from the repository. The record "
+        "stays so the rule keeps its owner and its review date, and so a future "
+        "instance has to be argued for rather than absorbed into a count."
     ),
 }
 
