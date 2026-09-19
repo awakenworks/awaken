@@ -276,49 +276,94 @@ mod tests {
         assert_eq!(right.await.expect("right task").expect("S1/E3"), 2);
     }
 
-    /// Fair-admission cause/effect graph: C1 one background operation owns the
-    /// connection; C2 a foreground Control operation queues next; C3 the same
-    /// background loop immediately requests another operation. Effects: E1 the
-    /// foreground operation enters before the requeued background operation;
-    /// E2 every operation runs exactly once; E3 no second blocking waiter is
-    /// created while the first owns the connection.
+    /// Queue one caller behind the current owner *now*, in program order.
     ///
-    /// | Rule | Owner | Next waiter | Requeue | Effect |
-    /// |---|---|---|---|---|
-    /// | F1 | background | foreground | background | E1 + E2 + E3 |
+    /// Spawning a task and yielding does not establish queue order on a
+    /// multi-thread runtime: under load the spawned task may not be polled
+    /// before the next caller is spawned, so a fairness assertion would then
+    /// test the scheduler instead of admission. Polling the admission future
+    /// once in place registers it with the FIFO semaphore before this function
+    /// returns, and the boxed future keeps that waiter when it is spawned.
+    async fn enqueue<T, F>(
+        connection: &SharedSqliteConnection,
+        operation: F,
+    ) -> tokio::task::JoinHandle<Result<T, SqliteTaskError>>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> T + Send + 'static,
+    {
+        let mut admission = Box::pin(with_connection(connection.clone(), operation));
+        std::future::poll_fn(|cx| {
+            assert!(
+                admission.as_mut().poll(cx).is_pending(),
+                "a caller queued behind an owner must wait for admission"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tokio::spawn(admission)
+    }
+
+    /// Hold the connection until the returned sender fires, reporting entry.
+    async fn owner(
+        connection: &SharedSqliteConnection,
+        order: &Arc<Mutex<Vec<&'static str>>>,
+        name: &'static str,
+    ) -> (
+        tokio::task::JoinHandle<Result<(), SqliteTaskError>>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let order = Arc::clone(order);
+        let task = tokio::spawn(with_connection(connection.clone(), move |_| {
+            order.lock().expect("owner order").push(name);
+            entered_tx.send(()).expect("announce owner");
+            release_rx.recv().expect("release owner");
+        }));
+        entered_rx.await.expect("owner entered");
+        (task, release_tx)
+    }
+
+    fn record(
+        order: &Arc<Mutex<Vec<&'static str>>>,
+        name: &'static str,
+    ) -> impl FnOnce(&mut Connection) + Send + 'static {
+        let order = Arc::clone(order);
+        move |_| order.lock().expect("order").push(name)
+    }
+
+    /// Fair-admission cause/effect graph. Causes: C1 one background operation
+    /// owns the connection; C2 other callers are queued behind it in a known
+    /// order (established by [`enqueue`], not by scheduler timing); C3 the same
+    /// background loop requests again after them; C4 a queued caller is
+    /// cancelled before admission; C5 the owning operation panics. Effects:
+    /// E1 queued callers enter in queue order and a requeued background caller
+    /// cannot overtake them; E2 every admitted operation runs exactly once;
+    /// E3 a cancelled caller never runs and never blocks the callers behind
+    /// it; E4 a panic releases admission instead of deadlocking, the panicking
+    /// caller sees a join failure, and the connection then fails closed as
+    /// poisoned for every later caller.
+    ///
+    /// | Rule | Owner | Queue | Effect |
+    /// |---|---|---|---|
+    /// | F1 | background | foreground, then background requeue | E1 + E2 |
+    /// | F2 | background | three callers | E1 + E2 in exact queue order |
+    /// | F3 | background | one cancelled caller, then one live | E3 + E2 |
+    /// | F4 | panicking | one caller | E4 |
+    ///
+    /// Before `enqueue` existed, F1 spawned the foreground caller and yielded
+    /// once; under full CPU saturation that let the requeue register first in
+    /// 2 of 400 runs, so the rule tested scheduling luck rather than C2.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn foreground_control_cannot_be_starved_by_hot_background_reentry() {
         let connection =
             SharedSqliteConnection::new(Connection::open_in_memory().expect("connection"));
         let order = Arc::new(Mutex::new(Vec::new()));
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-
-        let background_order = Arc::clone(&order);
-        let first_background = tokio::spawn(with_connection(connection.clone(), move |_| {
-            background_order
-                .lock()
-                .expect("F1 order")
-                .push("background-1");
-            entered_tx.send(()).expect("F1 announce owner");
-            release_rx.recv().expect("F1 release owner");
-        }));
-        entered_rx.await.expect("F1 background entered");
-
-        let foreground_order = Arc::clone(&order);
-        let foreground = tokio::spawn(with_connection(connection.clone(), move |_| {
-            foreground_order
-                .lock()
-                .expect("F1 order")
-                .push("foreground");
-        }));
-        tokio::task::yield_now().await;
-
-        let reentry_order = Arc::clone(&order);
-        let background_reentry = tokio::spawn(with_connection(connection, move |_| {
-            reentry_order.lock().expect("F1 order").push("background-2");
-        }));
-        release_tx.send(()).expect("F1 release first background");
+        let (first_background, release) = owner(&connection, &order, "background-1").await;
+        let foreground = enqueue(&connection, record(&order, "foreground")).await;
+        let background_reentry = enqueue(&connection, record(&order, "background-2")).await;
+        release.send(()).expect("F1 release first background");
 
         first_background.await.expect("F1 task").expect("F1/E2");
         foreground.await.expect("F1 task").expect("F1/E2");
@@ -326,7 +371,94 @@ mod tests {
         assert_eq!(
             *order.lock().expect("F1 order"),
             ["background-1", "foreground", "background-2"],
-            "F1/E1-E3"
+            "F1/E1-E2"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_callers_enter_in_exactly_the_order_they_queued() {
+        let connection =
+            SharedSqliteConnection::new(Connection::open_in_memory().expect("connection"));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (owner_task, release) = owner(&connection, &order, "owner").await;
+        let first = enqueue(&connection, record(&order, "first")).await;
+        let second = enqueue(&connection, record(&order, "second")).await;
+        let third = enqueue(&connection, record(&order, "third")).await;
+        release.send(()).expect("F2 release owner");
+
+        for task in [owner_task, first, second, third] {
+            task.await.expect("F2 task").expect("F2/E2");
+        }
+        assert_eq!(
+            *order.lock().expect("F2 order"),
+            ["owner", "first", "second", "third"],
+            "F2/E1-E2"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancelled_waiter_never_runs_and_never_blocks_the_queue() {
+        let connection =
+            SharedSqliteConnection::new(Connection::open_in_memory().expect("connection"));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (owner_task, release) = owner(&connection, &order, "owner").await;
+        let cancelled = enqueue(&connection, record(&order, "cancelled")).await;
+        let live = enqueue(&connection, record(&order, "live")).await;
+        cancelled.abort();
+        assert!(
+            cancelled.await.expect_err("F3 cancelled").is_cancelled(),
+            "F3 the waiter was cancelled before admission"
+        );
+        release.send(()).expect("F3 release owner");
+
+        owner_task.await.expect("F3 task").expect("F3/E2");
+        tokio::time::timeout(Duration::from_secs(5), live)
+            .await
+            .expect("F3/E3 the live caller is not stuck behind the cancelled one")
+            .expect("F3 task")
+            .expect("F3/E2");
+        assert_eq!(
+            *order.lock().expect("F3 order"),
+            ["owner", "live"],
+            "F3/E3 the cancelled operation never ran"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_operation_releases_admission_and_fails_closed() {
+        let connection =
+            SharedSqliteConnection::new(Connection::open_in_memory().expect("connection"));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let panicking = tokio::spawn(with_connection(connection.clone(), move |_| {
+            entered_tx.send(()).expect("F4 announce owner");
+            release_rx.recv().expect("F4 release owner");
+            panic!("F4 operation fails mid-flight");
+        }));
+        entered_rx.await.expect("F4 owner entered");
+        let waiter = enqueue(&connection, |_| ()).await;
+        release_tx.send(()).expect("F4 release owner");
+
+        let failure = panicking
+            .await
+            .expect("F4 task")
+            .expect_err("F4/E4 the panicking caller sees a failure");
+        assert!(
+            matches!(failure, SqliteTaskError::Join(ref join) if join.is_panic()),
+            "F4/E4 a panic is reported as a join failure, got {failure:?}"
+        );
+        let waiter = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("F4/E4 admission was released, not deadlocked")
+            .expect("F4 task");
+        assert!(
+            matches!(waiter, Err(SqliteTaskError::Poisoned)),
+            "F4/E4 a connection a panic left mid-operation is not handed out again"
+        );
+        let later = with_connection(connection, |_| ()).await;
+        assert!(
+            matches!(later, Err(SqliteTaskError::Poisoned)),
+            "F4/E4 the connection stays fail-closed for every later caller"
         );
     }
 }
