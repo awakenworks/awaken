@@ -48,9 +48,10 @@ pub use dispatch::{
     SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
     SessionRunReservationResolution, SettleOutcome, SubmitOptions, can_admit_claim_credentials,
     claim_credential_operation, classify_commit_epoch_admission,
-    compile_attempt_credential_bindings, compile_claim_credential_bindings, decide_lease_renewal,
-    session_run_replacement_candidate_is_safe, verify_attempt_credential_bindings,
-    verify_claim_credential_bindings, worker_credential_realization_capabilities,
+    compile_attempt_credential_bindings, compile_claim_credential_bindings, deadline_has_passed,
+    decide_lease_renewal, session_run_replacement_candidate_is_safe,
+    verify_attempt_credential_bindings, verify_claim_credential_bindings,
+    worker_credential_realization_capabilities,
 };
 pub use dispatch_transition::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,

@@ -223,7 +223,7 @@ pub fn retry_exhaustion_eligible(
 ) -> bool {
     state == crate::DispatchState::Leased
         && attempt_count >= max_attempts
-        && lease_until_ms.is_some_and(|lease_until_ms| lease_until_ms < now_ms)
+        && crate::deadline_has_passed(lease_until_ms, now_ms)
 }
 
 impl DispatchTransition {

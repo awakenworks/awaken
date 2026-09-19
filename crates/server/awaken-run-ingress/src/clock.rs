@@ -42,6 +42,16 @@ pub(crate) fn millis_from_db(value: i64) -> Result<u64, &'static str> {
     u64::try_from(value).map_err(|_| "persisted millisecond value is negative")
 }
 
+/// The judging half of the deadline rule, owned by the contract.
+///
+/// [`deadline_millis`] mints a deadline here because clamping it into the SQL
+/// domain is a storage concern; deciding whether it has passed is not, so that
+/// half lives with the transition rules every backend already shares. Before it
+/// was named, the same comparison was spelled four times in Rust --- twice
+/// normalizing `now` and twice not --- plus once per SQL query.
+#[cfg(any(feature = "durable", test, kani))]
+pub(crate) use awaken_run_ingress_contract::deadline_has_passed;
+
 #[must_use]
 #[cfg(any(feature = "durable", test, kani))]
 pub(crate) fn deadline_millis(now_ms: u64, lease_ms: u64) -> u64 {

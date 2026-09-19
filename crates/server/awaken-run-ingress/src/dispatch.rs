@@ -912,8 +912,10 @@ pub(crate) fn classify_exact_claim_mode(
     lease_or_reservation_deadline_ms: Option<u64>,
     now_ms: u64,
 ) -> ExactClaimMode {
-    let expired = lease_or_reservation_deadline_ms
-        .is_some_and(|deadline| deadline < crate::clock::normalize_millis(now_ms));
+    let expired = crate::clock::deadline_has_passed(
+        lease_or_reservation_deadline_ms,
+        crate::clock::normalize_millis(now_ms),
+    );
     if expired
         && matches!(
             state,

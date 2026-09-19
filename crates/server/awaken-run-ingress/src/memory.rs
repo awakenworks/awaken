@@ -387,7 +387,7 @@ fn select_in_physical_band(
         if let Some(row) = state.rows.get(run)
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Leased
-            && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms)
+            && crate::clock::deadline_has_passed(row.lease.as_ref().map(|l| l.expires_ms), now_ms)
             && resolution_retry_is_due(row, now_ms)
             && compatible(row)
         {
@@ -453,10 +453,10 @@ fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
         return Some(false);
     }
     if row.state == DispatchState::Leased
-        && row
-            .lease
-            .as_ref()
-            .is_some_and(|lease| lease.expires_ms < now_ms)
+        && crate::clock::deadline_has_passed(
+            row.lease.as_ref().map(|lease| lease.expires_ms),
+            now_ms,
+        )
     {
         return Some(true);
     }
@@ -550,10 +550,10 @@ fn claim_exact_with_mode(
                 return Ok(None);
             };
             let expired_running = row.state == DispatchState::Leased
-                && row
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.expires_ms < now_ms);
+                && crate::clock::deadline_has_passed(
+                    row.lease.as_ref().map(|lease| lease.expires_ms),
+                    now_ms,
+                );
             let thread_busy = thread_has_claim_blocking_peer(state, requested_run, false);
             let quiescent_unleased =
                 matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
@@ -1697,7 +1697,10 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut operations = Vec::new();
         for row in state.rows.values_mut() {
             let expired = row.state == DispatchState::Leased
-                && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms);
+                && crate::clock::deadline_has_passed(
+                    row.lease.as_ref().map(|l| l.expires_ms),
+                    now_ms,
+                );
             if expired && row.attempt_count >= max_attempts && row.active_attempt.is_none() {
                 let lease = row
                     .lease
