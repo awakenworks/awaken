@@ -1297,10 +1297,8 @@ mod tests {
             );
             let clock = std::sync::Arc::new(awaken_run_ingress::ManualClock::new(0));
             let dispatch = Arc::new(
-                awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory_with_clock(
-                    clock.clone(),
-                )
-                .expect("coordinated Resource dispatch store"),
+                awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+                    .expect("coordinated Resource dispatch store"),
             );
             let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
                 .with_dispatch_store(dispatch.clone());

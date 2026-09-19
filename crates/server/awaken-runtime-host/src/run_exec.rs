@@ -1015,8 +1015,10 @@ mod tests {
         let thread = "thread-router";
         let storage = tempfile::tempdir().unwrap();
         let dispatch = Arc::new(
-            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
-                .expect("artifact test dispatch"),
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
+                awaken_run_ingress::SystemClock,
+            ))
+            .expect("artifact test dispatch"),
         );
         dispatch
             .enqueue(awaken_run_ingress::RunDispatch::new(activation("awaken")))

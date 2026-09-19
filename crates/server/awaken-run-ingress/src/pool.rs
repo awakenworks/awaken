@@ -1529,9 +1529,10 @@ mod in_flight_tests {
             fail_first: true,
         });
         let completion = Arc::new(RecordingCompletion::default());
+        let clock = Arc::new(ManualClock::new(0));
         let reconciler = DispatchReconciler::spawn(
-            Arc::new(MemoryDispatchStore::new()),
-            Arc::new(ManualClock::new(0)),
+            Arc::new(MemoryDispatchStore::new(clock.clone())),
+            clock,
             Arc::new(LocalWakeSignal::new()),
             DispatchServiceConfig {
                 poll_interval: Duration::from_secs(60),
@@ -1586,9 +1587,10 @@ mod in_flight_tests {
             release: Notify::new(),
             calls: AtomicUsize::new(0),
         });
+        let clock = Arc::new(ManualClock::new(0));
         let reconciler = DispatchReconciler::spawn(
-            Arc::new(MemoryDispatchStore::new()),
-            Arc::new(ManualClock::new(0)),
+            Arc::new(MemoryDispatchStore::new(clock.clone())),
+            clock,
             Arc::new(LocalWakeSignal::new()),
             DispatchServiceConfig::default(),
             resolver.clone(),
@@ -1621,8 +1623,8 @@ mod in_flight_tests {
     /// terminal truth or mutates dispatch rows itself.
     #[tokio::test]
     async fn maintenance_reconciliation_is_optional_retryable_and_event_driven() {
-        let store = Arc::new(MemoryDispatchStore::new());
         let clock = Arc::new(ManualClock::new(42));
+        let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
         let wake = Arc::new(LocalWakeSignal::new());
 
         let disabled_resolver = Arc::new(ReconciliationResolver {

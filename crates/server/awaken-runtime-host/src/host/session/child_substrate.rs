@@ -150,7 +150,10 @@ mod tests {
             .model(ModelBinding::new("test", "model", "native"))
             .build();
         let store = Arc::new(
-            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(std::sync::Arc::new(
+                awaken_run_ingress::SystemClock,
+            ))
+            .expect("dispatch store"),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),

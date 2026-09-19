@@ -46,7 +46,7 @@ fn pending(message_id: &str, run: &str, result: ResumeResult) -> PendingInput {
 #[tokio::test]
 async fn service_drains_submitted_runs_and_shuts_down() {
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
@@ -69,7 +69,7 @@ async fn service_drains_submitted_runs_and_shuts_down() {
 #[tokio::test]
 async fn service_resumes_an_awaiting_run_on_delivery() {
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
@@ -105,7 +105,7 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
     // One hand-driven clock: the store judges its rows against the same reading
     // the daemon polls with, so the recovery boundary stays exact.
     let clock = Arc::new(ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -148,7 +148,7 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
 #[tokio::test]
 async fn shutdown_is_clean_with_no_work() {
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit);
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
@@ -170,7 +170,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     // The store evaluates a scheduled delivery's due time against its own clock,
     // so it must read the same hand-driven reading the daemon polls with.
     let clock = Arc::new(ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(
@@ -226,7 +226,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
 async fn service_relays_a_cross_thread_send() {
     // The daemon relays staged cross-thread deliveries each tick (M3b).
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
@@ -262,7 +262,7 @@ async fn service_commits_retry_exhaustion_and_settles_done() {
     // One hand-driven clock: the store judges lease expiry against the same
     // reading the daemon polls with.
     let clock = Arc::new(ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -322,7 +322,7 @@ async fn daemon_runs_with_worker_owned_renewal_and_ttl_gc_enabled() {
     // Renewal is owned by the worker's exact drive; this exercises that common
     // path through the daemon together with the daemon-owned ttl-GC branch.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(

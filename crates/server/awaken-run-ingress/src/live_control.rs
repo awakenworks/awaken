@@ -175,11 +175,11 @@ mod tests {
     use tokio::sync::Notify;
 
     use crate::worker::DispatchWorker;
-    use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch};
+    use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch, SystemClock};
 
     fn make_service() -> LiveRunControlService<MemoryDispatchStore> {
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new());
+        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let worker = Arc::new(DispatchWorker::new(
             runtime,
@@ -255,7 +255,7 @@ mod tests {
         use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new());
+        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let worker = Arc::new(DispatchWorker::new(
             runtime,
@@ -283,7 +283,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_claim_uses_wall_time_and_cannot_be_immediately_reclaimed() {
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new());
+        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let worker = Arc::new(DispatchWorker::new(
             runtime,
@@ -347,7 +347,7 @@ mod tests {
         // the same Runtime registry, never an ingress-private pause map.
         // Decision rules: P1=C1+C2=>E1; P2=C3=>E2.
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new());
+        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let worker = Arc::new(DispatchWorker::new(
             runtime.clone(),

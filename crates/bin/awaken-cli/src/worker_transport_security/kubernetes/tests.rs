@@ -291,7 +291,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             original.clone()
         };
         let clock = std::sync::Arc::new(awaken_run_ingress::ManualClock::new(0));
-        let store = awaken_run_ingress::MemoryDispatchStore::new().with_clock(clock.clone());
+        let store = awaken_run_ingress::MemoryDispatchStore::new(clock.clone());
         let activation = awaken_run_ingress_testkit::worker_http::activation("cli-stop");
         let thread_id = activation.thread_id.clone();
         let request = awaken_run_ingress::RunDispatch::new(activation)

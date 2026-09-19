@@ -287,7 +287,7 @@ where
 
 /// A direct store's injected clock together with the suite handle that moves it.
 ///
-/// `clock()` is what the store is built over (`with_clock`); the value itself is
+/// `clock()` is the handle the store is constructed over; the value itself is
 /// the [`ConformanceClock`] the suite drives, so `set` moves the exact
 /// millisecond that store's rows are judged against.
 #[derive(Debug, Clone, Default)]

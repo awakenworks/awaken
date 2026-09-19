@@ -48,29 +48,24 @@ pub struct AnyDispatchStore {
 
 impl AnyDispatchStore {
     /// Open the SQLite backend at `path` (per-thread file queue; survives restart).
+    /// `clock` is the time the backend judges its own rows against — lease
+    /// expiry, retry due, reservation lapse — and is required for the reason
+    /// given on [`SqliteDispatchStore::open`].
     #[cfg(feature = "durable")]
-    pub fn open_sqlite(path: &str) -> Result<Self, String> {
-        SqliteDispatchStore::open(path)
+    pub fn open_sqlite(path: &str, clock: Arc<dyn crate::Clock>) -> Result<Self, String> {
+        SqliteDispatchStore::open(path, clock)
             .map(Self::from_store)
             .map_err(|e| e.to_string())
     }
 
-    /// Open an in-memory SQLite backend for tests and scenario fixtures.
+    /// Open an in-memory SQLite backend for tests and scenario fixtures over a
+    /// caller-owned clock, so a test drives the exact time the selected backend
+    /// judges its rows against.
     #[cfg(feature = "durable")]
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_sqlite_in_memory() -> Result<Self, String> {
-        SqliteDispatchStore::open_in_memory()
+    pub fn open_sqlite_in_memory(clock: Arc<dyn crate::Clock>) -> Result<Self, String> {
+        SqliteDispatchStore::open_in_memory(clock)
             .map(Self::from_store)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Open an in-memory SQLite backend over a caller-owned clock, so a test can
-    /// drive the exact time the selected backend judges its rows against.
-    #[cfg(feature = "durable")]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn open_sqlite_in_memory_with_clock(clock: Arc<dyn crate::Clock>) -> Result<Self, String> {
-        SqliteDispatchStore::open_in_memory()
-            .map(|store| Self::from_store(store.with_clock(clock)))
             .map_err(|e| e.to_string())
     }
 
