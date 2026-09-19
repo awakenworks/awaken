@@ -131,18 +131,13 @@ async fn binding_survives_a_recovery_claim(
 #[tokio::test]
 async fn memory_backend_binds_and_recovers() {
     let clock = ManualStoreClock::new(0);
-    binding_survives_a_recovery_claim(
-        &MemoryDispatchStore::new().with_clock(clock.clock()),
-        &clock,
-    )
-    .await;
+    binding_survives_a_recovery_claim(&MemoryDispatchStore::new(clock.clock()), &clock).await;
 }
 
 #[tokio::test]
 async fn runtime_selected_store_delegates_the_sandbox_binding() {
     let clock = ManualStoreClock::new(0);
-    let store =
-        AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clock()).expect("sqlite adapter");
+    let store = AnyDispatchStore::open_sqlite_in_memory(clock.clock()).expect("sqlite adapter");
     binding_survives_a_recovery_claim(&store, &clock).await;
 }
 

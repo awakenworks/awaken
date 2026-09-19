@@ -313,23 +313,28 @@ pub struct SqliteDispatchStore {
 
 impl SqliteDispatchStore {
     /// Open (or create) a database file and apply the dispatch migrations.
-    pub fn open(path: &str) -> Result<Self, StoreError> {
+    ///
+    /// The clock is required for the reason given on
+    /// [`MemoryDispatchStore::new`](crate::MemoryDispatchStore::new): this store
+    /// judges its own rows, so a default would let a caller believe it had
+    /// supplied one when it had not.
+    pub fn open(path: &str, clock: Arc<dyn crate::Clock>) -> Result<Self, StoreError> {
         let conn = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
             .open()
             .map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn)
+        Self::from_connection(conn, clock)
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory() -> Result<Self, StoreError> {
+    pub fn open_in_memory(clock: Arc<dyn crate::Clock>) -> Result<Self, StoreError> {
         let conn = awaken_sqlite_pool::SqliteConnectionFactory::memory()
             .open()
             .map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn)
+        Self::from_connection(conn, clock)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, StoreError> {
+    fn from_connection(conn: Connection, clock: Arc<dyn crate::Clock>) -> Result<Self, StoreError> {
         let published = selected_dispatch_bundle(published_v15_checksum(&conn)?.as_deref())
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
         let converged =
@@ -343,15 +348,8 @@ impl SqliteDispatchStore {
         Ok(Self {
             conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
             authority: Arc::new(tokio::sync::Mutex::new(())),
-            clock: Arc::new(crate::SystemClock),
+            clock,
         })
-    }
-
-    /// Replace the store-owned clock for deterministic embedded-store tests.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn crate::Clock>) -> Self {
-        self.clock = clock;
-        self
     }
 
     /// Run a closure with the locked connection on a blocking thread. The closure
@@ -503,7 +501,10 @@ mod migration_history_tests {
     use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
     use rusqlite::Connection;
 
+    use std::sync::Arc;
+
     use super::{NS, SqliteDispatchStore};
+    use crate::SystemClock;
     use crate::dispatch_schema::{BUNDLE_ID, CONVERGED_BUNDLE_ID, expanded_dispatch_bundle};
 
     #[test]
@@ -524,11 +525,14 @@ mod migration_history_tests {
             .expect("runner")
             .run_bundle(&connection, &published)
             .expect("seed expanded history");
-        let migrated =
-            SqliteDispatchStore::from_connection(connection).expect("Q2 selected migration");
+        let migrated = SqliteDispatchStore::from_connection(connection, Arc::new(SystemClock))
+            .expect("Q2 selected migration");
         drop(migrated);
-        let reopened = SqliteDispatchStore::open(path.to_str().expect("UTF-8 migration path"))
-            .expect("Q3 idempotent reopen");
+        let reopened = SqliteDispatchStore::open(
+            path.to_str().expect("UTF-8 migration path"),
+            Arc::new(SystemClock),
+        )
+        .expect("Q3 idempotent reopen");
         let connection = reopened.conn.lock().expect("Q3 inspect connection");
         let published_max: i64 = connection
             .query_row(

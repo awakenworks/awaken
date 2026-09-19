@@ -412,7 +412,9 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         lifecycle.clone(),
     ));
     let (directory, identity) = support::ready_worker("worker-artifacts").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     let claim = claimed_dispatch(&dispatch, "session-artifacts", &identity.lease_owner()).await;
     let service = Arc::new(WorkerArtifactPublicationService::new(
         application.clone(),
@@ -691,7 +693,9 @@ async fn embedded_and_raw_http_artifact_admission_have_the_same_resource_effects
         Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
     ));
     let (directory, identity) = support::ready_worker("worker-admission").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     let claim = claimed_dispatch(&dispatch, "admission", &identity.lease_owner()).await;
     let address = support::serve(worker_artifact_publication_router(Arc::new(
         WorkerArtifactPublicationService::new(
@@ -877,7 +881,9 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
     let service = Arc::new(
         WorkerArtifactPublicationService::new(
             application.clone(),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
         )
@@ -906,7 +912,9 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
     let unrenewed_service = Arc::new(
         WorkerArtifactPublicationService::new(
             application.clone(),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
             directory,
         )
@@ -1092,7 +1100,9 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     let service = Arc::new(
         WorkerArtifactPublicationService::new(
             counting.clone(),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
             directory,
         )
@@ -1288,7 +1298,9 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
     let service = Arc::new(
         WorkerArtifactPublicationService::new(
             counting.clone(),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
         )
@@ -1374,7 +1386,9 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
     let expired_current_service = Arc::new(
         WorkerArtifactPublicationService::new(
             counting.clone(),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
             directory,
         )
@@ -1465,7 +1479,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     // R10 needs a lease that is already expired. The store now judges that
     // from its own clock, so this fixture owns one it can move.
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(support::unix_now_ms()));
-    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let claim = claimed_dispatch(&dispatch, "capture-journey", &identity.lease_owner()).await;
     let service = Arc::new(WorkerArtifactPublicationService::new(
         counting.clone(),

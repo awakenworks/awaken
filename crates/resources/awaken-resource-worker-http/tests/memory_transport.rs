@@ -195,7 +195,9 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
                 },
             })
         };
-        let dispatch = Arc::new(MemoryDispatchStore::new());
+        let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+            awaken_dispatch::SystemClock,
+        )));
         let file_service = WorkerFileContentService::new(
             Arc::new(
                 awaken_resource_application::ApplicationFileContentSource::new(
@@ -414,7 +416,9 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         Vec::new(),
     )
     .unwrap();
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     dispatch
         .enqueue(
             RunDispatch::new(support::activation("memory"))
@@ -618,7 +622,9 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
         storage,
     ));
     create_store(&catalog, "memory-realization").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     let (directory, identity) = support::ready_worker("worker-realization-memory").await;
     let lease = awaken_session_contract::SessionRealizationLease {
         owner: identity.worker_id.clone(),
@@ -789,7 +795,9 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     ));
     create_store(&catalog, "memory-terminal").await;
 
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     dispatch
         .enqueue(RunDispatch::new(support::activation("terminal-memory")))
         .await

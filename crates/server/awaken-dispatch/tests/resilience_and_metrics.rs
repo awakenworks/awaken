@@ -42,7 +42,7 @@ async fn a_transient_store_error_is_swallowed_and_the_daemon_recovers() {
     // The daemon's drain tick treats a store error as transient: it logs and retries
     // on the next tick rather than dying. A store whose first two claims fail must
     // still drain the run once the injected failures are spent.
-    let store = Arc::new(FlakyDispatchStore::new(2));
+    let store = Arc::new(FlakyDispatchStore::new(2, Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),
@@ -85,7 +85,7 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
     // and assert its complete metric vector.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
@@ -133,7 +133,7 @@ async fn an_awaiting_drive_meters_one_claim_one_drive_and_one_awaiting_settle() 
     // and assert its vector against the terminal control above.
     let metrics = Arc::new(RecordingMetrics::default());
     let (runtime, _ran) = tool_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
@@ -178,7 +178,7 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
     // one drive.duration (the RAII timer fires on every exit), and one done settle.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-1".to_string());
 
@@ -239,7 +239,7 @@ async fn an_expired_lease_reclaim_is_reported_as_recovery() {
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
@@ -277,7 +277,7 @@ async fn a_stale_settlement_increments_the_fenced_metric() {
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store

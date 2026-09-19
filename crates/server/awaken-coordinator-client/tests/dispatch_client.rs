@@ -124,7 +124,7 @@ async fn spawn_transport_server() -> (
     // The server's dispatch authority now answers from its own clock, so the
     // test's server clock is the store's clock.
     let now_ms = Arc::new(awaken_dispatch::ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(now_ms.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(now_ms.clone()));
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let holder = awaken_runtime_contract::PlaintextHolder::new(
         awaken_runtime_contract::PlaintextBoundary::Worker,
@@ -1122,8 +1122,10 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
     // Schedulers skip maintenance, but the explicit M1 calls below still reject.
     // M4 the same erasure must not disable a genuine local store's maintenance.
     assert!(
-        awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()))
-            .owns_local_maintenance()
+        awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(
+            Arc::new(awaken_dispatch::SystemClock)
+        )))
+        .owns_local_maintenance()
     );
     assert!(!queue.owns_local_maintenance());
     let queue = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(queue));

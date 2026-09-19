@@ -19,26 +19,23 @@ impl std::fmt::Debug for MemoryDispatchStore {
     }
 }
 
-impl Default for MemoryDispatchStore {
-    fn default() -> Self {
+impl MemoryDispatchStore {
+    /// The clock is required, and there is deliberately no default.
+    ///
+    /// This store judges its own rows: whether a lease has expired, whether a
+    /// retry is due, when a reservation lapses. A hidden `SystemClock` default
+    /// made it possible to hand a test a `ManualClock`, move it, and watch the
+    /// assertions pass while the store answered from wall time -- the test had
+    /// stopped exercising the boundary it was named for, and said nothing.
+    /// Naming the clock at construction cannot make that mistake impossible,
+    /// but it does make it impossible to make *silently*: a caller that wants
+    /// wall time now says so.
+    #[must_use]
+    pub fn new(clock: Arc<dyn crate::Clock>) -> Self {
         Self {
             state: Mutex::new(State::default()),
             authority: Arc::new(tokio::sync::Mutex::new(())),
-            clock: Arc::new(crate::SystemClock),
+            clock,
         }
-    }
-}
-
-impl MemoryDispatchStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Replace the store-owned clock. Production uses SystemClock; deterministic
-    /// adapter conformance injects one shared ManualClock.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn crate::Clock>) -> Self {
-        self.clock = clock;
-        self
     }
 }

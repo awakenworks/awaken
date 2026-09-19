@@ -115,11 +115,11 @@ async fn coordinator(
     let store = Arc::new(
         // The test clock advances only while the first server is down. Freeze
         // the same phase time at both existing authority ports on each reopen.
-        SqliteDispatchStore::open(files.join("dispatch.sqlite").to_str().unwrap())
-            .unwrap()
-            .with_clock(Arc::new(awaken_dispatch::ManualClock::new(
-                clock.now_ms(),
-            ))),
+        SqliteDispatchStore::open(
+            files.join("dispatch.sqlite").to_str().unwrap(),
+            Arc::new(awaken_dispatch::ManualClock::new(clock.now_ms())),
+        )
+        .unwrap(),
     );
     let directory = Arc::new(SqliteWorkerDirectory::open(files.join("registry.sqlite")).unwrap());
     let recovery = Arc::new(

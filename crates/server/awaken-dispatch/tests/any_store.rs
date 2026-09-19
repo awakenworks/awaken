@@ -27,15 +27,15 @@ use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, activation_on, tool_runtime};
 
 fn any_in_memory() -> AnyDispatchStore {
-    AnyDispatchStore::open_sqlite_in_memory().expect("open in-memory sqlite backend")
+    AnyDispatchStore::open_sqlite_in_memory(Arc::new(awaken_dispatch::SystemClock))
+        .expect("open in-memory sqlite backend")
 }
 
 /// The same runtime-selected backend over a raw injected clock handle.
 fn any_in_memory_with_clock_handle(
     clock: std::sync::Arc<dyn awaken_dispatch::Clock>,
 ) -> AnyDispatchStore {
-    AnyDispatchStore::open_sqlite_in_memory_with_clock(clock)
-        .expect("open in-memory sqlite backend")
+    AnyDispatchStore::open_sqlite_in_memory(clock).expect("open in-memory sqlite backend")
 }
 
 /// The same runtime-selected backend over a clock the test drives, because the
@@ -43,8 +43,7 @@ fn any_in_memory_with_clock_handle(
 fn any_in_memory_with_clock(
     clock: &awaken_dispatch_testkit::ManualStoreClock,
 ) -> AnyDispatchStore {
-    AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clock())
-        .expect("open in-memory sqlite backend")
+    AnyDispatchStore::open_sqlite_in_memory(clock.clock()).expect("open in-memory sqlite backend")
 }
 
 #[tokio::test]
@@ -52,9 +51,7 @@ async fn execution_binding_is_frozen_with_the_physical_slot() {
     // Shared B1-B9 includes Any delegation, Memory and real SQLite transactions.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
-        AnyDispatchStore::from_dispatch(Arc::new(
-            MemoryDispatchStore::new().with_clock(clock.clock()),
-        )),
+        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clock()))),
         any_in_memory_with_clock(&clock),
     ] {
         harness::attempt_binding::assert_binding_lifecycle(&store, &clock).await;
@@ -70,9 +67,7 @@ async fn returned_attempt_cannot_restart_under_the_same_claim() {
     // This is a prerequisite for accepting independently delayed stop evidence.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
-        AnyDispatchStore::from_dispatch(Arc::new(
-            MemoryDispatchStore::new().with_clock(clock.clock()),
-        )),
+        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clock()))),
         any_in_memory_with_clock(&clock),
     ] {
         harness::attempt_retirement::assert_retirement(&store, 0, &clock).await;
@@ -87,7 +82,9 @@ fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     // path remains authoritative. This test owns R2/R3 and prevents an implicit
     // process-local checkpoint from returning inside the runtime-selected wrapper.
     assert!(any_in_memory().stream_checkpoint_store().is_none(), "R2");
-    let remote = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()));
+    let remote = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    ))));
     assert!(remote.stream_checkpoint_store().is_none(), "R3");
 }
 
@@ -218,11 +215,8 @@ async fn exact_backend_capability_claim_conformance(
 #[tokio::test]
 async fn exact_backend_capability_routes_a_mixed_queue_on_every_local_store() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    exact_backend_capability_claim_conformance(
-        &MemoryDispatchStore::new().with_clock(clock.clock()),
-        &clock,
-    )
-    .await;
+    exact_backend_capability_claim_conformance(&MemoryDispatchStore::new(clock.clock()), &clock)
+        .await;
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     exact_backend_capability_claim_conformance(&any_in_memory_with_clock(&clock), &clock).await;
 }
@@ -320,11 +314,7 @@ async fn policy_claim_conformance(
 #[tokio::test]
 async fn policy_claim_is_wired_through_memory_and_runtime_selected_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    policy_claim_conformance(
-        &MemoryDispatchStore::new().with_clock(clock.clock()),
-        &clock,
-    )
-    .await;
+    policy_claim_conformance(&MemoryDispatchStore::new(clock.clock()), &clock).await;
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     policy_claim_conformance(&any_in_memory_with_clock(&clock), &clock).await;
 }
@@ -332,7 +322,7 @@ async fn policy_claim_is_wired_through_memory_and_runtime_selected_sqlite() {
 #[tokio::test]
 async fn replacement_policy_cannot_override_never_replace() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    let store = MemoryDispatchStore::new(clock.clock());
     let mut requirements = PlacementRequirements::remote_required();
     requirements.required_capabilities.insert("cpu".to_string());
     requirements.recovery = WorkerRecoveryMode::NeverReplace;
@@ -655,7 +645,9 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
 
 #[tokio::test]
 async fn any_fails_feed_reads_closed_for_a_dispatch_only_adapter() {
-    let dispatch_only: Arc<dyn awaken_dispatch::Dispatch> = Arc::new(MemoryDispatchStore::new());
+    let dispatch_only: Arc<dyn awaken_dispatch::Dispatch> = Arc::new(MemoryDispatchStore::new(
+        Arc::new(awaken_dispatch::SystemClock),
+    ));
     let store = AnyDispatchStore::from_dispatch(dispatch_only);
 
     assert!(

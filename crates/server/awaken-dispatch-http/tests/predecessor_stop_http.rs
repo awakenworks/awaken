@@ -261,7 +261,9 @@ impl Fixture {
         budget: u64,
     ) -> Self {
         Self::with_store(
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             directory,
             bound,
             old_ttl,
@@ -769,8 +771,12 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
 
 async fn dispatch_stores() -> Vec<Arc<dyn DispatchQueue>> {
     let mut stores: Vec<Arc<dyn DispatchQueue>> = vec![
-        Arc::new(MemoryDispatchStore::new()),
-        Arc::new(SqliteDispatchStore::open_in_memory().unwrap()),
+        Arc::new(MemoryDispatchStore::new(Arc::new(
+            awaken_dispatch::SystemClock,
+        ))),
+        Arc::new(
+            SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock)).unwrap(),
+        ),
     ];
     if let Some(url) = postgres_support::database_url() {
         stores.push(Arc::new(

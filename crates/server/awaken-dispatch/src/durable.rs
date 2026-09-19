@@ -470,7 +470,9 @@ mod tests {
         // rule: replace once and assert pointer identity plus weak-handle release.
         let ingress = DispatchTestHarness::new(
             Arc::new(Runtime::new()),
-            Arc::new(crate::MemoryDispatchStore::new()),
+            Arc::new(crate::MemoryDispatchStore::new(Arc::new(
+                crate::SystemClock,
+            ))),
             Arc::new(MemoryCommitCoordinator::new()),
         );
         let provisional = Arc::downgrade(&ingress.reader);

@@ -76,12 +76,12 @@ async fn check_case(
     fail: bool,
 ) -> serde_json::Value {
     let probe = Arc::new(MaintenanceProbe::new(pause, fail));
+    let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(
-        FlakyDispatchStore::new(0)
+        FlakyDispatchStore::new(0, clock.clone())
             .with_local_maintenance(owns)
             .with_maintenance_probe(probe.clone()),
     );
-    let clock = Arc::new(ManualClock::new(0));
     let wake = Arc::new(LocalWakeSignal::new());
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),

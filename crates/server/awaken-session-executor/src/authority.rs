@@ -409,7 +409,7 @@ impl EphemeralRuntimeAuthority {
     #[must_use]
     pub fn new() -> Self {
         let dispatch = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(
-            awaken_dispatch::MemoryDispatchStore::new(),
+            awaken_dispatch::MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock)),
         ));
         Self {
             commits: std::sync::Mutex::new(std::collections::HashMap::new()),

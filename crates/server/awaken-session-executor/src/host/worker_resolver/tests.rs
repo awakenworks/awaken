@@ -27,7 +27,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
 
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
     );
     let session_id = "reservation-repair";
@@ -243,7 +243,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
 
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let durable_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("R2 dispatch store"),
     );
     let durable = Arc::new(
@@ -269,7 +269,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     );
 
     let coordinator_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("R3 dispatch store"),
     );
     let coordinator = Arc::new(
@@ -330,7 +330,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     let now = awaken_dispatch::SystemClock.now_ms();
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
     );
     let host = Arc::new(
@@ -410,7 +410,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         .expect("D1/E1 claimed publication constructs delegation");
 
     let missing_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("missing dispatch store"),
     );
     let missing_host = Arc::new(
@@ -503,7 +503,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .expect("warm catalog source");
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
     );
     let host = Arc::new(
@@ -630,7 +630,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     let storage = tempfile::tempdir().expect("isolated deferred Sandbox root");
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
     );
     let host = Arc::new(
@@ -697,7 +697,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2, "D2+D3");
 
     let loss_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("loss dispatch store"),
     );
     let loss_host = Arc::new(
@@ -873,7 +873,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
      * claim rules retain fail-closed coverage for invalid authority. */
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
     );
     let host = Arc::new(
@@ -1149,7 +1149,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
 
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("in-memory dispatch"),
     );
     let resume_calls = Arc::new(AtomicUsize::new(0));
@@ -1334,8 +1334,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
     for rule in ["workspace", "revision", "bindings"] {
         let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
-                .unwrap(),
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
         );
         let mut projection = ordinary_frozen_projection();
         match rule {
@@ -2796,8 +2795,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         );
         let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
-                .unwrap(),
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
         );
         let calls = Arc::new(AtomicUsize::new(0));
         let host = Arc::new(

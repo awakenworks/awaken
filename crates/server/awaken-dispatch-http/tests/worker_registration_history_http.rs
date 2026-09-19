@@ -30,7 +30,9 @@ async fn assert_registration_history(directory: Arc<dyn WorkerDirectory>, worker
         .with_clock(clock.clone())
         .with_time_policy(60_000, 0);
     let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new()),
+        Arc::new(MemoryDispatchStore::new(Arc::new(
+            awaken_dispatch::SystemClock,
+        ))),
         Arc::new(auth),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(50)),

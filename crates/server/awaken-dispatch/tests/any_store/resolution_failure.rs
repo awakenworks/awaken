@@ -21,9 +21,7 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
             let store = Arc::new(if sqlite {
                 any_in_memory_with_clock_handle(clock.clone())
             } else {
-                AnyDispatchStore::from_dispatch(Arc::new(
-                    MemoryDispatchStore::new().with_clock(clock.clone()),
-                ))
+                AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clone())))
             });
             let committed = Arc::new(MemoryCommitCoordinator::new());
             exercise_failure(
@@ -47,9 +45,7 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
             let store = Arc::new(if sqlite {
                 any_in_memory_with_clock_handle(clock.clone())
             } else {
-                AnyDispatchStore::from_dispatch(Arc::new(
-                    MemoryDispatchStore::new().with_clock(clock.clone()),
-                ))
+                AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clone())))
             });
             exercise_failure(
                 store,

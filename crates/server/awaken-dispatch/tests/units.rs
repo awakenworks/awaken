@@ -69,7 +69,7 @@ fn request_exposes_run_and_thread_ids() {
 #[tokio::test]
 async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    let store = MemoryDispatchStore::new(clock.clock());
     let traceparent = "00-aa11bb22cc33dd44ee55ff6677889900-1122334455667788-01";
 
     store
@@ -120,7 +120,7 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
     // the claim. Constraint/Invariant: builder composition preserves one Worker
     // path. Decision rule: compose C1+C2, execute C3, and observe all ports.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "unit-worker")
@@ -159,7 +159,7 @@ async fn dispatch_harness_attaches_one_best_effort_stream_sink_to_its_worker() {
     // | R2 | absent | yes | E2 only (existing default path) |
     // R2 is covered by the foreground submit/cancel integration below.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone())
@@ -199,7 +199,7 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
         )),
     ] {
         let (runtime, calls) = harness::counting_text_runtime();
-        let store = Arc::new(MemoryDispatchStore::new());
+        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
         let partial = StreamCheckpoint {
@@ -298,7 +298,7 @@ async fn dispatch_harness_unknown_live_cancel_is_typed() {
     // `durable_inline_start_and_resume_fail_closed_before_executor_entry`.
     let ingress = DispatchTestHarness::new(
         text_runtime(),
-        Arc::new(MemoryDispatchStore::new()),
+        Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock))),
         Arc::new(MemoryCommitCoordinator::new()),
     );
     let err = ingress

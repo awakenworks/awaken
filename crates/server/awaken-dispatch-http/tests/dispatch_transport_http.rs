@@ -351,7 +351,7 @@ async fn claimed_terminal_dispatch(
         thread_id.clone()
     };
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let mut request = RunDispatch::new(activation(&run_id.0, &thread_id.0))
         .for_session(session_thread_id.clone())
         .with_traceparent(Some(TERMINAL_TRACEPARENT.to_string()));
@@ -476,7 +476,9 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
     // Constraint: the receipt comes from claim admission and recovery may never
     // self-sign the latest owner/epoch. The read-count assertion makes the
     // validation-before-Thread-read ordering observable.
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     let run_id = RunId("work-epoch-recovery-run".into());
     let session_id = ThreadId("work-epoch-session".into());
     let request = RunDispatch::new(activation(&run_id.0, &session_id.0))
@@ -601,7 +603,18 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_db_less_worker_claims_renews_and_settles_over_http() {
-    let mem = Arc::new(MemoryDispatchStore::new());
+    // The store is on wall time on purpose, and the manual clock below is not a
+    // mirror of it. Every fenced outcome this test asserts is decided by the
+    // claim *epoch*, not by a deadline: the stale-owner settles it rejects carry
+    // a non-current epoch, and the 30s lease never lapses inside a test that
+    // runs in milliseconds. The manual clock drives the service's lease policy,
+    // which is `WorkerClock`'s job. Handing the store a second, mirrored clock —
+    // as `signed_worker_transport_http.rs` legitimately does, because there the
+    // store does judge a deadline — would add machinery here that decides
+    // nothing.
+    let mem = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
         mem as Arc<dyn DispatchQueue>,
@@ -1277,7 +1290,7 @@ async fn work_release_response_loss_retries_done_from_the_same_committed_run() {
 #[tokio::test(flavor = "multi_thread")]
 async fn worker_stream_transport_forwards_only_live_events_from_the_current_claim() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let mem = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
+    let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let stream = Arc::new(MemoryStreamSink::new());
     let router = dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::new(

@@ -418,7 +418,9 @@ impl RepositoryTransportAuthorizer for RenewingTerminalAuthorizer {
 #[tokio::test]
 async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced() {
     let (directory, identity) = support::ready_worker("worker-repository").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
     let service = Arc::new(
         WorkerRepositoryBindingService::new(
@@ -558,7 +560,9 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
 #[tokio::test]
 async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
     let (directory, identity) = support::ready_worker("worker-repository-gateway").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
     let authorizer = Arc::new(GatewayAuthorizer::default());
     let service = Arc::new(
@@ -633,7 +637,9 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
     assert!(error.to_string().contains("403"), "T3: {error}");
 
     let (directory, identity) = support::ready_worker("worker-repository-cancel").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_dispatch::SystemClock,
+    )));
     let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
     let cancelling = Arc::new(
         WorkerRepositoryBindingService::new(
@@ -669,7 +675,9 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
     ] {
         let (directory, identity) =
             support::ready_worker(&format!("worker-repository-expiry-{rule}")).await;
-        let dispatch = Arc::new(MemoryDispatchStore::new());
+        let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
+            awaken_dispatch::SystemClock,
+        )));
         let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
         let service = Arc::new(
             WorkerRepositoryBindingService::new(
@@ -742,7 +750,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     let direct = Arc::new(
         WorkerRepositoryBindingService::new(
             Arc::new(ExactRepositoryRegistry { active: true }),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
         )
         .with_worker_directory(directory.clone())
@@ -812,7 +822,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     let gateway = Arc::new(
         WorkerRepositoryBindingService::new(
             Arc::new(ExactRepositoryRegistry { active: true }),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
         )
         .with_worker_directory(directory.clone())
@@ -858,7 +870,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         let expiry_service = Arc::new(
             WorkerRepositoryBindingService::new(
                 Arc::new(ExactRepositoryRegistry { active: true }),
-                Arc::new(MemoryDispatchStore::new()),
+                Arc::new(MemoryDispatchStore::new(Arc::new(
+                    awaken_dispatch::SystemClock,
+                ))),
                 Arc::new(HeaderWorkerAuthenticator),
             )
             .with_worker_directory(directory.clone())
@@ -932,7 +946,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     let slow_publication_service = Arc::new(
         WorkerRepositoryBindingService::new(
             Arc::new(ExactRepositoryRegistry { active: true }),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
         )
         .with_worker_directory(directory.clone())
@@ -983,7 +999,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     let expired_service = Arc::new(
         WorkerRepositoryBindingService::new(
             Arc::new(ExactRepositoryRegistry { active: true }),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
         )
         .with_worker_directory(directory.clone())
@@ -1024,7 +1042,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     let renewing_service = Arc::new(
         WorkerRepositoryBindingService::new(
             Arc::new(ExactRepositoryRegistry { active: true }),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
         )
         .with_worker_directory(directory.clone())
@@ -1103,7 +1123,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     let unavailable = Arc::new(
         WorkerRepositoryBindingService::new(
             Arc::new(ExactRepositoryRegistry { active: true }),
-            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(MemoryDispatchStore::new(Arc::new(
+                awaken_dispatch::SystemClock,
+            ))),
             Arc::new(HeaderWorkerAuthenticator),
         )
         .with_worker_directory(directory),

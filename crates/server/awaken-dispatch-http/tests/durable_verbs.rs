@@ -112,7 +112,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // Inject one in-memory dispatch store we also keep a handle to, so we can drive
     // the queue deterministically and then assert the host verbs route to it.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let mem = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
+    let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
@@ -262,7 +262,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
      * => dead-letters 200 with only DeadLetter; R3 => superseded 200 with only
      * Superseded. The non-durable C1=false => 400 rule remains below. */
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let mem = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
+    let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));

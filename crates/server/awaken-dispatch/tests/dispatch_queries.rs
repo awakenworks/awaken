@@ -147,9 +147,9 @@ async fn memory_and_any_bounded_dispatch_queries_conform() {
     // than silently using a full-list fallback; Memory owns one ordered row map.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_bounded_query_conformance(
-        &AnyDispatchStore::from_dispatch(std::sync::Arc::new(
-            MemoryDispatchStore::new().with_clock(clock.clock()),
-        )),
+        &AnyDispatchStore::from_dispatch(std::sync::Arc::new(MemoryDispatchStore::new(
+            clock.clock(),
+        ))),
         &clock,
     )
     .await;
@@ -161,9 +161,7 @@ async fn sqlite_bounded_dispatch_queries_conform() {
     // projection decoder; the budget applies before payload deserialization.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_bounded_query_conformance(
-        &SqliteDispatchStore::open_in_memory()
-            .unwrap()
-            .with_clock(clock.clock()),
+        &SqliteDispatchStore::open_in_memory(clock.clock()).unwrap(),
         &clock,
     )
     .await;
@@ -218,7 +216,11 @@ async fn sqlite_corrupt_summary_does_not_poison_identity_pages() {
     // Q7 uses a real persisted payload corruption, not a mock query result.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("queries.sqlite");
-    let store = SqliteDispatchStore::open(path.to_str().unwrap()).unwrap();
+    let store = SqliteDispatchStore::open(
+        path.to_str().unwrap(),
+        std::sync::Arc::new(awaken_dispatch::SystemClock),
+    )
+    .unwrap();
     for run in ["bad", "healthy"] {
         store
             .enqueue(RunDispatch::new(harness::activation(run)))
