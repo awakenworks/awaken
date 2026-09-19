@@ -33,10 +33,28 @@ this (`3fe9d936a9`) reported a store outage to the caller as "no runtime". It is
 the same defect as the degrading default -- an operation succeeds while providing
 none of what it names -- so it is gated here rather than somewhere new.
 
+A third shape says it from the other side. Instead of dropping a qualifier the
+signature names, an implementation *accepts* one and then substitutes its own:
+
+    async fn renew_lease(&self, claim: &RunClaim, lease_ms: u64, _now_ms: u64) {
+        let now_ms = postgres_now_ms(&mut *tx).await?;   // the caller's fact,
+        ...                                              // discarded and reissued
+
+The caller passed a fact the signature asked for; the implementation answered
+with a different one under the same name. Ignoring a parameter is not the
+defect -- a test double ignores everything and lies to no one. Discarding it and
+binding its own value of the same name is, because the signature now means two
+things: whatever the honouring implementations do with it, and whatever this one
+substitutes. `lease_renewal_on_postgres` is what that costs: the same lease call
+is evaluated against the caller's clock on two backends and the database clock
+on the third, so a shared property can hold for two and be unprovable for the
+third. Which authority is right is a port decision; a signature that implies
+both is not a decision, it is a silence.
+
 Whole-repo scan plus an exemption registry, never a file allow-list: a list
 freezes today's instances, a scan also refuses tomorrow's.
 
-Both counts are ratcheted, and each ratchet records **who owns retiring it and
+Every count is ratcheted, and each ratchet records **who owns retiring it and
 by when**. An undated allowance is how a ratchet stops being temporary: the
 number stops falling, nobody owns it, and the gate ends up certifying the debt.
 An expired entry fails, which forces the choice -- finish the conversion, or
@@ -124,6 +142,39 @@ FAIL_OPEN_READ_RATCHET = {
     ),
 }
 
+# An input the signature names, discarded by the body and reissued from another
+# authority under the same name. The underscore is what makes it findable: the
+# author had to silence the compiler to keep the parameter while not using it,
+# and then bound `x` anyway.
+#
+# Key: "<relative path>::<fn>". Value: why this implementation is entitled to
+# answer with its own value instead of the caller's. The only argument that
+# holds is that the substituted authority is the *correct* one for every caller
+# -- in which case the parameter does not belong in the signature, and the entry
+# is a note that the port change is owed, not that the shape is fine.
+SUBSTITUTED_INPUT_EXEMPTIONS: dict[str, str] = {}
+
+# The Postgres dispatch backend is one decision, not eight: a lease is a
+# mutual-exclusion primitive, and its expiry must be judged by the one process
+# every contender talks to, so this backend reads `clock_timestamp()` and the
+# caller's `now_ms` is dead weight in all eight. The fix is to take the
+# parameter off the port (the store owns its clock) rather than to make Postgres
+# trust a worker's clock -- a claimant that times its own lease can extend it
+# without bound, which is the split-brain the lease exists to prevent. That is a
+# contract change across `awaken-dispatch-contract`, so it is ratcheted here
+# until it lands: the eight may not become nine.
+SUBSTITUTED_INPUT_BASELINE = 8
+SUBSTITUTED_INPUT_RATCHET = {
+    "owner": "chaizhenhua",
+    "expires": "2026-12-31",
+    "reason": (
+        "Removing `now_ms` from the queue port changes every method, every "
+        "backend and the shared harness, which must then drive each backend's "
+        "own clock. It lands as one reviewed contract change with the lease "
+        "property proved per backend, not as eight separate edits."
+    ),
+}
+
 TRAIT = re.compile(r"pub trait (\w+)[^{;]*\{")
 METHOD = re.compile(r"(?:async )?fn ([a-z_]\w*)\((?:[^()]|\([^()]*\))*\)\s*->\s*[^;{]*\{")
 
@@ -191,6 +242,86 @@ def degrading_default_violations(sources: dict[str, str]) -> list[str]:
             errors.append(
                 f"DEGRADING_DEFAULT_EXEMPTIONS names {key}, which no longer degrades; "
                 "drop the stale exemption"
+            )
+    return errors
+
+
+def _paren_span(text: str, open_index: int) -> int:
+    depth = 0
+    for index in range(open_index, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return len(text)
+
+
+def _declared_parameters(signature: str) -> list[str]:
+    """Parameter names in one signature, `self` and unnamed receivers removed."""
+    parts: list[str] = []
+    depth = 0
+    current = ""
+    for character in signature:
+        if character in "<([":
+            depth += 1
+        elif character in ">)]":
+            depth -= 1
+        if character == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += character
+    if current.strip():
+        parts.append(current)
+    names: list[str] = []
+    for part in parts:
+        part = part.strip()
+        if not part or part.lstrip("&").startswith("self") or ":" not in part:
+            continue
+        names.append(part.split(":", 1)[0].strip())
+    return names
+
+
+def substituted_input_violations(sources: dict[str, str]) -> list[str]:
+    """Every `_x` parameter whose body binds its own `x` (exemptions removed)."""
+    errors: list[str] = []
+    seen: set[str] = set()
+    for relpath, text in sorted(sources.items()):
+        for match in re.finditer(r"(?:async\s+)?fn\s+([a-z_]\w*)\s*\(", text):
+            open_paren = text.index("(", match.end() - 1)
+            close_paren = _paren_span(text, open_paren)
+            # A trait *declaration* ends at `;` and has no body to substitute in.
+            brace = text.find("{", close_paren)
+            semicolon = text.find(";", close_paren)
+            if brace < 0 or (semicolon != -1 and semicolon < brace):
+                continue
+            body = text[brace : _brace_span(text, brace) + 1]
+            for name in _declared_parameters(text[open_paren + 1 : close_paren]):
+                if not name.startswith("_") or name == "_":
+                    continue
+                bare = name.lstrip("_")
+                if not re.search(rf"\blet\s+(?:mut\s+)?{re.escape(bare)}\s*[=:]", body):
+                    continue
+                key = f"{relpath}::{match.group(1)}"
+                seen.add(key)
+                if key in SUBSTITUTED_INPUT_EXEMPTIONS:
+                    continue
+                line = text[: match.start()].count("\n") + 1
+                errors.append(
+                    f"{relpath}:{line}: {match.group(1)} takes {name} and then binds its own "
+                    f"{bare!r}, so the caller's value is discarded and answered with another "
+                    "authority under the same name. Remove the parameter from the port if the "
+                    "substituted authority is the right one for every caller, honour the "
+                    "argument if it is not, or record the decision in "
+                    "SUBSTITUTED_INPUT_EXEMPTIONS"
+                )
+    for key in sorted(SUBSTITUTED_INPUT_EXEMPTIONS):
+        if key not in seen:
+            errors.append(
+                f"SUBSTITUTED_INPUT_EXEMPTIONS names {key}, which no longer substitutes its "
+                "own value; drop the stale exemption"
             )
     return errors
 
@@ -320,13 +451,46 @@ def selftest() -> None:
     assert fail_open_read_errors({"a.rs": ""}), "a fall must lower the baseline"
     FAIL_OPEN_READ_BASELINE = {}
 
-    # Both ratchets must carry an owner, an argued reason and a live expiry —
+    # Causes: S1 a `_x` parameter whose body binds its own `x`; S2 a `_x`
+    # parameter the body never rebinds (a double that ignores, and lies to
+    # nobody); S3 an honoured parameter rebound from itself, which is ordinary
+    # Rust and not a substitution; S4 a trait declaration, which has no body;
+    # S5 the substitution is registered; S6 a registry entry that no longer
+    # substitutes.
+    # Effects: E1 admitted, E2 rejected.
+    # R1 = S1 => E2.  R2 = S2|S3|S4|S5 => E1.  R3 = S6 => E2.
+    global SUBSTITUTED_INPUT_EXEMPTIONS
+    SUBSTITUTED_INPUT_EXEMPTIONS = {}
+
+    substituted = {
+        "a.rs": "fn renew(&self, _now_ms: u64) -> u64 {\n    let now_ms = db_now();\n    now_ms\n}\n"
+    }
+    assert substituted_input_violations(substituted), "S1/E2"
+
+    ignored = {"a.rs": "fn renew(&self, _now_ms: u64) -> u64 {\n    0\n}\n"}
+    assert not substituted_input_violations(ignored), "S2/E1"
+
+    honoured = {
+        "a.rs": "fn renew(&self, now_ms: u64) -> u64 {\n    let now_ms = now_ms + 1;\n    now_ms\n}\n"
+    }
+    assert not substituted_input_violations(honoured), "S3/E1"
+
+    declared = {"a.rs": "trait Q {\n    fn renew(&self, _now_ms: u64) -> u64;\n}\n"}
+    assert not substituted_input_violations(declared), "S4/E1"
+
+    SUBSTITUTED_INPUT_EXEMPTIONS = {"a.rs::renew": "the database is the only authority"}
+    assert not substituted_input_violations(substituted), "S5/E1"
+    assert substituted_input_violations(ignored), "S6/E2 stale registry entry"
+    SUBSTITUTED_INPUT_EXEMPTIONS = {}
+
+    # Every ratchet must carry an owner, an argued reason and a live expiry —
     # `check_fabricated_facts.py` enforces the same rule from outside.
     import datetime as _dt
 
     for name, record in (
         ("DEGRADING_DEFAULT_RATCHET", DEGRADING_DEFAULT_RATCHET),
         ("FAIL_OPEN_READ_RATCHET", FAIL_OPEN_READ_RATCHET),
+        ("SUBSTITUTED_INPUT_RATCHET", SUBSTITUTED_INPUT_RATCHET),
     ):
         assert record["owner"].strip(), f"{name} owner"
         assert record["reason"].strip(), f"{name} reason"
@@ -334,7 +498,7 @@ def selftest() -> None:
             f"{name} has expired: convert the remainder or re-argue and re-date it"
         )
 
-    print("check_degrading_defaults selftest: both decision tables hold")
+    print("check_degrading_defaults selftest: all three decision tables hold")
 
 
 # One canonical spelling per flag, and nothing else admitted. A checker that
@@ -364,6 +528,25 @@ if __name__ == "__main__":
         for problem in fail_open:
             print(f"ERROR: {problem}", file=sys.stderr)
         raise SystemExit(1)
+    substituted = substituted_input_violations(sources)
+    if len(substituted) > SUBSTITUTED_INPUT_BASELINE:
+        for problem in substituted:
+            print(f"ERROR: {problem}", file=sys.stderr)
+        print(
+            f"\n{len(substituted)} substituted inputs, baseline {SUBSTITUTED_INPUT_BASELINE}: "
+            f"{len(substituted) - SUBSTITUTED_INPUT_BASELINE} new one(s). Take the parameter "
+            "off the port, honour the argument, or register the decision.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if len(substituted) < SUBSTITUTED_INPUT_BASELINE:
+        print(
+            f"{len(substituted)} substituted inputs, below the baseline of "
+            f"{SUBSTITUTED_INPUT_BASELINE}. Lower SUBSTITUTED_INPUT_BASELINE to "
+            f"{len(substituted)} so the ground gained is held.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     problems = degrading_default_violations(sources)
     count = len(problems)
     if count > UNTRIAGED_BASELINE:
@@ -389,5 +572,7 @@ if __name__ == "__main__":
         f"(owner {DEGRADING_DEFAULT_RATCHET['owner']}, expires "
         f"{DEGRADING_DEFAULT_RATCHET['expires']}); fail-open reads held at {held} "
         f"(owner {FAIL_OPEN_READ_RATCHET['owner']}, expires "
-        f"{FAIL_OPEN_READ_RATCHET['expires']})."
+        f"{FAIL_OPEN_READ_RATCHET['expires']}); substituted inputs held at "
+        f"{SUBSTITUTED_INPUT_BASELINE} (owner {SUBSTITUTED_INPUT_RATCHET['owner']}, "
+        f"expires {SUBSTITUTED_INPUT_RATCHET['expires']})."
     )
