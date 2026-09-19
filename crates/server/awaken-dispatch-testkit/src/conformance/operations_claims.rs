@@ -40,26 +40,16 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         ))
         .await
         .expect("enqueue settled operational run");
+    clock.set(0);
     let first = store
-        .claim_run(
-            &settled_run,
-            "operations-a",
-            LEASE_MS,
-            0,
-            &Default::default(),
-        )
+        .claim_run(&settled_run, "operations-a", LEASE_MS, &Default::default())
         .await
         .expect("first operational claim")
         .expect("settled run is runnable");
     clock.advance_past(first.lease.expires_ms).await;
+    clock.set(first.lease.expires_ms.saturating_add(1));
     let recovered = store
-        .claim_run(
-            &settled_run,
-            "operations-b",
-            LEASE_MS,
-            first.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim_run(&settled_run, "operations-b", LEASE_MS, &Default::default())
         .await
         .expect("operational recovery")
         .expect("expired run is recoverable");
@@ -92,26 +82,16 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         ))
         .await
         .expect("enqueue dead-letter operational run");
+    clock.set(2_000);
     let dead_first = store
-        .claim_run(
-            &dead_run,
-            "operations-c",
-            LEASE_MS,
-            2_000,
-            &Default::default(),
-        )
+        .claim_run(&dead_run, "operations-c", LEASE_MS, &Default::default())
         .await
         .expect("dead-letter first claim")
         .expect("dead-letter run is runnable");
     clock.advance_past(dead_first.lease.expires_ms).await;
+    clock.set(dead_first.lease.expires_ms.saturating_add(1));
     let dead_recovered = store
-        .claim_run(
-            &dead_run,
-            "operations-d",
-            LEASE_MS,
-            dead_first.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim_run(&dead_run, "operations-d", LEASE_MS, &Default::default())
         .await
         .expect("dead-letter recovery")
         .expect("dead-letter run is recoverable");
@@ -133,12 +113,12 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         ))
         .await
         .expect("enqueue cancellation operational run");
+    clock.set(5_000);
     store
         .claim_run(
             &cancelled_run,
             "operations-e",
             LEASE_MS,
-            5_000,
             &Default::default(),
         )
         .await
@@ -265,7 +245,11 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
     assert_eq!(empty.next_cursor, page.next_cursor);
 }
 
-async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str) {
+async fn local_claims_skip_remote_only_work(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
     let required_credential = WorkerCredentialRevision {
         id: format!("{ns}-worker-credential"),
         revision: 7,
@@ -296,8 +280,9 @@ async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str)
         .await
         .expect("enqueue local fallback run");
 
+    clock.set(0);
     let local = store
-        .claim("conformance-local", LEASE_MS, 0, &Default::default())
+        .claim("conformance-local", LEASE_MS, &Default::default())
         .await
         .expect("local claim succeeds")
         .expect("local-compatible work is available");
@@ -340,8 +325,9 @@ async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str)
         acp_capability_observations: Default::default(),
         expires_at_ms: u64::MAX,
     };
+    clock.set(0);
     let remote = store
-        .claim_compatible(&worker, LEASE_MS, 0)
+        .claim_compatible(&worker, LEASE_MS)
         .await
         .expect("worker-compatible claim succeeds")
         .expect("the exact worker credential revision is available");
@@ -427,12 +413,12 @@ async fn exact_claim_recovery_and_fencing(
         .enqueue(frozen.clone())
         .await
         .expect("enqueue exact-claim target");
-    if let Some(depth) = store.runnable_depth(0).await.expect("query runnable depth") {
+    if let Some(depth) = store.runnable_depth().await.expect("query runnable depth") {
         assert_eq!(depth, 2, "both freshly enqueued runs are claimable");
     }
 
     let first = store
-        .claim_run(&target, "conformance-a", LEASE_MS, 0, &capabilities)
+        .claim_run(&target, "conformance-a", LEASE_MS, &capabilities)
         .await
         .expect("exact claim succeeds")
         .expect("target is runnable");
@@ -454,7 +440,7 @@ async fn exact_claim_recovery_and_fencing(
     );
 
     let other = store
-        .claim("conformance-pool", LEASE_MS, 0, &Default::default())
+        .claim("conformance-pool", LEASE_MS, &Default::default())
         .await
         .expect("general claim succeeds")
         .expect("exact claim leaves unrelated work available");
@@ -471,13 +457,7 @@ async fn exact_claim_recovery_and_fencing(
         clock.set(first.lease.expires_ms);
         assert!(
             store
-                .claim_run(
-                    &target,
-                    "conformance-b",
-                    LEASE_MS,
-                    first.lease.expires_ms,
-                    &capabilities,
-                )
+                .claim_run(&target, "conformance-b", LEASE_MS, &capabilities,)
                 .await
                 .expect("live-boundary claim")
                 .is_none(),
@@ -485,14 +465,9 @@ async fn exact_claim_recovery_and_fencing(
         );
     }
     clock.advance_past(first.lease.expires_ms).await;
+    clock.set(first.lease.expires_ms.saturating_add(1));
     let recovered = store
-        .claim_run(
-            &target,
-            "conformance-b",
-            LEASE_MS,
-            first.lease.expires_ms.saturating_add(1),
-            &capabilities,
-        )
+        .claim_run(&target, "conformance-b", LEASE_MS, &capabilities)
         .await
         .expect("recovery claim succeeds")
         .expect("expired target is recoverable");
@@ -567,7 +542,6 @@ async fn parent_mediated_commands_are_atomic(
             child_dispatch.clone(),
             "conformance-parent",
             LEASE_MS,
-            10_000,
             &Default::default(),
         )
         .await
@@ -577,7 +551,7 @@ async fn parent_mediated_commands_are_atomic(
     assert_eq!(claimed.request, child_dispatch, "R1/E1");
     assert!(
         store
-            .claim("conformance-pool", LEASE_MS, 10_000, &Default::default(),)
+            .claim("conformance-pool", LEASE_MS, &Default::default(),)
             .await
             .expect("pool claim after atomic admission")
             .is_none(),
@@ -606,7 +580,6 @@ async fn parent_mediated_commands_are_atomic(
             },
             "conformance-parent",
             LEASE_MS,
-            10_001,
             &Default::default(),
         )
         .await
@@ -616,7 +589,7 @@ async fn parent_mediated_commands_are_atomic(
     assert_eq!(resumed.pending[0].message_id, message_id);
     assert!(
         store
-            .claim("conformance-pool", LEASE_MS, 10_001, &Default::default(),)
+            .claim("conformance-pool", LEASE_MS, &Default::default(),)
             .await
             .expect("pool claim after atomic delivery")
             .is_none(),

@@ -84,8 +84,8 @@ mod tests {
     use awaken_agent_contract::thread::commit::staged::ThreadCommit;
     use awaken_ext_memory::MemoryExtractionStatus;
     use awaken_dispatch::{
-        AnyDispatchStore, ApplicationErrorKind, ClaimedCommitRequest, Clock as _,
-        MemoryDispatchStore, RunClaim, WorkerIdentity, WorkerResolver as _,
+        AnyDispatchStore, ApplicationErrorKind, ClaimedCommitRequest, MemoryDispatchStore,
+        RunClaim, WorkerIdentity, WorkerResolver as _,
     };
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
@@ -564,12 +564,7 @@ mod tests {
 
         queue.enqueue(dispatch).await.expect("enqueue D1");
         let claimed = queue
-            .claim(
-                "cold-durable-worker",
-                30_000,
-                awaken_dispatch::SystemClock.now_ms(),
-                &Default::default(),
-            )
+            .claim("cold-durable-worker", 30_000, &Default::default())
             .await
             .expect("claim D1")
             .expect("D1 dispatch available");
@@ -683,13 +678,15 @@ mod tests {
                 && host.session_slots.read(child_thread, |_| ()).is_none(),
             "R1-R5/C6 target starts cold"
         );
-        let queue = Arc::new(MemoryDispatchStore::new());
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let queue = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
         queue
             .enqueue(request)
             .await
             .expect("enqueue child dispatch");
+        clock.set(0);
         let claimed = queue
-            .claim("remote-child-worker", 30_000, 0, &Default::default())
+            .claim("remote-child-worker", 30_000, &Default::default())
             .await
             .expect("claim child dispatch")
             .expect("child dispatch is claimable");

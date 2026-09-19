@@ -238,15 +238,17 @@ async fn an_expired_lease_reclaim_is_reported_as_recovery() {
     // compare the initial recovered=false claim with C3's recovered drive.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
         .enqueue(RunDispatch::new(activation("run-recovered")))
         .await
         .unwrap();
+    clock.set(0);
     let abandoned = store
-        .claim("crashed", 10, 0, &Default::default())
+        .claim("crashed", 10, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -254,7 +256,7 @@ async fn an_expired_lease_reclaim_is_reported_as_recovery() {
 
     let worker = DispatchWorker::new(runtime, store, commit, "replacement");
     worker
-        .tick(harness::clock(11))
+        .tick(harness::at(&clock, 11))
         .await
         .unwrap()
         .expect("recovered drive");
@@ -274,33 +276,36 @@ async fn a_stale_settlement_increments_the_fenced_metric() {
     // mint old/current claims, settle old, and assert the fenced vector.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
         .enqueue(RunDispatch::new(activation("run-fenced")))
         .await
         .unwrap();
+    clock.set(0);
     let stale = store
-        .claim("old", 10, 0, &Default::default())
+        .claim("old", 10, &Default::default())
         .await
         .unwrap()
         .unwrap();
+    clock.set(11);
     let current = store
-        .claim("new", 10, 11, &Default::default())
+        .claim("new", 10, &Default::default())
         .await
         .unwrap()
         .unwrap();
     let worker = DispatchWorker::new(runtime, store, commit, "driver");
 
     worker
-        .drive_claimed(current, harness::clock(11))
+        .drive_claimed(current, harness::at(&clock, 11))
         .await
         .unwrap()
         .expect("current owner completes");
     assert!(
         worker
-            .drive_claimed(stale, harness::clock(11))
+            .drive_claimed(stale, harness::at(&clock, 11))
             .await
             .unwrap()
             .is_none(),

@@ -35,13 +35,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: Dispatch>(
     clock.set(300_000);
     store.enqueue(request).await.expect("SF1 enqueue");
     let initial = store
-        .claim_run(
-            &run_id,
-            "pending-initial",
-            LEASE_MS,
-            300_000,
-            &Default::default(),
-        )
+        .claim_run(&run_id, "pending-initial", LEASE_MS, &Default::default())
         .await
         .expect("SF1 initial claim")
         .expect("SF1 initial Run is claimable");
@@ -63,28 +57,18 @@ async fn settlement_fence_and_pending_input_are_atomic<S: Dispatch>(
         result: ResumeResult::Input("replay after crash".to_string()),
     };
     assert!(store.append(input.clone()).await.expect("SF1 append"));
+    clock.set(300_001);
     let crashed = store
-        .claim_run(
-            &run_id,
-            "pending-crashed",
-            LEASE_MS,
-            300_001,
-            &Default::default(),
-        )
+        .claim_run(&run_id, "pending-crashed", LEASE_MS, &Default::default())
         .await
         .expect("SF1 crash-window claim")
         .expect("SF1 pending input wakes Awaiting Run");
     assert_eq!(crashed.pending, vec![input.clone()], "SF1/E1 exact handoff");
 
     clock.advance_past(crashed.lease.expires_ms).await;
+    clock.set(crashed.lease.expires_ms.saturating_add(1));
     let recovered = store
-        .claim_run(
-            &run_id,
-            "pending-recovered",
-            LEASE_MS,
-            crashed.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim_run(&run_id, "pending-recovered", LEASE_MS, &Default::default())
         .await
         .expect("SF1 recovery claim")
         .expect("SF1 expired claim is recoverable");
@@ -208,14 +192,9 @@ async fn settlement_fence_and_pending_input_are_atomic<S: Dispatch>(
             "SF3/E3 Awaiting publishes no completion"
         );
     }
+    clock.set(recovered.lease.expires_ms.saturating_add(1));
     let next = store
-        .claim_run(
-            &run_id,
-            "pending-next",
-            LEASE_MS,
-            recovered.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim_run(&run_id, "pending-next", LEASE_MS, &Default::default())
         .await
         .expect("SF3 next wake")
         .expect("SF3 retained input wakes the Awaiting row");
@@ -312,15 +291,10 @@ async fn settlement_fence_and_pending_input_are_atomic<S: Dispatch>(
         assert_eq!(completions.len(), 1, "SF4/E5 one completion tombstone");
         assert_eq!(completions[0].run_id, run_id, "SF4/E5 exact completion");
     }
+    clock.set(next.lease.expires_ms.saturating_add(1));
     assert!(
         store
-            .claim_run(
-                &run_id,
-                "pending-after-done",
-                LEASE_MS,
-                next.lease.expires_ms.saturating_add(1),
-                &Default::default(),
-            )
+            .claim_run(&run_id, "pending-after-done", LEASE_MS, &Default::default(),)
             .await
             .expect("SF4 wake after current Done")
             .is_none(),
@@ -351,12 +325,12 @@ async fn settlement_fence_and_pending_input_are_atomic<S: Dispatch>(
         .enqueue(omitted.clone())
         .await
         .expect("PI1 enqueue omit");
+    clock.set(400_000);
     let omitted_claim = store
         .claim_run(
             omitted.run_id(),
             "pending-unbound-omit",
             LEASE_MS,
-            400_000,
             &Default::default(),
         )
         .await
@@ -385,12 +359,12 @@ async fn settlement_fence_and_pending_input_are_atomic<S: Dispatch>(
         .enqueue(named.clone())
         .await
         .expect("PI1 enqueue named");
+    clock.set(400_001);
     let named_claim = store
         .claim_run(
             named.run_id(),
             "pending-unbound-name",
             LEASE_MS,
-            400_001,
             &Default::default(),
         )
         .await
@@ -459,17 +433,17 @@ pub async fn record_dispatch_recovery_history(
     clock.set(0);
     store.enqueue(request).await.expect("R1 enqueue");
     let first = store
-        .claim_run(&run_id, "history-a", LEASE_MS, 0, &Default::default())
+        .claim_run(&run_id, "history-a", LEASE_MS, &Default::default())
         .await
         .expect("R1 claim")
         .expect("R1 claimable");
     let first_claim = RunClaim::from(&first.lease);
     let first_attempt = store
-        .begin_attempt(&first_claim, 0, None)
+        .begin_attempt(&first_claim, None)
         .await
         .expect("R1 begin attempt");
     assert_eq!(
-        store.begin_attempt(&first_claim, 0, None).await.unwrap(),
+        store.begin_attempt(&first_claim, None).await.unwrap(),
         AttemptAdmission::AlreadyApplied,
         "R4 lost begin response retries admission, not execution"
     );
@@ -480,20 +454,16 @@ pub async fn record_dispatch_recovery_history(
     // backend execute this one history without giving PostgreSQL a test-only
     // clock or duplicating the recovery oracle.
     clock.advance_past(first.lease.expires_ms).await;
+    clock.set(recovery_now);
     let recovered = store
-        .claim_run(
-            &run_id,
-            "history-b",
-            LEASE_MS,
-            recovery_now,
-            &Default::default(),
-        )
+        .claim_run(&run_id, "history-b", LEASE_MS, &Default::default())
         .await
         .expect("R2 recover")
         .expect("R2 expired claim recovers");
     let recovered_claim = RunClaim::from(&recovered.lease);
+    clock.set(recovery_now);
     let blocked_successor = store
-        .begin_attempt(&recovered_claim, recovery_now, None)
+        .begin_attempt(&recovered_claim, None)
         .await
         .expect("R2 successor admission");
     // R2b: even an exact current claim may commit logical truth, but its
@@ -535,8 +505,9 @@ pub async fn record_dispatch_recovery_history(
         "R3 precise ACK enables boundary effects"
     );
     guard.release().await.unwrap();
+    clock.set(recovery_now);
     let successor_attempt = store
-        .begin_attempt(&recovered_claim, recovery_now, None)
+        .begin_attempt(&recovered_claim, None)
         .await
         .expect("R3 successor admission");
     assert_eq!(
@@ -544,11 +515,9 @@ pub async fn record_dispatch_recovery_history(
         SettleOutcome::Fenced,
         "R6 a delayed old ACK cannot clear the successor slot"
     );
+    clock.set(recovery_now);
     assert_eq!(
-        store
-            .begin_attempt(&recovered_claim, recovery_now, None)
-            .await
-            .unwrap(),
+        store.begin_attempt(&recovered_claim, None).await.unwrap(),
         AttemptAdmission::AlreadyApplied,
         "R6 the successor slot survives the delayed old ACK"
     );
@@ -633,14 +602,16 @@ async fn occupied_recovery_does_not_starve_other_threads(
                     worker: &WorkerSnapshot,
                     selector: u8,
                     now: u64,
+                    clock: &dyn ConformanceClock,
                 ) -> awaken_dispatch_contract::Claimed {
+                    clock.set(now);
                     match selector {
                         0 => {
                             store
-                                .claim("fair-local", LEASE_MS, now, &Default::default())
+                                .claim("fair-local", LEASE_MS, &Default::default())
                                 .await
                         }
-                        1 => store.claim_compatible(worker, LEASE_MS, now).await,
+                        1 => store.claim_compatible(worker, LEASE_MS).await,
                         _ => {
                             store
                                 .claim_placed(
@@ -648,7 +619,6 @@ async fn occupied_recovery_does_not_starve_other_threads(
                                     vec![worker.clone()],
                                     std::sync::Arc::new(LeastLoadedPolicy),
                                     LEASE_MS,
-                                    now,
                                 )
                                 .await
                         }
@@ -660,20 +630,15 @@ async fn occupied_recovery_does_not_starve_other_threads(
                 let old = dispatch(&ns, "old", "shared");
                 store.enqueue(old.clone()).await.unwrap();
                 let first = store
-                    .claim_run(
-                        old.run_id(),
-                        "predecessor",
-                        LEASE_MS,
-                        0,
-                        &Default::default(),
-                    )
+                    .claim_run(old.run_id(), "predecessor", LEASE_MS, &Default::default())
                     .await
                     .unwrap()
                     .unwrap();
                 let first_claim = RunClaim::from(&first.lease);
                 if occupied {
+                    clock.set(0);
                     assert_eq!(
-                        store.begin_attempt(&first_claim, 0, None).await.unwrap(),
+                        store.begin_attempt(&first_claim, None).await.unwrap(),
                         AttemptAdmission::Applied
                     );
                 }
@@ -685,8 +650,9 @@ async fn occupied_recovery_does_not_starve_other_threads(
                 if occupied {
                     // The real observer failure relinquishes a replacement
                     // mutation claim, preserving the predecessor's slot.
+                    clock.set(now);
                     let replacement = store
-                        .claim_run(old.run_id(), "observer", LEASE_MS, now, &Default::default())
+                        .claim_run(old.run_id(), "observer", LEASE_MS, &Default::default())
                         .await
                         .unwrap()
                         .unwrap();
@@ -699,9 +665,10 @@ async fn occupied_recovery_does_not_starve_other_threads(
                     );
                 }
                 if occupied {
+                    clock.set(now);
                     assert!(
                         store
-                            .claim_for_terminal_recovery(old.run_id(), "maintenance", LEASE_MS, now)
+                            .claim_for_terminal_recovery(old.run_id(), "maintenance", LEASE_MS)
                             .await
                             .unwrap()
                             .is_none(),
@@ -712,7 +679,7 @@ async fn occupied_recovery_does_not_starve_other_threads(
                 let fresh = dispatch(&ns, "independent", "independent");
                 store.enqueue(peer.clone()).await.unwrap();
                 store.enqueue(fresh.clone()).await.unwrap();
-                let selected = pick(store, &worker, selector, now).await;
+                let selected = pick(store, &worker, selector, now, clock).await;
                 let recovered = if occupied {
                     assert_eq!(
                         selected.request.run_id(),
@@ -720,15 +687,16 @@ async fn occupied_recovery_does_not_starve_other_threads(
                         "R2 independent progress"
                     );
                     settle_done(store, &selected).await;
-                    let recovered = pick(store, &worker, selector, now).await;
+                    let recovered = pick(store, &worker, selector, now, clock).await;
                     assert_eq!(
                         recovered.request.run_id(),
                         old.run_id(),
                         "R3 recovery still visible"
                     );
+                    clock.set(now);
                     assert_eq!(
                         store
-                            .begin_attempt(&RunClaim::from(&recovered.lease), now, None)
+                            .begin_attempt(&RunClaim::from(&recovered.lease), None)
                             .await
                             .unwrap(),
                         AttemptAdmission::Blocked,
@@ -748,15 +716,10 @@ async fn occupied_recovery_does_not_starve_other_threads(
                     );
                     selected
                 };
+                clock.set(now);
                 assert!(
                     store
-                        .claim_run(
-                            peer.run_id(),
-                            "same-thread",
-                            LEASE_MS,
-                            now,
-                            &Default::default()
-                        )
+                        .claim_run(peer.run_id(), "same-thread", LEASE_MS, &Default::default())
                         .await
                         .unwrap()
                         .is_none(),
@@ -768,8 +731,9 @@ async fn occupied_recovery_does_not_starve_other_threads(
                 } else {
                     vec![peer.run_id(), fresh.run_id()]
                 } {
+                    clock.set(now);
                     let next = store
-                        .claim_run(expected, "finish", LEASE_MS, now, &Default::default())
+                        .claim_run(expected, "finish", LEASE_MS, &Default::default())
                         .await
                         .unwrap()
                         .unwrap();

@@ -14,7 +14,7 @@
 //! in-memory store — the client, the socket, and the store are all real.)
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -111,7 +111,6 @@ fn provider_candidate(
 /// can assert server-side state directly.
 struct TransportState {
     store: Arc<MemoryDispatchStore>,
-    now_ms: Arc<AtomicU64>,
     stream_calls: Arc<AtomicUsize>,
     credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
@@ -119,11 +118,13 @@ struct TransportState {
 async fn spawn_transport_server() -> (
     String,
     Arc<MemoryDispatchStore>,
-    Arc<AtomicU64>,
+    Arc<awaken_dispatch::ManualClock>,
     Arc<AtomicUsize>,
 ) {
-    let store = Arc::new(MemoryDispatchStore::new());
-    let now_ms = Arc::new(AtomicU64::new(0));
+    // The server's dispatch authority now answers from its own clock, so the
+    // test's server clock is the store's clock.
+    let now_ms = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(now_ms.clone()));
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let holder = awaken_runtime_contract::PlaintextHolder::new(
         awaken_runtime_contract::PlaintextBoundary::Worker,
@@ -131,7 +132,6 @@ async fn spawn_transport_server() -> (
     );
     let state = Arc::new(TransportState {
         store: store.clone(),
-        now_ms: now_ms.clone(),
         stream_calls: stream_calls.clone(),
         credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities {
             holders: [holder].into_iter().collect(),
@@ -218,12 +218,7 @@ async fn claim(
     assert_server_authority_fields_absent(&req);
     let claimed = state
         .store
-        .claim(
-            worker_id(&headers),
-            1_000,
-            state.now_ms.load(Ordering::SeqCst),
-            &state.credential_capabilities,
-        )
+        .claim(worker_id(&headers), 1_000, &state.credential_capabilities)
         .await
         .expect("claim");
     Json(json!({ "claimed": claimed }))
@@ -241,7 +236,6 @@ async fn claim_run(
             &run_id(&req),
             worker_id(&headers),
             1_000,
-            state.now_ms.load(Ordering::SeqCst),
             &state.credential_capabilities,
         )
         .await
@@ -260,11 +254,7 @@ async fn renew(
         owner: worker_id(&headers).to_string(),
         epoch: req["lease_epoch"].as_u64().expect("lease_epoch"),
     };
-    let outcome = state
-        .store
-        .renew_lease(&claim, 1_000, state.now_ms.load(Ordering::SeqCst))
-        .await
-        .expect("renew");
+    let outcome = state.store.renew_lease(&claim, 1_000).await.expect("renew");
     Json(json!({ "outcome": outcome }))
 }
 
@@ -280,7 +270,7 @@ async fn begin_attempt(
     let claim: RunClaim = serde_json::from_value(req["claim"].clone()).expect("claim");
     let admission = state
         .store
-        .begin_attempt(&claim, state.now_ms.load(Ordering::SeqCst), None)
+        .begin_attempt(&claim, None)
         .await
         .expect("begin attempt");
     Json(json!({ "admission": admission }))
@@ -298,7 +288,7 @@ async fn handoff_attempt(
     let claim: RunClaim = serde_json::from_value(req["claim"].clone()).expect("claim");
     let admission = state
         .store
-        .handoff_attempt(&claim, state.now_ms.load(Ordering::SeqCst), None)
+        .handoff_attempt(&claim, None)
         .await
         .expect("handoff attempt");
     Json(json!({ "admission": admission }))
@@ -518,11 +508,11 @@ async fn worker_transport_cannot_silently_erase_an_execution_binding() {
             .unwrap();
     let queue = HttpDispatchQueue::new(format!("http://{address}"), identity);
     assert!(matches!(
-        queue.begin_attempt(&claim, 0, Some(&binding)).await,
+        queue.begin_attempt(&claim, Some(&binding)).await,
         Err(DispatchError::Rejected(_))
     ));
     assert!(matches!(
-        queue.handoff_attempt(&claim, 0, Some(&binding)).await,
+        queue.handoff_attempt(&claim, Some(&binding)).await,
         Err(DispatchError::Rejected(_))
     ));
     assert!(queue.load_physical_attempt(&claim.run_id).await.is_err());
@@ -826,9 +816,9 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
     // Claim it over the wire → a `Claimed` carrying the self-contained request and a
     // fresh lease (epoch 1) — the whole payload survived the JSON round-trip.
-    clock.store(0, Ordering::SeqCst);
+    clock.set(0);
     let claimed = queue
-        .claim("worker-A", 1_000, 0, &Default::default())
+        .claim("worker-A", 1_000, &Default::default())
         .await
         .expect("claim ok")
         .expect("a runnable dispatch");
@@ -854,24 +844,18 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     );
     let claim = RunClaim::from(&claimed.lease);
     assert_eq!(
-        queue
-            .begin_attempt(&claim, 0, None)
-            .await
-            .expect("D4 begin"),
+        queue.begin_attempt(&claim, None).await.expect("D4 begin"),
         AttemptAdmission::Applied,
         "D4/E5"
     );
     assert_eq!(
-        queue
-            .begin_attempt(&claim, 0, None)
-            .await
-            .expect("D4 retry"),
+        queue.begin_attempt(&claim, None).await.expect("D4 retry"),
         AttemptAdmission::AlreadyApplied,
         "D4/E5 response-loss retry"
     );
     assert_eq!(
         queue
-            .handoff_attempt(&claim, 0, None)
+            .handoff_attempt(&claim, None)
             .await
             .expect("D4 handoff transport retry"),
         AttemptAdmission::AlreadyApplied,
@@ -879,10 +863,10 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     );
 
     // A second claim finds nothing runnable (the only run is now leased): `None`.
-    clock.store(10, Ordering::SeqCst);
+    clock.set(10);
     assert!(
         queue
-            .claim("worker-A", 1_000, 10, &Default::default())
+            .claim("worker-A", 1_000, &Default::default())
             .await
             .expect("claim")
             .is_none()
@@ -946,36 +930,33 @@ async fn continuation_handoff_preserves_replacement_provenance_over_http() {
         .enqueue(RunDispatch::new(activation("handoff-provenance")))
         .await
         .unwrap();
-    clock.store(0, Ordering::SeqCst);
+    clock.set(0);
     let a = queue_a
-        .claim("worker-A", 1_000, 0, &Default::default())
+        .claim("worker-A", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("A claims");
     let claim_a = RunClaim::from(&a.lease);
     assert_eq!(
-        queue_a.begin_attempt(&claim_a, 0, None).await.unwrap(),
+        queue_a.begin_attempt(&claim_a, None).await.unwrap(),
         AttemptAdmission::Applied,
         "H1 A installs the fresh slot"
     );
 
-    clock.store(2_000, Ordering::SeqCst);
+    clock.set(2_000);
     let b = queue_b
-        .claim("worker-B", 1_000, 2_000, &Default::default())
+        .claim("worker-B", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("B recovers");
     let claim_b = RunClaim::from(&b.lease);
     assert_eq!(
-        queue_b.begin_attempt(&claim_b, 2_000, None).await.unwrap(),
+        queue_b.begin_attempt(&claim_b, None).await.unwrap(),
         AttemptAdmission::Blocked,
         "H1/E1 ordinary recovery cannot inherit A's slot"
     );
     assert_eq!(
-        queue_b
-            .handoff_attempt(&claim_b, 2_000, None)
-            .await
-            .unwrap(),
+        queue_b.handoff_attempt(&claim_b, None).await.unwrap(),
         AttemptAdmission::Replaced,
         "H2/E2 replacement provenance survives JSON"
     );
@@ -1013,18 +994,18 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
         .unwrap();
 
     // Worker A claims at t=0 with a 1s lease (epoch 1).
-    clock.store(0, Ordering::SeqCst);
+    clock.set(0);
     let a = queue_a
-        .claim("worker-A", 1_000, 0, &Default::default())
+        .claim("worker-A", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("A claims");
     assert_eq!(a.lease.epoch, 1);
     // While A still holds it, a renew succeeds — the TRUE path, as a control.
-    clock.store(100, Ordering::SeqCst);
+    clock.set(100);
     assert_eq!(
         queue_a
-            .renew_lease(&RunClaim::from(&a.lease), 1_000, 100)
+            .renew_lease(&RunClaim::from(&a.lease), 1_000)
             .await
             .unwrap(),
         awaken_dispatch::LeaseRenewalOutcome::Current,
@@ -1032,9 +1013,9 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
     );
 
     // The lease lapses; worker B recovers the run at t=2s (epoch 2 — B now owns it).
-    clock.store(2_000, Ordering::SeqCst);
+    clock.set(2_000);
     let b = queue_b
-        .claim("worker-B", 1_000, 2_000, &Default::default())
+        .claim("worker-B", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("B recovers the lapsed lease");
@@ -1047,10 +1028,10 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
 
     // A's renew now returns Lost over the wire — the lease was stolen; the stale
     // holder must stop (the whole point of the multi-node liveness knob).
-    clock.store(2_100, Ordering::SeqCst);
+    clock.set(2_100);
     assert_eq!(
         queue_a
-            .renew_lease(&RunClaim::from(&a.lease), 1_000, 2_100)
+            .renew_lease(&RunClaim::from(&a.lease), 1_000)
             .await
             .unwrap(),
         awaken_dispatch::LeaseRenewalOutcome::Lost,

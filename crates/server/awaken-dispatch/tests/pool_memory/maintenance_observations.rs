@@ -19,7 +19,6 @@ impl WorkerResolver<FlakyDispatchStore> for ObservedResolver {
     }
     async fn reconcile_committed_terminals(
         &self,
-        _: Arc<dyn Clock>,
         _: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         Ok(self

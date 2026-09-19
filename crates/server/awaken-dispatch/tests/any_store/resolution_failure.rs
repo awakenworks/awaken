@@ -17,13 +17,23 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress() {
     for sqlite in [false, true] {
         for fault in ["reject", "lost-reply", "takeover"] {
+            let clock = Arc::new(ManualClock::new(100));
             let store = Arc::new(if sqlite {
-                any_in_memory()
+                any_in_memory_with_clock_handle(clock.clone())
             } else {
-                AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()))
+                AnyDispatchStore::from_dispatch(Arc::new(
+                    MemoryDispatchStore::new().with_clock(clock.clone()),
+                ))
             });
             let committed = Arc::new(MemoryCommitCoordinator::new());
-            exercise_failure(store, committed.clone(), || committed.commit_count(), fault).await;
+            exercise_failure(
+                store,
+                committed.clone(),
+                || committed.commit_count(),
+                fault,
+                clock,
+            )
+            .await;
             // R19 the SAME fault table also commits through a file-backed
             // ThreadCommit authority; reopening must retain its one terminal
             // fact after a lost reply, not just a process-local projection.
@@ -33,12 +43,22 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
                 awaken_store_sqlite::SqliteCommitCoordinator::open(database.to_str().unwrap())
                     .unwrap(),
             );
+            let clock = Arc::new(ManualClock::new(100));
             let store = Arc::new(if sqlite {
-                any_in_memory()
+                any_in_memory_with_clock_handle(clock.clone())
             } else {
-                AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()))
+                AnyDispatchStore::from_dispatch(Arc::new(
+                    MemoryDispatchStore::new().with_clock(clock.clone()),
+                ))
             });
-            exercise_failure(store, committed.clone(), || committed.commit_count(), fault).await;
+            exercise_failure(
+                store,
+                committed.clone(),
+                || committed.commit_count(),
+                fault,
+                clock,
+            )
+            .await;
             drop(committed);
             let reopened =
                 awaken_store_sqlite::SqliteCommitCoordinator::open(database.to_str().unwrap())
@@ -57,6 +77,7 @@ async fn exercise_failure<C>(
     committed: Arc<C>,
     count: impl Fn() -> u64,
     fault: &str,
+    clock: Arc<ManualClock>,
 ) where
     C: awaken_agent_contract::thread::commit::coordinator::Coordinator
         + CommittedThreadView
@@ -72,7 +93,7 @@ async fn exercise_failure<C>(
     }
     let (runtime, model_calls) = harness::counting_text_runtime();
     let worker = DispatchWorker::new(runtime, store.clone(), boundary.clone(), "owner-a");
-    let clock = Arc::new(ManualClock::new(100));
+    clock.set(100);
     let first = activation_on("conflict", "one-thread");
     let first_id = first.run_id.clone();
     store.enqueue(RunDispatch::new(first)).await.unwrap();
@@ -80,23 +101,26 @@ async fn exercise_failure<C>(
         .enqueue(RunDispatch::new(activation_on("follower", "one-thread")))
         .await
         .unwrap();
+    clock.set(100);
     let claimed = store
-        .claim("owner-a", 1_000, 100, &Default::default())
+        .claim("owner-a", 1_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
+    clock.set(100);
     assert!(
         store
-            .claim("peer", 1_000, 100, &Default::default())
+            .claim("peer", 1_000, &Default::default())
             .await
             .unwrap()
             .is_none()
     );
     let successor = if fault == "takeover" {
         clock.advance(1_001);
+        clock.set(1_101);
         Some(
             store
-                .claim("owner-b", 1_000, 1_101, &Default::default())
+                .claim("owner-b", 1_000, &Default::default())
                 .await
                 .unwrap()
                 .unwrap(),
@@ -109,7 +133,6 @@ async fn exercise_failure<C>(
             &claimed,
             "dispatch_resolution_failed",
             "immutable Resource snapshot conflict",
-            clock.clone(),
         )
         .await;
     if fault == "lost-reply" {
@@ -131,8 +154,7 @@ async fn exercise_failure<C>(
                 .fail_claimed_before_execution(
                     retry,
                     "dispatch_resolution_failed",
-                    "immutable Resource snapshot conflict",
-                    clock.clone()
+                    "immutable Resource snapshot conflict"
                 )
                 .await
                 .unwrap()
@@ -147,8 +169,9 @@ async fn exercise_failure<C>(
         ))
     ));
     assert_eq!(model_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    clock.set(1_101);
     let follower = store
-        .claim("peer", 1_000, 1_101, &Default::default())
+        .claim("peer", 1_000, &Default::default())
         .await
         .unwrap()
         .unwrap();

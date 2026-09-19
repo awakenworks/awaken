@@ -4,7 +4,6 @@
 
 use super::{DispatchWorker, PendingInputAdmission, pending_input_admission};
 use crate::Error;
-use crate::clock::Clock;
 use crate::dispatch::{
     Claimed, Dispatch, DispatchOutcome, DispatchSummary, RunClaim, SettleOutcome,
 };
@@ -14,7 +13,6 @@ use awaken_runtime_contract::terminal::{
     CommittedTerminalProjection, CommittedTerminalRun, committed_terminal_projection,
     deliver_committed_terminal,
 };
-use std::sync::Arc;
 use tracing::Instrument;
 
 pub(super) enum CommittedTerminalSettlement {
@@ -60,19 +58,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         claimed: &Claimed,
         terminal: CommittedTerminalRun,
         consumed: &[String],
-        clock: &Arc<dyn Clock>,
     ) -> Result<CommittedTerminalSettlement, Error> {
         self.deliver_terminal_observers(&terminal).await?;
         let run_id = terminal.run_id;
         let state = RunState::Ended(terminal.cause);
         let settled = self
-            .settle(
-                claimed,
-                Some(&state),
-                DispatchOutcome::Done,
-                consumed,
-                clock,
-            )
+            .settle(claimed, Some(&state), DispatchOutcome::Done, consumed)
             .await?;
         Ok(if settled.applied() {
             CommittedTerminalSettlement::Applied(run_id, state)
@@ -91,7 +82,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         claimed: &Claimed,
         code: impl Into<String>,
         message: impl Into<String>,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         use awaken_agent_contract::agent::run::{EndCause, Failure};
 
@@ -100,7 +90,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             message: message.into(),
         });
         let dispatch = Self::claimed_dispatch_span(claimed);
-        self.prepare_and_end_claimed_before_execution(claimed, cause, clock)
+        self.prepare_and_end_claimed_before_execution(claimed, cause)
             .instrument(dispatch)
             .await
     }
@@ -113,13 +103,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn terminalize_retry_exhausted(
         &self,
         claimed: &Claimed,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let dispatch = Self::claimed_dispatch_span(claimed);
         self.prepare_and_end_claimed_before_execution(
             claimed,
             awaken_agent_contract::agent::run::EndCause::Indeterminate,
-            clock,
         )
         .instrument(dispatch)
         .await
@@ -133,34 +121,27 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: &Claimed,
         cause: awaken_agent_contract::agent::run::EndCause,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         self.install_claimed_recovery_projection(claimed, claimed.request.thread_id())
             .await?;
-        self.end_claimed_before_execution(claimed, cause, clock)
-            .await
+        self.end_claimed_before_execution(claimed, cause).await
     }
 
     /// Claim and terminalize at most one exhausted dispatch for the per-Session
     /// service. Process pools claim centrally and call
     /// [`terminalize_retry_exhausted`](Self::terminalize_retry_exhausted) on the
     /// resolved boundary Worker instead.
-    pub async fn resolve_one_retry_exhausted(
-        &self,
-        max_attempts: u64,
-        clock: Arc<dyn Clock>,
-    ) -> Result<bool, Error> {
-        let now_ms = clock.now_ms();
+    pub async fn resolve_one_retry_exhausted(&self, max_attempts: u64) -> Result<bool, Error> {
         let Some(claimed) = self
             .store
-            .claim_retry_exhausted(&self.owner, self.lease_ms, now_ms, max_attempts)
+            .claim_retry_exhausted(&self.owner, self.lease_ms, max_attempts)
             .await?
         else {
             return Ok(false);
         };
         let claim = RunClaim::from(&claimed.lease);
-        let _renewal = self.renew_claim_while_driving(&claim, clock.clone());
-        let _ = self.terminalize_retry_exhausted(&claimed, clock).await?;
+        let _renewal = self.renew_claim_while_driving(&claim);
+        let _ = self.terminalize_retry_exhausted(&claimed).await?;
         Ok(true)
     }
 
@@ -172,7 +153,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: &Claimed,
         cause: awaken_agent_contract::agent::run::EndCause,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
 
@@ -189,7 +169,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             claimed.request.execution_scope.as_ref(),
             &None,
             &[],
-            clock.clone(),
             None,
         );
         let coordinator = context.commit.ok_or_else(|| {
@@ -213,7 +192,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     Error::Execution(awaken_runtime_contract::execution::Error::Execution(
                         error.to_string(),
                     )),
-                    &clock,
                 )
                 .await;
         }
@@ -226,7 +204,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     cause,
                 },
                 &consumed,
-                &clock,
             )
             .await?
             .into_processed())
@@ -239,7 +216,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: &Claimed,
         all_pending: &mut Vec<String>,
-        clock: &Arc<dyn Clock>,
     ) -> Result<Option<CommittedTerminalSettlement>, Error> {
         let Some(terminal) = self.committed_terminal_for_claim(claimed)? else {
             return Ok(None);
@@ -281,7 +257,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .map(|input| input.message_id);
         all_pending.extend(consumed_unbound);
         Ok(Some(
-            self.settle_projected_terminal(claimed, terminal, all_pending, clock)
+            self.settle_projected_terminal(claimed, terminal, all_pending)
                 .await?,
         ))
     }
@@ -294,7 +270,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         claimed: &Claimed,
         consumed: &[String],
         err: impl Into<Error>,
-        clock: &Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let err = err.into();
         self.refresh_local_recovery_projection(
@@ -307,7 +282,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // the winning attempt may have crashed after commit and observers
             // suppress duplicate effects by `(observer_id, run_id)`.
             return Ok(self
-                .settle_projected_terminal(claimed, terminal, consumed, clock)
+                .settle_projected_terminal(claimed, terminal, consumed)
                 .await?
                 .into_processed());
         }
@@ -320,7 +295,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // manufacture an Error boundary for the parent Session.
         let started = std::time::Instant::now();
         let claim = RunClaim::from(&claimed.lease);
-        if !self.store.claim_is_current(&claim, clock.now_ms()).await? {
+        if !self.store.claim_is_current(&claim).await? {
             self.record_settlement_outcome(SettleOutcome::Fenced, "done", started.elapsed());
             if claimed.request.session_activity_epoch.is_some() {
                 return Ok(None);
@@ -338,18 +313,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn reconcile_committed_terminal(
         &self,
         run_id: &RunId,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let Some(row) = self.store.dispatch_summary(run_id).await? else {
             return Ok(None);
         };
-        self.reconcile_terminal_row(row, clock).await
+        self.reconcile_terminal_row(row).await
     }
 
     async fn reconcile_terminal_row(
         &self,
         row: DispatchSummary,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let run_id = &row.run_id;
         // A local active-active worker's process projection may predate the peer
@@ -364,24 +337,23 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
         let Some(claimed) = self
             .store
-            .claim_for_terminal_recovery(run_id, &self.owner, self.lease_ms, clock.now_ms())
+            .claim_for_terminal_recovery(run_id, &self.owner, self.lease_ms)
             .await?
         else {
             return Ok(None);
         };
-        self.settle_claimed_terminal(claimed, clock).await
+        self.settle_claimed_terminal(claimed).await
     }
 
     /// Inspect a bounded page through the same scan owner used by the Host.
     /// The budget counts inspected IDs, not successful terminal settlements.
     pub async fn reconcile_committed_terminals(
         &self,
-        clock: Arc<dyn Clock>,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         self.terminal_scan
             .reconcile(self.store.as_ref(), limit, |row| {
-                self.reconcile_terminal_row(row, clock.clone())
+                self.reconcile_terminal_row(row)
             })
             .await
     }
@@ -392,10 +364,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn settle_claimed_terminal(
         &self,
         claimed: Claimed,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let dispatch = Self::claimed_dispatch_span(&claimed);
-        self.settle_claimed_terminal_inner(claimed, clock)
+        self.settle_claimed_terminal_inner(claimed)
             .instrument(dispatch)
             .await
     }
@@ -403,7 +374,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     async fn settle_claimed_terminal_inner(
         &self,
         claimed: Claimed,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         // Decision table invariant: every terminal-recovery caller must check
         // the authoritative snapshot bound to this exact claim, never a stale
@@ -413,12 +383,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .await?;
         let Some(terminal) = self.committed_terminal_for_claim(&claimed)? else {
             let _ = self
-                .settle(&claimed, None, DispatchOutcome::Awaiting, &[], &clock)
+                .settle(&claimed, None, DispatchOutcome::Awaiting, &[])
                 .await?;
             return Ok(None);
         };
         Ok(self
-            .settle_projected_terminal(&claimed, terminal, &[], &clock)
+            .settle_projected_terminal(&claimed, terminal, &[])
             .await?
             .into_processed())
     }

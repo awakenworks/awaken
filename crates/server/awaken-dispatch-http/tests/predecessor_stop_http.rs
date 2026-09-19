@@ -306,7 +306,7 @@ impl Fixture {
         old_snapshot.expires_at_ms = u64::MAX;
         let old = RunClaim::from(
             &store
-                .claim_run_compatible(&run_id, &old_snapshot, 60_000, 100)
+                .claim_run_compatible(&run_id, &old_snapshot, 60_000)
                 .await
                 .unwrap()
                 .unwrap()
@@ -316,13 +316,13 @@ impl Fixture {
             AttemptExecutionBinding::new(old_worker, "cluster", "frozen-process").unwrap();
         assert_eq!(
             store
-                .begin_attempt(&old, 100, bound.then_some(&binding))
+                .begin_attempt(&old, bound.then_some(&binding))
                 .await
                 .unwrap(),
             AttemptAdmission::Applied
         );
         assert_eq!(
-            store.renew_lease(&old, 0, 100).await.unwrap(),
+            store.renew_lease(&old, 0).await.unwrap(),
             awaken_dispatch::LeaseRenewalOutcome::Current
         );
         AuthoritativeWallClock.advance_past(0).await;
@@ -335,7 +335,7 @@ impl Fixture {
         next_snapshot.expires_at_ms = u64::MAX;
         let next = RunClaim::from(
             &store
-                .claim_run_compatible(&run_id, &next_snapshot, 60_000, 200)
+                .claim_run_compatible(&run_id, &next_snapshot, 60_000)
                 .await
                 .unwrap()
                 .unwrap()
@@ -440,10 +440,7 @@ impl Fixture {
             .unwrap();
         assert_eq!(slot.claim, self.old);
         assert_eq!(
-            self.store
-                .begin_attempt(&self.next, 200, None)
-                .await
-                .unwrap(),
+            self.store.begin_attempt(&self.next, None).await.unwrap(),
             AttemptAdmission::Blocked
         );
     }
@@ -506,7 +503,7 @@ async fn blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_re
             tokio::time::timeout(std::time::Duration::from_secs(1), async {
                 assert!(f.store.finish_attempt(&f.old).await.unwrap().applied());
                 assert_eq!(
-                    f.store.begin_attempt(&f.next, 200, None).await.unwrap(),
+                    f.store.begin_attempt(&f.next, None).await.unwrap(),
                     AttemptAdmission::Applied
                 );
             })
@@ -583,10 +580,13 @@ async fn stop_admission_rejects_live_replaced_historical_and_noncurrent_subjects
                     .unwrap()
                     .unwrap()
                     .snapshot;
-                snapshot.expires_at_ms = 10_000;
+                // Placement liveness is read against the store's own clock, so
+                // this snapshot stays live on every backend clock, exactly as the
+                // fixture's two other snapshots already do.
+                snapshot.expires_at_ms = u64::MAX;
                 successor = RunClaim::from(
                     &f.store
-                        .claim_compatible(&snapshot, 1_000, 200)
+                        .claim_compatible(&snapshot, 1_000)
                         .await
                         .unwrap()
                         .unwrap()
@@ -836,10 +836,10 @@ async fn complete_stop_uses_exact_retirement_and_requires_fresh_successor_admiss
             f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
             None
         );
-        assert!(!f.store.claim_is_current(&f.old, 200).await.unwrap());
+        assert!(!f.store.claim_is_current(&f.old).await.unwrap());
         assert_eq!(
             f.store
-                .begin_attempt(&f.old, 200, Some(&f.binding))
+                .begin_attempt(&f.old, Some(&f.binding))
                 .await
                 .unwrap(),
             AttemptAdmission::Fenced
@@ -997,7 +997,7 @@ async fn concurrent_complete_receipts_cannot_clear_a_successor_slot() {
                 None
             );
             assert_eq!(
-                f.store.begin_attempt(&f.next, 200, None).await.unwrap(),
+                f.store.begin_attempt(&f.next, None).await.unwrap(),
                 AttemptAdmission::Applied
             );
             probe.release.add_permits(1);

@@ -1,8 +1,11 @@
 //! The clock at the edge of the durable host.
 //!
 //! The worker stays clock-free: an edge passes one clock source into each drive,
-//! so queue claims, lease renewal, pre-effect ownership checks, and settlement
-//! fencing share a timeline. Long-running services and pools own that source;
+//! so everything the attempt itself times — credential-binding expiry and the
+//! due time of a committed ScheduledAction — shares one timeline. Queue claims,
+//! lease renewal, ownership checks and settlement fencing are NOT among them:
+//! the store that owns the row judges those against its own clock, so no caller
+//! can disagree with it. Long-running services and pools own the drive source;
 //! direct tests pass [`ManualClock`] while production uses [`SystemClock`].
 
 pub use awaken_agent_contract::clock::{Clock, ManualClock, SystemClock};
@@ -41,6 +44,16 @@ pub(crate) fn db_millis(value: u64) -> i64 {
 pub(crate) fn millis_from_db(value: i64) -> Result<u64, &'static str> {
     u64::try_from(value).map_err(|_| "persisted millisecond value is negative")
 }
+
+/// The judging half of the deadline rule, owned by the contract.
+///
+/// [`deadline_millis`] mints a deadline here because clamping it into the SQL
+/// domain is a storage concern; deciding whether it has passed is not, so that
+/// half lives with the transition rules every backend already shares. Before it
+/// was named, the same comparison was spelled four times in Rust --- twice
+/// normalizing `now` and twice not --- plus once per SQL query.
+#[cfg(any(feature = "durable", test, kani))]
+pub(crate) use awaken_dispatch_contract::deadline_has_passed;
 
 #[must_use]
 #[cfg(any(feature = "durable", test, kani))]

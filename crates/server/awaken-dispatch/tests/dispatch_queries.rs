@@ -12,7 +12,10 @@ fn id(value: &str) -> RunId {
     RunId(value.into())
 }
 
-async fn assert_bounded_query_conformance(store: &dyn DispatchQueue) {
+async fn assert_bounded_query_conformance(
+    store: &dyn DispatchQueue,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
     // Cause/effect decision table. C1 page budget is zero/one/multiple; C2 the
     // cursor exists/is deleted/is absent; C3 peers are inserted before/after it;
     // C4 a row changes lifecycle; C5 the exact row exists/is absent.
@@ -64,8 +67,9 @@ async fn assert_bounded_query_conformance(store: &dyn DispatchQueue) {
             "Q5 exact canonical projection"
         );
     }
+    clock.set(0);
     let claimed = store
-        .claim("query-owner", 60_000, 0, &Default::default())
+        .claim("query-owner", 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -141,9 +145,13 @@ async fn assert_bounded_query_conformance(store: &dyn DispatchQueue) {
 async fn memory_and_any_bounded_dispatch_queries_conform() {
     // Backend matrix Q1-Q6 above: Any must forward the same bounded port rather
     // than silently using a full-list fallback; Memory owns one ordered row map.
-    assert_bounded_query_conformance(&AnyDispatchStore::from_dispatch(std::sync::Arc::new(
-        MemoryDispatchStore::new(),
-    )))
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    assert_bounded_query_conformance(
+        &AnyDispatchStore::from_dispatch(std::sync::Arc::new(
+            MemoryDispatchStore::new().with_clock(clock.clock()),
+        )),
+        &clock,
+    )
     .await;
 }
 
@@ -151,7 +159,14 @@ async fn memory_and_any_bounded_dispatch_queries_conform() {
 async fn sqlite_bounded_dispatch_queries_conform() {
     // Backend matrix Q1-Q6 above: SQLite uses its existing primary key and exact
     // projection decoder; the budget applies before payload deserialization.
-    assert_bounded_query_conformance(&SqliteDispatchStore::open_in_memory().unwrap()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    assert_bounded_query_conformance(
+        &SqliteDispatchStore::open_in_memory()
+            .unwrap()
+            .with_clock(clock.clock()),
+        &clock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -161,7 +176,11 @@ async fn postgres_bounded_dispatch_queries_conform() {
     let Some(pool) = harness::schema_pool("t_dispatch_bounded_queries").await else {
         return;
     };
-    assert_bounded_query_conformance(&PostgresDispatchStore::with_pool(pool).await.unwrap()).await;
+    assert_bounded_query_conformance(
+        &PostgresDispatchStore::with_pool(pool).await.unwrap(),
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
 }
 
 async fn assert_bad_row_isolation(store: &dyn DispatchQueue) {

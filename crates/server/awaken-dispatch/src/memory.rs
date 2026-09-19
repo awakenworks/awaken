@@ -387,7 +387,7 @@ fn select_in_physical_band(
         if let Some(row) = state.rows.get(run)
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Leased
-            && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms)
+            && crate::clock::deadline_has_passed(row.lease.as_ref().map(|l| l.expires_ms), now_ms)
             && resolution_retry_is_due(row, now_ms)
             && compatible(row)
         {
@@ -453,10 +453,10 @@ fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
         return Some(false);
     }
     if row.state == DispatchState::Leased
-        && row
-            .lease
-            .as_ref()
-            .is_some_and(|lease| lease.expires_ms < now_ms)
+        && crate::clock::deadline_has_passed(
+            row.lease.as_ref().map(|lease| lease.expires_ms),
+            now_ms,
+        )
     {
         return Some(true);
     }
@@ -550,10 +550,10 @@ fn claim_exact_with_mode(
                 return Ok(None);
             };
             let expired_running = row.state == DispatchState::Leased
-                && row
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.expires_ms < now_ms);
+                && crate::clock::deadline_has_passed(
+                    row.lease.as_ref().map(|lease| lease.expires_ms),
+                    now_ms,
+                );
             let thread_busy = thread_has_claim_blocking_peer(state, requested_run, false);
             let quiescent_unleased =
                 matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
@@ -932,8 +932,8 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         identity: &crate::WorkerIdentity,
         run_id: &RunId,
-        now_ms: u64,
     ) -> Result<Option<RunClaim>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let owner = identity.lease_owner();
         let state = lock(&self.state)?;
         Ok(state.rows.get(run_id).and_then(|row| {
@@ -1178,9 +1178,9 @@ impl DispatchQueue for MemoryDispatchStore {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         claim_new_local(&mut state, request, owner, lease_ms, now_ms, capabilities)
@@ -1191,8 +1191,8 @@ impl DispatchQueue for MemoryDispatchStore {
         request: RunDispatch,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
@@ -1219,9 +1219,9 @@ impl DispatchQueue for MemoryDispatchStore {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         deliver_and_claim_local(&mut state, input, owner, lease_ms, now_ms, capabilities)
@@ -1232,8 +1232,8 @@ impl DispatchQueue for MemoryDispatchStore {
         input: PendingInput,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let run_id = input.run_id.clone();
@@ -1253,9 +1253,9 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         claim_next_local(&mut state, owner, lease_ms, now_ms, capabilities)
@@ -1265,8 +1265,8 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let capabilities = installed_worker_credential_capabilities(worker)?;
@@ -1319,8 +1319,8 @@ impl DispatchQueue for MemoryDispatchStore {
         workers: Vec<WorkerSnapshot>,
         policy: Arc<dyn PlacementPolicy>,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let mut policy_error = None;
@@ -1389,9 +1389,9 @@ impl DispatchQueue for MemoryDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         claim_exact(
@@ -1410,8 +1410,8 @@ impl DispatchQueue for MemoryDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         claim_exact_with_mode(
@@ -1430,9 +1430,9 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let now_ms = crate::clock::normalize_millis(now_ms);
@@ -1467,8 +1467,8 @@ impl DispatchQueue for MemoryDispatchStore {
         requested_run: &RunId,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         claim_exact(
@@ -1543,7 +1543,20 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(SettleOutcome::Fenced)
     }
 
-    async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
+    /// The store's own clock decides liveness, exactly as it does for every
+    /// other deadline this backend judges. This used to ride the trait default
+    /// on a caller-supplied `now_ms`; the caller no longer has a say in when
+    /// "now" is for rows this store owns.
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        Ok(self
+            .lock_commit_epoch(claim)
+            .await?
+            .is_some_and(|guard| guard.is_live_at(now_ms)))
+    }
+
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let state = lock(&self.state)?;
         let depth = state
             .rows
@@ -1557,8 +1570,8 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         claim: &RunClaim,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<LeaseRenewalOutcome, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let mut state = lock(&self.state)?;
         let Some(row) = state.rows.get_mut(&claim.run_id) else {
             return Ok(LeaseRenewalOutcome::Lost);
@@ -1587,9 +1600,9 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
+        let now_ms = self.clock.now_ms();
         self.admit_physical_attempt(claim, now_ms, false, _binding)
             .await
     }
@@ -1597,9 +1610,9 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
+        let now_ms = self.clock.now_ms();
         self.admit_physical_attempt(claim, now_ms, true, _binding)
             .await
     }
@@ -1690,14 +1703,17 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
-        now_ms: u64,
+        expired_before_ms: u64,
     ) -> Result<usize, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let mut operations = Vec::new();
         for row in state.rows.values_mut() {
             let expired = row.state == DispatchState::Leased
-                && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms);
+                && crate::clock::deadline_has_passed(
+                    row.lease.as_ref().map(|l| l.expires_ms),
+                    expired_before_ms,
+                );
             if expired && row.attempt_count >= max_attempts && row.active_attempt.is_none() {
                 let lease = row
                     .lease
@@ -1720,7 +1736,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 };
                 row.apply_transition(next);
                 row.lease = None;
-                row.dead_lettered_at = Some(now_ms);
+                row.dead_lettered_at = Some(expired_before_ms);
             }
         }
         let quarantined = operations.len() / 2;

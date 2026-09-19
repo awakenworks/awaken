@@ -243,7 +243,6 @@ impl HostWorkerResolver {
 
 pub(super) async fn reconcile_committed_terminals(
     resolver: &HostWorkerResolver,
-    clock: Arc<dyn awaken_dispatch::Clock>,
     limit: usize,
 ) -> Result<Vec<(RunId, RunState)>, awaken_dispatch::Error> {
     let host = resolver.host()?;
@@ -260,7 +259,6 @@ pub(super) async fn reconcile_committed_terminals(
         .reconcile(store.as_ref(), limit, |row| {
             let host = &host;
             let store = &store;
-            let clock = clock.clone();
             async move {
                 // The dispatch summary already carries the canonical Session affinity.
                 // Read committed truth from that physical partition before taking the
@@ -284,7 +282,6 @@ pub(super) async fn reconcile_committed_terminals(
                         &row.run_id,
                         &host.deployment.dispatch_owner,
                         DEFAULT_LEASE_MS,
-                        clock.now_ms(),
                     )
                     .await?
                 else {
@@ -308,7 +305,7 @@ pub(super) async fn reconcile_committed_terminals(
                         return Err(error);
                     }
                 };
-                worker.settle_claimed_terminal(claimed, clock.clone()).await
+                worker.settle_claimed_terminal(claimed).await
             }
         })
         .await
@@ -698,8 +695,10 @@ mod tests {
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_dispatch::SystemClock.now_ms();
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(now));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+                .expect("dispatch store"),
         );
         let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
             .with_store_dir(storage.path())
@@ -708,7 +707,15 @@ mod tests {
         coordinator.deployment.disable_local_pool = true;
         let host = Arc::new(coordinator);
 
-        let control = claim(&store, "thread-control", "run-control", "setup", now).await;
+        let control = claim(
+            &store,
+            "thread-control",
+            "run-control",
+            "setup",
+            now,
+            &clock,
+        )
+        .await;
         store
             .settle(
                 &control.lease.run_id,
@@ -718,7 +725,15 @@ mod tests {
             )
             .await
             .expect("quiesce control");
-        let terminal = claim(&store, "thread-terminal", "run-terminal", "setup", now).await;
+        let terminal = claim(
+            &store,
+            "thread-terminal",
+            "run-terminal",
+            "setup",
+            now,
+            &clock,
+        )
+        .await;
         store
             .settle(
                 &terminal.lease.run_id,
@@ -807,8 +822,10 @@ mod tests {
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_dispatch::SystemClock.now_ms();
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+                .expect("dispatch store"),
         );
         let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
             .with_store_dir(storage.path())
@@ -820,7 +837,15 @@ mod tests {
             host: Arc::downgrade(&host),
         };
 
-        let parked = claim(&store, "thread-awaiting", "run-awaiting", "worker-a", now).await;
+        let parked = claim(
+            &store,
+            "thread-awaiting",
+            "run-awaiting",
+            "worker-a",
+            now,
+            &clock,
+        )
+        .await;
         assert_eq!(
             store
                 .settle(
@@ -833,28 +858,28 @@ mod tests {
                 .expect("park Awaiting row"),
             SettleOutcome::Applied
         );
-        let leased = claim(&store, "thread-leased", "run-leased", "worker-a", now).await;
+        let leased = claim(
+            &store,
+            "thread-leased",
+            "run-leased",
+            "worker-a",
+            now,
+            &clock,
+        )
+        .await;
         let recovery_now = leased.lease.expires_ms.saturating_add(1);
 
         assert!(
-            reconcile_committed_terminals(
-                &resolver,
-                Arc::new(awaken_dispatch::ManualClock::new(recovery_now)),
-                8,
-            )
-            .await
-            .expect("scan non-terminal rows")
-            .is_empty(),
+            reconcile_committed_terminals(&resolver, 8,)
+                .await
+                .expect("scan non-terminal rows")
+                .is_empty(),
             "A1/A2: non-terminal rows are not maintenance work"
         );
 
+        clock.set(recovery_now);
         let awaiting_probe = store
-            .claim_for_terminal_recovery(
-                &parked.lease.run_id,
-                "epoch-probe",
-                DEFAULT_LEASE_MS,
-                recovery_now,
-            )
+            .claim_for_terminal_recovery(&parked.lease.run_id, "epoch-probe", DEFAULT_LEASE_MS)
             .await
             .expect("probe Awaiting epoch")
             .expect("Awaiting row remains available to its canonical recovery verb");
@@ -873,12 +898,12 @@ mod tests {
             .await
             .expect("restore Awaiting probe");
 
+        clock.set(recovery_now);
         let replacement = store
             .claim_run(
                 &leased.lease.run_id,
                 "worker-b",
                 DEFAULT_LEASE_MS,
-                recovery_now,
                 &Default::default(),
             )
             .await
@@ -922,8 +947,10 @@ mod tests {
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_dispatch::SystemClock.now_ms();
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+                .expect("dispatch store"),
         );
         let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
             .with_store_dir(storage.path())
@@ -931,20 +958,24 @@ mod tests {
         coordinator.deployment.durable = true;
         coordinator.deployment.disable_local_pool = true;
         let host = Arc::new(coordinator);
-        let fresh = claim(&store, "thread-exhausted", "run-exhausted", "crashed", now).await;
+        let fresh = claim(
+            &store,
+            "thread-exhausted",
+            "run-exhausted",
+            "crashed",
+            now,
+            &clock,
+        )
+        .await;
+        clock.set(fresh.lease.expires_ms + 1);
         store
-            .claim_run(
-                &fresh.lease.run_id,
-                "crashed",
-                1_000,
-                fresh.lease.expires_ms + 1,
-                &Default::default(),
-            )
+            .claim_run(&fresh.lease.run_id, "crashed", 1_000, &Default::default())
             .await
             .expect("recovery claim")
             .expect("expired row recovers");
+        clock.set(now + 2_002);
         let claimed = store
-            .claim_retry_exhausted("remote-worker", 1_000, now + 2_002, 1)
+            .claim_retry_exhausted("remote-worker", 1_000, 1)
             .await
             .expect("special claim")
             .expect("exhausted row claims");
@@ -953,10 +984,7 @@ mod tests {
         };
         assert_eq!(
             resolver
-                .terminalize_retry_exhausted(
-                    &claimed,
-                    Arc::new(awaken_dispatch::ManualClock::new(now + 2_002)),
-                )
+                .terminalize_retry_exhausted(&claimed,)
                 .await
                 .expect("H1 terminalization"),
             Some((
@@ -999,8 +1027,10 @@ mod tests {
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_dispatch::SystemClock.now_ms();
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+                .expect("dispatch store"),
         );
         let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
             .with_store_dir(storage.path())
@@ -1019,8 +1049,9 @@ mod tests {
             )
             .await
             .expect("admit child");
+        clock.set(now);
         let claimed = store
-            .claim_run(&run, "setup", DEFAULT_LEASE_MS, now, &Default::default())
+            .claim_run(&run, "setup", DEFAULT_LEASE_MS, &Default::default())
             .await
             .expect("claim child")
             .expect("child claim");
@@ -1050,13 +1081,9 @@ mod tests {
         let resolver = HostWorkerResolver {
             host: Arc::downgrade(&host),
         };
-        let reconciled = reconcile_committed_terminals(
-            &resolver,
-            Arc::new(awaken_dispatch::ManualClock::new(now + 1)),
-            8,
-        )
-        .await
-        .expect("reconcile child");
+        let reconciled = reconcile_committed_terminals(&resolver, 8)
+            .await
+            .expect("reconcile child");
         assert_eq!(reconciled.len(), 1, "P1/E2");
         assert_eq!(reconciled[0].0, run, "P1/E2");
         assert!(store.list_dispatches().await.unwrap().is_empty(), "P1/E2");

@@ -102,7 +102,10 @@ async fn service_resumes_an_awaiting_run_on_delivery() {
 #[tokio::test]
 async fn service_recovers_a_crashed_lease_on_its_clock() {
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    // One hand-driven clock: the store judges its rows against the same reading
+    // the daemon polls with, so the recovery boundary stays exact.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -111,17 +114,17 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
         store
-            .claim("dead-worker", 1_000, 0, &Default::default())
+            .claim("dead-worker", 1_000, &Default::default())
             .await
             .unwrap()
             .is_some()
     );
     assert_eq!(commit.commit_count(), 0);
 
-    // A hand-driven clock: the daemon polls slowly, so only the clock advances it.
-    let clock = Arc::new(ManualClock::new(0));
+    // The daemon polls slowly, so only the clock advances it.
     let service = ingress.spawn_service(
         clock.clone(),
         DispatchServiceConfig {
@@ -164,10 +167,12 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     // M4 end to end: a delivery scheduled for the future does not resume the run
     // until the daemon's clock reaches it.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    // The store evaluates a scheduled delivery's due time against its own clock,
+    // so it must read the same hand-driven reading the daemon polls with.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
-    let clock = Arc::new(ManualClock::new(0));
     let service = ingress.spawn_service(
         clock.clone(),
         DispatchServiceConfig {
@@ -254,7 +259,10 @@ async fn service_commits_retry_exhaustion_and_settles_done() {
     // service path => never create a manual dead-letter quarantine. The setup
     // selects S2/S3; backend decision-table coverage owns S1.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    // One hand-driven clock: the store judges lease expiry against the same
+    // reading the daemon polls with.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -263,24 +271,26 @@ async fn service_commits_retry_exhaustion_and_settles_done() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
         store
-            .claim("w", 100, 0, &Default::default())
+            .claim("w", 100, &Default::default())
             .await
             .unwrap()
             .is_some()
     ); // fresh
+    clock.set(200);
     assert!(
         store
-            .claim("w", 100, 200, &Default::default())
+            .claim("w", 100, &Default::default())
             .await
             .unwrap()
             .is_some()
     ); // recovery -> attempt 1
 
-    let clock = Arc::new(ManualClock::new(400));
+    clock.set(400);
     let service = ingress.spawn_service(
-        clock,
+        clock.clone(),
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(10),
             max_attempts: 1,

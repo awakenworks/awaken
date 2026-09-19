@@ -37,6 +37,19 @@
 /// | AR8 | Done | exact | Y | consumed | initial | exact | E6 |
 /// | AR9 | Awaiting/Done | exact | Y | - | - | changed | E7 |
 pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Dispatch, ns: &str) {
+    assert_session_reply_activity_rotation_conformance_with_clock(
+        store,
+        ns,
+        &AuthoritativeWallClock,
+    )
+    .await;
+}
+
+pub async fn assert_session_reply_activity_rotation_conformance_with_clock(
+    store: &dyn Dispatch,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
     let parent = thread_id(ns, "activity-parent");
     let child = thread_id(ns, "activity-child");
     let initial_epoch = 11;
@@ -101,12 +114,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
         .await
         .expect("original canonical dispatch still replays");
     assert_eq!(store.relay().await.expect("relay extension"), 1);
+    clock.set(199_997);
     let claim = store
         .claim_run(
             extension.run_id(),
             "extension-owner",
             LEASE_MS,
-            199_997,
             &Default::default(),
         )
         .await
@@ -152,12 +165,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
             .expect("AR1U exact adoption replay is idempotent"),
         "AR1U/E3"
     );
+    clock.set(199_998);
     let unbound_first_claim = store
         .claim_run(
             unbound.run_id(),
             "activity-unbound-owner",
             LEASE_MS,
-            199_998,
             &Default::default(),
         )
         .await
@@ -182,12 +195,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
         "AR1U/E9"
     );
     assert_eq!(store.relay().await.expect("AR1U relay"), 1, "AR1U/E2");
+    clock.set(199_999);
     let unbound_resumed = store
         .claim_run(
             unbound.run_id(),
             "activity-unbound-owner",
             LEASE_MS,
-            199_999,
             &Default::default(),
         )
         .await
@@ -270,12 +283,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
         .enqueue(different_initial_epoch)
         .await
         .expect("AR7 initial replay ignores mutable activity coordinate");
+    clock.set(200_000);
     let claimed = store
         .claim_run(
             initial.run_id(),
             "activity-owner",
             LEASE_MS,
-            200_000,
             &Default::default(),
         )
         .await
@@ -419,12 +432,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
     );
 
     assert_eq!(store.relay().await.expect("AR7 relay"), 1, "AR7/E5");
+    clock.set(200_001);
     let resumed = store
         .claim_run(
             initial.run_id(),
             "activity-owner",
             LEASE_MS,
-            200_001,
             &Default::default(),
         )
         .await
@@ -508,12 +521,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
         .enqueue(race.clone())
         .await
         .expect("AR4L enqueue coordinated child");
+    clock.set(200_010);
     let race_claim = store
         .claim_run(
             race.run_id(),
             "activity-race-owner",
             LEASE_MS,
-            200_010,
             &Default::default(),
         )
         .await
@@ -554,12 +567,12 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
         "AR4L/E8"
     );
     assert_eq!(store.relay().await.expect("AR4L relay"), 1, "AR4L/E8");
+    clock.set(200_011);
     let race_resumed = store
         .claim_run(
             race.run_id(),
             "activity-race-owner",
             LEASE_MS,
-            200_011,
             &Default::default(),
         )
         .await
@@ -606,6 +619,15 @@ pub async fn assert_session_reply_activity_rotation_conformance(store: &dyn Disp
 /// | RC13 | two direct | Y | absent | N | root | same Thread | E1+E6 |
 /// | RC14 | direct | wrong Run | absent | N | root | - | E3, no cross-Run binding |
 pub async fn assert_atomic_report_continuation_conformance(store: &dyn Dispatch, ns: &str) {
+    assert_atomic_report_continuation_conformance_with_clock(store, ns, &AuthoritativeWallClock)
+        .await;
+}
+
+pub async fn assert_atomic_report_continuation_conformance_with_clock(
+    store: &dyn Dispatch,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
     let continuation_input =
         |message_id: String, request: &RunDispatch, content: &str| PendingInput {
             message_id,
@@ -654,12 +676,12 @@ pub async fn assert_atomic_report_continuation_conformance(store: &dyn Dispatch,
     );
     assert_eq!(store.relay().await.expect("RC2 outbox drained"), 0, "RC2");
 
+    clock.set(100_000);
     let claimed = store
         .claim_run(
             root.run_id(),
             "report-root-owner",
             LEASE_MS,
-            100_000,
             &Default::default(),
         )
         .await
@@ -1047,12 +1069,12 @@ pub async fn assert_atomic_report_continuation_conformance(store: &dyn Dispatch,
         "RC13 both messages remain durable"
     );
 
+    clock.set(200_000);
     let first_claim = store
         .claim_run(
             first_run.run_id(),
             "continuation-exact-owner",
             LEASE_MS,
-            200_000,
             &Default::default(),
         )
         .await
@@ -1063,13 +1085,13 @@ pub async fn assert_atomic_report_continuation_conformance(store: &dyn Dispatch,
         vec![first_input.clone()],
         "RC13/E6 the first Run receives only its bound message"
     );
+    clock.set(200_000);
     assert!(
         store
             .claim_run(
                 second_run.run_id(),
                 "continuation-exact-owner",
                 LEASE_MS,
-                200_000,
                 &Default::default(),
             )
             .await
@@ -1090,12 +1112,12 @@ pub async fn assert_atomic_report_continuation_conformance(store: &dyn Dispatch,
         SettleOutcome::Applied,
         "RC13 first settles independently"
     );
+    clock.set(200_001);
     let second_claim = store
         .claim_run(
             second_run.run_id(),
             "continuation-exact-owner",
             LEASE_MS,
-            200_001,
             &Default::default(),
         )
         .await

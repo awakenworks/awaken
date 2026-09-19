@@ -685,7 +685,11 @@ mod tests {
             "child_parent",
             "child",
         ] {
-            let queue = Arc::new(MemoryDispatchStore::new());
+            // Lease liveness is judged by the store's own clock now, so the
+            // expired case mints its claim in the distant past and then returns
+            // the clock to the present.
+            let clock = Arc::new(awaken_dispatch::ManualClock::new(artifact_now_ms()));
+            let queue = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
             let mut dispatch =
                 awaken_dispatch::RunDispatch::new(support::activation("capture-local"));
             let session = dispatch.thread_id().0.clone();
@@ -703,16 +707,17 @@ mod tests {
                 ));
             }
             queue.enqueue(dispatch).await.unwrap();
-            let now = if cause == "expired" {
-                0
-            } else {
-                artifact_now_ms()
-            };
+            if cause == "expired" {
+                clock.set(0);
+            }
             let claimed = queue
-                .claim("owner", 60_000, now, &Default::default())
+                .claim("owner", 60_000, &Default::default())
                 .await
                 .unwrap()
                 .unwrap();
+            if cause == "expired" {
+                clock.set(artifact_now_ms());
+            }
             let mut claim = awaken_dispatch::RunClaim::from(&claimed.lease);
             if cause == "epoch" {
                 claim.epoch += 1;

@@ -118,7 +118,8 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     // R1 exercises the crash window and proves one delivery, ordered
     // reschedule, and no third claim.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-1".to_string());
 
@@ -131,7 +132,7 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
         .await
         .unwrap();
     assert_eq!(
-        worker.tick(harness::clock(0)).await.unwrap(),
+        worker.tick(harness::at(&clock, 0)).await.unwrap(),
         Some((run.clone(), RunState::Awaiting)),
         "the fresh run awaits on the gate ticket"
     );
@@ -150,8 +151,9 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
 
     // An owner claims the woken run (a wake pick hands the pending) then CRASHES
     // before settling: dropping the claim leaves the run leased-but-unsettled.
+    clock.set(10);
     let crashed = store
-        .claim("crasher", LEASE, 10, &Default::default())
+        .claim("crasher", LEASE, &Default::default())
         .await
         .unwrap()
         .expect("the awaiting run with due input is claimable");
@@ -176,7 +178,10 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
 
     // Recovery: after the lease lapses, the worker reclaims and delivers the SAME
     // pending exactly once, driving the run to completion.
-    let recovered = worker.tick(harness::clock(10 + LEASE + 1)).await.unwrap();
+    let recovered = worker
+        .tick(harness::at(&clock, 10 + LEASE + 1))
+        .await
+        .unwrap();
     assert_eq!(
         recovered,
         Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
@@ -217,7 +222,7 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     assert_eq!(store.dispatch_count(), 0, "the settled dispatch is gone");
     assert!(
         worker
-            .tick(harness::clock(10 + 2 * LEASE))
+            .tick(harness::at(&clock, 10 + 2 * LEASE))
             .await
             .unwrap()
             .is_none(),
@@ -252,14 +257,15 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
         let clock = Arc::new(ManualClock::new(0));
         let store = SqliteDispatchStore::open(root.join("dispatch.db").to_str().unwrap())
             .expect("PCR1 open child store")
-            .with_clock(clock);
+            .with_clock(clock.clone());
         let run = RunId("run-process-crash".to_string());
         store
             .enqueue(RunDispatch::new(activation("run-process-crash")))
             .await
             .expect("PCR1 enqueue");
+        clock.set(0);
         let initial = store
-            .claim_run(&run, "initial", LEASE, 0, &Default::default())
+            .claim_run(&run, "initial", LEASE, &Default::default())
             .await
             .expect("PCR1 initial claim")
             .expect("PCR1 fresh Run is claimable");
@@ -277,8 +283,9 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
             ResumeResult::Input("persist me".to_string()),
         );
         assert!(store.append(input.clone()).await.expect("PCR1 append"));
+        clock.set(0);
         let crashed = store
-            .claim_run(&run, "crashed", LEASE, 0, &Default::default())
+            .claim_run(&run, "crashed", LEASE, &Default::default())
             .await
             .expect("PCR1 crash-window claim")
             .expect("PCR1 pending input wakes Awaiting Run");
@@ -319,8 +326,9 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
         let reopened = SqliteDispatchStore::open(root.path().join("dispatch.db").to_str().unwrap())
             .expect("PCR1 reopen after crash")
             .with_clock(clock.clone());
+        clock.set(LEASE + 1);
         let recovered = reopened
-            .claim_run(&run, "recovered", LEASE, LEASE + 1, &Default::default())
+            .claim_run(&run, "recovered", LEASE, &Default::default())
             .await
             .expect("PCR1 recovery claim")
             .expect("PCR1 crashed lease is reclaimable");
@@ -358,7 +366,7 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
     }
     let reopened = SqliteDispatchStore::open(root.path().join("dispatch.db").to_str().unwrap())
         .expect("PCR3 second reopen")
-        .with_clock(clock);
+        .with_clock(clock.clone());
     assert!(
         reopened
             .list(&thread)
@@ -367,9 +375,10 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
             .is_empty(),
         "PCR3/E5"
     );
+    clock.set(LEASE + 1);
     assert!(
         reopened
-            .claim_run(&run, "third", LEASE, LEASE + 1, &Default::default())
+            .claim_run(&run, "third", LEASE, &Default::default())
             .await
             .expect("PCR3 duplicate wake probe")
             .is_none(),
@@ -395,7 +404,8 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     // owner drains and delivers it exactly once, and it is NOT re-delivered to a
     // later fresh run on the same thread once a settle has consumed it.
     let runtime = input_echo_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
 
@@ -420,8 +430,9 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     let crashed = store
-        .claim("crasher", LEASE, 0, &Default::default())
+        .claim("crasher", LEASE, &Default::default())
         .await
         .unwrap()
         .expect("the fresh run is claimable");
@@ -444,7 +455,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
 
     // Recovery: the worker reclaims the fresh run after the lease lapses, drains the
     // unbound input into the run's activation, delivers it exactly once, and settles.
-    let recovered = worker.tick(harness::clock(LEASE + 1)).await.unwrap();
+    let recovered = worker.tick(harness::at(&clock, LEASE + 1)).await.unwrap();
     assert_eq!(
         recovered,
         Some((
@@ -481,7 +492,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
         .enqueue(RunDispatch::new(harness::activation("run-2")))
         .await
         .unwrap();
-    let next = worker.tick(harness::clock(LEASE + 2)).await.unwrap();
+    let next = worker.tick(harness::at(&clock, LEASE + 2)).await.unwrap();
     assert_eq!(
         next,
         Some((
@@ -531,7 +542,8 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     // a row IS consumed iff its message id appears in the committed transcript.
     awaken_observability::init(&awaken_observability::ObservabilityConfig::default());
     let runtime = input_echo_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
     let run = RunId("run-1".to_string());
@@ -557,8 +569,9 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     let _crashed = store
-        .claim("crasher", LEASE, 0, &Default::default())
+        .claim("crasher", LEASE, &Default::default())
         .await
         .unwrap()
         .expect("fresh claim");
@@ -604,7 +617,7 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         .with_context(RuntimeRunContext::new().with_terminal_observer(observer.clone()))
         .with_lease_ms(LEASE);
     let delivery_error = worker
-        .tick(harness::clock(LEASE + 1))
+        .tick(harness::at(&clock, LEASE + 1))
         .await
         .expect_err("the first terminal-observer delivery is injected to fail");
     assert!(
@@ -646,7 +659,10 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
 
     // Once that failed claim's lease expires, committed truth is redelivered. Only
     // the successful replay may settle Done and consume the delivered input.
-    let recovered = worker.tick(harness::clock(2 * LEASE + 2)).await.unwrap();
+    let recovered = worker
+        .tick(harness::at(&clock, 2 * LEASE + 2))
+        .await
+        .unwrap();
     assert_eq!(
         recovered,
         Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
@@ -685,7 +701,10 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         .await
         .unwrap();
     assert_eq!(
-        worker.tick(harness::clock(2 * LEASE + 3)).await.unwrap(),
+        worker
+            .tick(harness::at(&clock, 2 * LEASE + 3))
+            .await
+            .unwrap(),
         Some((
             RunId("run-2".to_string()),
             RunState::Ended(EndCause::NaturalEnd)
@@ -734,7 +753,8 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     // (its message id is absent from the committed transcript — it arrived after the
     // terminal commit) must be LEFT in the inbox on recovery, not swept away. No loss.
     let runtime = input_echo_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
     let run = RunId("run-1".to_string());
@@ -743,8 +763,9 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     let _crashed = store
-        .claim("crasher", LEASE, 0, &Default::default())
+        .claim("crasher", LEASE, &Default::default())
         .await
         .unwrap()
         .expect("claim");
@@ -774,7 +795,7 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     let worker =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
     assert_eq!(
-        worker.tick(harness::clock(LEASE + 1)).await.unwrap(),
+        worker.tick(harness::at(&clock, LEASE + 1)).await.unwrap(),
         Some((run, RunState::Ended(EndCause::NaturalEnd)))
     );
     assert!(

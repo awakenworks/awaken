@@ -31,7 +31,7 @@ async fn claimed_dispatch(
     );
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
-        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .claim(owner, 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -1462,7 +1462,10 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     ));
     let counting = Arc::new(CountingFileApplication::new(app.clone()));
     let (directory, identity) = support::ready_worker("capture-worker").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    // R10 needs a lease that is already expired. The store now judges that
+    // from its own clock, so this fixture owns one it can move.
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(support::unix_now_ms()));
+    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     let claim = claimed_dispatch(&dispatch, "capture-journey", &identity.lease_owner()).await;
     let service = Arc::new(WorkerArtifactPublicationService::new(
         counting.clone(),
@@ -1744,12 +1747,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     let child_session = child_request.thread_id().0.clone();
     dispatch.enqueue(child_request).await.unwrap();
     let child_lease = dispatch
-        .claim(
-            &identity.lease_owner(),
-            60_000,
-            support::unix_now_ms(),
-            &Default::default(),
-        )
+        .claim(&identity.lease_owner(), 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -1879,10 +1877,12 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     let reads = counting.capture_reads.load(Ordering::SeqCst);
     let replacements = counting.capture_replaces.load(Ordering::SeqCst);
     assert_eq!(
-        dispatch.renew_lease(&claim, 0, 0).await.unwrap(),
+        dispatch.renew_lease(&claim, 0).await.unwrap(),
         LeaseRenewalOutcome::Current,
         "R10 exact current claim receives the typed renewal outcome"
     );
+    // The zero-duration renewal expires at the reading it was minted from.
+    dispatch_clock.set(support::unix_now_ms().saturating_add(1));
     assert!(
         publisher
             .capture(workspace, session, Some(&fence))

@@ -32,6 +32,7 @@ use awaken_dispatch::{
     ContinuationAdmission, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, Outbox,
     RunDispatch, SqliteDispatchStore, SubmitOptions,
 };
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -105,7 +106,10 @@ async fn dedupe_key_blocks_a_duplicate_dispatch_on_sqlite() {
     // Prove the durable dedupe index (V0008) holds: two DISTINCT run ids sharing a
     // live dedupe key yield only ONE claimable dispatch — the second submit is a
     // no-op while the first is live.
-    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = SqliteDispatchStore::open_in_memory()
+        .expect("open")
+        .with_clock(clock.clock());
     let key = SubmitOptions {
         dedupe_key: Some("k".to_string()),
         ..Default::default()
@@ -125,15 +129,17 @@ async fn dedupe_key_blocks_a_duplicate_dispatch_on_sqlite() {
         .await
         .unwrap();
 
+    clock.set(0);
     let first = store
-        .claim("w", LEASE, 0, &Default::default())
+        .claim("w", LEASE, &Default::default())
         .await
         .unwrap()
         .expect("first");
     assert_eq!(first.request.run_id().0, "d1");
+    clock.set(0);
     assert!(
         store
-            .claim("w", LEASE, 0, &Default::default())
+            .claim("w", LEASE, &Default::default())
             .await
             .unwrap()
             .is_none(),

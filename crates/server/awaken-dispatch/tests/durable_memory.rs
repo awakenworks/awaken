@@ -22,6 +22,7 @@ use awaken_dispatch::{
     Inbox, ManualClock, MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch,
     SessionChildAdmission,
 };
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
@@ -102,7 +103,8 @@ async fn coordinated_settlement_observer_follows_the_durable_boundary_decision_t
     // retry evidence; no observer receipt or completion task is authoritative.
     // Decision rule: S1-S5 cover epoch presence, both boundaries, observer
     // success/failure, recovery, and cancellation.
-    let ordinary_store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let ordinary_store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let ordinary_observer = Arc::new(RecordingSettlementObserver::new(1));
     let ordinary = DispatchWorker::new(
         text_runtime(),
@@ -115,7 +117,7 @@ async fn coordinated_settlement_observer_follows_the_durable_boundary_decision_t
         ordinary
             .start_run(
                 RunDispatch::new(activation("ordinary-observer")),
-                harness::clock(0),
+                harness::at(&clock, 0),
             )
             .await
             .expect("S1 ordinary drive")
@@ -130,7 +132,7 @@ async fn coordinated_settlement_observer_follows_the_durable_boundary_decision_t
             .start_run(
                 RunDispatch::new(activation("ordinary-session-child"))
                     .for_session(ThreadId("parent-session".into())),
-                harness::clock(1),
+                harness::at(&clock, 1),
             )
             .await
             .expect("S1 ordinary session-affined child drive")
@@ -141,9 +143,9 @@ async fn coordinated_settlement_observer_follows_the_durable_boundary_decision_t
         "S1/E1 session affinity alone does not classify coordination"
     );
 
-    let awaiting_store = Arc::new(MemoryDispatchStore::new());
-    let awaiting_observer = Arc::new(RecordingSettlementObserver::new(0));
     let awaiting_clock = Arc::new(ManualClock::new(0));
+    let awaiting_store = Arc::new(MemoryDispatchStore::new().with_clock(awaiting_clock.clone()));
+    let awaiting_observer = Arc::new(RecordingSettlementObserver::new(0));
     let (awaiting_runtime, awaiting_tool_runs) = tool_runtime();
     let awaiting_commit = Arc::new(MemoryCommitCoordinator::new());
     let awaiting = DispatchWorker::new(
@@ -230,11 +232,11 @@ async fn coordinated_settlement_observer_follows_the_durable_boundary_decision_t
         assert!(awaiting_observed[1].3, "S5/E5 trusted cancellation");
     }
 
-    let terminal_store = Arc::new(MemoryDispatchStore::new());
+    let terminal_clock = Arc::new(ManualClock::new(0));
+    let terminal_store = Arc::new(MemoryDispatchStore::new().with_clock(terminal_clock.clone()));
     let terminal_commit = Arc::new(MemoryCommitCoordinator::new());
     let terminal_observer = Arc::new(RecordingSettlementObserver::new(1));
     let executor = Arc::new(RecordingAttemptExecutor::default());
-    let terminal_clock = Arc::new(ManualClock::new(0));
     let terminal = DispatchWorker::new(
         text_runtime(),
         terminal_store.clone(),
@@ -310,7 +312,8 @@ async fn stale_coordinated_settlement_uses_the_canonical_fenced_metric_exit() {
     // metrics test.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let observer = Arc::new(RecordingSettlementObserver::new(0));
     let worker = DispatchWorker::new(
         runtime,
@@ -329,25 +332,27 @@ async fn stale_coordinated_settlement_uses_the_canonical_fenced_metric_exit() {
         )
         .await
         .expect("admit coordinated child");
+    clock.set(0);
     let stale = store
-        .claim("attempt-a", 10, 0, &Default::default())
+        .claim("attempt-a", 10, &Default::default())
         .await
         .expect("claim attempt A")
         .expect("attempt A");
+    clock.set(11);
     let current = store
-        .claim("attempt-b", 10, 11, &Default::default())
+        .claim("attempt-b", 10, &Default::default())
         .await
         .expect("reclaim attempt B")
         .expect("attempt B");
 
     worker
-        .drive_claimed(current, harness::clock(11))
+        .drive_claimed(current, harness::at(&clock, 11))
         .await
         .expect("drive current attempt")
         .expect("current attempt applied");
     assert!(
         worker
-            .drive_claimed(stale, harness::clock(11))
+            .drive_claimed(stale, harness::at(&clock, 11))
             .await
             .expect("classify stale attempt")
             .is_none(),
@@ -360,9 +365,9 @@ async fn stale_coordinated_settlement_uses_the_canonical_fenced_metric_exit() {
     assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0, "F3/E4");
 
     let precommit_metrics = Arc::new(RecordingMetrics::default());
-    let precommit_store = Arc::new(MemoryDispatchStore::new());
-    let precommit_observer = Arc::new(RecordingSettlementObserver::new(0));
     let precommit_clock = Arc::new(ManualClock::new(0));
+    let precommit_store = Arc::new(MemoryDispatchStore::new().with_clock(precommit_clock.clone()));
+    let precommit_observer = Arc::new(RecordingSettlementObserver::new(0));
     let expiring = Arc::new(ExpiringOwnershipAttemptExecutor {
         clock: precommit_clock.clone(),
         effects: AtomicUsize::new(0),
@@ -970,9 +975,11 @@ async fn advancing_the_drive_clock_expires_ownership_before_any_effect() {
     // rule: execute complementary CA2 from the adjacent clock table and require
     // fail-closed pre-effect behavior plus the complete metric vector.
     let metrics = Arc::new(RecordingMetrics::default());
-    let store = Arc::new(MemoryDispatchStore::new());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    // Ownership is verified against the store's own clock, so the executor that
+    // advances time past the lease must advance that exact clock.
     let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
     let selected = Arc::new(ExpiringOwnershipAttemptExecutor {
         clock: clock.clone(),
         effects: AtomicUsize::new(0),
@@ -1478,33 +1485,37 @@ async fn duplicate_pending_delivery_is_idempotent() {
 
 #[tokio::test]
 async fn expired_lease_is_reclaimable_for_recovery() {
-    let store = MemoryDispatchStore::new();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
     // First claim takes a 1000ms lease at t=0.
+    clock.set(0);
     assert!(
         store
-            .claim("worker-a", 1_000, 0, &Default::default())
+            .claim("worker-a", 1_000, &Default::default())
             .await
             .unwrap()
             .is_some(),
         "a fresh run is claimable"
     );
     // While the lease holds, the run is not re-claimable.
+    clock.set(500);
     assert!(
         store
-            .claim("worker-b", 1_000, 500, &Default::default())
+            .claim("worker-b", 1_000, &Default::default())
             .await
             .unwrap()
             .is_none(),
         "a held lease blocks a second claim"
     );
     // After the lease expires, recovery reclaims it.
+    clock.set(1_001);
     let recovered = store
-        .claim("worker-b", 1_000, 1_001, &Default::default())
+        .claim("worker-b", 1_000, &Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -1530,7 +1541,8 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
     // request audit facts remain the sole evidence. Decision rule: R1 is the
     // crash-before-first-commit partition and must yield E1-E4 exactly once.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -1540,9 +1552,10 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
         store
-            .claim("dead-worker", 1_000, 0, &Default::default())
+            .claim("dead-worker", 1_000, &Default::default())
             .await
             .unwrap()
             .is_some()
@@ -1555,7 +1568,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
 
     // Recovery after the lease expires reclaims and completes the run.
     let processed = ingress
-        .recover(harness::clock(2_000))
+        .recover(harness::at(&clock, 2_000))
         .await
         .expect("recover");
     assert_eq!(
@@ -1589,7 +1602,8 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
 #[tokio::test]
 async fn settle_done_clears_pending_and_dispatch() {
     // A store-level invariant: settling Done removes the dispatch and any pending.
-    let store = MemoryDispatchStore::new();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
@@ -1604,12 +1618,12 @@ async fn settle_done_clears_pending_and_dispatch() {
         .unwrap();
     // Settle is authority-bearing: obtain the exact claim epoch first. Epoch 0
     // means "never claimed" and is not execution authority.
+    clock.set(0);
     let claimed = store
         .claim_run(
             &RunId("run-1".to_string()),
             "settle-test",
             1_000,
-            0,
             &Default::default(),
         )
         .await
@@ -1640,7 +1654,8 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
     // settles. The dispatch is left 'running' with the pending input still
     // present and the ticket already cleared. Recovery must NOT re-run the tool.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime.clone(), store.clone(), commit.clone());
 
@@ -1659,8 +1674,9 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
 
     // Worker got partway: it claimed (took a lease) and committed the resume,
     // then crashed before settle. Drive those two steps by hand.
+    clock.set(0);
     let _claimed = store
-        .claim("dead-worker", 1_000, 0, &Default::default())
+        .claim("dead-worker", 1_000, &Default::default())
         .await
         .unwrap();
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -1678,7 +1694,7 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
     // Recovery after the lease expires: the committed run is terminal, so the
     // worker settles it without re-running the tool, and clears the pending.
     let processed = ingress
-        .recover(harness::clock(2_000))
+        .recover(harness::at(&clock, 2_000))
         .await
         .expect("recover");
     assert_eq!(
@@ -1714,7 +1730,8 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
 #[tokio::test]
 async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime.clone(), store.clone(), commit.clone());
 
@@ -1725,8 +1742,9 @@ async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
         .enqueue(RunDispatch::new(control))
         .await
         .expect("enqueue nonterminal control");
+    clock.set(0);
     let control_claim = store
-        .claim("setup", 1_000, 0, &Default::default())
+        .claim("setup", 1_000, &Default::default())
         .await
         .expect("claim nonterminal control")
         .expect("control is runnable");
@@ -1760,26 +1778,26 @@ async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 
+    clock.set(1_000);
     store
-        .claim_for_terminal_recovery(
-            &RunId("run-terminal".to_string()),
-            "crashed-reconciler",
-            10,
-            1_000,
-        )
+        .claim_for_terminal_recovery(&RunId("run-terminal".to_string()), "crashed-reconciler", 10)
         .await
         .expect("claim terminal before modeled crash")
         .expect("terminal awaiting row is claimable");
 
+    // R4: the modeled reconciler crash left its own claim leased until 1_010.
+    // The store's own clock decides that expiry now, so advance that one clock
+    // past it rather than handing the scan a private reading.
+    clock.set(2_000);
     assert!(
         ingress
-            .reconcile_committed_terminals(harness::clock(2_000), 1)
+            .reconcile_committed_terminals(1)
             .await
             .expect("R3 first inspection consumes the page budget")
             .is_empty()
     );
     let reconciled = ingress
-        .reconcile_committed_terminals(harness::clock(2_000), 1)
+        .reconcile_committed_terminals(1)
         .await
         .expect("reconcile committed terminal");
     assert_eq!(
@@ -1839,7 +1857,7 @@ async fn reconciliation_repairs_released_pending_terminal_without_execution() {
 
     assert_eq!(
         ingress
-            .reconcile_committed_terminals(harness::clock(0), 1)
+            .reconcile_committed_terminals(1)
             .await
             .expect("E1 reconcile"),
         vec![(activation.run_id, RunState::Ended(EndCause::NaturalEnd))],
@@ -1916,7 +1934,9 @@ async fn cross_thread_outbox_store_spec() {
 
 #[tokio::test]
 async fn message_idempotency_conflicts_store_spec() {
-    harness::assert_message_idempotency_conflicts(&MemoryDispatchStore::new()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_message_idempotency_conflicts(&store, &clock).await;
 }
 
 #[tokio::test]
@@ -1966,34 +1986,30 @@ async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
 
 #[tokio::test]
 async fn scheduled_delivery_due_store_spec() {
-    harness::assert_scheduled_due(
-        &MemoryDispatchStore::new(),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_scheduled_due(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn millis_boundaries_store_spec() {
-    harness::assert_millis_boundaries(
-        &MemoryDispatchStore::new(),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_millis_boundaries(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn dead_letter_budget_store_spec() {
-    harness::assert_dead_letter(
-        &MemoryDispatchStore::new(),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_dead_letter(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn cancel_store_spec() {
-    harness::assert_cancel(&MemoryDispatchStore::new()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_cancel(&store, &clock).await;
 }
 
 #[tokio::test]
@@ -2127,7 +2143,8 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
     // makes the generic pool route, rather than the dedicated terminal scanner,
     // own the replacement claim.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("cancel-crash".to_string());
 
@@ -2136,8 +2153,9 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
         .await
         .unwrap();
     store.cancel(&run).await.unwrap().expect("intent persisted");
+    clock.set(0);
     let crashed = store
-        .claim("dead-worker", 1_000, 0, &Default::default())
+        .claim("dead-worker", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("intent claimed");
@@ -2159,7 +2177,10 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
     let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "restarted-worker");
     worker.install_attempt_executor(selected.clone());
     assert_eq!(
-        worker.tick(harness::clock(1_001)).await.expect("recovery"),
+        worker
+            .tick(harness::at(&clock, 1_001))
+            .await
+            .expect("recovery"),
         Some((run.clone(), RunState::Ended(EndCause::Cancelled)))
     );
     assert_eq!(selected.cancels.load(Ordering::SeqCst), 0, "TC1/E2");
@@ -2235,7 +2256,8 @@ async fn authenticated_remote_cancellation_receives_only_its_current_claim_bindi
     // Constraint: credential material remains behind the A2A resolver. This
     // Worker test observes only the same claim-bound projection that resolver
     // consumes; it cannot create an anonymous transport fallback.
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let executor = Arc::new(CredentialCheckingCancelExecutor::default());
     let run = RunId("authenticated-remote-cancel".into());
@@ -2256,7 +2278,7 @@ async fn authenticated_remote_cancellation_receives_only_its_current_claim_bindi
     worker.install_attempt_executor(executor.clone());
 
     let (_, state) = worker
-        .tick(harness::clock(0))
+        .tick(harness::at(&clock, 0))
         .await
         .expect("R1 drive")
         .expect("R1 applied");
@@ -2275,7 +2297,7 @@ async fn authenticated_remote_cancellation_receives_only_its_current_claim_bindi
     }
     assert_eq!(store.dispatch_count(), 0, "R1/E2");
 
-    let rejected_store = Arc::new(MemoryDispatchStore::new());
+    let rejected_store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     rejected_store
         .enqueue(remote_credential_dispatch("missing-cancel-capability"))
         .await
@@ -2286,12 +2308,12 @@ async fn authenticated_remote_cancellation_receives_only_its_current_claim_bindi
         .await
         .expect("cancel R2")
         .expect("known R2");
+    clock.set(0);
     let error = rejected_store
         .claim_run(
             &rejected_run,
             "credential-free-worker",
             DEFAULT_LEASE_MS,
-            0,
             &Default::default(),
         )
         .await
@@ -2312,20 +2334,16 @@ async fn authenticated_remote_cancellation_receives_only_its_current_claim_bindi
 
 #[tokio::test]
 async fn priority_dedupe_gc_store_spec() {
-    harness::assert_priority_dedupe_gc(
-        &MemoryDispatchStore::new(),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_priority_dedupe_gc(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn lease_renewal_store_spec() {
-    harness::assert_lease_renewal(
-        &MemoryDispatchStore::new(),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_lease_renewal(&store, &clock).await;
 }
 
 #[tokio::test]
@@ -2342,7 +2360,8 @@ async fn local_wake_signal_delivers_a_held_hint() {
 #[tokio::test]
 async fn dispatch_harness_dead_letter_and_purge_ops() {
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit);
 
@@ -2351,9 +2370,10 @@ async fn dispatch_harness_dead_letter_and_purge_ops() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
         store
-            .claim("w", 1, 0, &Default::default())
+            .claim("w", 1, &Default::default())
             .await
             .unwrap()
             .is_some()
@@ -2367,9 +2387,10 @@ async fn dispatch_harness_dead_letter_and_purge_ops() {
     // Requeue, quarantine again, then GC through the ingress API.
     assert!(ingress.requeue(&RunId("run-1".to_string())).await.unwrap());
     assert!(ingress.dead_letters().await.unwrap().is_empty());
+    clock.set(0);
     assert!(
         store
-            .claim("w", 1, 0, &Default::default())
+            .claim("w", 1, &Default::default())
             .await
             .unwrap()
             .is_some()
@@ -2426,7 +2447,8 @@ async fn a_recovered_scheduled_action_is_performed() {
     // before performing it (dispatch left 'running' with an expired lease) is
     // recovered by another worker and performed from the committed request.
     let (runtime, ran) = schedule_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     // The run awaiting on a committed ScheduledAction (the action has not run).
@@ -2441,14 +2463,15 @@ async fn a_recovered_scheduled_action_is_performed() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     store
-        .claim("dead-worker", 10, 0, &Default::default())
+        .claim("dead-worker", 10, &Default::default())
         .await
         .unwrap();
 
     // A live worker recovers it after the lease expires and performs the action.
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "live-worker");
-    let processed = worker.tick(harness::clock(100)).await.unwrap();
+    let processed = worker.tick(harness::at(&clock, 100)).await.unwrap();
     assert_eq!(
         processed,
         Some((
@@ -2548,7 +2571,9 @@ async fn fresh_continuation_identity_is_stable_without_a_parallel_message_comman
 
 #[tokio::test]
 async fn supersession_store_spec() {
-    harness::assert_supersession(&MemoryDispatchStore::new()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_supersession(&store, &clock).await;
 }
 
 #[tokio::test]
@@ -2573,7 +2598,8 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
         ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, RunClaim,
     };
 
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let inner = Arc::new(MemoryCommitCoordinator::new());
 
     store
@@ -2581,13 +2607,15 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
         .await
         .unwrap();
     // Owner A claims (epoch 1); its lease lapses; owner B reclaims (epoch 2).
+    clock.set(0);
     let a = store
-        .claim("owner-a", 100, 0, &Default::default())
+        .claim("owner-a", 100, &Default::default())
         .await
         .unwrap()
         .expect("A claims");
+    clock.set(200);
     let b = store
-        .claim("owner-b", 100, 200, &Default::default())
+        .claim("owner-b", 100, &Default::default())
         .await
         .unwrap()
         .expect("B reclaims");
@@ -2661,9 +2689,10 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
 
 #[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_memory() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     harness::assert_concurrent_recovery_yields_one_winner(
-        std::sync::Arc::new(MemoryDispatchStore::new()),
-        &awaken_dispatch_testkit::LogicalCommandClock,
+        std::sync::Arc::new(MemoryDispatchStore::new().with_clock(clock.clock())),
+        &clock,
     )
     .await;
 }
@@ -2713,21 +2742,23 @@ async fn submit_superseding_abandons_prior_thread_work() {
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_store_spec() {
-    harness::assert_dead_letter_ttl_gc(
-        &MemoryDispatchStore::new(),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_dead_letter_ttl_gc(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn relinquish_claim_store_spec() {
-    harness::assert_relinquish_claim(&MemoryDispatchStore::new()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_relinquish_claim(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn defer_claim_is_request_local_store_spec() {
-    harness::assert_defer_claim_is_request_local(&MemoryDispatchStore::new()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_defer_claim_is_request_local(&store, &clock).await;
 }
 
 #[tokio::test]
@@ -2739,33 +2770,38 @@ async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_memory() {
 
 #[tokio::test]
 async fn physical_attempt_admission_store_spec() {
-    harness::assert_physical_attempt_admission(
-        &MemoryDispatchStore::new(),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_physical_attempt_admission(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn list_dispatches_store_spec() {
-    harness::assert_list_dispatches(&MemoryDispatchStore::new()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_list_dispatches(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn dedupe_ignores_dead_lettered_store_spec() {
-    harness::assert_dedupe_ignores_dead_lettered(&MemoryDispatchStore::new()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_dedupe_ignores_dead_lettered(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn wake_suppressed_while_thread_running_store_spec() {
-    harness::assert_wake_suppressed_while_thread_running(&MemoryDispatchStore::new()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
+    harness::assert_wake_suppressed_while_thread_running(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn dispatch_harness_lists_dispatches_and_purges_aged_dead_letters() {
     // Covers the DispatchTestHarness query + time-windowed GC wrappers.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit);
 
@@ -2778,9 +2814,10 @@ async fn dispatch_harness_lists_dispatches_and_purges_aged_dead_letters() {
     assert_eq!(listed[0].run_id, RunId("run-1".to_string()));
 
     // Dead-letter it at t=1000, then age it out through the ingress.
+    clock.set(0);
     assert!(
         store
-            .claim("w", 1, 0, &Default::default())
+            .claim("w", 1, &Default::default())
             .await
             .unwrap()
             .is_some()

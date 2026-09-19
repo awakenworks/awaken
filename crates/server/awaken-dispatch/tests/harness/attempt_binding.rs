@@ -9,6 +9,7 @@ use awaken_dispatch::{
 pub async fn bound_claim(
     store: &impl DispatchQueue,
     name: &str,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) -> (RunClaim, AttemptExecutionBinding, WorkerSnapshot) {
     let (directory, identity) = awaken_dispatch_testkit::worker_http::ready_worker(name).await;
     let mut worker = directory
@@ -25,8 +26,9 @@ pub async fn bound_claim(
         )
         .await
         .unwrap();
+    clock.set(0);
     let claim = store
-        .claim_compatible(&worker, 60_000, 0)
+        .claim_compatible(&worker, 60_000)
         .await
         .unwrap()
         .unwrap();
@@ -40,7 +42,10 @@ pub async fn bound_claim(
 }
 
 /// Shared decision table, executed against all three stores and Any delegation.
-pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
+pub async fn assert_binding_lifecycle(
+    store: &impl DispatchQueue,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
     // C1 exact registered Worker tuple (not merely its owner string); C2 empty,
     // same-claim or predecessor slot; C3 absent/equal/changed provider coordinate;
     // C4 current/new/retired epoch; C5 ordinary begin or durable handoff.
@@ -53,7 +58,7 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
     // B8 ACK retires identity even when the old binding is supplied again.
     // B9 an unregistered owner string cannot substitute for C1.
     // No rule proves provider provenance, process stop, or remote termination.
-    let (a, binding_a, worker_a) = bound_claim(store, "bound-attempt").await;
+    let (a, binding_a, worker_a) = bound_claim(store, "bound-attempt", clock).await;
     assert_eq!(store.load_physical_attempt(&a.run_id).await.unwrap(), None);
     // Different structured identities can share the legacy owner encoding.
     let collision = AttemptExecutionBinding::new(
@@ -63,8 +68,9 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
     )
     .unwrap();
     assert_eq!(collision.worker().lease_owner(), a.owner);
+    clock.set(0);
     assert!(
-        store.begin_attempt(&a, 0, Some(&collision)).await.is_err(),
+        store.begin_attempt(&a, Some(&collision)).await.is_err(),
         "B2"
     );
     assert_eq!(
@@ -72,8 +78,9 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         None,
         "B2 no slot"
     );
+    clock.set(0);
     assert_eq!(
-        store.begin_attempt(&a, 0, Some(&binding_a)).await.unwrap(),
+        store.begin_attempt(&a, Some(&binding_a)).await.unwrap(),
         A::Applied,
         "B1"
     );
@@ -89,9 +96,11 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
     );
     for handoff in [false, true] {
         let retry = if handoff {
-            store.handoff_attempt(&a, 0, Some(&binding_a)).await
+            clock.set(0);
+            store.handoff_attempt(&a, Some(&binding_a)).await
         } else {
-            store.begin_attempt(&a, 0, Some(&binding_a)).await
+            clock.set(0);
+            store.begin_attempt(&a, Some(&binding_a)).await
         };
         assert_eq!(retry.unwrap(), A::AlreadyApplied, "B3");
         let other_provider = AttemptExecutionBinding::new(
@@ -113,9 +122,11 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
             Some(&collision),
         ] {
             let result = if handoff {
-                store.handoff_attempt(&a, 0, changed).await
+                clock.set(0);
+                store.handoff_attempt(&a, changed).await
             } else {
-                store.begin_attempt(&a, 0, changed).await
+                clock.set(0);
+                store.begin_attempt(&a, changed).await
             };
             assert!(result.is_err(), "B2/B4");
             assert_eq!(
@@ -125,12 +136,14 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
             );
         }
     }
-    store.renew_lease(&a, 0, 0).await.unwrap();
+    clock.set(0);
+    store.renew_lease(&a, 0).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let mut worker_b = worker_a.clone();
     worker_b.identity = WorkerIdentity::new(&worker_a.identity.worker_id, "boot-b", 2);
+    clock.set(1);
     let b = store
-        .claim_compatible(&worker_b, 60_000, 1)
+        .claim_compatible(&worker_b, 60_000)
         .await
         .unwrap()
         .unwrap();
@@ -141,8 +154,9 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         "container-b",
     )
     .unwrap();
+    clock.set(1);
     assert_eq!(
-        store.begin_attempt(&b, 1, Some(&binding_b)).await.unwrap(),
+        store.begin_attempt(&b, Some(&binding_b)).await.unwrap(),
         A::Blocked,
         "B5"
     );
@@ -158,8 +172,9 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         S::Applied,
         "ACK response-loss retry"
     );
+    clock.set(1);
     assert_eq!(
-        store.begin_attempt(&b, 1, Some(&binding_b)).await.unwrap(),
+        store.begin_attempt(&b, Some(&binding_b)).await.unwrap(),
         A::Applied
     );
     assert_eq!(
@@ -177,12 +192,14 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         Some(binding_b)
     );
 
-    store.renew_lease(&b, 0, 1).await.unwrap();
+    clock.set(1);
+    store.renew_lease(&b, 0).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let mut worker_c = worker_b;
     worker_c.identity = WorkerIdentity::new(&worker_c.identity.worker_id, "boot-c", 3);
+    clock.set(2);
     let c = store
-        .claim_compatible(&worker_c, 60_000, 2)
+        .claim_compatible(&worker_c, 60_000)
         .await
         .unwrap()
         .unwrap();
@@ -193,11 +210,9 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         "container-c",
     )
     .unwrap();
+    clock.set(2);
     assert_eq!(
-        store
-            .handoff_attempt(&c, 2, Some(&binding_c))
-            .await
-            .unwrap(),
+        store.handoff_attempt(&c, Some(&binding_c)).await.unwrap(),
         A::Replaced,
         "B7"
     );
@@ -212,28 +227,30 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
     );
     assert_eq!(store.finish_attempt(&b).await.unwrap(), S::Fenced);
     assert_eq!(store.finish_attempt(&c).await.unwrap(), S::Applied);
+    clock.set(2);
     assert_eq!(
-        store.begin_attempt(&c, 2, Some(&binding_c)).await.unwrap(),
+        store.begin_attempt(&c, Some(&binding_c)).await.unwrap(),
         A::Fenced,
         "B8"
     );
     assert_eq!(store.relinquish_claim(&c).await.unwrap(), S::Applied);
+    clock.set(2);
     let d = store
-        .claim_compatible(&worker_c, 60_000, 2)
+        .claim_compatible(&worker_c, 60_000)
         .await
         .unwrap()
         .unwrap();
     let d = RunClaim::from(&d.lease);
-    assert_eq!(store.begin_attempt(&d, 2, None).await.unwrap(), A::Applied);
+    clock.set(2);
+    assert_eq!(store.begin_attempt(&d, None).await.unwrap(), A::Applied);
+    clock.set(2);
     assert!(
-        store.begin_attempt(&d, 2, Some(&binding_c)).await.is_err(),
+        store.begin_attempt(&d, Some(&binding_c)).await.is_err(),
         "B4 no post-effect backfill"
     );
+    clock.set(2);
     assert!(
-        store
-            .handoff_attempt(&d, 2, Some(&binding_c))
-            .await
-            .is_err(),
+        store.handoff_attempt(&d, Some(&binding_c)).await.is_err(),
         "B4 no handoff backfill"
     );
     assert_eq!(
@@ -254,22 +271,20 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         )))
         .await
         .unwrap();
+    clock.set(2);
     let local = store
         .claim(
             &worker_c.identity.lease_owner(),
             60_000,
-            2,
             &Default::default(),
         )
         .await
         .unwrap()
         .unwrap();
     let local = RunClaim::from(&local.lease);
+    clock.set(2);
     assert!(
-        store
-            .begin_attempt(&local, 2, Some(&binding_c))
-            .await
-            .is_err(),
+        store.begin_attempt(&local, Some(&binding_c)).await.is_err(),
         "B9"
     );
     assert_eq!(
@@ -280,13 +295,14 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
     // B14 concurrent same-claim requests with different coordinates: one wins
     // the slot transaction, the other conflicts; observation equals the winner.
     // B15 concurrent exact retries: both stutter, neither replaces the binding.
-    let (race, left, _) = bound_claim(store, "binding-race").await;
+    let (race, left, _) = bound_claim(store, "binding-race", clock).await;
     let right =
         AttemptExecutionBinding::new(left.worker().clone(), left.provider_id(), "other-instance")
             .unwrap();
+    clock.set(0);
     let (a, b) = tokio::join!(
-        store.begin_attempt(&race, 0, Some(&left)),
-        store.begin_attempt(&race, 0, Some(&right)),
+        store.begin_attempt(&race, Some(&left)),
+        store.begin_attempt(&race, Some(&right)),
     );
     let winner = match (a, b) {
         (Ok(A::Applied), Err(awaken_dispatch::DispatchError::Conflict(_))) => left,
@@ -302,9 +318,10 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
             session_thread_id: None,
         })
     );
+    clock.set(0);
     let (a, b) = tokio::join!(
-        store.begin_attempt(&race, 0, Some(&winner)),
-        store.handoff_attempt(&race, 0, Some(&winner)),
+        store.begin_attempt(&race, Some(&winner)),
+        store.handoff_attempt(&race, Some(&winner)),
     );
     assert_eq!(a.unwrap(), A::AlreadyApplied, "B15");
     assert_eq!(b.unwrap(), A::AlreadyApplied, "B15");
@@ -325,14 +342,16 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         )
         .await
         .unwrap();
+    clock.set(3);
     let partitioned = store
-        .claim_compatible(&worker_c, 60_000, 3)
+        .claim_compatible(&worker_c, 60_000)
         .await
         .unwrap()
         .unwrap();
     let partitioned = RunClaim::from(&partitioned.lease);
+    clock.set(3);
     assert_eq!(
-        store.begin_attempt(&partitioned, 3, None).await.unwrap(),
+        store.begin_attempt(&partitioned, None).await.unwrap(),
         A::Applied,
         "B16"
     );

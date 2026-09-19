@@ -23,20 +23,41 @@ use awaken_dispatch::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
+use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, activation_on, tool_runtime};
 
 fn any_in_memory() -> AnyDispatchStore {
     AnyDispatchStore::open_sqlite_in_memory().expect("open in-memory sqlite backend")
 }
 
+/// The same runtime-selected backend over a raw injected clock handle.
+fn any_in_memory_with_clock_handle(
+    clock: std::sync::Arc<dyn awaken_dispatch::Clock>,
+) -> AnyDispatchStore {
+    AnyDispatchStore::open_sqlite_in_memory_with_clock(clock)
+        .expect("open in-memory sqlite backend")
+}
+
+/// The same runtime-selected backend over a clock the test drives, because the
+/// dispatch port now reads "now" from the store it was built with.
+fn any_in_memory_with_clock(
+    clock: &awaken_dispatch_testkit::ManualStoreClock,
+) -> AnyDispatchStore {
+    AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clock())
+        .expect("open in-memory sqlite backend")
+}
+
 #[tokio::test]
 async fn execution_binding_is_frozen_with_the_physical_slot() {
     // Shared B1-B9 includes Any delegation, Memory and real SQLite transactions.
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
-        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new())),
-        any_in_memory(),
+        AnyDispatchStore::from_dispatch(Arc::new(
+            MemoryDispatchStore::new().with_clock(clock.clock()),
+        )),
+        any_in_memory_with_clock(&clock),
     ] {
-        harness::attempt_binding::assert_binding_lifecycle(&store).await;
+        harness::attempt_binding::assert_binding_lifecycle(&store, &clock).await;
     }
 }
 
@@ -47,11 +68,14 @@ async fn returned_attempt_cannot_restart_under_the_same_claim() {
     // physical execution. R1 exact live admission retry before ACK is idempotent;
     // R2 same claim after ACK is fenced; R3 repeated ACK stays idempotent.
     // This is a prerequisite for accepting independently delayed stop evidence.
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
-        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new())),
-        any_in_memory(),
+        AnyDispatchStore::from_dispatch(Arc::new(
+            MemoryDispatchStore::new().with_clock(clock.clock()),
+        )),
+        any_in_memory_with_clock(&clock),
     ] {
-        harness::attempt_retirement::assert_retirement(&store, 0).await;
+        harness::attempt_retirement::assert_retirement(&store, 0, &clock).await;
     }
 }
 
@@ -69,7 +93,8 @@ fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
 
 #[tokio::test]
 async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
-    let store = any_in_memory();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = any_in_memory_with_clock(&clock);
     let mut gpu = PlacementRequirements::remote_required();
     gpu.required_capabilities.insert("gpu".to_string());
     let mut cpu = PlacementRequirements::remote_required();
@@ -103,8 +128,9 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
         acp_capability_observations: Default::default(),
         expires_at_ms: 10_000,
     };
+    clock.set(0);
     let claimed = store
-        .claim_compatible(&worker, 1_000, 0)
+        .claim_compatible(&worker, 1_000)
         .await
         .unwrap()
         .expect("the compatible lower-priority run is selected");
@@ -115,7 +141,10 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
     assert_eq!(assignment.capability_fingerprint, fingerprint);
 }
 
-async fn exact_backend_capability_claim_conformance(store: &dyn DispatchQueue) {
+async fn exact_backend_capability_claim_conformance(
+    store: &dyn DispatchQueue,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
     // Cause/effect graph:
     // immutable backend_ref -> exact required capability -> atomic claim
     // compatibility. Queue priority/order cannot let an incapable Worker take a
@@ -164,7 +193,8 @@ async fn exact_backend_capability_claim_conformance(store: &dyn DispatchQueue) {
     for (backend, expected) in [("acp:codex", 6), ("acp:claude", 6)] {
         let worker = worker(backend, backend);
         let mut claimed = 0;
-        while let Some(run) = store.claim_compatible(&worker, 100, 0).await.unwrap() {
+        clock.set(0);
+        while let Some(run) = store.claim_compatible(&worker, 100).await.unwrap() {
             assert!(
                 run.request.run_id().0.starts_with(backend),
                 "{backend} Worker claimed {}",
@@ -187,8 +217,14 @@ async fn exact_backend_capability_claim_conformance(store: &dyn DispatchQueue) {
 
 #[tokio::test]
 async fn exact_backend_capability_routes_a_mixed_queue_on_every_local_store() {
-    exact_backend_capability_claim_conformance(&MemoryDispatchStore::new()).await;
-    exact_backend_capability_claim_conformance(&any_in_memory()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    exact_backend_capability_claim_conformance(
+        &MemoryDispatchStore::new().with_clock(clock.clock()),
+        &clock,
+    )
+    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    exact_backend_capability_claim_conformance(&any_in_memory_with_clock(&clock), &clock).await;
 }
 
 fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
@@ -246,7 +282,10 @@ fn worker_with_load(id: &str, load: u32) -> WorkerSnapshot {
     worker
 }
 
-async fn policy_claim_conformance(store: &dyn DispatchQueue) {
+async fn policy_claim_conformance(
+    store: &dyn DispatchQueue,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
     let mut requirements = PlacementRequirements::remote_required();
     requirements.required_capabilities.insert("cpu".to_string());
     store
@@ -260,16 +299,18 @@ async fn policy_claim_conformance(store: &dyn DispatchQueue) {
     let busy = worker_with_load("busy", 7);
     let workers = vec![busy.clone(), idle.clone()];
 
+    clock.set(0);
     assert!(
         store
-            .claim_placed(&busy, workers.clone(), Arc::new(LeastLoadedPolicy), 100, 0,)
+            .claim_placed(&busy, workers.clone(), Arc::new(LeastLoadedPolicy), 100,)
             .await
             .unwrap()
             .is_none(),
         "a worker rejected by the active preference cannot race into ownership"
     );
+    clock.set(0);
     let claimed = store
-        .claim_placed(&idle, workers, Arc::new(LeastLoadedPolicy), 100, 0)
+        .claim_placed(&idle, workers, Arc::new(LeastLoadedPolicy), 100)
         .await
         .unwrap()
         .unwrap();
@@ -278,13 +319,20 @@ async fn policy_claim_conformance(store: &dyn DispatchQueue) {
 
 #[tokio::test]
 async fn policy_claim_is_wired_through_memory_and_runtime_selected_sqlite() {
-    policy_claim_conformance(&MemoryDispatchStore::new()).await;
-    policy_claim_conformance(&any_in_memory()).await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    policy_claim_conformance(
+        &MemoryDispatchStore::new().with_clock(clock.clock()),
+        &clock,
+    )
+    .await;
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    policy_claim_conformance(&any_in_memory_with_clock(&clock), &clock).await;
 }
 
 #[tokio::test]
 async fn replacement_policy_cannot_override_never_replace() {
-    let store = MemoryDispatchStore::new();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
     let mut requirements = PlacementRequirements::remote_required();
     requirements.required_capabilities.insert("cpu".to_string());
     requirements.recovery = WorkerRecoveryMode::NeverReplace;
@@ -296,17 +344,18 @@ async fn replacement_policy_cannot_override_never_replace() {
         .unwrap();
     let original = worker_with_load("original", 0);
     let replacement = worker_with_load("replacement", 9);
+    clock.set(0);
     store
         .claim_placed(
             &original,
             vec![original.clone(), replacement.clone()],
             Arc::new(LeastLoadedPolicy),
             10,
-            0,
         )
         .await
         .unwrap()
         .unwrap();
+    clock.set(11);
     assert!(
         store
             .claim_placed(
@@ -314,13 +363,13 @@ async fn replacement_policy_cannot_override_never_replace() {
                 vec![original.clone(), replacement.clone()],
                 Arc::new(MostLoadedPolicy),
                 10,
-                11,
             )
             .await
             .unwrap()
             .is_none(),
         "extension ranking cannot widen durable recovery authority"
     );
+    clock.set(11);
     assert!(
         store
             .claim_placed(
@@ -328,7 +377,6 @@ async fn replacement_policy_cannot_override_never_replace() {
                 vec![original.clone()],
                 Arc::new(MostLoadedPolicy),
                 10,
-                11,
             )
             .await
             .unwrap()
@@ -338,7 +386,8 @@ async fn replacement_policy_cannot_override_never_replace() {
 
 #[tokio::test]
 async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
-    let store = any_in_memory();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = any_in_memory_with_clock(&clock);
     let mut never = PlacementRequirements::remote_required();
     never.required_capabilities.insert("cpu".to_string());
     never.recovery = WorkerRecoveryMode::NeverReplace;
@@ -348,21 +397,24 @@ async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
         .unwrap();
     let original = worker_snapshot("worker", "boot-a", 1);
     let replacement = worker_snapshot("worker", "boot-b", 2);
+    clock.set(0);
     let _first = store
-        .claim_compatible(&original, 10, 0)
+        .claim_compatible(&original, 10)
         .await
         .unwrap()
         .unwrap();
+    clock.set(11);
     assert!(
         store
-            .claim_compatible(&replacement, 10, 11)
+            .claim_compatible(&replacement, 10)
             .await
             .unwrap()
             .is_none()
     );
+    clock.set(11);
     assert!(
         store
-            .claim_compatible(&original, 10, 11)
+            .claim_compatible(&original, 10)
             .await
             .unwrap()
             .is_some(),
@@ -379,14 +431,16 @@ async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
         )
         .await
         .unwrap();
+    clock.set(20);
     let initial = store
-        .claim_compatible(&original, 10, 20)
+        .claim_compatible(&original, 10)
         .await
         .unwrap()
         .unwrap();
+    clock.set(31);
     assert!(
         store
-            .claim_run_compatible(initial.request.run_id(), &replacement, 10, 31)
+            .claim_run_compatible(initial.request.run_id(), &replacement, 10)
             .await
             .unwrap()
             .is_none(),
@@ -399,9 +453,10 @@ async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
             .unwrap(),
         SettleOutcome::Applied
     );
+    clock.set(31);
     assert!(
         store
-            .claim_run_compatible(initial.request.run_id(), &replacement, 10, 31)
+            .claim_run_compatible(initial.request.run_id(), &replacement, 10)
             .await
             .unwrap()
             .is_some()
@@ -410,7 +465,8 @@ async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
 
 #[tokio::test]
 async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
-    let store = any_in_memory();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = any_in_memory_with_clock(&clock);
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
@@ -423,8 +479,9 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
 
     // The claim records the owner on the lease; a held lease blocks a second
     // owner; an expired lease is reclaimed by the next owner.
+    clock.set(0);
     let claimed = store
-        .claim("owner-a", 1_000, 0, &Default::default())
+        .claim("owner-a", 1_000, &Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -432,16 +489,18 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
         Some("owner-a".to_string()),
         "claim records the claiming owner on the lease"
     );
+    clock.set(500);
     assert!(
         store
-            .claim("owner-b", 1_000, 500, &Default::default())
+            .claim("owner-b", 1_000, &Default::default())
             .await
             .unwrap()
             .is_none(),
         "a live lease blocks a second owner"
     );
+    clock.set(1_001);
     let recovered = store
-        .claim("owner-b", 1_000, 1_001, &Default::default())
+        .claim("owner-b", 1_000, &Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -457,7 +516,8 @@ async fn any_lets_two_owners_claim_distinct_runs() {
     // claim two distinct runs, never the same one. Under single-writer-per-thread
     // (ADR-0022) "distinct runs" means distinct THREADS — two runs of one thread
     // cannot both be in flight (see `any_serializes_one_thread_across_workers`).
-    let store = any_in_memory();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = any_in_memory_with_clock(&clock);
     store
         .enqueue(RunDispatch::new(activation_on("run-1", "thread-1")))
         .await
@@ -467,13 +527,15 @@ async fn any_lets_two_owners_claim_distinct_runs() {
         .await
         .unwrap();
 
+    clock.set(0);
     let first = store
-        .claim("worker-a", 1_000, 0, &Default::default())
+        .claim("worker-a", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("one");
+    clock.set(0);
     let second = store
-        .claim("worker-b", 1_000, 0, &Default::default())
+        .claim("worker-b", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("two");
@@ -484,9 +546,10 @@ async fn any_lets_two_owners_claim_distinct_runs() {
         second.request.run_id(),
         "distinct owners must claim distinct runs"
     );
+    clock.set(0);
     assert!(
         store
-            .claim("worker-c", 1_000, 0, &Default::default())
+            .claim("worker-c", 1_000, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -500,13 +563,15 @@ async fn any_serializes_one_thread_across_workers() {
     // once. Enqueue run-2 while run-1 is already in flight (so run-2 is a fresh
     // pending run, not a supersession of run-1) — a second worker still cannot claim
     // it, and it becomes claimable only after run-1 settles.
-    let store = any_in_memory();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = any_in_memory_with_clock(&clock);
     store
         .enqueue(RunDispatch::new(activation_on("run-1", "thread-x")))
         .await
         .unwrap();
+    clock.set(0);
     let first = store
-        .claim("worker-a", 1_000, 0, &Default::default())
+        .claim("worker-a", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("run-1 claims and is now in flight on thread-x");
@@ -517,9 +582,10 @@ async fn any_serializes_one_thread_across_workers() {
         .enqueue(RunDispatch::new(activation_on("run-2", "thread-x")))
         .await
         .unwrap();
+    clock.set(1);
     assert!(
         store
-            .claim("worker-b", 1_000, 1, &Default::default())
+            .claim("worker-b", 1_000, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -536,8 +602,9 @@ async fn any_serializes_one_thread_across_workers() {
         )
         .await
         .unwrap();
+    clock.set(2);
     let second = store
-        .claim("worker-b", 1_000, 2, &Default::default())
+        .claim("worker-b", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("run-2 claims after run-1 settled");
@@ -557,13 +624,15 @@ async fn any_delegates_inbox_append_idempotency() {
 
 #[tokio::test]
 async fn any_exposes_the_builtin_backends_operational_feed() {
-    let store = any_in_memory();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = any_in_memory_with_clock(&clock);
     store
         .enqueue(RunDispatch::new(activation("operations-run")))
         .await
         .expect("enqueue");
+    clock.set(0);
     store
-        .claim("operations-owner", 1_000, 0, &Default::default())
+        .claim("operations-owner", 1_000, &Default::default())
         .await
         .expect("claim")
         .expect("runnable");
@@ -654,7 +723,7 @@ async fn any_postgres_connect_and_claim() {
         .await
         .expect("enqueue over postgres");
     let claimed = store
-        .claim("pg-owner", 1_000, 0, &Default::default())
+        .claim("pg-owner", 1_000, &Default::default())
         .await
         .expect("claim");
     assert_eq!(claimed.map(|c| c.lease.owner), Some("pg-owner".to_string()));

@@ -1003,7 +1003,7 @@ mod tests {
         // CR4 projection publication now carries the actual Dispatch claim.
         // Use its authoritative queue row, not a fabricated tuple that would
         // bypass the deferred binding fence when the slot had no claim.
-        use awaken_dispatch::{Clock as _, DispatchQueue as _};
+        use awaken_dispatch::DispatchQueue as _;
         let dispatch = host.dispatch_store().unwrap();
         dispatch
             .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
@@ -1013,12 +1013,7 @@ mod tests {
             .await
             .unwrap();
         let claimed = dispatch
-            .claim(
-                "worker-a",
-                300_000,
-                awaken_dispatch::SystemClock.now_ms(),
-                &Default::default(),
-            )
+            .claim("worker-a", 300_000, &Default::default())
             .await
             .unwrap()
             .unwrap();
@@ -1555,7 +1550,7 @@ mod tests {
 
         // CR4 the legacy recovery fixture must also exercise real binding CAS,
         // not an unregistered claim previously hidden by the empty local slot.
-        use awaken_dispatch::{Clock as _, DispatchQueue as _};
+        use awaken_dispatch::DispatchQueue as _;
         let dispatch = host.dispatch_store().unwrap();
         dispatch
             .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
@@ -1565,12 +1560,7 @@ mod tests {
             .await
             .unwrap();
         let claimed = dispatch
-            .claim(
-                "worker-a",
-                300_000,
-                awaken_dispatch::SystemClock.now_ms(),
-                &Default::default(),
-            )
+            .claim("worker-a", 300_000, &Default::default())
             .await
             .unwrap()
             .unwrap();

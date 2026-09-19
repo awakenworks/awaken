@@ -1295,9 +1295,12 @@ mod tests {
                     transcript_prefix: None,
                 },
             );
+            let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
             let dispatch = Arc::new(
-                awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
-                    .expect("coordinated Resource dispatch store"),
+                awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(
+                    clock.clone(),
+                )
+                .expect("coordinated Resource dispatch store"),
             );
             let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
                 .with_dispatch_store(dispatch.clone());
@@ -1336,12 +1339,12 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{rule} production child admission: {error}"));
             assert_eq!(receipt.thread_id, child_thread, "{rule} child identity");
 
+            clock.set(1);
             let claimed = dispatch
                 .claim_run(
                     &child_run,
                     "resource-inspector",
                     30_000,
-                    1,
                     &Default::default(),
                 )
                 .await

@@ -218,8 +218,10 @@ mod tests {
         use awaken_dispatch::{Clock, DispatchQueue, WorkerResolver as _};
 
         let now = awaken_dispatch::SystemClock.now_ms();
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+                .expect("dispatch store"),
         );
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
@@ -253,8 +255,9 @@ mod tests {
             ))
             .await
             .expect("enqueue legacy projection with exact empty Resources");
+        clock.set(now);
         let legacy = store
-            .claim("worker-a", 1_000, now, &Default::default())
+            .claim("worker-a", 1_000, &Default::default())
             .await
             .expect("claim legacy projection")
             .expect("legacy projection available");
@@ -291,8 +294,9 @@ mod tests {
             ))
             .await
             .expect("enqueue deferred projection");
+        clock.set(now);
         let deferred = store
-            .claim("worker-a", 1_000, now, &Default::default())
+            .claim("worker-a", 1_000, &Default::default())
             .await
             .expect("claim deferred projection")
             .expect("deferred projection available");

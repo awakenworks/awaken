@@ -623,7 +623,7 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_dispatch::{Clock as _, DispatchQueue as _};
+    use awaken_dispatch::DispatchQueue as _;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::resume::ResumeResult;
@@ -1023,12 +1023,7 @@ mod tests {
             .await
             .expect("enqueue artifact attempt");
         let claimed = dispatch
-            .claim(
-                "worker-a",
-                60_000,
-                awaken_dispatch::SystemClock.now_ms(),
-                &Default::default(),
-            )
+            .claim("worker-a", 60_000, &Default::default())
             .await
             .expect("claim artifact attempt")
             .expect("artifact attempt available");

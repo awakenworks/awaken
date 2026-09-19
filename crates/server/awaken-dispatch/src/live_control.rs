@@ -83,8 +83,9 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
             let driven = self
                 .worker
                 // The control edge owns the clock for this exact drive. Claim,
-                // renewal, ownership verification, and settlement all retain this
-                // source instead of pairing a timestamp with a private Worker clock.
+                // renewal, ownership verification and settlement are judged by the
+                // store that owns the row; this source times only what the attempt
+                // itself reads, so the control edge never introduces a second one.
                 .tick_run(&run_id, Arc::new(SystemClock))
                 .await
                 .map_err(|error| Error::Dispatch(error.to_string()))?;
@@ -173,7 +174,6 @@ mod tests {
     use awaken_store_inmem::MemoryCommitCoordinator;
     use tokio::sync::Notify;
 
-    use crate::clock::Clock;
     use crate::worker::DispatchWorker;
     use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch};
 
@@ -312,12 +312,7 @@ mod tests {
             .expect("timed out waiting for entered.notified()");
         assert!(
             store
-                .claim(
-                    "competing-pool",
-                    30_000,
-                    SystemClock.now_ms(),
-                    &Default::default(),
-                )
+                .claim("competing-pool", 30_000, &Default::default())
                 .await
                 .unwrap()
                 .is_none(),
