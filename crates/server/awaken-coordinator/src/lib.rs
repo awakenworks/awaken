@@ -44,6 +44,7 @@ pub use managed_lifecycle::{
 };
 mod runtime_authority;
 pub mod webhooks;
+pub mod worker_fleet;
 pub mod worker_observation_boundary;
 pub mod worker_placement;
 mod worker_registry;
@@ -1479,7 +1480,7 @@ fn mount_with_managed_over_and_models(
             dispatch as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
             host.clone(),
         )),
-        worker_directory,
+        worker_directory.clone(),
         worker_authenticator,
     ));
     let worker_transport =
@@ -1497,7 +1498,12 @@ fn mount_with_managed_over_and_models(
     let managed = managed.merge(resource_management_router).merge(models);
     let managed = awaken_protocol_managed::with_managed_response_context(managed);
     let local_workspace = host.local_workspace().to_string();
-    let router = a2a.merge(durable_ops);
+    // Fleet readiness is a deployment-wide read, so it joins the
+    // service-authenticated product surface rather than the Managed data
+    // plane, whose beta-header gate would reject a plain fleet question.
+    let router = a2a
+        .merge(durable_ops)
+        .merge(crate::worker_fleet::router(worker_directory.clone()));
     let router = with_local_workspace_scope(router, local_workspace);
     let worker_transport =
         with_local_workspace_scope(worker_transport, host.local_workspace().to_string());

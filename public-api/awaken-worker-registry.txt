@@ -1,5 +1,6 @@
 pub mod awaken_worker_registry
 pub use awaken_worker_registry::ExecutionLocation
+pub use awaken_worker_registry::FleetReadiness
 pub use awaken_worker_registry::LeastLoadedPolicy
 pub use awaken_worker_registry::PlacementContext
 pub use awaken_worker_registry::PlacementError
@@ -23,6 +24,7 @@ pub use awaken_worker_registry::WorkerObservationSource
 pub use awaken_worker_registry::WorkerRegistration
 pub use awaken_worker_registry::WorkerSnapshot
 pub use awaken_worker_registry::WorkerState
+pub use awaken_worker_registry::fleet_readiness
 pub use awaken_worker_registry::place
 pub use awaken_worker_registry::place_assignment
 pub struct awaken_worker_registry::PostgresWorkerDirectory

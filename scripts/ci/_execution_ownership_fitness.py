@@ -96,6 +96,7 @@ ROUTE_OWNER_FILES = (
     "crates/server/awaken-protocol-managed/src/routes/vaults.rs",
     "crates/server/awaken-protocol-mcp/src/http.rs",
     "crates/server/awaken-coordinator/src/application_access.rs",
+    "crates/server/awaken-coordinator/src/worker_fleet.rs",
 )
 
 # Public ingress code is discovered as well as explicitly registered. This
