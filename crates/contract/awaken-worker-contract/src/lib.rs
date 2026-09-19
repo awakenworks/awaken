@@ -5,6 +5,7 @@
 //! durable requirements, but it cannot widen authority; mutable adapters live elsewhere.
 
 mod capability_agreement;
+mod fleet_readiness;
 mod manifest;
 mod observation;
 mod placement;
@@ -14,6 +15,7 @@ mod requirements;
 pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
 };
+pub use fleet_readiness::{FleetReadiness, fleet_readiness};
 pub use manifest::{
     CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, FingerprintError,
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,

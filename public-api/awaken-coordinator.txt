@@ -116,6 +116,8 @@ pub mod awaken_coordinator::mcp_export
 pub fn awaken_coordinator::mcp_export::router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>, core::option::Option<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub mod awaken_coordinator::webhooks
 pub use awaken_coordinator::webhooks::<<awaken_webhook_managed::*>>
+pub mod awaken_coordinator::worker_fleet
+pub fn awaken_coordinator::worker_fleet::router(alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>) -> axum::routing::Router
 pub mod awaken_coordinator::worker_observation_boundary
 pub struct awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource
 impl awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource
