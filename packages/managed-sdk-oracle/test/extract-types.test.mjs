@@ -91,6 +91,22 @@ test('current wire contract extracts recursive Session shape and event vocabular
   assert.ok(wire.events.inbound.includes('user.message'));
   assert.deepEqual(wire.events.preview, ['event_delta', 'event_start']);
   assert.ok(wire.managed_betas.includes('managed-agents-2026-04-01'));
+  // Pagination is declared once in the SDK core and shared by every Managed
+  // collection. The cursor envelope's continuation is required-nullable
+  // (`next_page: string | null`), so a last page must still send the key;
+  // both query parameters are optional.
+  assert.deepEqual(wire.pagination.PageCursorResponse, {
+    required: ['data', 'next_page'],
+    optional: [],
+  });
+  assert.deepEqual(wire.pagination.PageResponse, {
+    required: ['data', 'first_id', 'has_more', 'last_id'],
+    optional: [],
+  });
+  assert.deepEqual(wire.pagination.PageCursorParams, {
+    required: [],
+    optional: ['limit', 'page'],
+  });
 });
 
 test('current wire contract describes every committed event down to its nested discriminated fields', () => {
@@ -144,6 +160,11 @@ test('the current SDK declared-type vocabulary is extracted for the wire naming 
     'BetaManagedAgentsAgentAutoEvaluatedPermissionDeny',
     'BetaManagedAgentsAutoPolicy',
     'BetaFileMetadata',
+    // The shared pagination vocabulary lives in `core/pagination.d.ts`, not
+    // under a resource root; these witness that it is in scope.
+    'PageCursor',
+    'PageCursorParams',
+    'Page',
   ]) {
     assert.ok(names.includes(witness), `E1 ${witness}`);
   }

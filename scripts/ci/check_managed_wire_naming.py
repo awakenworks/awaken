@@ -43,7 +43,10 @@ TYPE_RE = re.compile(
     r"^[ \t]*pub(?:\(crate\)|\(super\))? (?:struct|enum) (\w+)",
     re.MULTILINE,
 )
-CITATION_RE = re.compile(r"`([A-Za-z][A-Za-z0-9_]*)(?:\.[a-z_]+)?`")
+# A citation names one SDK type, optionally with its generic parameters
+# (`PageCursor<T>`) or one member (`Event.evaluated_permission`). The captured
+# name is the outer type: `Vec<PageCursor>` cites `Vec`, not `PageCursor`.
+CITATION_RE = re.compile(r"`([A-Za-z][A-Za-z0-9_]*)(?:<[A-Za-z0-9_, ]*>)?(?:\.[a-z_]+)?`")
 
 
 def declared_types(oracle: dict) -> set[str]:
@@ -109,7 +112,11 @@ def check(rows: list[dict], baseline: dict) -> list[str]:
 
 
 def self_test() -> None:
-    declared = {"BetaManagedAgentsAgentToolUseEvent", "BetaManagedAgentsAgentToolEvaluation"}
+    declared = {
+        "BetaManagedAgentsAgentToolUseEvent",
+        "BetaManagedAgentsAgentToolEvaluation",
+        "PageCursor",
+    }
     cases = {
         "/// `BetaManagedAgentsAgentToolEvaluation`.\n": ("cited", "BetaManagedAgentsAgentToolEvaluation"),
         "/// SDK: inline — `BetaManagedAgentsAgentToolUseEvent.evaluated_permission`.\n": (
@@ -119,6 +126,11 @@ def self_test() -> None:
         "/// SDK: inline — mirrors something.\n": ("inline-uncited", None),
         "/// SDK: none — adapter-private cursor.\n": ("private", None),
         "/// A doc that cites `Nothing`.\n": ("unannotated", None),
+        # A generic SDK type is cited with its parameters and still names it.
+        "/// Anthropic `PageCursor<T>` used by collections.\n": ("cited", "PageCursor"),
+        "/// `PageCursor<Item, Extra>`.\n": ("cited", "PageCursor"),
+        # Only the outer type is cited: a wrapper does not borrow its argument.
+        "/// A `Vec<PageCursor>` of pages.\n": ("unannotated", None),
     }
     for doc, expected in cases.items():
         assert classify(doc, declared) == expected, (doc, classify(doc, declared))
