@@ -473,7 +473,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness fnv_hex_output_preserves_every_u64
   run_kani awaken-agent-contract --checked-loop-profile fingerprint-sha256-hex-v1 \
     --harness sha256_hex_output_preserves_every_digest_byte
-  run_kani awaken-authorization-contract \
+  # Hosted Runtime and Workspace role vocabulary is owned by its only consumer.
+  run_kani awaken-control \
     --harness run_backed_route_policy_uses_exact_run_actions \
     --harness application_route_policy_never_enters_the_service_guard \
     --harness credential_ingress_role_contains_only_apikey_and_provider_connect_authority \
@@ -481,9 +482,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness hosted_admin_role_contains_exactly_its_seven_workspace_authorities \
     --harness hosted_builder_role_has_writes_without_apikey_or_model_administration \
     --harness workspace_member_role_contains_exactly_read_only_workspace_authorities \
-    --harness legacy_workspace_binding_migration_is_idempotent_and_authority_exact
-  # Hosted Runtime role vocabulary is owned by its only consumer.
-  run_kani awaken-control \
+    --harness legacy_workspace_binding_migration_is_idempotent_and_authority_exact \
     --harness runtime_member_role_contains_exactly_run_read
   run_kani awaken-acp-contract \
     --harness acp_capability_is_detected_exactly_after_a_verified_observation

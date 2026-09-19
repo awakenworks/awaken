@@ -102,10 +102,8 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use awaken_authorization_contract::{
-    RouteAccess, RouteGuardSelection, WorkspaceBindingRole, application_route_policy,
-    legacy_workspace_binding_migration_target, run_backed_route_policy,
-};
+pub mod roles;
+
 use awaken_iam_contract::{
     ActivateAuthorizationProfile, ApiToken, ApiTokenId, AuthorizationDecision,
     AuthorizationRequest, CreateAuthorizationProfile, OrgId, PolicySnapshot, PrincipalRef,
@@ -134,6 +132,10 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::delete;
 use axum::{Json, Router};
+use roles::{
+    RouteAccess, RouteGuardSelection, WorkspaceBindingRole, application_route_policy,
+    legacy_workspace_binding_migration_target, run_backed_route_policy,
+};
 
 mod bootstrap;
 mod clock;
