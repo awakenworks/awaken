@@ -1,4 +1,8 @@
 {
+  "baseline": {
+    "scanners_without_input_globs": 20,
+    "scope_lists": 34
+  },
   "comment": [
     "Every hand-written scope inside scripts/ci, with the reason it is not derived.",
     "",
@@ -12,9 +16,87 @@
     "fails the gate, and an entry naming something that no longer exists fails too,",
     "so the baselines only go down."
   ],
-  "baseline": {
-    "scope_lists": 28,
-    "scanners_without_input_globs": 20
+  "scanners_without_input_globs": {
+    "_realization_permit_fitness.py": {
+      "reason": "a helper module imported by check_crate_boundaries.py, whose __main__ exists only for running the fitness function standalone; its inputs are the importer's",
+      "runner": null
+    },
+    "_session_effect_fitness.py": {
+      "reason": "a helper module imported by check_crate_boundaries.py, whose __main__ exists only for running the fitness function standalone; its inputs are the importer's",
+      "runner": null
+    },
+    "check_authority_arithmetic.py": {
+      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",
+      "runner": "scripts/ci/check-rust.sh"
+    },
+    "check_crate_boundaries.py": {
+      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",
+      "runner": "scripts/ci/check-rust.sh"
+    },
+    "check_degrading_defaults.py": {
+      "reason": "runs only in the static group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render",
+      "runner": "scripts/ci/check-all.sh"
+    },
+    "check_dependency_gates.py": {
+      "reason": "runs only in the static group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render",
+      "runner": "scripts/ci/check-all.sh"
+    },
+    "check_dependency_sources.py": {
+      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",
+      "runner": "scripts/ci/check-rust.sh"
+    },
+    "check_feature_matrix.py": {
+      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",
+      "runner": "scripts/ci/check-rust.sh"
+    },
+    "check_formal_mutations.py": {
+      "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds",
+      "runner": "scripts/ci/check_formal.sh"
+    },
+    "check_formal_web_surface.py": {
+      "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds",
+      "runner": "scripts/ci/check_formal.sh"
+    },
+    "check_managed_wire_naming.py": {
+      "reason": "has a pre-commit command whose glob is still hand-written; declaring inputs here belongs with the hook-hygiene work, not with this scope change",
+      "runner": "scripts/ci/check-all.sh"
+    },
+    "check_node_dependencies.py": {
+      "reason": "has a pre-commit command whose glob is still hand-written; declaring inputs here belongs with the hook-hygiene work, not with this scope change",
+      "runner": "scripts/ci/check-all.sh"
+    },
+    "check_product_release.py": {
+      "reason": "runs only in the docs group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render",
+      "runner": "scripts/ci/check-all.sh"
+    },
+    "check_test_orchestration.py": {
+      "reason": "has a pre-commit command whose glob is still hand-written, and the module is being changed in another lane, so its declaration is deferred rather than raced",
+      "runner": "scripts/ci/check-all.sh"
+    },
+    "export_homogeneous_lcov.py": {
+      "reason": "a coverage export tool rather than a gate: it reads profraw output produced by the run that invokes it, not a set of repository files",
+      "runner": "scripts/ci/e2e-coverage.sh"
+    },
+    "formal_run_evidence.py": {
+      "reason": "an evidence writer rather than a gate: it walks the artefact directory the proof run just produced, which is not a repository input at all",
+      "runner": "scripts/ci/check_formal.sh"
+    },
+    "render_runtime_refinement_traces.py": {
+      "reason": "a renderer rather than a gate: it walks the trace directory the reliability run just produced, which is not a repository input at all",
+      "runner": "scripts/ci/check-reliability.sh"
+    },
+    "test_bootstrap_kani.py": {
+      "reason": "a self-test of the solver bootstrap; it walks the temporary trees its own fixtures build, so it has no repository input set to declare",
+      "runner": "scripts/ci/check_formal.sh"
+    },
+    "test_formal_run_evidence.py": {
+      "reason": "a self-test whose corpus is the dependency closure of the entry scripts it copies, derived at run time rather than declared",
+      "runner": "scripts/ci/check_formal.sh"
+    },
+    "test_postgres_recovery_root.py": {
+      "reason": "a self-test of the recovery drill; it walks the temporary trees its own fixtures build, so it has no repository input set to declare",
+      "runner": "scripts/ci/postgres_recovery_drill.sh"
+    }
   },
   "scope_lists": {
     "_coordinator_authority_fitness.py:ATTEMPT_BACKENDS": {
@@ -65,8 +147,17 @@
     "check_authority_arithmetic.py:RULES": {
       "reason": "each entry pairs an authority file with the arithmetic it must not re-derive, so the list carries the rule and not merely the scope"
     },
+    "check_degrading_defaults.py:FAIL_OPEN_READ_BASELINE": {
+      "reason": "the frozen inventory of fail-open reads this ratchet is driving to zero; a walk would recompute today's count and so could never detect a new one"
+    },
+    "check_degrading_defaults.py:FAIL_OPEN_READ_EXEMPTIONS": {
+      "reason": "each entry is a read whose default was argued to be correct in review; membership is a judgement about that call site, not a property any walk of the tree can observe"
+    },
     "check_dependency_gates.py:SILENT_SKIP_EXEMPTIONS": {
       "reason": "two files whose short-circuit on an absent dependency is sound; soundness is a judgement about the test, not a property any walk can read"
+    },
+    "check_fabricated_facts.py:COMPOSITION_ROOTS": {
+      "reason": "a composition root is where the process is allowed to read the wall clock; nothing in those files declares that status, and inferring it from a binary target would admit every test harness"
     },
     "check_file_limits.py:CODE_SUFFIXES": {
       "reason": "a taxonomy, not a scope: the suffix decides which line budget applies, and no directory walk can say whether a new extension is code, doc or config"
@@ -76,6 +167,15 @@
     },
     "check_file_limits.py:DOC_SUFFIXES": {
       "reason": "same taxonomy: these suffixes select the documentation budget rather than the code one, which is a decision and not a discoverable fact"
+    },
+    "check_gate_arguments.py:ADDITIONAL_ENTRY_POINTS": {
+      "reason": "gate entry points outside scripts/ci that no directory walk of that tree can reach; they are named by the lanes that run them, not by their own location"
+    },
+    "check_gate_arguments.py:ENTRY_POINT_EXEMPTIONS": {
+      "reason": "transparent argument passthroughs (kani.sh execs cargo kani \"$@\"); refusing an unknown flag there would refuse the tool's own flags, which is a property of the wrapper's contract, not of its text"
+    },
+    "check_lane_reachability.py:UNSELECTED_EXECUTABLES": {
+      "reason": "executables no lane runs today, each recorded with what covers the behaviour instead; a walk cannot distinguish a deliberate manual drill from a script that was orphaned by accident"
     },
     "check_observation_collapse.py:TRANSLATED_TRANSPORT": {
       "reason": "three dispatch-transport declarations that keep Result<Option<StreamCheckpoint>> because one named file translates it into the tri-state; the checker verifies that translation still exists and that each file still carries the shape, so the list cannot outlive its reason"
@@ -100,88 +200,6 @@
     },
     "check_test_orchestration.py:STORE_BACKEND_TESTS": {
       "reason": "the four store backends whose conformance suite must be wired; derivable from a crate walk, but this module is being changed in another lane, so it is registered rather than edited here"
-    }
-  },
-  "scanners_without_input_globs": {
-    "_realization_permit_fitness.py": {
-      "runner": null,
-      "reason": "a helper module imported by check_crate_boundaries.py, whose __main__ exists only for running the fitness function standalone; its inputs are the importer's"
-    },
-    "_session_effect_fitness.py": {
-      "runner": null,
-      "reason": "a helper module imported by check_crate_boundaries.py, whose __main__ exists only for running the fitness function standalone; its inputs are the importer's"
-    },
-    "check_authority_arithmetic.py": {
-      "runner": "scripts/ci/check-rust.sh",
-      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker"
-    },
-    "check_crate_boundaries.py": {
-      "runner": "scripts/ci/check-rust.sh",
-      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker"
-    },
-    "check_degrading_defaults.py": {
-      "runner": "scripts/ci/check-all.sh",
-      "reason": "runs only in the static group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render"
-    },
-    "check_dependency_gates.py": {
-      "runner": "scripts/ci/check-all.sh",
-      "reason": "runs only in the static group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render"
-    },
-    "check_dependency_sources.py": {
-      "runner": "scripts/ci/check-rust.sh",
-      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker"
-    },
-    "check_feature_matrix.py": {
-      "runner": "scripts/ci/check-rust.sh",
-      "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker"
-    },
-    "check_formal_mutations.py": {
-      "runner": "scripts/ci/check_formal.sh",
-      "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds"
-    },
-    "check_formal_web_surface.py": {
-      "runner": "scripts/ci/check_formal.sh",
-      "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds"
-    },
-    "check_managed_wire_naming.py": {
-      "runner": "scripts/ci/check-all.sh",
-      "reason": "has a pre-commit command whose glob is still hand-written; declaring inputs here belongs with the hook-hygiene work, not with this scope change"
-    },
-    "check_node_dependencies.py": {
-      "runner": "scripts/ci/check-all.sh",
-      "reason": "has a pre-commit command whose glob is still hand-written; declaring inputs here belongs with the hook-hygiene work, not with this scope change"
-    },
-    "check_product_release.py": {
-      "runner": "scripts/ci/check-all.sh",
-      "reason": "runs only in the docs group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render"
-    },
-    "check_test_orchestration.py": {
-      "runner": "scripts/ci/check-all.sh",
-      "reason": "has a pre-commit command whose glob is still hand-written, and the module is being changed in another lane, so its declaration is deferred rather than raced"
-    },
-    "export_homogeneous_lcov.py": {
-      "runner": "scripts/ci/e2e-coverage.sh",
-      "reason": "a coverage export tool rather than a gate: it reads profraw output produced by the run that invokes it, not a set of repository files"
-    },
-    "formal_run_evidence.py": {
-      "runner": "scripts/ci/check_formal.sh",
-      "reason": "an evidence writer rather than a gate: it walks the artefact directory the proof run just produced, which is not a repository input at all"
-    },
-    "render_runtime_refinement_traces.py": {
-      "runner": "scripts/ci/check-reliability.sh",
-      "reason": "a renderer rather than a gate: it walks the trace directory the reliability run just produced, which is not a repository input at all"
-    },
-    "test_bootstrap_kani.py": {
-      "runner": "scripts/ci/check_formal.sh",
-      "reason": "a self-test of the solver bootstrap; it walks the temporary trees its own fixtures build, so it has no repository input set to declare"
-    },
-    "test_formal_run_evidence.py": {
-      "runner": "scripts/ci/check_formal.sh",
-      "reason": "a self-test whose corpus is the dependency closure of the entry scripts it copies, derived at run time rather than declared"
-    },
-    "test_postgres_recovery_root.py": {
-      "runner": "scripts/ci/postgres_recovery_drill.sh",
-      "reason": "a self-test of the recovery drill; it walks the temporary trees its own fixtures build, so it has no repository input set to declare"
     }
   }
 }
