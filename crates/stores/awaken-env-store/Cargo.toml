@@ -26,6 +26,7 @@ awaken-scoped-migration-sqlite.workspace = true
 awaken-sqlite-pool.workspace = true
 
 [dev-dependencies]
+awaken-store-conformance.workspace = true
 # Property-based verification of the archive-vs-delete + fail-closed semantics (ADR-0059).
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

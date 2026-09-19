@@ -6,6 +6,12 @@
 //! from their own test crate, each with a freshly constructed store, so the suite
 //! stays backend-agnostic and the media (inmem/fs/postgres/sqlite) cannot diverge.
 
+pub mod env_registry;
+pub mod resource_registry;
+pub mod session_store;
+pub mod work_queue;
+pub mod worker_directory;
+
 use awaken_agent_contract::agent::awaiting::{
     AwaitTarget, PendingTool, ResumeTicket, ToolAwaitReason,
 };
