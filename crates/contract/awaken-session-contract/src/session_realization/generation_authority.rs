@@ -19,11 +19,22 @@ pub fn realization_generation_authorizes(
     current: &McpGenerationRef,
     asserted: &McpGenerationRef,
 ) -> bool {
+    use awaken_provisioning_contract::{FenceSuccession, fence_succession};
+    // Same Session and generation, and the current lease is a renewal of the
+    // asserted one under the one fence succession law.
     current.session_id == asserted.session_id
         && awaken_resource_contract::generation_matches(&current.generation, &asserted.generation)
-        && current.runtime_incarnation == asserted.runtime_incarnation
-        && current.lease_epoch == asserted.lease_epoch
-        && current.lease_expires_at_unix_ms >= asserted.lease_expires_at_unix_ms
+        && matches!(
+            fence_succession(
+                asserted.lease_epoch,
+                asserted.lease_expires_at_unix_ms,
+                current.lease_epoch,
+                current.lease_expires_at_unix_ms,
+                current.runtime_incarnation == asserted.runtime_incarnation
+                    && current.lease_epoch == asserted.lease_epoch,
+            ),
+            Some(FenceSuccession::Renewal)
+        )
 }
 
 #[cfg(kani)]
@@ -165,6 +176,42 @@ mod tests {
                 false,
             ),
         ] {
+            assert_eq!(
+                realization_generation_authorizes(&current, &asserted),
+                expected,
+                "{rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn generation_authorization_is_renewal_only_under_the_fence_succession_law() {
+        // C1 current lease expiry shorter/equal/longer than asserted; C2 epoch
+        // equal/higher. R1 equal epoch with expiry not shortened => authorized
+        // (a renewal); R2 shortened expiry => refused; R3 a higher epoch is a
+        // *reassignment* under the shared succession law and must not
+        // authorize an assertion made under the previous generation.
+        let asserted = McpGenerationRef {
+            session_id: "session-a".into(),
+            generation: crate::mcp_attachment::test_generation(
+                "browser",
+                1,
+                "https://browser.test/mcp",
+            ),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            lease_epoch: 3,
+            lease_expires_at_unix_ms: 10,
+        };
+        for (epoch, expiry, expected, rule) in [
+            (3, 9, false, "R2 shortened"),
+            (3, 10, true, "R1 equal"),
+            (3, 11, true, "R1 lengthened"),
+            (4, 11, false, "R3 reassignment"),
+            (4, 10, false, "R3 reassignment equal expiry"),
+        ] {
+            let mut current = asserted.clone();
+            current.lease_epoch = epoch;
+            current.lease_expires_at_unix_ms = expiry;
             assert_eq!(
                 realization_generation_authorizes(&current, &asserted),
                 expected,
