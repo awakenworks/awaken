@@ -372,6 +372,51 @@
       "requirement": "fetched",
       "install": "docker pull quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z",
       "owner": "scripts/ci/pg_tests.sh MC_IMAGE"
+    },
+    {
+      "name": "docker.io/library/rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663",
+      "locate": "container-image",
+      "gates": ["sandbox", "kubernetes", "k3d"],
+      "requirement": "required",
+      "note": "rust toolchain stage of deploy/images/sandbox/Dockerfile. Required rather than fetched on demand: the gate builds from all five at once, and when the registry is slow or unreachable the on-demand path burns minutes inside buildkit and then reports `DeadlineExceeded: failed to resolve source metadata`, which reads as a broken build rather than a missing image. Deciding it in the preflight costs one lookup and names the exact pull to run. The digest is the one pinned in the Dockerfile; both must move together.",
+      "install": "docker pull docker.io/library/rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663",
+      "owner": "deploy/images/sandbox/Dockerfile"
+    },
+    {
+      "name": "docker.io/library/node:22-trixie-slim@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284",
+      "locate": "container-image",
+      "gates": ["sandbox", "kubernetes", "k3d"],
+      "requirement": "required",
+      "note": "node toolchain stage of deploy/images/sandbox/Dockerfile. Required rather than fetched on demand: the gate builds from all five at once, and when the registry is slow or unreachable the on-demand path burns minutes inside buildkit and then reports `DeadlineExceeded: failed to resolve source metadata`, which reads as a broken build rather than a missing image. Deciding it in the preflight costs one lookup and names the exact pull to run. The digest is the one pinned in the Dockerfile; both must move together.",
+      "install": "docker pull docker.io/library/node:22-trixie-slim@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284",
+      "owner": "deploy/images/sandbox/Dockerfile"
+    },
+    {
+      "name": "docker.io/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac",
+      "locate": "container-image",
+      "gates": ["sandbox", "kubernetes", "k3d"],
+      "requirement": "required",
+      "note": "go toolchain stage of deploy/images/sandbox/Dockerfile. Required rather than fetched on demand: the gate builds from all five at once, and when the registry is slow or unreachable the on-demand path burns minutes inside buildkit and then reports `DeadlineExceeded: failed to resolve source metadata`, which reads as a broken build rather than a missing image. Deciding it in the preflight costs one lookup and names the exact pull to run. The digest is the one pinned in the Dockerfile; both must move together.",
+      "install": "docker pull docker.io/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac",
+      "owner": "deploy/images/sandbox/Dockerfile"
+    },
+    {
+      "name": "docker.io/library/ruby:3.3-bookworm@sha256:daf7fa54695b1fcb24fadd7b8cd18ff847e20ce76fe5a908e3cfe9af9147bc46",
+      "locate": "container-image",
+      "gates": ["sandbox", "kubernetes", "k3d"],
+      "requirement": "required",
+      "note": "ruby toolchain stage of deploy/images/sandbox/Dockerfile. Required rather than fetched on demand: the gate builds from all five at once, and when the registry is slow or unreachable the on-demand path burns minutes inside buildkit and then reports `DeadlineExceeded: failed to resolve source metadata`, which reads as a broken build rather than a missing image. Deciding it in the preflight costs one lookup and names the exact pull to run. The digest is the one pinned in the Dockerfile; both must move together.",
+      "install": "docker pull docker.io/library/ruby:3.3-bookworm@sha256:daf7fa54695b1fcb24fadd7b8cd18ff847e20ce76fe5a908e3cfe9af9147bc46",
+      "owner": "deploy/images/sandbox/Dockerfile"
+    },
+    {
+      "name": "docker.io/library/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+      "locate": "container-image",
+      "gates": ["sandbox", "kubernetes", "k3d"],
+      "requirement": "required",
+      "note": "runtime stage of deploy/images/sandbox/Dockerfile. Required rather than fetched on demand: the gate builds from all five at once, and when the registry is slow or unreachable the on-demand path burns minutes inside buildkit and then reports `DeadlineExceeded: failed to resolve source metadata`, which reads as a broken build rather than a missing image. Deciding it in the preflight costs one lookup and names the exact pull to run. The digest is the one pinned in the Dockerfile; both must move together.",
+      "install": "docker pull docker.io/library/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+      "owner": "deploy/images/sandbox/Dockerfile"
     }
   ]
 }
