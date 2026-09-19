@@ -1,307 +1,462 @@
 {
   "version": 1,
   "exclusions": [
-    {"path":"crates/worker/awaken-sandbox-container/src/runtime/realization_tests/rebuild.rs","boundary":"test_only","reason":"Child of the existing cfg(test) realization_tests module. It owns the source/result decision-table regression cases and reuses the parent test fixtures; production Rebuild admission remains in runtime/realization.rs and the shared existing_realization_decision. This test module is not a production safety implementation.","evidence":["crates/worker/awaken-sandbox-container/src/runtime.rs"]},
+    {
+      "path": "crates/worker/awaken-sandbox-container/src/runtime/realization_tests/rebuild.rs",
+      "boundary": "test_only",
+      "reason": "Child of the existing cfg(test) realization_tests module. It owns the source/result decision-table regression cases and reuses the parent test fixtures; production Rebuild admission remains in runtime/realization.rs and the shared existing_realization_decision. This test module is not a production safety implementation.",
+      "evidence": [
+        "crates/worker/awaken-sandbox-container/src/runtime.rs"
+      ]
+    },
     {
       "path": "crates/contract/awaken-session-contract/src/realization_observation.rs",
       "boundary": "test_support_observation_port",
       "reason": "The parent module exports this port only under the test-support feature. It forwards checkpoints to the scenario executable without owning product transitions or persistence; the scenario adapter and real HTTP crash tests validate observation behavior. This exclusion is not a production proof claim.",
-      "evidence": ["crates/contract/awaken-session-contract/src/lib.rs", "crates/devtools/awaken-scenario-host/src/realization_observation.rs", "e2e/managed_mcp_recovery_e2e.ts"]
+      "evidence": [
+        "crates/contract/awaken-session-contract/src/lib.rs",
+        "crates/devtools/awaken-scenario-host/src/realization_observation.rs",
+        "e2e/managed_mcp_recovery_e2e.ts"
+      ]
     },
     {
       "path": "crates/contract/awaken-provisioning-contract/src/test_support.rs",
       "boundary": "test_only",
       "reason": "Static owner: one explicit revocable effect-authority fixture shared by provider tests. Dynamic path: tests install, renew or revoke its finite grant; the module is compiled only by cfg(any(test, feature = test-support)), not the default production graph. It is not a production clock or a second Session authority.",
-      "evidence": ["crates/contract/awaken-provisioning-contract/src/lib.rs", "crates/contract/awaken-provisioning-contract/Cargo.toml"]
+      "evidence": [
+        "crates/contract/awaken-provisioning-contract/src/lib.rs",
+        "crates/contract/awaken-provisioning-contract/Cargo.toml"
+      ]
     },
     {
       "path": "crates/bin/awaken-cli/src/config/report.rs",
       "boundary": "presentation_only",
       "reason": "Formats an already-resolved deployment into redacted text or JSON; it owns no authorization, state transition, concurrency, or persistence decision.",
-      "evidence": ["crates/bin/awaken-cli/src/config.rs"]
+      "evidence": [
+        "crates/bin/awaken-cli/src/config.rs"
+      ]
     },
     {
       "path": "crates/bin/awaken-cli/src/credential_probe.rs",
       "boundary": "external_adapter",
       "reason": "Projects the provider adapter's three-state credential-probe result into the admin API vocabulary without selecting credentials or deciding admission.",
-      "evidence": ["crates/control/awaken-admin-config-api/src/router.rs"]
+      "evidence": [
+        "crates/control/awaken-admin-config-api/src/router.rs"
+      ]
     },
     {
       "path": "crates/bin/awaken-cli/src/web_search_publication.rs",
       "boundary": "composition_adapter",
       "reason": "Delegates publication validation to the WebSearch plugin's canonical validator and returns the unchanged validated configuration; it introduces no independent policy.",
-      "evidence": ["crates/bin/awaken-cli/src/web_search_publication.rs"]
+      "evidence": [
+        "crates/bin/awaken-cli/src/web_search_publication.rs"
+      ]
     },
     {
       "path": "crates/control/awaken-admin-assistant/src/console_help.rs",
       "boundary": "presentation_content",
       "reason": "Curated, read-only help text and topic lookup for the console; it neither authorizes nor mutates any product resource despite security vocabulary in the prose.",
-      "evidence": ["crates/control/awaken-admin-assistant/src/console_help.rs"]
+      "evidence": [
+        "crates/control/awaken-admin-assistant/src/console_help.rs"
+      ]
     },
     {
       "path": "crates/contract/awaken-agent-contract/src/audit/kind.rs",
       "boundary": "wire_vocabulary",
       "reason": "Closed serde vocabulary for audit event names only; lifecycle authority and transition decisions live in the commit and fold implementations.",
-      "evidence": ["crates/contract/awaken-agent-contract/src/audit/kind.rs"]
+      "evidence": [
+        "crates/contract/awaken-agent-contract/src/audit/kind.rs"
+      ]
     },
     {
       "path": "crates/contract/awaken-agent-contract/src/audit/run_event.rs",
       "boundary": "projection_dto",
       "reason": "Typed audit-event product shape and lossless lowering into a draft payload; it observes already-decided facts and cannot authorize or change Run state.",
-      "evidence": ["crates/contract/awaken-agent-contract/src/audit/run_event.rs"]
+      "evidence": [
+        "crates/contract/awaken-agent-contract/src/audit/run_event.rs"
+      ]
     },
     {
       "path": "crates/contract/awaken-agent-contract/src/event/agent.rs",
       "boundary": "projection_dto",
       "reason": "Defines neutral fact and delta projection shapes plus trivial constructors; production event classification and fold decisions live in sibling modules.",
-      "evidence": ["docs/adr/0058-one-neutral-event-vocabulary-message-sourced-classify-routed-two-tier-projection.md"]
+      "evidence": [
+        "docs/adr/0058-one-neutral-event-vocabulary-message-sourced-classify-routed-two-tier-projection.md"
+      ]
     },
     {
       "path": "crates/contract/awaken-agent-contract/src/thread/read/checkpoint.rs",
       "boundary": "read_port_contract",
       "reason": "Read-only scope DTO and repository trait; consistency and commit authority are implemented and tested by concrete stores.",
-      "evidence": ["docs/design/runtime-persistence.md"]
+      "evidence": [
+        "docs/design/runtime-persistence.md"
+      ]
     },
     {
       "path": "crates/contract/awaken-agent-contract/src/thread/read/recovery.rs",
       "boundary": "read_port_contract",
       "reason": "Serializable recovery snapshot and asynchronous read-port signature only; it cannot mutate, fence, or select committed truth.",
-      "evidence": ["docs/design/runtime-persistence.md"]
+      "evidence": [
+        "docs/design/runtime-persistence.md"
+      ]
     },
     {
       "path": "crates/contract/awaken-session-contract/src/mcp_probe.rs",
       "boundary": "external_port_contract",
       "reason": "Defines the three-state MCP probe result, the refresh-exchange outcome, their port signatures, and the pure scrub-then-bound projection of observed HTTP evidence; live handshake classification is owned by the runtime-host adapter and the exchange by the credential materializer.",
-      "evidence": ["crates/bin/awaken-cli/tests/mcp_sessions.rs"]
+      "evidence": [
+        "crates/bin/awaken-cli/tests/mcp_sessions.rs"
+      ]
     },
     {
       "path": "crates/control/awaken-admin-config-api/src/openapi.rs",
       "boundary": "contract_documentation",
       "reason": "Emits OpenAPI and JSON Schema documentation from already-defined wire types; real router conformance is checked against the generated registry and no request is admitted here.",
-      "evidence": ["crates/control/awaken-admin-config-api/tests/openapi_contract.rs"]
+      "evidence": [
+        "crates/control/awaken-admin-config-api/tests/openapi_contract.rs"
+      ]
     },
     {
       "path": "crates/control/awaken-config-service/src/config_service/test_support.rs",
       "boundary": "test_only",
       "reason": "Shared ConfigService fixtures, fake resolvers, registries, and failure injectors included only by config_service.rs under cfg(test); they own no production authorization, durability, concurrency, or credential boundary.",
-      "evidence": ["crates/control/awaken-config-service/src/config_service.rs"]
+      "evidence": [
+        "crates/control/awaken-config-service/src/config_service.rs"
+      ]
     },
     {
       "path": "crates/control/awaken-config-service/src/service_wiring.rs",
       "boundary": "composition_wiring",
       "reason": "Builder methods install already-authorized collaborator ports into ConfigService fields and contain no selection or authorization policy.",
-      "evidence": ["crates/control/awaken-config-service/src/config_service.rs"]
+      "evidence": [
+        "crates/control/awaken-config-service/src/config_service.rs"
+      ]
     },
     {
       "path": "crates/runtime/awaken-ext-memory/src/agent.rs",
       "boundary": "static_agent_wiring",
       "reason": "Builds two fixed internal Agent snapshots from static instructions and descriptors; extraction admission, persistence, and secret filtering are owned by other modules.",
-      "evidence": ["crates/runtime/awaken-ext-memory/src/agent.rs"]
+      "evidence": [
+        "crates/runtime/awaken-ext-memory/src/agent.rs"
+      ]
     },
     {
       "path": "crates/runtime/awaken-mcp-wire/src/types.rs",
       "boundary": "wire_dto",
       "reason": "MCP protocol serde shapes, errors, and field-preserving constructors only; JSON-RPC state and transport behavior live in separate modules.",
-      "evidence": ["crates/runtime/awaken-mcp-wire/src/types.rs"]
+      "evidence": [
+        "crates/runtime/awaken-mcp-wire/src/types.rs"
+      ]
     },
     {
       "path": "crates/runtime/awaken-observability/src/metrics.rs",
       "boundary": "observability_adapter",
       "reason": "Projects already-observed structure-only facts into OpenTelemetry/Prometheus instruments; counters and exporter shutdown have no authority over product state.",
-      "evidence": ["crates/runtime/awaken-observability/src/metrics.rs"]
+      "evidence": [
+        "crates/runtime/awaken-observability/src/metrics.rs"
+      ]
     },
     {
       "path": "crates/runtime/awaken-observability/src/otel.rs",
       "boundary": "observability_adapter",
       "reason": "Configures external trace exporters and a JSON-lines diagnostic sink; failures intentionally affect telemetry only and never authorize or mutate a product aggregate.",
-      "evidence": ["crates/runtime/awaken-observability/src/otel.rs"]
+      "evidence": [
+        "crates/runtime/awaken-observability/src/otel.rs"
+      ]
     },
     {
       "path": "crates/contract/awaken-runtime-contract/src/metrics.rs",
       "boundary": "observability_port",
       "reason": "Structure-only metrics DTO, sink trait, and null implementation; it has no product admission, transition, or persistence authority.",
-      "evidence": ["crates/contract/awaken-runtime-contract/src/metrics.rs"]
+      "evidence": [
+        "crates/contract/awaken-runtime-contract/src/metrics.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-mcp-server-testkit/src/lib.rs",
       "boundary": "test_support_crate",
       "reason": "Reusable MCP conformance test server and fixtures; it is not linked into a product execution surface.",
-      "evidence": ["crates/server/awaken-mcp-server-testkit/tests/core_conformance.rs"]
+      "evidence": [
+        "crates/server/awaken-mcp-server-testkit/tests/core_conformance.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-ag-ui/src/types.rs",
       "boundary": "wire_dto",
       "reason": "AG-UI protocol serde shapes and error constructors only; request admission and event projection decisions live in request.rs and encoder.rs.",
-      "evidence": ["crates/server/awaken-protocol-ag-ui/tests/router_errors.rs"]
+      "evidence": [
+        "crates/server/awaken-protocol-ag-ui/tests/router_errors.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-managed/src/state/environment.rs",
       "boundary": "application_adapter",
       "reason": "Forwards Environment queries and resolution to the canonical SessionApplication, only translating its error and return shape.",
-      "evidence": ["crates/server/awaken-session-application/src/creation.rs"]
+      "evidence": [
+        "crates/server/awaken-session-application/src/creation.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-managed/src/state/managed_state.rs",
       "boundary": "projection_state_holder",
       "reason": "Declares disposable in-memory wire projection fields only; it implements no locking protocol or canonical Session transition.",
-      "evidence": ["crates/server/awaken-protocol-managed/src/state/rehydration.rs"]
+      "evidence": [
+        "crates/server/awaken-protocol-managed/src/state/rehydration.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-managed/src/state/session_service.rs",
       "boundary": "composition_wiring",
       "reason": "Constructs the disposable Managed projection and installs application ports; test-support builders are configuration-gated and production behavior remains in SessionApplication.",
-      "evidence": ["crates/server/awaken-session-application/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-session-application/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-managed/src/state/test_support.rs",
       "boundary": "test_only",
       "reason": "Managed-state fixtures and fake runtime compiled only through the test-gated parent module.",
-      "evidence": ["crates/server/awaken-protocol-managed/src/state/tests/mod.rs"]
+      "evidence": [
+        "crates/server/awaken-protocol-managed/src/state/tests/mod.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-managed/src/state/work_dispatch.rs",
       "boundary": "application_adapter",
       "reason": "Triggers the application-owned WorkQueue reconciler and logs its report; it makes no dispatch state or settlement decision.",
-      "evidence": ["crates/server/awaken-session-application/src/realization.rs"]
+      "evidence": [
+        "crates/server/awaken-session-application/src/realization.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-managed/src/types/user_profile.rs",
       "boundary": "wire_dto",
       "reason": "Pure serde request and response shapes for the external user-profile API; storage, authorization, and update semantics live in the route owner.",
-      "evidence": ["crates/server/awaken-protocol-managed/src/routes/user_profiles.rs"]
+      "evidence": [
+        "crates/server/awaken-protocol-managed/src/routes/user_profiles.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-mcp/src/bin/awaken-mcp-stdio-demo.rs",
       "boundary": "demonstration_binary",
       "reason": "Standalone MCP stdio demonstration program, not a product server or worker entrypoint.",
-      "evidence": ["crates/server/awaken-protocol-mcp/src/bin/awaken-mcp-stdio-demo.rs"]
+      "evidence": [
+        "crates/server/awaken-protocol-mcp/src/bin/awaken-mcp-stdio-demo.rs"
+      ]
     },
     {
       "path": "crates/contract/awaken-dispatch-contract/src/lib.rs",
       "boundary": "module_facade",
       "reason": "Run-ingress contract declarations and public re-exports only; dispatch, claim, placement, and settlement decisions remain inventoried in their defining modules.",
-      "evidence": ["crates/contract/awaken-dispatch-contract/src/lib.rs"]
+      "evidence": [
+        "crates/contract/awaken-dispatch-contract/src/lib.rs"
+      ]
     },
     {
       "path": "crates/contract/awaken-dispatch-contract/src/operational.rs",
       "boundary": "read_model_contract",
       "reason": "Serializable operational-feed events, cursor DTOs, and a read-only feed port; it does not issue or mutate dispatch authority.",
-      "evidence": ["crates/contract/awaken-dispatch-contract/src/operational.rs"]
+      "evidence": [
+        "crates/contract/awaken-dispatch-contract/src/operational.rs"
+      ]
     },
     {
       "path": "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
       "boundary": "wire_dto",
       "reason": "Serializable Worker HTTP request envelopes and a field-preserving constructor; authentication and claim authorization stay server-side.",
-      "evidence": ["crates/server/awaken-dispatch-http/tests/dispatch_transport_http.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch-http/tests/dispatch_transport_http.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-dispatch-testkit/src/lib.rs",
       "boundary": "test_support_crate",
       "reason": "Reusable dispatch conformance fixtures and fake executors; it is not linked into a product execution surface.",
-      "evidence": ["crates/server/awaken-dispatch-testkit/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch-testkit/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-session-executor/src/host/worker_resolver/test_support.rs",
       "boundary": "test_only",
       "reason": "Claimed-dispatch fixtures and fake model compiled only through the test-gated worker_resolver module.",
-      "evidence": ["crates/server/awaken-session-executor/src/host/worker_resolver/dispatched_mcp_tests.rs"]
+      "evidence": [
+        "crates/server/awaken-session-executor/src/host/worker_resolver/dispatched_mcp_tests.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-session-executor/src/test_mcp.rs",
       "boundary": "test_only",
       "reason": "In-process MCP protocol emulator declared under cfg(test) and used only by runtime-host tests.",
-      "evidence": ["crates/server/awaken-session-executor/src/mcp.rs"]
+      "evidence": [
+        "crates/server/awaken-session-executor/src/mcp.rs"
+      ]
     },
     {
       "path": "crates/worker/awaken-connection-plan/src/plan.rs",
       "boundary": "topology_dto",
       "reason": "Serializable connection-topology value object with field-preserving convenience constructors; transport authentication and admission are intentionally absent.",
-      "evidence": ["docs/adr/0045-connection-plan-and-network-topology.md"]
+      "evidence": [
+        "docs/adr/0045-connection-plan-and-network-topology.md"
+      ]
     },
     {
       "path": "crates/bin/awaken-cli/src/managed_platform.rs",
       "boundary": "composition_adapter",
       "reason": "Static owner: hosted composition seam carrying already-selected provider ports. Dynamic path: startup injects those ports into canonical IAM, Vault, Session, and protocol owners; this file neither evaluates entitlement nor adopts credential material. Evidence: crates/control/awaken-credential-vault/src/repo.rs and the canonical downstream owners.",
-      "evidence": ["crates/control/awaken-credential-vault/src/repo.rs"]
+      "evidence": [
+        "crates/control/awaken-credential-vault/src/repo.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-coordinator/src/managed_lifecycle.rs",
       "boundary": "composition_wiring",
       "reason": "Static owner: Coordinator assembly of existing lifecycle delivery ports. Dynamic path: committed lifecycle facts flow through CompositeLifecycleFactDelivery to the existing WebhookOutboxNotifier; no lifecycle transition, retry, or durable-outbox decision is reimplemented here. Evidence: crates/contract/awaken-session-contract/src/lifecycle.rs and crates/server/awaken-webhook-managed/src/lib.rs.",
-      "evidence": ["crates/contract/awaken-session-contract/src/lifecycle.rs", "crates/server/awaken-webhook-managed/src/lib.rs"]
+      "evidence": [
+        "crates/contract/awaken-session-contract/src/lifecycle.rs",
+        "crates/server/awaken-webhook-managed/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-protocol-managed/src/test_support.rs",
       "boundary": "test_only",
       "reason": "Static owner: Managed protocol fixtures and scenario helpers. Dynamic path: the module is reachable only through the exact cfg(any(test, feature = test-support)) declaration and never enters the default product graph. Evidence: crates/server/awaken-protocol-managed/src/lib.rs.",
-      "evidence": ["crates/server/awaken-protocol-managed/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-protocol-managed/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-dispatch-testkit/src/conformance/dispatch_admission.rs",
       "boundary": "test_support_crate",
       "reason": "Static owner: dispatch-admission conformance cases. Dynamic path: the tooling-only testkit includes this exact file into its test fixture library; no product crate owns or invokes it. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.",
-      "evidence": ["crates/server/awaken-dispatch-testkit/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch-testkit/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-dispatch-testkit/src/conformance/fixtures.rs",
       "boundary": "test_support_crate",
       "reason": "Static owner: reusable ingress fakes and fixture constructors. Dynamic path: the tooling-only testkit includes this exact file for conformance execution; it is absent from the product runtime graph. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.",
-      "evidence": ["crates/server/awaken-dispatch-testkit/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch-testkit/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-dispatch-testkit/src/conformance/operations_claims.rs",
       "boundary": "test_support_crate",
       "reason": "Static owner: operation-claim conformance cases. Dynamic path: the tooling-only testkit includes this exact file to drive implementations under test; production dispatch never calls it. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.",
-      "evidence": ["crates/server/awaken-dispatch-testkit/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch-testkit/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-dispatch-testkit/src/conformance/recovery_credentials.rs",
       "boundary": "test_support_crate",
       "reason": "Static owner: recovery-credential conformance cases. Dynamic path: the tooling-only testkit includes this exact file to exercise claimed recovery; it does not resolve credentials in production. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.",
-      "evidence": ["crates/server/awaken-dispatch-testkit/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch-testkit/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
       "boundary": "test_support_crate",
       "reason": "Static owner: normalized crash-recovery history for adapter differential tests. Dynamic path: the tooling-only testkit drives production DispatchStore implementations and records observations; it neither transitions nor persists product state itself. Evidence: run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing.",
-      "evidence": ["crates/server/awaken-dispatch/tests/dispatch_conformance.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
       "boundary": "test_support_crate",
       "reason": "Static owner: dispatch-reservation conformance cases. Dynamic path: the tooling-only testkit includes this exact file to assert store behavior; it does not reserve product work itself. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.",
-      "evidence": ["crates/server/awaken-dispatch-testkit/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch-testkit/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-dispatch-testkit/src/conformance/session_messages.rs",
       "boundary": "test_support_crate",
       "reason": "Static owner: pending Session-message conformance cases. Dynamic path: the tooling-only testkit includes this exact file to drive store implementations under test; it is not a production message port. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.",
-      "evidence": ["crates/server/awaken-dispatch-testkit/src/lib.rs"]
+      "evidence": [
+        "crates/server/awaken-dispatch-testkit/src/lib.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-session-executor/src/managed_outcome.rs",
       "boundary": "application_adapter",
       "reason": "Static owner: field-preserving adapter between Session outcome ports and the Host outcome controller. Dynamic path: define, resume, and committed projection calls delegate to SharedHost and project the existing controller result without choosing outcome transitions. Evidence: crates/server/awaken-session-executor/src/outcome_controller.rs.",
-      "evidence": ["crates/server/awaken-session-executor/src/outcome_controller.rs"]
+      "evidence": [
+        "crates/server/awaken-session-executor/src/outcome_controller.rs"
+      ]
     },
     {
       "path": "crates/server/awaken-coordinator-client/src/session_control.rs",
       "boundary": "transport_adapter",
       "reason": "Static owner: Worker-side implementation of neutral Session-control ports. Dynamic path: each method forwards the exact Worker identity, claim, and command to WorkerControlClient; authentication and state decisions remain server-side. Evidence: crates/server/awaken-coordinator-client/src/worker_control_client.rs.",
-      "evidence": ["crates/server/awaken-coordinator-client/src/worker_control_client.rs"]
+      "evidence": [
+        "crates/server/awaken-coordinator-client/src/worker_control_client.rs"
+      ]
     },
     {
       "path": "crates/contract/awaken-session-contract/src/session/run_coordination.rs",
       "boundary": "projection_dto",
       "reason": "Defines immutable delegated-Run snapshots, budget-resume delivery and ticket shapes, plus a closed disposition enum; it performs no transition, dispatch, persistence, or authorization decision. Runtime and Session owners consume these values.",
-      "evidence": ["crates/contract/awaken-session-contract/src/session.rs"]
+      "evidence": [
+        "crates/contract/awaken-session-contract/src/session.rs"
+      ]
     },
     {
       "path": "crates/control/awaken-credential-vault/src/repo/in_memory.rs",
       "boundary": "test_support_adapter",
       "reason": "Every state type and repository implementation is compiled only under cfg(any(test, feature = test-support)) and serves tests or scenario fixtures. Production Credential authority remains the neutral repository contract and external durable adapters.",
-      "evidence": ["crates/control/awaken-credential-vault/src/repo.rs"]
+      "evidence": [
+        "crates/control/awaken-credential-vault/src/repo.rs"
+      ]
     },
-    {"path":"crates/server/awaken-protocol-managed/src/official_request_witnesses.rs","boundary":"test_only","reason":"Declared `#[cfg(test)] mod official_request_witnesses;`. It owns no production behavior: it loads the generated official request corpus and asserts every witness decodes into the route parameter type the server already uses, so the risk signals it matches are the shapes under test, not a surface this crate ships."}
+    {
+      "path": "crates/server/awaken-protocol-managed/src/official_request_witnesses.rs",
+      "boundary": "test_only",
+      "reason": "Declared `#[cfg(test)] mod official_request_witnesses;`. It owns no production behavior: it loads the generated official request corpus and asserts every witness decodes into the route parameter type the server already uses, so the risk signals it matches are the shapes under test, not a surface this crate ships."
+    },
+    {
+      "path": "crates/stores/awaken-store-conformance/src/env_registry.rs",
+      "boundary": "test_support_crate",
+      "reason": "Trait-generic EnvRegistry conformance suite (ADR-0081 §7). It is a tooling-only test library every backend's test target calls; no product crate links or invokes it, and it admits nothing at runtime.",
+      "evidence": [
+        "crates/stores/awaken-env-store/tests/env_registry_conformance.rs"
+      ]
+    },
+    {
+      "path": "crates/stores/awaken-store-conformance/src/resource_registry.rs",
+      "boundary": "test_support_crate",
+      "reason": "Trait-generic ResourceRegistryRepository conformance suite (ADR-0081 §7). It is a tooling-only test library every backend's test target calls; no product crate links or invokes it, and it admits nothing at runtime.",
+      "evidence": [
+        "crates/stores/awaken-resource-store/tests/registry_conformance.rs"
+      ]
+    },
+    {
+      "path": "crates/stores/awaken-store-conformance/src/session_store.rs",
+      "boundary": "test_support_crate",
+      "reason": "Trait-generic SessionStore (SessionRepository + LifecycleOutbox) and DeploymentRepository conformance suite (ADR-0081 §7). It is a tooling-only test library every backend's test target calls; no product crate links or invokes it, and it admits nothing at runtime.",
+      "evidence": [
+        "crates/stores/awaken-session-store/tests/session_repo_conformance.rs"
+      ]
+    },
+    {
+      "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+      "boundary": "test_support_crate",
+      "reason": "Trait-generic WorkQueue conformance suite (ADR-0081 §7). It is a tooling-only test library every backend's test target calls; no product crate links or invokes it, and it admits nothing at runtime.",
+      "evidence": [
+        "crates/stores/awaken-work-store/tests/work_queue_conformance.rs"
+      ]
+    },
+    {
+      "path": "crates/stores/awaken-store-conformance/src/worker_directory.rs",
+      "boundary": "test_support_crate",
+      "reason": "Trait-generic WorkerDirectory conformance suite (ADR-0081 §7). It is a tooling-only test library every backend's test target calls; no product crate links or invokes it, and it admits nothing at runtime.",
+      "evidence": [
+        "crates/server/awaken-worker-registry/tests/conformance.rs"
+      ]
+    }
   ]
 }
