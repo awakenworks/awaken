@@ -1,6 +1,6 @@
 //! Deterministic authorization profiles owned by Awaken.
 
-use awaken_authorization_contract::{
+use super::roles::{
     AGENT_PUBLISHER_AUTHORITIES, CREDENTIAL_INGRESS_AUTHORITIES, WorkspaceProfileRole,
     WorkspaceRoleAuthority, workspace_profile_role_authorities,
 };
@@ -32,7 +32,7 @@ pub(super) const AWAKEN_WORKSPACE_LEGACY_HOSTED_ADMIN_ROLE: &str =
     "awaken.workspace:legacy_hosted_admin";
 /// Hosted human member: the existing read-only Workspace role, fully qualified
 /// under the one Awaken Workspace authorization language.
-pub use awaken_authorization_contract::{
+pub use super::roles::{
     AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE, AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE,
     AWAKEN_WORKSPACE_USER_ROLE,
 };
