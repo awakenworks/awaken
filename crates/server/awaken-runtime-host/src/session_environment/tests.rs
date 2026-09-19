@@ -7,6 +7,7 @@ use awaken_provisioning_contract::{
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_sandbox_container::ContainerEnvironmentProvider as _;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
@@ -4439,4 +4440,83 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         );
         previous.stop_bound_processes().await.unwrap();
     }
+}
+
+/// A checkpoint store that counts reads so a test can prove the selection
+/// edge refused before any checkpoint byte was fetched.
+#[derive(Default)]
+struct CountingCheckpointStore {
+    gets: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl pc::SandboxCheckpointStore for CountingCheckpointStore {
+    async fn put(
+        &self,
+        _metadata: &pc::CheckpointObjectMetadata,
+        _bytes: Vec<u8>,
+    ) -> Result<pc::StoredCheckpointObject, pc::SandboxError> {
+        Err(pc::SandboxError::unsupported("counting store never stores"))
+    }
+    async fn get(&self, _id: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(pc::SandboxError::unsupported("counting store never reads"))
+    }
+    async fn delete(&self, _id: &str) -> Result<(), pc::SandboxError> {
+        Ok(())
+    }
+}
+
+// Container restore capability ladder (ADR-0081): C1 the container provider
+// advertises no `restorable` rung. R1 restore is refused as a typed
+// Unsupported at selection, so a composition root learns the missing rung
+// from the error class; R2 no checkpoint byte is read before that refusal;
+// R3 the refusal is the selection edge's own, not a provider default that a
+// warm pool or decorator could silently forward.
+#[tokio::test]
+async fn container_restore_is_refused_at_selection_when_the_provider_has_no_restorable_rung() {
+    let provider = Arc::new(FakeContainerProvider::default());
+    assert!(provider.restorable().is_none(), "C1");
+    let container = SessionEnvironmentProvider::container(
+        provider,
+        Vec::new(),
+        Arc::new(FakeHandExecutorFactory),
+        "/usr/local/bin/awaken-sandbox",
+    );
+    let store = CountingCheckpointStore::default();
+    let request = pc::SandboxRestoreRequest {
+        workspace_id: "workspace".into(),
+        session_id: "session".into(),
+        effect_id: "restore-effect".into(),
+        generation_id: "generation".into(),
+        checkpoint: pc::SandboxCheckpointRef {
+            id: "checkpoint".into(),
+            format: "portable-test-v1".into(),
+            digest: "digest".into(),
+            size_bytes: 7,
+            created_at_unix_ms: 10,
+            expires_at_unix_ms: u64::MAX,
+            environment_fingerprint: "environment".into(),
+            base_image_fingerprint: "base".into(),
+            excluded_mounts: Vec::new(),
+            suspend_effect_id: "suspend-effect".into(),
+        },
+    };
+    let error = container
+        .restore(&spec(), &request, &store)
+        .await
+        .expect_err("R1 refused");
+    assert!(
+        matches!(error, pc::SandboxError::Unsupported(_)),
+        "R1 typed variant: {error}"
+    );
+    assert_eq!(
+        store.gets.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "R2"
+    );
+    assert!(
+        error.to_string().contains("checkpoint restore"),
+        "R3 names the rung: {error}"
+    );
 }

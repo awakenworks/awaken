@@ -614,38 +614,59 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError>;
 
-    /// Acquire the one physical target for an exact restore effect. Canonical
-    /// checkpoint decorators use this instead of ordinary create.
+    /// Exact-restore target capability. `None` means this provider cannot own
+    /// a restore target, and the caller refuses at selection time instead of
+    /// discovering it at the physical effect (ADR-0081 capability ladder).
+    fn restore_targets(&self) -> Option<&dyn RestoreTargetContainerEnvironmentProvider> {
+        None
+    }
+
+    /// Checkpoint-byte restoration capability. Restorable providers also own
+    /// restore targets; [`restore_ladder_is_consistent`] states that law.
+    fn restorable(&self) -> Option<&dyn RestorableContainerEnvironmentProvider> {
+        None
+    }
+}
+
+/// Ladder law: a provider that can restore checkpoint bytes must also be able
+/// to acquire and dispose the exact physical target those bytes land in.
+#[must_use]
+pub fn restore_ladder_is_consistent(provider: &dyn ContainerEnvironmentProvider) -> bool {
+    provider.restorable().is_none() || provider.restore_targets().is_some()
+}
+
+/// Container providers that own the one physical target of an exact restore
+/// effect. Canonical checkpoint decorators use this instead of ordinary create.
+#[async_trait]
+pub trait RestoreTargetContainerEnvironmentProvider: ContainerEnvironmentProvider {
+    /// Acquire the one physical target for an exact restore effect.
     async fn acquire_restore_environment(
         &self,
-        _spec: &pc::SandboxSpec,
-        _request: &pc::SandboxRestoreRequest,
-    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container provider does not implement exact restore target acquisition",
-        ))
-    }
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError>;
 
-    async fn restore_environment(
-        &self,
-        _spec: &pc::SandboxSpec,
-        _request: &pc::SandboxRestoreRequest,
-        _store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<pc::SandboxRestoreResult<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container provider does not implement checkpoint restore",
-        ))
-    }
-
+    /// Remove only the unpublished physical target named by one durable
+    /// restoring tuple under the current disposal authorization.
     async fn dispose_restored_environment(
         &self,
-        _spec: &pc::SandboxSpec,
-        _request: &pc::SandboxRestoreRequest,
-        _authorization: &pc::SandboxDisposalAuthorization,
-        _authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container provider does not implement exact restored-target disposal",
-        ))
-    }
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError>;
+}
+
+/// Container providers that can materialize verified checkpoint bytes into an
+/// acquired restore target and return canonical restore evidence.
+#[async_trait]
+pub trait RestorableContainerEnvironmentProvider:
+    RestoreTargetContainerEnvironmentProvider
+{
+    async fn restore_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<pc::SandboxRestoreResult<Arc<dyn ContainerEnvironment>>, pc::SandboxError>;
 }

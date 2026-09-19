@@ -1267,6 +1267,15 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         })
     }
 
+    fn restore_targets(&self) -> Option<&dyn RestoreTargetContainerEnvironmentProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> RestoreTargetContainerEnvironmentProvider
+    for ContainerProvider<R>
+{
     async fn acquire_restore_environment(
         &self,
         spec: &pc::SandboxSpec,
