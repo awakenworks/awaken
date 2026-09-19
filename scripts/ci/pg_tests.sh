@@ -408,11 +408,15 @@ fi
 export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow: secret
 echo "-> AWAKEN_TEST_DATABASE_URL configured for ephemeral Postgres :$PORT"
 
-# Exact, reviewed tags. A runner that cannot reach Docker Hub may point these at
-# a mirror holding the same digests; the tag stays exact either way, because a
-# floating tag would let the object substrate change under the recovery drill.
-MINIO_IMAGE="${AWAKEN_CI_OBJECT_IMAGE:-minio/minio:RELEASE.2024-12-18T13-15-44Z}"
-MC_IMAGE="${AWAKEN_CI_OBJECT_CLIENT_IMAGE:-minio/mc:RELEASE.2024-11-21T17-21-54Z}"
+# Exact, reviewed tags, served from MinIO's own registry. Docker Hub answers
+# `docker pull minio/minio` with "pull access denied ... repository does not
+# exist", which reads as a credentials problem but is not one: upstream publishes
+# to quay.io, and the Hub repository is gone. A runner that cannot reach quay.io
+# may point these at a mirror holding the same digests; the tag stays exact
+# either way, because a floating tag would let the object substrate change under
+# the recovery drill.
+MINIO_IMAGE="${AWAKEN_CI_OBJECT_IMAGE:-quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z}"
+MC_IMAGE="${AWAKEN_CI_OBJECT_CLIENT_IMAGE:-quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z}"
 export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow: secret (throwaway fixture identity)
 FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow: secret (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret

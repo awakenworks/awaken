@@ -355,22 +355,22 @@
       "owner": "scripts/ci/pg_tests.sh"
     },
     {
-      "name": "minio/minio:RELEASE.2024-12-18T13-15-44Z",
+      "name": "quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z",
       "locate": "container-image",
       "env_override": "AWAKEN_CI_OBJECT_IMAGE",
       "gates": ["postgres"],
       "requirement": "fetched",
-      "note": "An unpulled image fails with the same 'pull access denied' text as a private repository, which reads as a permission problem rather than a missing image.",
-      "install": "docker pull minio/minio:RELEASE.2024-12-18T13-15-44Z",
+      "note": "Served from MinIO's own registry: Docker Hub answers `docker pull minio/minio` with 'pull access denied ... repository does not exist', which reads as a permission problem but means the Hub repository is gone, not that credentials are missing. An unpulled image reports the same text.",
+      "install": "docker pull quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z",
       "owner": "scripts/ci/pg_tests.sh MINIO_IMAGE"
     },
     {
-      "name": "minio/mc:RELEASE.2024-11-21T17-21-54Z",
+      "name": "quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z",
       "locate": "container-image",
       "env_override": "AWAKEN_CI_OBJECT_CLIENT_IMAGE",
       "gates": ["postgres"],
       "requirement": "fetched",
-      "install": "docker pull minio/mc:RELEASE.2024-11-21T17-21-54Z",
+      "install": "docker pull quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z",
       "owner": "scripts/ci/pg_tests.sh MC_IMAGE"
     }
   ]
