@@ -143,6 +143,7 @@ are only `cfg(test)` or `cfg(kani)` and all comments removed):
 | backend nouns | backend/topology nouns in type, trait and variant names | count never grows |
 | catch-all errors | `Storage`/`Unavailable`/`Rejected`/… variants of `*Error` enums (and `*Error` newtypes) carrying one `String` | count never grows |
 | capability defaults | trait default bodies returning `Err` whose wording or variant says the capability is missing | count never grows |
+| kinds | `[package.metadata.awaken] kinds` names the §1 interface kinds the crate holds; a types-only crate may not hold a port trait, a crate declaring a port kind must | hard error, no baseline |
 
 A count above its baseline fails and names each instance with a fix. A count below its
 baseline also fails until the baseline is lowered, so the gain is kept. Line counts

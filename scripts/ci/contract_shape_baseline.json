@@ -16,9 +16,6 @@
         "production_lines": "the UTC calendar codec moved from awaken-session-contract into the clock port's own crate so every context spells a clock reading identically"
       }
     },
-    "awaken-authorization-contract": {
-      "depth": 0
-    },
     "awaken-credential-contract": {
       "depth": 1,
       "production_lines": 2404
@@ -44,11 +41,11 @@
     },
     "awaken-provisioning-contract": {
       "depth": 1,
-      "production_lines": 4403,
+      "production_lines": 4426,
       "catch_all_errors": 3,
       "capability_defaults": 1,
       "growth_reasons": {
-        "production_lines": "sandbox effect fence: FenceToken succession law and SandboxEffectGuard live in the provisioning contract (capability defaults 12->1); SessionRealizationLease implements FenceToken so the generation-authority rule delegates to that one law",
+        "production_lines": "single-source the realization-lease laws: SandboxEffectFence::for_operation and fence_is_live_at join the fence kernel in provisioning (+23); session-contract lease/generation rules now call that kernel instead of repeating the field comparison (+12 at three call sites, -6 projection)",
         "catch_all_errors": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)"
       }
     },
@@ -75,7 +72,7 @@
       "production_lines": 7321,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "runtime-contract retains the capability supertraits and advisor_binding_is_duplicate production kernel recorded by the prior baseline. Model recovery additionally distinguishes a completely consumed HTTP error body from success-body and stream terminal receipts; three enum/mapping lines close unknown-outcome retry ambiguity."
+        "production_lines": "runtime-contract gains the two capability supertraits (CancellableRunDelegationService, AttachedChannelToolExporter) that replaced its unsupported-style default methods. Advisor de-duplication: the binding-equality that decides whether an Advisor duplicates a published route is a named production kernel (advisor_binding_is_duplicate) so a proof can reach it -- the fact previously entered the Kani harness as a free bool"
       }
     },
     "awaken-sandbox-control": {
@@ -87,11 +84,11 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 16401,
+      "production_lines": 16413,
       "catch_all_errors": 11,
       "capability_defaults": 49,
       "growth_reasons": {
-        "production_lines": "sandbox effect fence: FenceToken succession law and SandboxEffectGuard live in the provisioning contract (capability defaults 12->1); SessionRealizationLease implements FenceToken so the generation-authority rule delegates to that one law. Session realization exclusion: the contract-owned SessionRealizationPermit and its admission kernel (session_realization/exclusion.rs) are the one authority both the Worker slot and the co-located registry mint through, so the permit vocabulary stays in the contract while its phase driver moved to awaken-session-application. Settlement and Work-receipt derivations: the named derivation kernels the settlement and Work-receipt Kani harnesses prove against now live in the contract; they were previously inline assumptions inside the harnesses, which made the proofs assume what they were meant to establish"
+        "production_lines": "single-source the realization-lease laws: SandboxEffectFence::for_operation and fence_is_live_at join the fence kernel in provisioning (+23); session-contract lease/generation rules now call that kernel instead of repeating the field comparison (+12 at three call sites, -6 projection)"
       }
     },
     "awaken-tenancy": {
