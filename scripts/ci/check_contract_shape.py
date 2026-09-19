@@ -88,6 +88,8 @@ STRING_PAYLOAD = re.compile(r"^\(\s*(?:pub\s+)?(?:(?:std|alloc)::string::)?Strin
 STRING_FIELD = re.compile(r"^\{\s*(?:pub\s+)?\w+\s*:\s*(?:(?:std|alloc)::string::)?String\s*,?\s*\}$")
 
 RULES = ("depth", "production_lines", "backend_nouns", "catch_all_errors", "capability_defaults")
+INTERFACE_KINDS = ("types", "spi", "api", "remote", "ext")
+PORT_KINDS = frozenset(INTERFACE_KINDS[1:])
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,8 @@ class ContractCrate:
     contract_deps: frozenset[str]
     # relative path -> production projection (comments, cfg(test) and cfg(kani) blanked)
     sources: dict[str, str] = field(default_factory=dict)
+    # ADR-0081 §1 interface kinds declared in [package.metadata.awaken]; None when absent
+    kinds: frozenset[str] | None = None
 
 
 @dataclass
@@ -306,7 +310,43 @@ def measure(crates: dict[str, ContractCrate]) -> tuple[list[str], dict[str, Meas
         measurement = measure_sources(crate.sources)
         measurement.depth = depths[name]
         measurements[name] = measurement
+        errors.extend(kind_errors(name, crate.kinds, measurement))
     return errors, measurements
+
+
+def kind_errors(name: str, kinds: frozenset[str] | None, measurement: Measurement) -> list[str]:
+    """ADR-0081 §1: a contract crate declares which interface kinds it holds.
+
+    K1 no ``kinds`` metadata; K2 an unknown kind; K3 a types-only crate that
+    holds a port trait (a trait with methods); K4 a crate that declares a port
+    kind but holds no port trait. Each is a hard error, not a ratchet: the
+    declaration is what lets the direction rules (spi implemented outside the
+    application layer, api implemented by it) be checked at all.
+    """
+    if kinds is None:
+        return [
+            f"{name}: rule kinds: [package.metadata.awaken] declares no `kinds`. Fix: declare the "
+            f"ADR-0081 interface kinds this crate holds, e.g. kinds = [\"types\", \"spi\"]"
+        ]
+    unknown = sorted(kinds - set(INTERFACE_KINDS))
+    if unknown:
+        return [
+            f"{name}: rule kinds: unknown kind(s) {unknown}. Fix: use only "
+            f"{list(INTERFACE_KINDS)} (ADR-0081 §1)"
+        ]
+    holds_ports = measurement.role == "ports"
+    if not (kinds & PORT_KINDS) and holds_ports:
+        return [
+            f"{name}: rule kinds: declared types-only but holds a trait with methods. Fix: declare "
+            f"the port kind it holds (spi/api/remote/ext) or move the trait to the crate that owns it"
+        ]
+    if (kinds & PORT_KINDS) and not holds_ports:
+        return [
+            f"{name}: rule kinds: declares {sorted(kinds & PORT_KINDS)} but holds no trait with "
+            f"methods. Fix: declare kinds = [\"types\"] so the budget and direction rules apply "
+            f"to what is really there"
+        ]
+    return []
 
 
 # --------------------------------------------------------------------------- ratchet
@@ -449,7 +489,9 @@ def load_contract_crates() -> dict[str, ContractCrate]:
             for file in sorted(workspace.production_module_files([path]))
         }
         deps = frozenset(workspace.normal_dependency_names(manifest)) & contract.keys()
-        crates[name] = ContractCrate(name, deps, sources)
+        declared = workspace._awaken_metadata(manifest).get("kinds")
+        kinds = frozenset(str(kind) for kind in declared) if isinstance(declared, list) else None
+        crates[name] = ContractCrate(name, deps, sources, kinds)
     return crates
 
 
@@ -498,20 +540,25 @@ def self_test() -> None:
     | R2   | C7 count < baseline                              | reject: lower the baseline   |
     | W1   | C8 raise without reason                          | growth reported              |
     | W2   | C8 raise with reason                             | reason retained in baseline  |
+    | K1   | C9 no kinds metadata                             | reject                       |
+    | K2   | C9 unknown kind                                  | reject                       |
+    | K3   | C9 types-only crate holds a port trait           | reject                       |
+    | K4   | C9 port kind declared, no port trait             | reject                       |
+    | K5   | C9 kinds match what the crate holds              | admit                        |
     """
     project = production_projection
 
     cyclic = {
-        "a": ContractCrate("a", frozenset({"b"})),
-        "b": ContractCrate("b", frozenset({"a"})),
+        "a": ContractCrate("a", frozenset({"b"}), kinds=frozenset({"types"})),
+        "b": ContractCrate("b", frozenset({"a"}), kinds=frozenset({"types"})),
     }
     errors, measured = measure(cyclic)
     assert errors and not measured and "a -> b -> a" in errors[0], "G1"
 
     chain = {
-        "a": ContractCrate("a", frozenset({"b", "external"})),
-        "b": ContractCrate("b", frozenset({"c"})),
-        "c": ContractCrate("c", frozenset()),
+        "a": ContractCrate("a", frozenset({"b", "external"}), kinds=frozenset({"types"})),
+        "b": ContractCrate("b", frozenset({"c"}), kinds=frozenset({"types"})),
+        "c": ContractCrate("c", frozenset(), kinds=frozenset({"types"})),
     }
     errors, measured = measure(chain)
     assert not errors and [measured[n].depth for n in "abc"] == [2, 1, 0], "G2"
@@ -528,6 +575,14 @@ def self_test() -> None:
     small = Measurement(depth=0, production_lines=PORT_LINE_BUDGET - 1, role="ports")
     assert compare({"p": small}, {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 5}}}), "L3 budget"
     assert measure_sources({"x.rs": project(port)}).role == "ports", "L4 ports"
+    ports_measured = measure_sources({"x.rs": project(port)})
+    types_measured = measure_sources({"x.rs": project("pub struct Value;\n")})
+    assert kind_errors("k", None, ports_measured), "K1"
+    assert kind_errors("k", frozenset({"types", "backend"}), types_measured), "K2"
+    assert kind_errors("k", frozenset({"types"}), ports_measured), "K3"
+    assert kind_errors("k", frozenset({"types", "spi"}), types_measured), "K4"
+    assert not kind_errors("k", frozenset({"types", "spi"}), ports_measured), "K5 ports"
+    assert not kind_errors("k", frozenset({"types"}), types_measured), "K5 types"
     vocabulary = Measurement(depth=0, production_lines=PORT_LINE_BUDGET + 10)
     marker = "pub trait Marker {}\npub struct Value;\n"
     assert measure_sources({"x.rs": project(marker)}).role == "types", "L4 marker trait is not a port"
