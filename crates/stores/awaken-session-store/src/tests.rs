@@ -474,7 +474,7 @@ async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_onc
         "R2/E1 fixed first page"
     );
     let cursor = first.next_cursor.clone().expect("R2/E2 next page");
-    assert_eq!(cursor.session_id(), expected[total - 2], "R2/E2");
+    assert_eq!(cursor.session_id().as_str(), expected[total - 2], "R2/E2");
 
     let second = sqlite
         .scan(awaken_session_contract::SessionScanQuery::Reconcilable {
@@ -2291,11 +2291,11 @@ fn make_deletable(session: &mut PersistedSession) {
     session.request_delete("workspace", 0).unwrap();
     session
         .terminal_cleanup
-        .freeze_targets(session_id.as_str(), [], 0, 0)
+        .freeze_targets(&session_id, [], 0, 0)
         .unwrap();
     let command = session
         .terminal_cleanup
-        .command_for(session_id.as_str(), session_id.as_str())
+        .command_for(&session_id, session_id.as_str())
         .unwrap();
     install_legacy_completion_wire(session, &command);
     session
@@ -2353,14 +2353,26 @@ fn install_legacy_completion_wire(
 
 fn requested_cleanup_with_completion(session_id: &str) -> PersistedSession {
     let mut session = sample(session_id);
-    assert!(session.terminal_cleanup.request(session_id));
+    assert!(
+        session
+            .terminal_cleanup
+            .request(&awaken_session_contract::SessionId::from(session_id))
+    );
     session
         .terminal_cleanup
-        .freeze_targets(session_id, std::iter::empty::<String>(), 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from(session_id),
+            std::iter::empty::<String>(),
+            0,
+            0,
+        )
         .expect("freeze cleanup compatibility fixture");
     let command = session
         .terminal_cleanup
-        .command_for(session_id, session_id)
+        .command_for(
+            &awaken_session_contract::SessionId::from(session_id),
+            session_id,
+        )
         .expect("cleanup compatibility command");
     install_legacy_completion_wire(&mut session, &command);
     let revision = i64::try_from(session.revision.0).expect("test revision fits SQL index");
@@ -2377,7 +2389,10 @@ fn removed_bundle_v2_aggregate(session: &PersistedSession) -> serde_json::Value 
     let session_id = session.session_id.as_str();
     let command = session
         .terminal_cleanup
-        .command_for(session_id, session_id)
+        .command_for(
+            &awaken_session_contract::SessionId::from(session_id),
+            session_id,
+        )
         .expect("cleanup compatibility command");
     let removed_fingerprint = "removed-bundle-receipt";
     let v2_fingerprint = awaken_session_contract::stable_fingerprint(&(
@@ -3126,10 +3141,17 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         let repo = SqliteManagedSessionRepository::open(&path).unwrap();
         create_fixture(&repo, "ws_a", sample("sesn_cleanup"), Vec::new()).await;
         let mut requested = repo.get(&SessionId::from("sesn_cleanup")).await.unwrap();
-        requested.terminal_cleanup.request("sesn_cleanup");
         requested
             .terminal_cleanup
-            .freeze_targets("sesn_cleanup", ["child-cleanup".to_string()], 3, 0)
+            .request(&awaken_session_contract::SessionId::from("sesn_cleanup"));
+        requested
+            .terminal_cleanup
+            .freeze_targets(
+                &awaken_session_contract::SessionId::from("sesn_cleanup"),
+                ["child-cleanup".to_string()],
+                3,
+                0,
+            )
             .unwrap();
         requested.environment.set_resident("opaque-binding");
         replace_fixture(&repo, "ws_a", requested, "test:cleanup:request", Vec::new()).await;
@@ -3140,11 +3162,17 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         assert!(recovered.terminal_cleanup.is_requested());
         let intent = recovered
             .terminal_cleanup
-            .command_for("sesn_cleanup", "sesn_cleanup")
+            .command_for(
+                &awaken_session_contract::SessionId::from("sesn_cleanup"),
+                "sesn_cleanup",
+            )
             .unwrap();
         let child_intent = recovered
             .terminal_cleanup
-            .command_for("sesn_cleanup", "child-cleanup")
+            .command_for(
+                &awaken_session_contract::SessionId::from("sesn_cleanup"),
+                "child-cleanup",
+            )
             .expect("child cleanup intent survives restart");
         install_legacy_completion_wire(&mut recovered, &intent);
         install_legacy_completion_wire(&mut recovered, &child_intent);

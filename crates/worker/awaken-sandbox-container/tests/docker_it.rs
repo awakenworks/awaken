@@ -23,8 +23,7 @@ use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::RestoreTargetContainerEnvironmentProvider as _;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{
-    ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRuntime,
-    ContainerState, NetworkMode, RootfsPlan,
+    ContainerPlan, ContainerProvider, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

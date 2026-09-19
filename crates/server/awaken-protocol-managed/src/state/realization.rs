@@ -193,7 +193,10 @@ mod tests {
         });
         let mut resources = SessionResourceState::default();
         resources
-            .prepare(id, Default::default())
+            .prepare(
+                &awaken_session_contract::SessionId::from(id),
+                Default::default(),
+            )
             .expect("prepare generation 1 resources");
         let mcp = SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
@@ -605,7 +608,10 @@ mod tests {
             .unwrap();
         pending
             .resources
-            .prepare("session-phase", desired.clone())
+            .prepare(
+                &awaken_session_contract::SessionId::from("session-phase"),
+                desired.clone(),
+            )
             .expect("Q12 pending Resource generation");
         let expected_revision = pending.revision;
         let payload = awaken_session_contract::SessionMutationPayload::Replace(pending);

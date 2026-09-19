@@ -280,7 +280,13 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
         let mut session = persisted(id, false, "idle");
         session.realization = Some(lease.clone());
         session.resources = SessionResourceState::from_active(active.clone());
-        session.resources.prepare(id, desired.clone()).unwrap();
+        session
+            .resources
+            .prepare(
+                &awaken_session_contract::SessionId::from(id),
+                desired.clone(),
+            )
+            .unwrap();
         match lifecycle {
             "rollback" => session.resources.rollback("failed replacement").unwrap(),
             "committed" => session.resources.commit().unwrap(),
@@ -366,7 +372,13 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
         let mut session = persisted(id, false, "running");
         session.realization = Some(lease.clone());
         session.resources = SessionResourceState::from_active(file_resources("a"));
-        session.resources.prepare(id, file_resources("b")).unwrap();
+        session
+            .resources
+            .prepare(
+                &awaken_session_contract::SessionId::from(id),
+                file_resources("b"),
+            )
+            .unwrap();
         session.resources.start_attempt().unwrap();
         create(repo.as_ref(), session).await;
         let before = repo.get(&SessionId::from(id)).await.unwrap();
@@ -434,7 +446,10 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
         let mut session = persisted(session_id, false, "idle");
         pending_revision = session
             .resources
-            .prepare(session_id, pending.clone())
+            .prepare(
+                &awaken_session_contract::SessionId::from(session_id),
+                pending.clone(),
+            )
             .unwrap();
         session.resources.start_attempt().unwrap();
         session
@@ -526,7 +541,10 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
     session.resources = SessionResourceState::from_active(file_resources("active"));
     session
         .resources
-        .prepare(session_id, file_resources("never-active"))
+        .prepare(
+            &awaken_session_contract::SessionId::from(session_id),
+            file_resources("never-active"),
+        )
         .unwrap();
     session.resources.start_attempt().unwrap();
     create(repository.as_ref(), session).await;

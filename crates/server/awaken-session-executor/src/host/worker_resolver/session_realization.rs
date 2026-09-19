@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn legacy_raw_claim_only_repairs_an_unmaterialized_environment() {
         let generation = awaken_session_contract::SandboxGeneration::new(
-            "legacy-claim",
+            &awaken_session_contract::SessionId::from("legacy-claim"),
             1,
             u64::MAX,
             "environment",
@@ -129,7 +129,7 @@ mod tests {
         );
         let operation = awaken_session_contract::SessionEnvironmentOperation::new(
             "workspace",
-            "legacy-claim",
+            &awaken_session_contract::SessionId::from("legacy-claim"),
             "suspend",
             &generation,
             1,

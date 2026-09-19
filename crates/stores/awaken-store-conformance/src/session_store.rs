@@ -140,7 +140,7 @@ pub fn hibernated_environment(
     id: &str,
 ) -> awaken_session_contract::SessionEnvironmentState {
     let generation = awaken_session_contract::SandboxGeneration::new(
-        id,
+        &awaken_session_contract::SessionId::from(id),
         1,
         100_000,
         "environment",
@@ -148,7 +148,7 @@ pub fn hibernated_environment(
     );
     let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
         workspace_id,
-        id,
+        &awaken_session_contract::SessionId::from(id),
         "suspend",
         &generation,
         0,
@@ -244,7 +244,7 @@ pub fn complete_terminal_cleanup(value: &mut PersistedSession) {
     let session_id = value.session_id.clone();
     if !value.terminal_cleanup.is_fenced() && !value.terminal_cleanup.is_requested() {
         assert!(
-            value.terminal_cleanup.request(session_id.as_str()),
+            value.terminal_cleanup.request(&session_id),
             "cleanup operation starts exactly once"
         );
     }
@@ -252,13 +252,13 @@ pub fn complete_terminal_cleanup(value: &mut PersistedSession) {
         assert!(
             value
                 .terminal_cleanup
-                .freeze_targets(session_id.as_str(), [], 0, 0)
+                .freeze_targets(&session_id, [], 0, 0)
                 .expect("freeze root cleanup target")
         );
     }
     let command = value
         .terminal_cleanup
-        .command_for(session_id.as_str(), session_id.as_str())
+        .command_for(&session_id, session_id.as_str())
         .expect("requested cleanup exposes its exact root command");
     install_legacy_completion_wire(value, &command);
     assert!(
@@ -443,7 +443,7 @@ pub async fn global_environment_phase_count_has_no_recovery_batch_limit<
     let last_id = last.session_id.clone();
     last.environment = hibernated_environment("ws_a", last_id.as_str());
     last.environment
-        .begin_restore("ws_a", last_id.as_str(), 0, None, 1)
+        .begin_restore("ws_a", &last_id, 0, None, 1)
         .expect("P2 valid restore intent");
     replace_session(repo, "ws_a", last, "test:phase-count:restoring", Vec::new()).await;
 
@@ -484,7 +484,13 @@ where
     let mut restoring = current.clone();
     restoring
         .environment
-        .begin_restore("ws_a", id, 0, None, 1)
+        .begin_restore(
+            "ws_a",
+            &awaken_session_contract::SessionId::from(id),
+            0,
+            None,
+            1,
+        )
         .expect("C2 valid restore intent");
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     let count = {
@@ -920,7 +926,7 @@ pub async fn credential_source_dependency_decision_table<
     );
 
     let mut archived = updated;
-    archived.archive(&at(1_787_788_800)).unwrap();
+    archived.archive(at(1_787_788_800)).unwrap();
     replace_session(r, "ws_a", archived, "test:source:archive", Vec::new()).await;
     assert!(
         r.scan(
@@ -1050,7 +1056,7 @@ pub async fn lifecycle_outbox_tracks_every_committed_transition<
 
     let archived = fact("evt:archive", "sesn_lifecycle", "session.archived");
     let mut archive = r.get(&SessionId::from("sesn_lifecycle")).await.unwrap();
-    archive.archive(&at(1_784_419_200)).unwrap();
+    archive.archive(at(1_784_419_200)).unwrap();
     replace_session(r, "ws_a", archive, "test:archive", vec![archived.clone()]).await;
     let durable = r
         .get(&SessionId::from("sesn_lifecycle"))
@@ -1308,7 +1314,7 @@ pub async fn pending_resource_activation_index_is_durable<
     pending.resources = Default::default();
     pending
         .resources
-        .prepare(pending.session_id.as_str(), desired)
+        .prepare(&pending.session_id, desired)
         .unwrap();
     pending = create_session(r, "ws_a", pending, Vec::new()).await;
 
@@ -1427,7 +1433,7 @@ pub async fn tombstone_requires_hidden_completed_cleanup<
     let active = create_session(repo, "ws_a", active, Vec::new()).await;
 
     let mut archived = session("sesn_delete_archived", "archived");
-    archived.archive(&at(1_786_752_000)).unwrap();
+    archived.archive(at(1_786_752_000)).unwrap();
     complete_terminal_cleanup(&mut archived);
     let archived = create_session(repo, "ws_a", archived, Vec::new()).await;
 
@@ -1435,7 +1441,7 @@ pub async fn tombstone_requires_hidden_completed_cleanup<
     assert!(pending.request_delete("ws_a", 0).unwrap().is_some());
     pending
         .terminal_cleanup
-        .freeze_targets(pending.session_id.clone().as_str(), [], 0, 0)
+        .freeze_targets(&pending.session_id.clone(), [], 0, 0)
         .expect("pending delete freezes its root target");
     let pending = create_session(repo, "ws_a", pending, Vec::new()).await;
 
@@ -1531,7 +1537,9 @@ pub async fn deleted_event_admission_decision_table<R: awaken_session_contract::
                     )],
                 };
                 let inputs = vec![input; if kind == "mixed" { 12 } else { 1 }];
-                let mut batch = SessionEventBatch::compile(&id, "batch", inputs).unwrap();
+                let mut batch =
+                    SessionEventBatch::compile(&SessionId::from(id.as_str()), "batch", inputs)
+                        .unwrap();
                 batch.admitted_revision = SessionRevision(1);
                 batch
                     .anchor_admission_projection(SessionEventProjectionAnchor {
@@ -1568,7 +1576,7 @@ pub async fn deleted_event_admission_decision_table<R: awaken_session_contract::
                 "batch_id":"prior:batch", "closed":true, "operation_ids":[]}),
             );
             let mut unkeyed = SessionEventBatch::compile(
-                &id,
+                &SessionId::from(id.as_str()),
                 "unkeyed",
                 vec![SessionEventInput::UserMessage {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(

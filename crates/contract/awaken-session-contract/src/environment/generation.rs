@@ -1,5 +1,6 @@
 //! Immutable identity of one live Sandbox generation.
 
+use crate::SessionId;
 /// Stable identity and immutable compatibility facts for one live Sandbox.
 ///
 /// **Not an optimistic-concurrency witness**, and deliberately not an
@@ -40,7 +41,7 @@ pub struct SandboxGeneration {
 impl SandboxGeneration {
     #[must_use]
     pub fn new(
-        session_id: &str,
+        session_id: &SessionId,
         created_at_unix_ms: u64,
         expires_at_unix_ms: u64,
         environment_fingerprint: impl Into<String>,

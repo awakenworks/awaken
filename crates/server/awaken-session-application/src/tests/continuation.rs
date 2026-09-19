@@ -343,7 +343,7 @@ fn generated_session(id: &str) -> PersistedSession {
     };
     baseline.environment.idle_retention = checkpoint_release_retention();
     let generation = awaken_session_contract::SandboxGeneration::new(
-        id,
+        &awaken_session_contract::SessionId::from(id),
         0,
         100_000,
         baseline.environment.config_fingerprint.0.clone(),
@@ -485,7 +485,7 @@ pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> Persisted
     let mut session = generated_session(id);
     let source_generation = session.environment.generation().unwrap();
     let generation = awaken_session_contract::SandboxGeneration::new(
-        id,
+        &awaken_session_contract::SessionId::from(id),
         source_generation.created_at_unix_ms,
         expires_at_unix_ms,
         source_generation.environment_fingerprint.clone(),
@@ -493,7 +493,7 @@ pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> Persisted
     );
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        id,
+        &awaken_session_contract::SessionId::from(id),
         "suspend",
         &generation,
         0,
@@ -872,12 +872,7 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
             "G1" => {
                 session
                     .environment
-                    .begin_suspend(
-                        "workspace",
-                        session_id.as_str(),
-                        activity_epoch,
-                        realization,
-                    )
+                    .begin_suspend("workspace", &session_id, activity_epoch, realization)
                     .unwrap();
             }
             "G3" => {
@@ -885,7 +880,7 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
                     .environment
                     .begin_restore(
                         "workspace",
-                        session_id.as_str(),
+                        &session_id,
                         activity_epoch + 1,
                         realization,
                         1_000,
@@ -977,14 +972,16 @@ async fn inexact_quiescence_receipts_leave_the_complete_root_unchanged() {
             .environment
             .begin_suspend(
                 "workspace",
-                &session_id,
+                &awaken_session_contract::SessionId::from(session_id.as_str()),
                 session.activity_epoch,
                 session.realization.clone(),
             )
             .unwrap();
         let expected = session
             .mcp
-            .active_generation_refs(&session_id)
+            .active_generation_refs(&awaken_session_contract::SessionId::from(
+                session_id.as_str(),
+            ))
             .expect("valid fixture Active set");
         let asserted = match rule {
             "X1" => expected[..1].to_vec(),
@@ -1738,7 +1735,13 @@ async fn driving_ingress_during_upload_completes_suspend_then_restores() {
     let realization = session.realization.clone();
     let operation = session
         .environment
-        .begin_suspend_at("workspace", "during-upload", 0, realization, 2_000)
+        .begin_suspend_at(
+            "workspace",
+            &awaken_session_contract::SessionId::from("during-upload"),
+            0,
+            realization,
+            2_000,
+        )
         .unwrap()
         .clone();
     let generation = session.environment.generation().unwrap().clone();

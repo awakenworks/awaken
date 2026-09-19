@@ -90,7 +90,7 @@ pub async fn drive_session_realization(
 ) -> Result<(), SessionRealizationDriveError> {
     // The Session is taken from the exclusion the caller holds, never passed
     // beside it: a permit for another Session cannot drive this one.
-    let session_id = &SessionId::from(permit.session_id());
+    let session_id = permit.session_id();
     loop {
         let previous = directive.clone();
         let prepare_session = match &directive.action {
@@ -136,7 +136,7 @@ pub async fn drive_session_realization(
             };
             awaken_session_contract::realization_observation::checkpoint(
                 "projection",
-                session_id.as_str(),
+                session_id,
                 serde_json::json!({"lease": directive.authority.lease, "action": action}),
             )
             .await;
@@ -178,7 +178,7 @@ pub async fn drive_session_realization(
                     return Err(error.into());
                 }
                 #[cfg(feature = "test-support")]
-                awaken_session_contract::realization_observation::checkpoint("stage", session_id.as_str(),
+                awaken_session_contract::realization_observation::checkpoint("stage", session_id,
                     serde_json::json!({"lease": directive.authority.lease,
                         "generations": receipts.iter().map(|r| awaken_session_contract::realization_observation::observed_generation(&r.generation)).collect::<Vec<_>>()})).await;
                 request_started = synchronizer.observe_realization_request()?;
@@ -208,7 +208,7 @@ pub async fn drive_session_realization(
                         #[cfg(feature = "test-support")]
                         awaken_session_contract::realization_observation::checkpoint(
                             "publish-one",
-                            session_id.as_str(),
+                            session_id,
                             serde_json::json!({
                                 "generation": awaken_session_contract::realization_observation::observed_generation(generation)
                             }),
@@ -220,7 +220,7 @@ pub async fn drive_session_realization(
                         #[cfg(feature = "test-support")]
                         awaken_session_contract::realization_observation::checkpoint(
                             "drain-one",
-                            session_id.as_str(),
+                            session_id,
                             serde_json::json!({
                                 "generation": awaken_session_contract::realization_observation::observed_generation(generation)
                             }),
@@ -244,7 +244,7 @@ pub async fn drive_session_realization(
                     return Err(error.into());
                 }
                 #[cfg(feature = "test-support")]
-                awaken_session_contract::realization_observation::checkpoint("published", session_id.as_str(),
+                awaken_session_contract::realization_observation::checkpoint("published", session_id,
                     serde_json::json!({"lease": directive.authority.lease,
                         "published": publish.iter().map(awaken_session_contract::realization_observation::observed_generation).collect::<Vec<_>>(),
                         "drained": drain.iter().map(awaken_session_contract::realization_observation::observed_generation).collect::<Vec<_>>()})).await;
@@ -262,7 +262,7 @@ pub async fn drive_session_realization(
                 #[cfg(feature = "test-support")]
                 awaken_session_contract::realization_observation::checkpoint(
                     "complete",
-                    session_id.as_str(),
+                    session_id,
                     serde_json::json!({"lease": directive.authority.lease}),
                 )
                 .await;
@@ -276,7 +276,7 @@ pub async fn drive_session_realization(
             #[cfg(feature = "test-support")]
             awaken_session_contract::realization_observation::checkpoint(
                 "complete",
-                session_id.as_str(),
+                session_id,
                 serde_json::json!({"lease": directive.authority.lease}),
             )
             .await;

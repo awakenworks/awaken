@@ -538,7 +538,7 @@ impl SessionApplication {
                     .checked_add(1)
                     .ok_or_else(|| RunError::internal("Session revision is exhausted"))?,
             );
-            let batch_id = session_event_batch_id(session_id.as_str(), committed_revision)
+            let batch_id = session_event_batch_id(session_id, committed_revision)
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
             let mut batch = match (plan, &admission) {
                 (
@@ -550,7 +550,7 @@ impl SessionApplication {
                         ..
                     },
                 ) => SessionEventBatch::compile_attributed(
-                    session_id.as_str(),
+                    session_id,
                     batch_id,
                     inputs.clone(),
                     data_subject_id.clone(),
@@ -1058,10 +1058,10 @@ impl SessionApplication {
                 let accompanying_system = adjacent_system_input(session, &batch_id, &operation_id);
                 SessionAgentCoordination::reply_session_thread_tool(
                     self,
-                    reply.delivery_command(session.session_id.as_str(), accompanying_system),
+                    reply.delivery_command(&session.session_id, accompanying_system),
                 )
                 .await?;
-                let target_thread = reply.target.thread_id(session.session_id.as_str());
+                let target_thread = reply.target.thread_id(&session.session_id);
                 // Current admissions freeze the Awaiting commit before
                 // delivery. Legacy rows lack it and retain the old
                 // post-delivery recovery fallback for compatibility.
@@ -1132,7 +1132,7 @@ impl SessionApplication {
                     .max()
                     .unwrap_or_default();
                 for target in &targets {
-                    let thread_id = target.thread_id(session.session_id.as_str());
+                    let thread_id = target.thread_id(&session.session_id);
                     if let Some(snapshot) = self
                         .runtime()
                         .session_thread_recovery_snapshot(&session.session_id, &thread_id.0)
@@ -1527,7 +1527,7 @@ fn preceding_event_runtime_target(
                 run_id.clone(),
             )),
             SessionEventCommand::ToolReply { reply, .. } => Some((
-                reply.target.thread_id(session.session_id.as_str()),
+                reply.target.thread_id(&session.session_id),
                 reply.expected_run_id.clone(),
             )),
             SessionEventCommand::SystemMessage { .. }
@@ -1627,7 +1627,7 @@ fn select_session_event(
                     {
                         let activity_operation_id = reply
                             .delivery_command(
-                                session.session_id.as_str(),
+                                &session.session_id,
                                 adjacent_system_input(session, batch_id, operation_id),
                             )
                             .activity_operation_id();

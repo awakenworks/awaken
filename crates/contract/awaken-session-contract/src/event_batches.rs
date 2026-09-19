@@ -6,6 +6,7 @@
 //! Outcome aggregate. These values retain only the stable command intent needed
 //! to reconcile those owners after a crash.
 
+use crate::SessionId;
 use crate::{SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand};
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -26,10 +27,10 @@ pub const OUTCOME_BUSY_CODE: &str = "outcome_busy";
 /// Session root revision. Fixed-width decimal encoding preserves FIFO ordering
 /// without a clock, random id, or process-local counter.
 pub fn session_event_batch_id(
-    session_id: &str,
+    session_id: &SessionId,
     committed_revision: crate::SessionRevision,
 ) -> Result<String, SessionEventBatchError> {
-    if session_id.trim().is_empty() {
+    if session_id.as_str().trim().is_empty() {
         return Err(SessionEventBatchError::EmptySessionId);
     }
     if committed_revision.0 == 0 {
@@ -89,7 +90,7 @@ pub fn decode_session_event_batch_operation(
 /// Stable User Run identity shared by create-time and ordinary Session Event
 /// batches. The operation id is already the unique batch/ordinal coordinate.
 #[must_use]
-pub fn session_event_user_run_id(session_id: &str, operation_id: &str) -> RunId {
+pub fn session_event_user_run_id(session_id: &SessionId, operation_id: &str) -> RunId {
     RunId(format!(
         "session-event-run-{}",
         crate::stable_fingerprint(&("session-event-user-run-v1", session_id, operation_id,))
@@ -99,7 +100,7 @@ pub fn session_event_user_run_id(session_id: &str, operation_id: &str) -> RunId 
 /// Stable Outcome identity shared by create-time and ordinary Session Event
 /// batches; ThreadOutcomeState remains the result owner.
 #[must_use]
-pub fn session_event_outcome_id(session_id: &str, operation_id: &str) -> String {
+pub fn session_event_outcome_id(session_id: &SessionId, operation_id: &str) -> String {
     format!(
         "outc_{}",
         crate::stable_fingerprint(&("session-event-outcome-v1", session_id, operation_id,))
@@ -239,7 +240,7 @@ impl SessionEventToolReply {
     #[must_use]
     pub fn delivery_command(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         accompanying_system: Option<SessionUserRunSystemInput>,
     ) -> SessionThreadToolReplyCommand {
         let reply = match &self.reply {
@@ -267,7 +268,7 @@ impl SessionEventToolReply {
             }
         };
         SessionThreadToolReplyCommand {
-            session_id: crate::SessionId::from(session_id),
+            session_id: session_id.clone(),
             tool_request_event_id: Some(self.tool_request_event_id.clone()),
             expected_thread_version: self.expected_thread_version,
             target: self.target.clone(),
@@ -747,7 +748,7 @@ impl SessionEventBatch {
     }
 
     pub fn compile(
-        session_id: &str,
+        session_id: &SessionId,
         batch_id: impl Into<String>,
         inputs: Vec<SessionEventInput>,
     ) -> Result<Self, SessionEventBatchError> {
@@ -759,14 +760,14 @@ impl SessionEventBatch {
     /// Compile the same neutral batch while freezing request-grain data-subject
     /// attribution into every User command and one batch-level trace context.
     pub fn compile_attributed(
-        session_id: &str,
+        session_id: &SessionId,
         batch_id: impl Into<String>,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
     ) -> Result<Self, SessionEventBatchError> {
         let batch_id = batch_id.into();
-        if session_id.trim().is_empty() {
+        if session_id.as_str().trim().is_empty() {
             return Err(SessionEventBatchError::EmptySessionId);
         }
         if batch_id.is_empty() {
@@ -941,7 +942,7 @@ pub struct SessionInitialEventPlan {
 
 impl SessionInitialEventPlan {
     pub fn compile(
-        session_id: &str,
+        session_id: &SessionId,
         batch_id: impl Into<String>,
         inputs: Vec<SessionEventInput>,
     ) -> Result<Self, SessionEventBatchError> {
@@ -1036,8 +1037,12 @@ mod tests {
             serde_json::from_value::<SessionEventBatch>(encoded.clone()).unwrap(),
             closed
         );
-        let mut accepted =
-            SessionEventBatch::compile("session", "accepted", vec![user("hello")]).unwrap();
+        let mut accepted = SessionEventBatch::compile(
+            &crate::SessionId::from("session"),
+            "accepted",
+            vec![user("hello")],
+        )
+        .unwrap();
         accepted.admitted_revision = crate::SessionRevision(1);
         accepted
             .anchor_admission_projection(SessionEventProjectionAnchor {
@@ -1098,7 +1103,7 @@ mod tests {
         base.answered_pending_commit_cursor = Some(7);
         let compile = |id: &str, replies: Vec<SessionEventToolReply>| {
             SessionEventBatch::compile(
-                "s",
+                &crate::SessionId::from("s"),
                 id,
                 replies
                     .into_iter()
@@ -1212,10 +1217,14 @@ mod tests {
         // Constraint/invariant: the Session root owns immutable Event order;
         // progress may advance only the entry named by its retained operation.
         let inputs = vec![user("one"), user("two"), system("context")];
-        let plan = SessionInitialEventPlan::compile("session-1", "initial:session-1", inputs)
-            .expect("R1 compiles");
+        let plan = SessionInitialEventPlan::compile(
+            &crate::SessionId::from("session-1"),
+            "initial:session-1",
+            inputs,
+        )
+        .expect("R1 compiles");
         let replay = SessionInitialEventPlan::compile(
-            "session-1",
+            &crate::SessionId::from("session-1"),
             "initial:session-1",
             vec![user("one"), user("two"), system("context")],
         )
@@ -1286,7 +1295,9 @@ mod tests {
             source_commit_cursor: 9,
         };
         for complete in [false, true] {
-            let mut batch = SessionEventBatch::compile("s", "b", vec![user("one")]).unwrap();
+            let mut batch =
+                SessionEventBatch::compile(&crate::SessionId::from("s"), "b", vec![user("one")])
+                    .unwrap();
             let op = batch.events[0].event.operation_id().to_owned();
             assert!(batch.anchor_committed_input(&op, anchor).unwrap(), "A1");
             assert!(!batch.events[0].processed && batch.events[0].processed_at_unix_ms.is_none());
@@ -1311,7 +1322,9 @@ mod tests {
                 "A4-A5"
             );
         }
-        let mut unobserved = SessionEventBatch::compile("s", "b", vec![user("one")]).unwrap();
+        let mut unobserved =
+            SessionEventBatch::compile(&crate::SessionId::from("s"), "b", vec![user("one")])
+                .unwrap();
         let op = unobserved.events[0].event.operation_id().to_owned();
         unobserved.resolve_terminally(None, 100);
         let before = unobserved.clone();
@@ -1335,7 +1348,9 @@ mod tests {
         let anchor = SessionEventProjectionAnchor {
             source_commit_cursor: 7,
         };
-        let mut accepted = SessionEventBatch::compile("s", "b", vec![user("one")]).unwrap();
+        let mut accepted =
+            SessionEventBatch::compile(&crate::SessionId::from("s"), "b", vec![user("one")])
+                .unwrap();
         accepted.admitted_revision = crate::SessionRevision(1);
         assert_eq!(
             accepted.verify_admission(),
@@ -1376,8 +1391,12 @@ mod tests {
         // Decision table: T1 unprocessed -> stamp; T2 exact replay with later
         // clock -> unchanged; T3 changed anchor -> reject atomically; T4 terminal
         // resolution -> stamp only pending; T5 historical missing field -> None.
-        let mut batch =
-            SessionEventBatch::compile("s", "b", vec![user("one"), user("two")]).unwrap();
+        let mut batch = SessionEventBatch::compile(
+            &crate::SessionId::from("s"),
+            "b",
+            vec![user("one"), user("two")],
+        )
+        .unwrap();
         let op = batch.events[0].event.operation_id().to_string();
         let anchor = SessionEventProjectionAnchor {
             source_commit_cursor: 1,
@@ -1447,13 +1466,18 @@ mod tests {
         // Constraint/invariant: at most one System command is accepted, and it
         // is inseparable from the immediately preceding executable input.
         assert!(
-            SessionInitialEventPlan::compile("s", "b1", vec![user("u"), system("s")]).is_ok(),
+            SessionInitialEventPlan::compile(
+                &crate::SessionId::from("s"),
+                "b1",
+                vec![user("u"), system("s")]
+            )
+            .is_ok(),
             "S1"
         );
         assert!(
             matches!(
                 SessionInitialEventPlan::compile(
-                    "s",
+                    &crate::SessionId::from("s"),
                     "b2",
                     vec![
                         SessionEventInput::DefineOutcome {
@@ -1473,7 +1497,7 @@ mod tests {
         assert!(
             matches!(
                 SessionInitialEventPlan::compile(
-                    "s",
+                    &crate::SessionId::from("s"),
                     "b3",
                     vec![user("u"), system("s"), user("later")]
                 ),
@@ -1484,7 +1508,7 @@ mod tests {
         assert!(
             matches!(
                 SessionInitialEventPlan::compile(
-                    "s",
+                    &crate::SessionId::from("s"),
                     "b4",
                     vec![user("u"), system("a"), system("b")]
                 ),
@@ -1524,7 +1548,11 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    SessionInitialEventPlan::compile("session", batch_id, vec![input]),
+                    SessionInitialEventPlan::compile(
+                        &crate::SessionId::from("session"),
+                        batch_id,
+                        vec![input]
+                    ),
                     Err(SessionEventBatchError::UnsupportedInitialEvent)
                 ),
                 "O1+O2/E1"
@@ -1532,7 +1560,7 @@ mod tests {
         }
 
         let tool_batch = SessionEventBatch::compile(
-            "session",
+            &crate::SessionId::from("session"),
             "ordinary-tool",
             vec![tool_reply(), system("reply context")],
         )
@@ -1541,7 +1569,7 @@ mod tests {
             panic!("O3/E2 retained ToolReply")
         };
         let command = reply.delivery_command(
-            "session",
+            &crate::SessionId::from("session"),
             Some(SessionUserRunSystemInput {
                 operation_id: tool_batch.events[1].event.operation_id().to_string(),
                 content: vec![ContentBlock::text("reply context")],
@@ -1593,7 +1621,9 @@ mod tests {
                 deny_message,
             };
             assert_eq!(
-                reply.delivery_command("session", None).reply,
+                reply
+                    .delivery_command(&crate::SessionId::from("session"), None)
+                    .reply,
                 SessionThreadToolReply::Confirm(expected),
                 "{rule} sole wire-to-session lowering"
             );
@@ -1610,7 +1640,7 @@ mod tests {
         assert!(
             matches!(
                 SessionEventBatch::compile(
-                    "session",
+                    &crate::SessionId::from("session"),
                     "confirmation-system",
                     vec![confirmation, system("not allowed")],
                 ),
@@ -1619,9 +1649,12 @@ mod tests {
             "O6/E4 official SDK does not allow System after Confirmation"
         );
 
-        let interrupt_batch =
-            SessionEventBatch::compile("session", "ordinary-interrupt", vec![interrupt()])
-                .expect("O4/E3");
+        let interrupt_batch = SessionEventBatch::compile(
+            &crate::SessionId::from("session"),
+            "ordinary-interrupt",
+            vec![interrupt()],
+        )
+        .expect("O4/E3");
         assert!(
             matches!(
                 &interrupt_batch.events[0].event,
@@ -1639,7 +1672,11 @@ mod tests {
         reply.expected_correlation_id.clear();
         assert!(
             matches!(
-                SessionEventBatch::compile("session", "invalid-tool", vec![invalid_reply]),
+                SessionEventBatch::compile(
+                    &crate::SessionId::from("session"),
+                    "invalid-tool",
+                    vec![invalid_reply]
+                ),
                 Err(SessionEventBatchError::InvalidToolReplyCoordinate)
             ),
             "O5/E4"
@@ -1647,7 +1684,7 @@ mod tests {
         assert!(
             matches!(
                 SessionEventBatch::compile(
-                    "session",
+                    &crate::SessionId::from("session"),
                     "invalid-interrupt",
                     vec![SessionEventInput::Interrupt(SessionEventInterrupt {
                         requested_target: Some(SessionThreadTarget::Primary),
@@ -1692,13 +1729,17 @@ mod tests {
         // rules exclude random/process-local Outcome ids.
         // Constraint/invariant: each command family has one domain-separated,
         // deterministic identity function and never allocates a second owner.
-        let event = session_event_outcome_id("session", "operation");
+        let event = session_event_outcome_id(&crate::SessionId::from("session"), "operation");
         assert_eq!(
             event,
-            session_event_outcome_id("session", "operation"),
+            session_event_outcome_id(&crate::SessionId::from("session"), "operation"),
             "C1/E1"
         );
-        assert_ne!(event, session_event_outcome_id("session", "other"), "C1/E2");
+        assert_ne!(
+            event,
+            session_event_outcome_id(&crate::SessionId::from("session"), "other"),
+            "C1/E2"
+        );
         let convenience = session_outcome_convenience_id("thread", "ship", "correct", 3);
         assert_eq!(
             convenience,
@@ -1723,16 +1764,25 @@ mod tests {
         // N2 create Plan+51=>reject; N3 revision0=>reject.
         // Constraint/invariant: revision is prospective committed Session-root
         // order; the 50-Event ceiling belongs only to create-time admission.
-        let batch_id = session_event_batch_id("ordinary", crate::SessionRevision(7)).unwrap();
+        let batch_id = session_event_batch_id(
+            &crate::SessionId::from("ordinary"),
+            crate::SessionRevision(7),
+        )
+        .unwrap();
         assert!(
-            batch_id < session_event_batch_id("ordinary", crate::SessionRevision(8)).unwrap(),
+            batch_id
+                < session_event_batch_id(
+                    &crate::SessionId::from("ordinary"),
+                    crate::SessionRevision(8)
+                )
+                .unwrap(),
             "N1/E1"
         );
         let inputs = (0..=MAX_SESSION_INITIAL_EVENTS)
             .map(|ordinal| user(&format!("message-{ordinal}")))
             .collect::<Vec<_>>();
         let batch = SessionEventBatch::compile_attributed(
-            "ordinary",
+            &crate::SessionId::from("ordinary"),
             batch_id,
             inputs.clone(),
             Some("subject-1".into()),
@@ -1750,13 +1800,21 @@ mod tests {
         );
         assert!(
             matches!(
-                SessionInitialEventPlan::compile("ordinary", "create", inputs),
+                SessionInitialEventPlan::compile(
+                    &crate::SessionId::from("ordinary"),
+                    "create",
+                    inputs
+                ),
                 Err(SessionEventBatchError::TooManyEvents)
             ),
             "N2/E2"
         );
         assert!(
-            session_event_batch_id("ordinary", crate::SessionRevision(0)).is_err(),
+            session_event_batch_id(
+                &crate::SessionId::from("ordinary"),
+                crate::SessionRevision(0)
+            )
+            .is_err(),
             "N3/E1"
         );
     }
@@ -1783,7 +1841,7 @@ mod tests {
         // ordinary `/events` admission only.
         let traceparent = "00-11111111111111111111111111111111-2222222222222222-01".to_string();
         let traced = SessionEventBatch::compile_attributed(
-            "trace-session",
+            &crate::SessionId::from("trace-session"),
             "trace-batch",
             vec![user("run"), user("run-two")],
             None,
@@ -1791,7 +1849,7 @@ mod tests {
         )
         .expect("T1 traced admission");
         let absent = SessionEventBatch::compile_attributed(
-            "trace-session",
+            &crate::SessionId::from("trace-session"),
             "trace-batch",
             vec![user("run"), user("run-two")],
             None,
@@ -1799,7 +1857,7 @@ mod tests {
         )
         .expect("T2 untraced admission");
         let changed = SessionEventBatch::compile_attributed(
-            "trace-session",
+            &crate::SessionId::from("trace-session"),
             "trace-batch",
             vec![user("run"), user("run-two")],
             None,
@@ -1807,7 +1865,7 @@ mod tests {
         )
         .expect("T3 retraced admission");
         let initial = SessionInitialEventPlan::compile(
-            "trace-session",
+            &crate::SessionId::from("trace-session"),
             "initial-trace-batch",
             vec![user("initial")],
         )
@@ -1904,14 +1962,14 @@ mod tests {
         // O2 different operation -> E2+E3.
         // Constraint/invariant: identity stays deterministic and within the
         // single Outcome wire namespace; no random or local counter participates.
-        let first = session_event_outcome_id("session-1", "operation-1");
+        let first = session_event_outcome_id(&crate::SessionId::from("session-1"), "operation-1");
         assert_eq!(
             first,
-            session_event_outcome_id("session-1", "operation-1"),
+            session_event_outcome_id(&crate::SessionId::from("session-1"), "operation-1"),
             "O1/E1"
         );
         assert!(first.starts_with("outc_"), "O1/E3");
-        let second = session_event_outcome_id("session-1", "operation-2");
+        let second = session_event_outcome_id(&crate::SessionId::from("session-1"), "operation-2");
         assert_ne!(first, second, "O2/E2");
         assert!(second.starts_with("outc_"), "O2/E3");
     }

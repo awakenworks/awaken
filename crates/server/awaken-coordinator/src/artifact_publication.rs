@@ -441,7 +441,11 @@ mod tests {
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
         let asserted = awaken_session_contract::SessionTerminalCleanupEffect::new(
-            awaken_session_contract::SessionCleanupCommand::new("session", "session", "cleanup"),
+            awaken_session_contract::SessionCleanupCommand::new(
+                &awaken_session_contract::SessionId::from("session"),
+                "session",
+                "cleanup",
+            ),
             awaken_session_contract::SessionRealizationLease {
                 owner: "coordinator".into(),
                 runtime_incarnation: "coordinator:incarnation".into(),
@@ -829,7 +833,7 @@ mod tests {
             };
             let mut operation = awaken_session_contract::SessionEnvironmentOperation::new(
                 "workspace",
-                "session",
+                &awaken_session_contract::SessionId::from("session"),
                 "suspend",
                 &generation,
                 1,
@@ -852,7 +856,9 @@ mod tests {
                     workspace_id: "workspace".into(),
                     asserted_effect: awaken_session_contract::SessionTerminalCleanupEffect::new(
                         awaken_session_contract::SessionCleanupCommand::new(
-                            "session", "session", "cleanup",
+                            &awaken_session_contract::SessionId::from("session"),
+                            "session",
+                            "cleanup",
                         ),
                         lease.clone(),
                     ),

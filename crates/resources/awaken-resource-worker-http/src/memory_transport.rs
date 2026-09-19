@@ -1194,7 +1194,7 @@ mod tests {
     fn terminal_intent() -> SessionTerminalMemoryIntent {
         let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
             awaken_session_contract::SessionCleanupCommand::new(
-                "session-memory",
+                &awaken_session_contract::SessionId::from("session-memory"),
                 "session-memory",
                 "cleanup-root",
             ),

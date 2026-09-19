@@ -1239,7 +1239,7 @@ fn user_observation_cannot_move_the_exact_run_opening() {
         SessionEventBatch, SessionEventInput, SessionEventProjectionAnchor, SessionRevision,
     };
     let mut batch = SessionEventBatch::compile(
-        "session",
+        &awaken_session_contract::SessionId::from("session"),
         "batch",
         vec![SessionEventInput::UserMessage {
             content: vec![ContentBlock::text("explain")],

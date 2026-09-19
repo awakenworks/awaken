@@ -375,7 +375,7 @@ impl SessionApplication {
         transition.session = durable.clone();
         if let Some(rejection) = durable
             .terminal_cleanup
-            .repository_publication_rejection(command.session_id.as_str())
+            .repository_publication_rejection(&command.session_id)
             .map_err(|_| SessionArchiveWithRepositoryPublicationError::Conflict)?
         {
             return Err(SessionArchiveWithRepositoryPublicationError::Rejected(
@@ -387,7 +387,7 @@ impl SessionApplication {
         }
         let publication_receipt = durable
             .terminal_cleanup
-            .repository_publication_receipt(command.session_id.as_str())
+            .repository_publication_receipt(&command.session_id)
             .map_err(|_| SessionArchiveWithRepositoryPublicationError::Conflict)?
             .cloned()
             .ok_or_else(|| {

@@ -77,7 +77,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 let generation = generation(thread);
                 let operation = awaken_session_contract::SessionEnvironmentOperation::new(
                     "workspace",
-                    thread,
+                    &awaken_session_contract::SessionId::from(thread),
                     "suspend",
                     &generation,
                     1,
@@ -431,7 +431,13 @@ async fn dispose_current_environment(
 }
 
 fn generation(thread: &str) -> awaken_session_contract::SandboxGeneration {
-    awaken_session_contract::SandboxGeneration::new(thread, 1, u64::MAX, "environment", "image")
+    awaken_session_contract::SandboxGeneration::new(
+        &awaken_session_contract::SessionId::from(thread),
+        1,
+        u64::MAX,
+        "environment",
+        "image",
+    )
 }
 
 #[test]
@@ -502,7 +508,7 @@ fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_close
         let generation = generation(rule);
         let operation = awaken_session_contract::SessionEnvironmentOperation::new(
             "workspace",
-            rule,
+            &awaken_session_contract::SessionId::from(rule),
             "suspend",
             &generation,
             1,
@@ -645,7 +651,7 @@ fn restore_request(thread: &str) -> awaken_session_contract::SandboxRestoreReque
     let generation = generation(thread);
     let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &generation,
         6,
@@ -666,7 +672,7 @@ fn restore_request(thread: &str) -> awaken_session_contract::SandboxRestoreReque
     };
     let restore = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "restore",
         &generation,
         7,
@@ -951,7 +957,7 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: "foreign-generation-receipt".into(),
                         generation: awaken_session_contract::SandboxGeneration::new(
-                            thread,
+                            &awaken_session_contract::SessionId::from(thread),
                             2,
                             u64::MAX,
                             "environment",
@@ -1087,7 +1093,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     let generation = generation(thread);
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &generation,
         2,
@@ -1254,7 +1260,7 @@ async fn terminal_takeover_is_highest_priority_and_other_causes_cannot_overwrite
     let generation = generation(thread);
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &generation,
         7,
@@ -1843,7 +1849,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
             SessionEnvironmentRetirementCause::CheckpointSource {
                 operation: awaken_session_contract::SessionEnvironmentOperation::new(
                     "workspace",
-                    thread,
+                    &awaken_session_contract::SessionId::from(thread),
                     "suspend",
                     &generation,
                     1,
@@ -1964,7 +1970,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     let prepared_generation = generation(thread);
     let prepared_operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &prepared_generation,
         7,
@@ -1980,7 +1986,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     )
     .expect("C1 exact Preparation owner");
     let asserted_generation = awaken_session_contract::SandboxGeneration::new(
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         2,
         u64::MAX,
         "other-environment",
@@ -1988,7 +1994,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     );
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &asserted_generation,
         7,
@@ -2041,7 +2047,7 @@ fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fabricati
     let generation = generation(thread);
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &generation,
         7,
@@ -3134,7 +3140,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .expect("C3 freeze exact root terminal target");
         let command = aggregate
             .terminal_cleanup
-            .command_for(thread, thread)
+            .command_for(&awaken_session_contract::SessionId::from(thread), thread)
             .expect("C3 aggregate terminal command");
         let effect =
             awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
@@ -3252,7 +3258,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
 
         let repository_preparation =
             awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 &projection.workspace_id,
                 &aggregate.resources,
             )
@@ -3397,7 +3403,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         aggregate
             .terminal_cleanup
-            .command_for(thread, thread)
+            .command_for(&awaken_session_contract::SessionId::from(thread), thread)
             .unwrap(),
         lease.clone(),
     );
@@ -3502,7 +3508,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             preparation,
             Some(
                 awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-                    thread,
+                    &awaken_session_contract::SessionId::from(thread),
                     &projection.workspace_id,
                     &aggregate.resources,
                 )
@@ -3584,7 +3590,7 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
     .unwrap();
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &generation,
         9,
@@ -3842,7 +3848,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     );
     host.install_test_resident_session_environment(thread, environment.clone());
     let generation = awaken_session_contract::SandboxGeneration::new(
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         1,
         u64::MAX,
         "environment",
@@ -3850,7 +3856,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     );
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &generation,
         7,
@@ -4154,7 +4160,7 @@ async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physica
             SessionEnvironmentRetirementCause::CheckpointSource {
                 operation: awaken_session_contract::SessionEnvironmentOperation::new(
                     "workspace",
-                    "owner-A",
+                    &awaken_session_contract::SessionId::from("owner-A"),
                     "suspend",
                     &generation("owner-A"),
                     1,

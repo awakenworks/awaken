@@ -4282,7 +4282,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let handle = original.handle();
         let binding = serde_json::to_string(&handle).unwrap();
         let generation = awaken_session_contract::SandboxGeneration::new(
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             1,
             u64::MAX,
             "environment",

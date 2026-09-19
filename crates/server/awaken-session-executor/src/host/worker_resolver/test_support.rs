@@ -343,7 +343,7 @@ pub(super) fn committed_environment(
     receipt: awaken_session_contract::SessionEnvironmentReceipt,
 ) -> awaken_session_contract::SessionEnvironmentState {
     let generation = awaken_session_contract::SandboxGeneration::new(
-        receipt.session_id.as_str(),
+        &receipt.session_id,
         1,
         u64::MAX,
         "test-environment",

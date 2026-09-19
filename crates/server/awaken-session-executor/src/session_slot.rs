@@ -1115,7 +1115,7 @@ mod tests {
         // | F6 | exact | Unmaterialized + Vacant + no local effects | E4 |
         let slots = SessionRuntimeSlots::default();
         let generation = awaken_session_contract::SandboxGeneration::new(
-            "mcp-admission",
+            &awaken_session_contract::SessionId::from("mcp-admission"),
             1,
             100,
             "environment",
@@ -1123,7 +1123,7 @@ mod tests {
         );
         let operation = awaken_session_contract::SessionEnvironmentOperation::new(
             "workspace",
-            "mcp-admission",
+            &awaken_session_contract::SessionId::from("mcp-admission"),
             "suspend",
             &generation,
             4,
@@ -1181,7 +1181,7 @@ mod tests {
             binding: "restored-binding".into(),
             effect_id: Some("restore-effect".into()),
             generation: Some(awaken_session_contract::SandboxGeneration::new(
-                "mcp-admission",
+                &awaken_session_contract::SessionId::from("mcp-admission"),
                 2,
                 100,
                 "environment",

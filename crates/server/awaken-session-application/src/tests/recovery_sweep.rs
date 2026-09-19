@@ -81,7 +81,10 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
     );
     stable
         .resources
-        .prepare("resource-interest", file_resources("pending"))
+        .prepare(
+            &awaken_session_contract::SessionId::from("resource-interest"),
+            file_resources("pending"),
+        )
         .unwrap();
     assert!(stable.needs_resource_reconciliation(), "R3 precondition");
     assert!(

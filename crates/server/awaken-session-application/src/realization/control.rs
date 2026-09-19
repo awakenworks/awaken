@@ -34,7 +34,7 @@ impl SessionApplication {
                 Err(error) => {
                     observation::checkpoint(
                         point,
-                        id.as_str(),
+                        id,
                         serde_json::json!({"read_error": error.to_string()}),
                     )
                     .await;
@@ -55,7 +55,7 @@ impl SessionApplication {
                 .collect::<Vec<_>>();
             observation::checkpoint(
                 point,
-                id.as_str(),
+                id,
                 serde_json::json!({
                     "revision": root.revision.0, "created": root.created_at_unix_ms,
                     "updated": root.updated_at_unix_ms, "lease": root.realization,
@@ -534,9 +534,7 @@ impl SessionApplication {
                 session.resources.commit().map_err(unavailable)?;
             }
             if prepared_legacy_resources {
-                session
-                    .resources
-                    .adopt_legacy_active(command.session_id.as_str());
+                session.resources.adopt_legacy_active(&command.session_id);
             }
             for request in expected {
                 let attachment = session
