@@ -3,7 +3,7 @@
   "schema_version": 1,
   "supported_sdk_anchors": [
     {
-      "declaration_file_count": 45,
+      "declaration_file_count": 46,
       "id": "oldest",
       "managed_export_count": 25,
       "managed_export_fingerprint": "702bc38ff90011f45ea3c499c403cea688f0b3e1a4b6d2a2e89539e28f9379da",
@@ -11,11 +11,11 @@
       "role": "oldest_supported",
       "runtime_file_count": 97,
       "runtime_fingerprint": "d796c2cd6c77244cd6345b09d4e70feea15464ba5b62e5012b21b4961e34bf56",
-      "type_fingerprint": "488b1aaa3a19a94e7449dba77fedbeca0ff7aed76c0eb7be6f7f66ed5f1bf593",
+      "type_fingerprint": "9a945530012341d23544c4f87f442c2a6d116279b9a5983b5ed2545b03740bd2",
       "version": "0.105.0"
     },
     {
-      "declaration_file_count": 51,
+      "declaration_file_count": 52,
       "id": "user_profiles_legacy",
       "managed_export_count": 27,
       "managed_export_fingerprint": "226132be287dbd236fd4075432862169fdeea2de28f7bead06568beb0952c23d",
@@ -23,11 +23,11 @@
       "role": "protocol_change_point",
       "runtime_file_count": 104,
       "runtime_fingerprint": "427157fd63fb784c6396fddd9fa381fba9bd1d6b1d1d9ec95ab5ebfe3f8f23a0",
-      "type_fingerprint": "9cfee5114665531e1c233d4810087b11ab9e5ea77973eaf47295f43cdc77897f",
+      "type_fingerprint": "68bdde5dbea319827a238b24742734aaf1a3006081eaf51e31d7da35bd9cd4be",
       "version": "0.117.1"
     },
     {
-      "declaration_file_count": 58,
+      "declaration_file_count": 59,
       "id": "beta_resources_legacy",
       "managed_export_count": 33,
       "managed_export_fingerprint": "cbcede7282b8baebb0183c9cdc7a328e84d0bc97d25dcfe0133383454fcfe2e4",
@@ -35,11 +35,11 @@
       "role": "beta_resource_projection_change_point",
       "runtime_file_count": 112,
       "runtime_fingerprint": "885483af1fdc09315dea9181c6bb1a03bdd2dfc2fa017c639547e0a5c2d8be1c",
-      "type_fingerprint": "c535637f745eeace33719d95c720897bf7149622a8d6cc57caba80aa28631e5c",
+      "type_fingerprint": "d16e38121528d192b3ce7c7db4357b408c21f8d8194406ed3280b03a9883338d",
       "version": "0.121.0"
     },
     {
-      "declaration_file_count": 58,
+      "declaration_file_count": 59,
       "id": "current",
       "managed_export_count": 32,
       "managed_export_fingerprint": "ccaa28658729c9ccab5ec52398847d0ea6cb8101381fe570899373b333d1c49d",
@@ -47,7 +47,7 @@
       "role": "current_oracle",
       "runtime_file_count": 113,
       "runtime_fingerprint": "736be5172fe3eebef2b1f011e8ca88113378663589b14a0de3ab2bc078187087",
-      "type_fingerprint": "00a54df575b29ad515bd5e0f56b6b4b634a5c442c4e3636dd1a185ae3860a152",
+      "type_fingerprint": "4a04f3a4cec684fbf0e0168f9b63a1f194e3785c2caa17862e2ef5347c672eac",
       "version": "0.125.0"
     }
   ]

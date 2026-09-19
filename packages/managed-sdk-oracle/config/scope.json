@@ -35,6 +35,7 @@
     "tools/agent-toolset/node.mjs"
   ],
   "managed_declaration_roots": [
+    "core/pagination.d.ts",
     "helpers/beta/zod.d.ts",
     "lib/environments",
     "lib/sessions/accumulate.d.ts",
