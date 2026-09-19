@@ -439,7 +439,7 @@ def selftest() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--self-test", action="store_true")
     arguments = parser.parse_args(argv)

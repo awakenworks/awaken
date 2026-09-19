@@ -35,6 +35,7 @@ decision — finish the conversion, or re-argue the allowance and re-date it.
 from __future__ import annotations
 
 import datetime as dt
+import argparse
 import json
 import re
 import sys
@@ -443,10 +444,18 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    if "--selftest" in sys.argv:
+    # Strict, one spelling per flag: a misspelling must refuse, never fall
+    # through to the default scan and report a green it did not earn.
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--self-test", action="store_true",
+                        help="run the decision table instead of scanning")
+    parser.add_argument("--report", action="store_true",
+                        help="print each rule's findings per file")
+    arguments = parser.parse_args()
+    if arguments.self_test:
         selftest()
         raise SystemExit(0)
-    if "--report" in sys.argv:
+    if arguments.report:
         for key, label in RULES:
             for relpath, hits in sorted(findings_by_rule(_sources(ROOT))[key].items()):
                 print(f"{label}\t{relpath}\t{len(hits)}")

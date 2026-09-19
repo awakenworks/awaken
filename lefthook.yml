@@ -197,7 +197,7 @@ pre-commit:
       # >>> generated glob from check_fabricated_facts.py INPUT_GLOBS — do not edit
       glob: "{crates/**/*.rs,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py,scripts/ci/fabricated_facts_baseline.json}"
       # <<< generated glob
-      run: python3 scripts/ci/check_fabricated_facts.py --selftest && python3 scripts/ci/check_fabricated_facts.py
+      run: python3 scripts/ci/check_fabricated_facts.py --self-test && python3 scripts/ci/check_fabricated_facts.py
 
     # The contract layer may only get simpler: no contract cycle, no deeper
     # contract chain, no growth above the line budget, and no new backend-noun
