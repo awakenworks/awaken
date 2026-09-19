@@ -5,7 +5,7 @@
 use awaken_store_conformance::worker_directory::*;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerManifest, WorkerProcessExit, WorkerRegistration, WorkerState,
+    WorkerState,
 };
 use awaken_worker_registry::MemoryWorkerDirectory;
 use awaken_worker_registry::{PostgresWorkerDirectory, SqliteWorkerDirectory};

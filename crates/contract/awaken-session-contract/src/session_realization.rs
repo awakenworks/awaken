@@ -1076,7 +1076,11 @@ mod tests {
         expires_at_unix_ms: u64,
     ) -> crate::SessionTerminalCleanupEffect {
         crate::SessionTerminalCleanupEffect::new(
-            crate::SessionCleanupCommand::new("session", thread_id, "terminal-root"),
+            crate::SessionCleanupCommand::new(
+                &crate::SessionId::from("session"),
+                thread_id,
+                "terminal-root",
+            ),
             SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/boot".into(),

@@ -10,6 +10,7 @@ mod effect_intent;
 mod generation;
 mod receipt_admission;
 
+use crate::SessionId;
 pub use continuation::{
     SourceReleaseDisposal, SourceReleasePreparationEffect, SourceReleasePreparedReceipt,
 };
@@ -201,7 +202,7 @@ impl SessionEnvironmentState {
     pub fn restoring_request(
         &self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Option<SandboxRestoreRequest> {
         let Self::Restoring {
             operation,
@@ -213,7 +214,7 @@ impl SessionEnvironmentState {
         };
         Some(SandboxRestoreRequest {
             workspace_id: workspace_id.to_owned(),
-            session_id: session_id.to_owned(),
+            session_id: session_id.as_str().to_owned(),
             effect_id: operation.effect_id.clone(),
             generation_id: generation.id.clone(),
             checkpoint: checkpoint.clone(),
@@ -227,7 +228,7 @@ impl SessionEnvironmentState {
     pub fn checkpoint_request(
         &self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &SessionId,
         policy: &crate::EnvironmentIdleRetentionPolicy,
     ) -> Result<Option<SandboxCheckpointRequest>, SessionEnvironmentTransitionError> {
         let (operation, generation) = match self {
@@ -266,7 +267,7 @@ impl SessionEnvironmentState {
         }
         Ok(Some(SandboxCheckpointRequest {
             workspace_id: workspace_id.to_owned(),
-            session_id: crate::SessionId::from(session_id),
+            session_id: session_id.clone(),
             operation: operation.clone(),
             source_effect_id: source_effect_id.as_ref().clone(),
             source_binding: source_binding.clone(),
@@ -777,7 +778,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn generation() -> SandboxGeneration {
-        SandboxGeneration::new("s1", 10, 1_000, "env", "image")
+        SandboxGeneration::new(&crate::SessionId::from("s1"), 10, 1_000, "env", "image")
     }
 
     fn realization(expires_at_unix_ms: u64) -> crate::SessionRealizationLease {
@@ -975,7 +976,7 @@ mod tests {
         // or explicit None without reconstructing lease fields in an adapter.
         let mut first = resident();
         let operation = first
-            .begin_suspend_at("workspace", "s1", 7, None, 100)
+            .begin_suspend_at("workspace", &crate::SessionId::from("s1"), 7, None, 100)
             .unwrap()
             .clone();
         assert_eq!(operation.started_at_unix_ms, 100, "R1");
@@ -988,7 +989,7 @@ mod tests {
         );
         assert_eq!(
             first
-                .begin_suspend_at("workspace", "s1", 7, None, 200)
+                .begin_suspend_at("workspace", &crate::SessionId::from("s1"), 7, None, 200)
                 .unwrap(),
             &operation,
             "R2"
@@ -996,11 +997,11 @@ mod tests {
 
         let mut equal_state = resident();
         let equal_operation = equal_state
-            .begin_suspend_at("workspace", "s1", 7, None, 100)
+            .begin_suspend_at("workspace", &crate::SessionId::from("s1"), 7, None, 100)
             .unwrap();
         let mut later_state = resident();
         let later_operation = later_state
-            .begin_suspend_at("workspace", "s1", 7, None, 101)
+            .begin_suspend_at("workspace", &crate::SessionId::from("s1"), 7, None, 101)
             .unwrap();
         assert_eq!(
             equal_operation.effect_id, operation.effect_id,
@@ -1029,7 +1030,7 @@ mod tests {
         };
         let fenced = SessionEnvironmentOperation::new_started_at(
             "workspace",
-            "s1",
+            &crate::SessionId::from("s1"),
             "suspend",
             &generation(),
             7,
@@ -1067,18 +1068,18 @@ mod tests {
         let mut state = resident();
         assert_eq!(
             state
-                .checkpoint_request("workspace-a", "s1", &policy)
+                .checkpoint_request("workspace-a", &crate::SessionId::from("s1"), &policy)
                 .unwrap(),
             None,
             "R1 Resident"
         );
         let operation = state
-            .begin_suspend_at("workspace-a", "s1", 7, None, 123)
+            .begin_suspend_at("workspace-a", &crate::SessionId::from("s1"), 7, None, 123)
             .unwrap()
             .clone();
         assert_eq!(
             state
-                .checkpoint_request("workspace-a", "s1", &policy)
+                .checkpoint_request("workspace-a", &crate::SessionId::from("s1"), &policy)
                 .unwrap(),
             None,
             "R1 Quiescing"
@@ -1097,7 +1098,7 @@ mod tests {
             .unwrap();
 
         let request = state
-            .checkpoint_request("workspace-a", "s1", &policy)
+            .checkpoint_request("workspace-a", &crate::SessionId::from("s1"), &policy)
             .unwrap()
             .unwrap();
         assert_eq!(request.workspace_id, "workspace-a", "R2 workspace");
@@ -1114,7 +1115,11 @@ mod tests {
             ..policy.clone()
         };
         assert_eq!(
-            state.checkpoint_request("workspace-a", "s1", &invalid_policy),
+            state.checkpoint_request(
+                "workspace-a",
+                &crate::SessionId::from("s1"),
+                &invalid_policy
+            ),
             Err(SessionEnvironmentTransitionError::InvalidCheckpointPolicy(
                 "checkpoint bounds must be positive"
             )),
@@ -1123,7 +1128,7 @@ mod tests {
         assert_eq!(
             state.checkpoint_request(
                 "workspace-a",
-                "s1",
+                &crate::SessionId::from("s1"),
                 &crate::EnvironmentIdleRetentionPolicy::default(),
             ),
             Err(SessionEnvironmentTransitionError::InvalidCheckpointPolicy(
@@ -1140,7 +1145,7 @@ mod tests {
             *slot = Some(checkpoint(&operation));
         }
         assert_eq!(
-            inconsistent.checkpoint_request("workspace-a", "s1", &policy),
+            inconsistent.checkpoint_request("workspace-a", &crate::SessionId::from("s1"), &policy),
             Err(SessionEnvironmentTransitionError::WrongPhase),
             "R4"
         );
@@ -1154,7 +1159,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             state
-                .checkpoint_request("workspace-a", "s1", &policy)
+                .checkpoint_request("workspace-a", &crate::SessionId::from("s1"), &policy)
                 .unwrap(),
             None,
             "R1 ReadyToDispose"
@@ -1326,7 +1331,7 @@ mod tests {
         let mut hibernated = SessionEnvironmentState::Hibernated {
             checkpoint: checkpoint(&SessionEnvironmentOperation::new(
                 "workspace",
-                "s1",
+                &crate::SessionId::from("s1"),
                 "suspend",
                 &generation(),
                 1,
@@ -1387,7 +1392,13 @@ mod tests {
         let mut state = resident();
         let lease = realization(1_000);
         let operation = state
-            .begin_suspend_at("workspace", "s1", 7, Some(lease.clone()), 100)
+            .begin_suspend_at(
+                "workspace",
+                &crate::SessionId::from("s1"),
+                7,
+                Some(lease.clone()),
+                100,
+            )
             .unwrap()
             .clone();
         assert!(matches!(
@@ -1455,7 +1466,7 @@ mod tests {
     fn source_cannot_be_disposed_before_checkpoint_reference() {
         let mut state = resident();
         let operation = state
-            .begin_suspend_at("workspace", "s1", 7, None, 100)
+            .begin_suspend_at("workspace", &crate::SessionId::from("s1"), 7, None, 100)
             .unwrap()
             .clone();
         state
@@ -1498,7 +1509,13 @@ mod tests {
         let mut state = resident();
         let lease = realization(1_000);
         let operation = state
-            .begin_suspend_at("workspace", "s1", 7, Some(lease.clone()), 100)
+            .begin_suspend_at(
+                "workspace",
+                &crate::SessionId::from("s1"),
+                7,
+                Some(lease.clone()),
+                100,
+            )
             .unwrap()
             .clone();
         state
@@ -1596,7 +1613,13 @@ mod tests {
         let prepared_lease = realization(2_000);
         let mut state = resident();
         let operation = state
-            .begin_suspend_at("workspace", "s1", 7, Some(admitted_lease), 100)
+            .begin_suspend_at(
+                "workspace",
+                &crate::SessionId::from("s1"),
+                7,
+                Some(admitted_lease),
+                100,
+            )
             .unwrap()
             .clone();
         state
@@ -1709,7 +1732,13 @@ mod tests {
         let mut state = resident();
         let lease = realization(1_000);
         let suspend = state
-            .begin_suspend_at("workspace", "s1", 7, Some(lease.clone()), 100)
+            .begin_suspend_at(
+                "workspace",
+                &crate::SessionId::from("s1"),
+                7,
+                Some(lease.clone()),
+                100,
+            )
             .unwrap()
             .clone();
         state
@@ -1744,13 +1773,13 @@ mod tests {
             })
             .unwrap();
         let restore = state
-            .begin_restore("workspace", "s1", 8, None, 100)
+            .begin_restore("workspace", &crate::SessionId::from("s1"), 8, None, 100)
             .unwrap()
             .clone();
         assert_eq!(restore.started_at_unix_ms, 100);
         assert_eq!(
             state
-                .begin_restore("workspace", "s1", 8, None, 200)
+                .begin_restore("workspace", &crate::SessionId::from("s1"), 8, None, 200)
                 .unwrap(),
             &restore
         );
@@ -1772,7 +1801,7 @@ mod tests {
     fn expired_checkpoint_fails_closed() {
         let operation = SessionEnvironmentOperation::new(
             "workspace",
-            "s1",
+            &crate::SessionId::from("s1"),
             "suspend",
             &generation(),
             1,
@@ -1784,7 +1813,7 @@ mod tests {
             generation: generation(),
         };
         assert_eq!(
-            state.begin_restore("workspace", "s1", 2, None, 1_000),
+            state.begin_restore("workspace", &crate::SessionId::from("s1"), 2, None, 1_000),
             Err(SessionEnvironmentTransitionError::CheckpointExpired)
         );
         assert!(matches!(state, SessionEnvironmentState::Hibernated { .. }));
@@ -1849,7 +1878,7 @@ mod tests {
         ) {
             let mut state = resident();
             let operation = state
-                .begin_suspend_at("workspace", "s1", 7, None, 100)
+                .begin_suspend_at("workspace", &crate::SessionId::from("s1"), 7, None, 100)
                 .unwrap()
                 .clone();
             let before = state.clone();

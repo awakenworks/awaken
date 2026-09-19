@@ -449,7 +449,7 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
     let session_id = "session-durable-input";
     let batch_id = "initial:create-key";
     let mut batch = awaken_session_contract::SessionEventBatch::compile(
-        session_id,
+        &awaken_session_contract::SessionId::from(session_id),
         batch_id,
         vec![
             SessionEventInput::UserMessage {
@@ -12118,7 +12118,7 @@ fn retained_outcome_fixture(
 ) -> (awaken_session_contract::PersistedSession, String) {
     let mut persisted = crate::state::tests::sample_persisted(session_id);
     let mut batch = awaken_session_contract::SessionEventBatch::compile(
-        session_id,
+        &awaken_session_contract::SessionId::from(session_id),
         batch_id,
         vec![SessionEventInput::DefineOutcome {
             description: "ship".into(),

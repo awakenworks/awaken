@@ -923,7 +923,7 @@ mod tests {
                 ));
             }
             Ok(awaken_session_contract::session_run_id(
-                thread,
+                &awaken_session_contract::SessionId::from(thread),
                 operation_id,
             ))
         }

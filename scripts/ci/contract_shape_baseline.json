@@ -84,11 +84,11 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 16413,
+      "production_lines": 16442,
       "catch_all_errors": 11,
       "capability_defaults": 49,
       "growth_reasons": {
-        "production_lines": "single-source the realization-lease laws: SandboxEffectFence::for_operation and fence_is_live_at join the fence kernel in provisioning (+23); session-contract lease/generation rules now call that kernel instead of repeating the field comparison (+12 at three call sites, -6 projection)"
+        "production_lines": "type Session identity: 58 port and vocabulary signatures take &SessionId instead of &str; the growth is the SessionId import in 14 modules and one owned binding where a borrowed identity outlives a mutable self borrow"
       }
     },
     "awaken-tenancy": {

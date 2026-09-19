@@ -957,7 +957,9 @@ mod tests {
         let request = ArtifactRecoveryRequest {
             terminal_effect: SessionTerminalCleanupEffect::new(
                 awaken_session_contract::SessionCleanupCommand::new(
-                    "session", "session", "cleanup",
+                    &awaken_session_contract::SessionId::from("session"),
+                    "session",
+                    "cleanup",
                 ),
                 awaken_session_contract::SessionRealizationLease {
                     owner: "worker".into(),

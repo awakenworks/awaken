@@ -1446,7 +1446,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         binding: "sandbox-binding-v2".into(),
         effect_id: Some(environment_receipt.effect_id.clone()),
         generation: Some(awaken_session_contract::SandboxGeneration::new(
-            "signed-thread",
+            &awaken_session_contract::SessionId::from("signed-thread"),
             100,
             1_000,
             "env-fingerprint",
@@ -1579,12 +1579,23 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
 
     let mut cleanup_operation = awaken_session_contract::SessionCleanupOperation::default();
-    assert!(cleanup_operation.request("signed-thread"), "K4 fence");
+    assert!(
+        cleanup_operation.request(&awaken_session_contract::SessionId::from("signed-thread")),
+        "K4 fence"
+    );
     cleanup_operation
-        .freeze_targets("signed-thread", [], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from("signed-thread"),
+            [],
+            0,
+            0,
+        )
         .expect("K4 root target");
     let cleanup_command = cleanup_operation
-        .command_for("signed-thread", "signed-thread")
+        .command_for(
+            &awaken_session_contract::SessionId::from("signed-thread"),
+            "signed-thread",
+        )
         .expect("K4 canonical command");
     *session_control.cleanup_action.lock().unwrap() = Some(
         awaken_session_contract::SessionTerminalCleanupAction::Prepare {
@@ -1834,13 +1845,21 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("publication intent fixture");
     let mut publication_operation = awaken_session_contract::SessionCleanupOperation::default();
     publication_operation
-        .request_with_publication("signed-thread", publication_intent.clone())
+        .request_with_publication(
+            &awaken_session_contract::SessionId::from("signed-thread"),
+            publication_intent.clone(),
+        )
         .expect("P1 publication fence");
     publication_operation
-        .freeze_targets("signed-thread", [], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from("signed-thread"),
+            [],
+            0,
+            0,
+        )
         .expect("P1 root target");
     let publication_command = publication_operation
-        .publication_command("signed-thread")
+        .publication_command(&awaken_session_contract::SessionId::from("signed-thread"))
         .expect("P1 command projection")
         .expect("P1 pending publication");
     let publication_projection = awaken_session_contract::SessionRepositoryPublicationProjection {
@@ -2860,7 +2879,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         expires_at_unix_ms: u64::MAX,
     };
     let command = awaken_session_contract::SessionCleanupCommand::new(
-        "any-session",
+        &awaken_session_contract::SessionId::from("any-session"),
         "any-session",
         "any-root",
     );

@@ -5,6 +5,7 @@
 //! persist scheduling state or introduce another recovery registry.
 
 use super::{PersistedSession, ScopedPersistedSession, SessionRepositoryError};
+use crate::SessionId;
 
 /// Closed supervisor policy for persistence failures. Retryable outages remain
 /// pending; corrupt durable truth is isolated for operator repair; command and
@@ -31,7 +32,7 @@ pub struct SessionRecoveryQuarantine {
 /// valid only as the exclusive lower bound of a subsequent read from the same
 /// repository authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionScanCursor(String);
+pub struct SessionScanCursor(SessionId);
 
 impl SessionScanCursor {
     /// Project one already-read durable row identity into the next-page lower
@@ -39,11 +40,11 @@ impl SessionScanCursor {
     /// carry the typed value returned by [`SessionScan`].
     #[must_use]
     pub fn after_session_id(session_id: impl Into<String>) -> Self {
-        Self(session_id.into())
+        Self(crate::SessionId::from(session_id.into()))
     }
 
     #[must_use]
-    pub fn session_id(&self) -> &str {
+    pub fn session_id(&self) -> &SessionId {
         &self.0
     }
 }

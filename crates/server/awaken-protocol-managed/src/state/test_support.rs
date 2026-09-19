@@ -937,7 +937,7 @@ impl SessionRuntime for RehydrateFake {
         &self,
         command: &awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError> {
-        let thread_id = command.target.thread_id(command.session_id.as_str());
+        let thread_id = command.target.thread_id(&command.session_id);
         let pending = self
             .pending_by_thread
             .lock()
@@ -977,7 +977,7 @@ impl SessionRuntime for RehydrateFake {
         delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
         let command = delivery.command;
-        let thread_id = command.target.thread_id(command.session_id.as_str());
+        let thread_id = command.target.thread_id(&command.session_id);
         let expected_fence = self.session_thread_tool_reply_fence(&command).await?;
         if delivery.fence != expected_fence {
             return Err(RunError::bad_request("reply fence is stale"));

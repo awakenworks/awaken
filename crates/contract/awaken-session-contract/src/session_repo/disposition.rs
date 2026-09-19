@@ -4,6 +4,7 @@
 //! only the closed disposition state and the pure plan used by its one delete
 //! reducer.
 
+use crate::SessionId;
 /// Durable retention and public-visibility state of one Session.
 ///
 /// `Deleting` is committed before physical cleanup starts. `Deleted` is retained
@@ -63,7 +64,7 @@ impl From<&SessionDisposition> for SessionDeleteDispositionClass {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SessionDeleteLifecycleFactPlan<'a> {
-    pub(super) session_id: &'a str,
+    pub(super) session_id: &'a SessionId,
     pub(super) owner_scope: &'a str,
     pub(super) requested_at_unix_s: i64,
 }
@@ -135,7 +136,7 @@ impl SessionDeleteRequestPlan<'_> {
 pub(super) fn session_delete_request_plan<'a>(
     disposition: SessionDeleteDispositionClass,
     execution_terminal: bool,
-    session_id: &'a str,
+    session_id: &'a SessionId,
     owner_scope: &'a str,
     requested_at_unix_s: i64,
 ) -> SessionDeleteRequestPlan<'a> {

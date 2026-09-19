@@ -7,6 +7,7 @@
 
 use super::state::SessionCleanupState;
 use super::{SessionCleanupError, SessionCleanupOperation, cleanup_effect_id};
+use crate::SessionId;
 use awaken_provisioning_contract::{
     RepositoryPublicationExpectation, RepositoryPublicationReceipt, RepositoryPublicationRejection,
 };
@@ -116,7 +117,7 @@ pub(super) fn verified_repository_publication_outcome(
 /// verification used by persistence, tombstone admission, and reconciliation.
 pub(super) fn verified_repository_publication_outcome_for(
     cleanup: &SessionCleanupOperation,
-    session_id: &str,
+    session_id: &SessionId,
 ) -> Result<Option<VerifiedRepositoryPublicationOutcome>, SessionCleanupError> {
     cleanup.verify_for(session_id)?;
     let envelope = cleanup.progress_inner();
@@ -140,7 +141,7 @@ impl SessionCleanupOperation {
     /// aggregate boundary is `PersistedSession::verified_terminal_cleanup`;
     /// crate-internal projections reuse this kernel before a Completed phase
     /// can suppress work or authorize a tombstone.
-    pub(crate) fn verify_for(&self, session_id: &str) -> Result<(), SessionCleanupError> {
+    pub(crate) fn verify_for(&self, session_id: &SessionId) -> Result<(), SessionCleanupError> {
         let envelope = self.progress_inner();
         let SessionCleanupState::RepositoryPublication(publication) = envelope.state() else {
             return Ok(());
@@ -164,7 +165,7 @@ impl SessionCleanupOperation {
                 if effect_id != &expected_effect_id {
                     return Err(SessionCleanupError::OperationMismatch);
                 }
-                if !thread_ids.contains(session_id) {
+                if !thread_ids.contains(session_id.as_str()) {
                     return Err(SessionCleanupError::FrozenTargetsMismatch);
                 }
                 if publication.receipt.is_some() || publication.rejection.is_some() {
@@ -184,7 +185,7 @@ impl SessionCleanupOperation {
                 if effect_id != &expected_effect_id {
                     return Err(SessionCleanupError::OperationMismatch);
                 }
-                if !thread_ids.contains(session_id) {
+                if !thread_ids.contains(session_id.as_str()) {
                     return Err(SessionCleanupError::FrozenTargetsMismatch);
                 }
                 let command = SessionRepositoryPublicationCommand::new(
@@ -217,7 +218,7 @@ impl SessionCleanupOperation {
     /// root cleanup may dispose the shared environment.
     pub fn publication_command(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Result<Option<SessionRepositoryPublicationCommand>, SessionCleanupError> {
         self.verify_for(session_id)?;
         let envelope = self.progress_inner();
@@ -251,7 +252,7 @@ impl SessionCleanupOperation {
         if effect_id != &cleanup_effect_id(session_id) {
             return Err(SessionCleanupError::OperationMismatch);
         }
-        if !thread_ids.contains(session_id) {
+        if !thread_ids.contains(session_id.as_str()) {
             return Err(SessionCleanupError::FrozenTargetsMismatch);
         }
         if thread_ids.iter().any(|thread_id| {
@@ -274,7 +275,7 @@ impl SessionCleanupOperation {
 
     pub fn repository_publication_receipt(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Result<Option<&SessionRepositoryPublicationReceipt>, SessionCleanupError> {
         self.verify_for(session_id)?;
         let envelope = self.progress_inner();
@@ -299,7 +300,7 @@ impl SessionCleanupOperation {
 
     pub fn repository_publication_rejection(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Result<Option<&SessionRepositoryPublicationRejection>, SessionCleanupError> {
         self.verify_for(session_id)?;
         let envelope = self.progress_inner();
@@ -327,7 +328,7 @@ impl SessionCleanupOperation {
     /// different command binding or effect receipt fails closed.
     pub fn record_repository_publication_receipt(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         receipt: SessionRepositoryPublicationReceipt,
     ) -> Result<bool, SessionCleanupError> {
         self.record_repository_publication_effect(
@@ -341,7 +342,7 @@ impl SessionCleanupOperation {
     /// root cleanup command may run; exact replay cannot invoke Git again.
     pub fn record_repository_publication_rejection(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         rejection: SessionRepositoryPublicationRejection,
     ) -> Result<bool, SessionCleanupError> {
         self.record_repository_publication_effect(
@@ -352,7 +353,7 @@ impl SessionCleanupOperation {
 
     fn record_repository_publication_effect(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         effect: SessionRepositoryPublicationEffect,
     ) -> Result<bool, SessionCleanupError> {
         let preparation_threads = self
@@ -398,7 +399,7 @@ impl SessionCleanupOperation {
                     ..
                 } => (
                     effect_id.clone(),
-                    thread_ids.contains(session_id),
+                    thread_ids.contains(session_id.as_str()),
                     thread_ids.iter().all(|thread_id| {
                         thread_id == session_id
                             || completions.contains_key(thread_id)
@@ -517,13 +518,13 @@ impl SessionRepositoryPublicationIntent {
 
 impl SessionRepositoryPublicationCommand {
     pub(super) fn new(
-        session_id: &str,
+        session_id: &SessionId,
         cleanup_effect_id: &str,
         intent: &SessionRepositoryPublicationIntent,
     ) -> Result<Self, SessionCleanupError> {
         intent.validate()?;
         Ok(Self {
-            session_id: crate::SessionId::from(session_id),
+            session_id: session_id.clone(),
             effect_id: crate::stable_fingerprint(&(
                 "session-repository-publication-effect-v1",
                 session_id,
@@ -782,11 +783,13 @@ mod tests {
     fn pending(session_id: &str) -> (SessionCleanupOperation, SessionRepositoryPublicationCommand) {
         let mut state = SessionCleanupOperation::default();
         state
-            .request_with_publication(session_id, intent())
+            .request_with_publication(&crate::SessionId::from(session_id), intent())
             .unwrap();
-        state.freeze_targets(session_id, [], 3, 5).unwrap();
+        state
+            .freeze_targets(&crate::SessionId::from(session_id), [], 3, 5)
+            .unwrap();
         let command = state
-            .publication_command(session_id)
+            .publication_command(&crate::SessionId::from(session_id))
             .unwrap()
             .expect("publication command");
         (state, command)
@@ -806,7 +809,10 @@ mod tests {
         )
         .unwrap();
         state
-            .record_repository_publication_rejection(session_id, rejection.clone())
+            .record_repository_publication_rejection(
+                &crate::SessionId::from(session_id),
+                rejection.clone(),
+            )
             .unwrap();
         (state, command, rejection)
     }
@@ -827,7 +833,9 @@ mod tests {
     }
 
     fn complete(mut state: SessionCleanupOperation, session_id: &str) -> SessionCleanupOperation {
-        let root = state.command_for(session_id, session_id).unwrap();
+        let root = state
+            .command_for(&crate::SessionId::from(session_id), session_id)
+            .unwrap();
         let completion = SessionCleanupCompletion::new(&root, Vec::new());
         let mut wire = serde_json::to_value(&state).unwrap();
         wire["cleanup"]
@@ -885,11 +893,16 @@ mod tests {
     #[test]
     fn rejection_command_mismatch_leaves_the_aggregate_unchanged() {
         let (foreign_state, _, foreign) = rejected("foreign-session");
-        foreign_state.verify_for("foreign-session").unwrap();
+        foreign_state
+            .verify_for(&crate::SessionId::from("foreign-session"))
+            .unwrap();
         let (mut state, _) = pending("target-session");
         let before = state.clone();
         assert_eq!(
-            state.record_repository_publication_rejection("target-session", foreign),
+            state.record_repository_publication_rejection(
+                &crate::SessionId::from("target-session"),
+                foreign
+            ),
             Err(SessionCleanupError::RepositoryPublicationRejectionMismatch),
             "D3 canonical self-evidence still requires the exact Session command"
         );
@@ -903,7 +916,10 @@ mod tests {
         let (mut state, _) = pending("target-receipt-session");
         let before = state.clone();
         assert_eq!(
-            state.record_repository_publication_receipt("target-receipt-session", foreign.clone(),),
+            state.record_repository_publication_receipt(
+                &crate::SessionId::from("target-receipt-session"),
+                foreign.clone(),
+            ),
             Err(SessionCleanupError::RepositoryPublicationReceiptMismatch),
             "D4 a receipt for another Session is rejected before mutation"
         );
@@ -915,7 +931,10 @@ mod tests {
         let own_receipt = receipt(&pending("target-receipt-session").1);
         let mut completed = before.clone();
         completed
-            .record_repository_publication_receipt("target-receipt-session", own_receipt)
+            .record_repository_publication_receipt(
+                &crate::SessionId::from("target-receipt-session"),
+                own_receipt,
+            )
             .unwrap();
         let completed = complete(completed, "target-receipt-session");
         let mut wire = serde_json::to_value(completed).unwrap();
@@ -927,12 +946,13 @@ mod tests {
             "D4 setup reaches the dangerous phase"
         );
         assert_eq!(
-            decoded.verify_for("target-receipt-session"),
+            decoded.verify_for(&crate::SessionId::from("target-receipt-session")),
             Err(SessionCleanupError::RepositoryPublicationReceiptMismatch),
             "D4 Completed suppression requires outer Session binding"
         );
         assert_eq!(
-            decoded.repository_publication_receipt("target-receipt-session"),
+            decoded
+                .repository_publication_receipt(&crate::SessionId::from("target-receipt-session")),
             Err(SessionCleanupError::RepositoryPublicationReceiptMismatch),
             "D4 exact Session command binding is mandatory at replay"
         );
@@ -952,7 +972,7 @@ mod tests {
             "D5 setup reaches the dangerous phase"
         );
         assert_eq!(
-            decoded.verify_for("target-rejection-session"),
+            decoded.verify_for(&crate::SessionId::from("target-rejection-session")),
             Err(SessionCleanupError::RepositoryPublicationRejectionMismatch),
             "D5 Completed rejection requires outer Session binding"
         );

@@ -1346,7 +1346,10 @@ async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation(
     pending.resources = Default::default();
     pending
         .resources
-        .prepare("sesn_pending", desired.clone())
+        .prepare(
+            &awaken_session_contract::SessionId::from("sesn_pending"),
+            desired.clone(),
+        )
         .unwrap();
     pending.resources.start_attempt().unwrap();
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, pending).await;
@@ -1384,7 +1387,9 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
     let mut deleted = sample_persisted("sesn_deleted");
     deleted.disposition = SessionDisposition::Deleting;
     deleted.execution = awaken_session_contract::SessionExecutionState::Terminated;
-    deleted.resources.adopt_legacy_active("sesn_deleted");
+    deleted
+        .resources
+        .adopt_legacy_active(&awaken_session_contract::SessionId::from("sesn_deleted"));
     deleted.resources.begin_release().unwrap();
     create_session_fixture(repo.as_ref(), "workspace-a", deleted).await;
 
@@ -1435,7 +1440,9 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
         let id = format!("sesn_{status}");
         let mut session = sample_persisted(&id);
         session.execution = status.parse().expect("fixture execution state");
-        session.resources.adopt_legacy_active(&id);
+        session
+            .resources
+            .adopt_legacy_active(&awaken_session_contract::SessionId::from(id.as_str()));
         session
             .environment
             .set_resident(format!("binding-{status}"));
@@ -1503,7 +1510,9 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
     running.execution = SessionExecutionState::Running;
     running
         .resources
-        .adopt_legacy_active("sesn_running_rehydrate");
+        .adopt_legacy_active(&awaken_session_contract::SessionId::from(
+            "sesn_running_rehydrate",
+        ));
     running.environment.set_resident("running-binding");
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, running).await;
 

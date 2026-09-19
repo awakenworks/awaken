@@ -841,7 +841,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     .unwrap();
     let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         awaken_session_contract::SessionCleanupCommand::new(
-            "session-terminal-memory",
+            &awaken_session_contract::SessionId::from("session-terminal-memory"),
             "session-terminal-memory",
             "cleanup-root",
         ),

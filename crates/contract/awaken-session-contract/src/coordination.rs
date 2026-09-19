@@ -4,6 +4,7 @@
 //! These values describe admission and a derived relationship; they are not a
 //! Subagent aggregate, registry, mailbox, or persistence model.
 
+use crate::SessionId;
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
@@ -69,7 +70,7 @@ pub enum SessionRunActivityAdmissionMode {
 /// id is already the canonical dispatch identity, so exact crash recovery
 /// reuses one Session receipt without another registry or counter.
 #[must_use]
-pub fn session_run_activity_operation_id(session_id: &str, run_id: &RunId) -> String {
+pub fn session_run_activity_operation_id(session_id: &SessionId, run_id: &RunId) -> String {
     format!(
         "session-run-activity:{}",
         crate::stable_fingerprint(&("session-run-activity-v1", session_id, run_id.0.as_str(),))
@@ -81,7 +82,7 @@ pub fn session_run_activity_operation_id(session_id: &str, run_id: &RunId) -> St
 /// admission and committed-link projector from maintaining parallel codecs.
 #[must_use]
 pub fn coordinated_thread_id(
-    session_id: &str,
+    session_id: &SessionId,
     source_run_id: &RunId,
     operation_id: &str,
 ) -> ThreadId {
@@ -400,7 +401,7 @@ impl SessionThreadTarget {
     /// Resolve the logical Thread id without consulting topology state. Child
     /// membership is still validated by the Session application before use.
     #[must_use]
-    pub fn thread_id(&self, session_id: &str) -> ThreadId {
+    pub fn thread_id(&self, session_id: &SessionId) -> ThreadId {
         match self {
             Self::Primary => ThreadId(session_id.to_string()),
             Self::Child(thread_id) => thread_id.clone(),
@@ -606,16 +607,21 @@ mod tests {
         // Constraint/invariant: this domain-separated fingerprint is the sole
         // identity derivation; retries must not allocate a registry entry.
         let run = RunId("run-1".into());
-        let exact = coordinated_thread_id("session-1", &run, "operation-1");
+        let exact =
+            coordinated_thread_id(&crate::SessionId::from("session-1"), &run, "operation-1");
         assert_eq!(
             exact,
-            coordinated_thread_id("session-1", &run, "operation-1"),
+            coordinated_thread_id(&crate::SessionId::from("session-1"), &run, "operation-1"),
             "T1/E1"
         );
         for changed in [
-            coordinated_thread_id("session-2", &run, "operation-1"),
-            coordinated_thread_id("session-1", &RunId("run-2".into()), "operation-1"),
-            coordinated_thread_id("session-1", &run, "operation-2"),
+            coordinated_thread_id(&crate::SessionId::from("session-2"), &run, "operation-1"),
+            coordinated_thread_id(
+                &crate::SessionId::from("session-1"),
+                &RunId("run-2".into()),
+                "operation-1",
+            ),
+            coordinated_thread_id(&crate::SessionId::from("session-1"), &run, "operation-2"),
         ] {
             assert_ne!(changed, exact, "T2/E2");
         }

@@ -10,6 +10,7 @@ use super::{
     SessionRepositoryPublicationCommand, SessionRepositoryPublicationIntent,
     VerifiedSessionCleanupReceipt, verified_repository_publication_outcome,
 };
+use crate::SessionId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,15 +29,15 @@ pub(crate) enum SessionCleanupPhase {
 /// consumes this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionCleanupRequestIdentity<'a> {
-    session_id: &'a str,
+    session_id: &'a SessionId,
 }
 
 impl<'a> SessionCleanupRequestIdentity<'a> {
-    pub(crate) const fn new(session_id: &'a str) -> Self {
+    pub(crate) const fn new(session_id: &'a SessionId) -> Self {
         Self { session_id }
     }
 
-    pub(crate) const fn session_id(&self) -> &str {
+    pub(crate) const fn session_id(&self) -> &SessionId {
         self.session_id
     }
 
@@ -261,7 +262,7 @@ impl SessionCleanupOperation {
     }
 
     /// Commit the stable whole-Session operation before any Runtime effect.
-    pub fn request(&mut self, session_id: &str) -> bool {
+    pub fn request(&mut self, session_id: &SessionId) -> bool {
         self.request_exact(session_id, &SessionCleanupRequestIdentity::new(session_id))
             .unwrap_or(false)
     }
@@ -271,7 +272,7 @@ impl SessionCleanupOperation {
     /// corrupted or foreign identity can never be rewritten by a retry.
     pub(crate) fn request_exact(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         identity: &SessionCleanupRequestIdentity<'_>,
     ) -> Result<bool, SessionCleanupError> {
         if identity.session_id() != session_id {
@@ -297,7 +298,7 @@ impl SessionCleanupOperation {
     /// another or absent publication intent cannot rewrite frozen authority.
     pub fn request_with_publication(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         repository_publication: SessionRepositoryPublicationIntent,
     ) -> Result<bool, SessionCleanupError> {
         repository_publication.validate()?;
@@ -354,7 +355,7 @@ impl SessionCleanupOperation {
     /// immutable: recovery may replay it, but no later projection can expand it.
     pub fn freeze_targets(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         thread_ids: impl IntoIterator<Item = String>,
         delegation_watermark: u64,
         runtime_commit_cursor: u64,
@@ -529,7 +530,11 @@ impl SessionCleanupOperation {
     }
 
     #[must_use]
-    pub fn command_for(&self, session_id: &str, thread_id: &str) -> Option<SessionCleanupCommand> {
+    pub fn command_for(
+        &self,
+        session_id: &SessionId,
+        thread_id: &str,
+    ) -> Option<SessionCleanupCommand> {
         let cleanup = self.legacy_cleanup();
         let (effect_id, thread_ids) = match cleanup.state() {
             SessionCleanupState::Requested {
@@ -587,7 +592,7 @@ impl SessionCleanupOperation {
                 Err(SessionCleanupError::NotRequested)
             };
         };
-        if *effect_id != cleanup_effect_id(session_id) {
+        if *effect_id != cleanup_effect_id(&crate::SessionId::from(session_id)) {
             return Err(SessionCleanupError::OperationMismatch);
         }
         let children = thread_ids
@@ -595,7 +600,13 @@ impl SessionCleanupOperation {
             .filter(|thread_id| {
                 thread_id.as_str() != session_id && !completions.contains_key(*thread_id)
             })
-            .map(|thread_id| SessionCleanupCommand::new(session_id, thread_id, effect_id))
+            .map(|thread_id| {
+                SessionCleanupCommand::new(
+                    &crate::SessionId::from(session_id),
+                    thread_id,
+                    effect_id,
+                )
+            })
             .collect::<Vec<_>>();
         if !children.is_empty() {
             // The root command disposes the shared Worker projection. Keep it
@@ -603,7 +614,10 @@ impl SessionCleanupOperation {
             // the same realization owner instead of losing its poll cursor.
             return Ok(children);
         }
-        if self.publication_command(session_id)?.is_some() {
+        if self
+            .publication_command(&crate::SessionId::from(session_id))?
+            .is_some()
+        {
             // Repository publication is a root-owned effect, but the ordinary
             // root cleanup command would dispose its working tree. Withhold that
             // disposer until the exact publication receipt is durable.
@@ -612,8 +626,13 @@ impl SessionCleanupOperation {
         Ok(thread_ids
             .contains(session_id)
             .then(|| {
-                (!completions.contains_key(session_id))
-                    .then(|| SessionCleanupCommand::new(session_id, session_id, effect_id))
+                (!completions.contains_key(session_id)).then(|| {
+                    SessionCleanupCommand::new(
+                        &crate::SessionId::from(session_id),
+                        session_id,
+                        effect_id,
+                    )
+                })
             })
             .flatten()
             .into_iter()
@@ -642,7 +661,11 @@ impl SessionCleanupOperation {
         thread_ids
             .iter()
             .map(|thread_id| {
-                let command = SessionCleanupCommand::new(session_id, thread_id, effect_id);
+                let command = SessionCleanupCommand::new(
+                    &crate::SessionId::from(session_id),
+                    thread_id,
+                    effect_id,
+                );
                 completions
                     .get(thread_id)
                     .ok_or(SessionCleanupError::MissingReceipt)?
@@ -679,19 +702,19 @@ impl SessionCleanupOperation {
                 .effect_id()
                 .ok_or(SessionCleanupError::NotRequested)?;
             let command = SessionRepositoryPublicationCommand::new(
-                session_id,
+                &crate::SessionId::from(session_id),
                 effect_id,
                 &publication.intent,
             )?;
             let outcome = verified_repository_publication_outcome(publication, &command)?;
             return complete_cleanup(
                 &mut publication.cleanup,
-                session_id,
+                &crate::SessionId::from(session_id),
                 receipts,
                 Some(outcome),
             );
         }
-        complete_cleanup(self, session_id, receipts, None)
+        complete_cleanup(self, &crate::SessionId::from(session_id), receipts, None)
     }
 
     /// Normalize only a complete canonical receipt set already present in a

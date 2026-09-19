@@ -190,7 +190,7 @@ pub(crate) fn compile_session_initial_event_plan(
         })
         .collect::<Result<Vec<_>, _>>()?;
     awaken_session_contract::SessionInitialEventPlan::compile(
-        session_id,
+        &awaken_session_contract::SessionId::from(session_id),
         format!("initial:{session_id}"),
         inputs,
     )

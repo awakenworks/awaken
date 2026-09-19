@@ -399,7 +399,7 @@ impl SessionRepository for ScheduledConflictRepository {
                 let session_id = concurrent.session_id.clone();
                 concurrent
                     .resources
-                    .prepare(session_id.as_str(), concurrent.resources.active.clone())
+                    .prepare(&session_id, concurrent.resources.active.clone())
                     .expect("concurrent Resource intent is valid");
                 concurrent
                     .resources

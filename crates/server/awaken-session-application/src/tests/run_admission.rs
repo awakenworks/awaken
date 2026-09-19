@@ -193,10 +193,12 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let run_id =
-        awaken_session_contract::session_run_id("cold-replica-activity", "cold-replica-operation");
+    let run_id = awaken_session_contract::session_run_id(
+        &awaken_session_contract::SessionId::from("cold-replica-activity"),
+        "cold-replica-operation",
+    );
     let activity_operation = awaken_session_contract::session_run_activity_operation_id(
-        "cold-replica-activity",
+        &awaken_session_contract::SessionId::from("cold-replica-activity"),
         &run_id,
     );
     let (_, original_epoch) = application

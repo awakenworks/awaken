@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::SessionId;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
@@ -49,7 +50,7 @@ pub struct SessionRunExecutionRequirements {
 /// Protocol adapters retain their wire identity as `operation_id`; no mapping
 /// repository is required because the internal identity is deterministic.
 #[must_use]
-pub fn session_run_id(session_id: &str, operation_id: &str) -> RunId {
+pub fn session_run_id(session_id: &SessionId, operation_id: &str) -> RunId {
     RunId(format!(
         "session-run-{}",
         crate::stable_fingerprint(&("session-run-v1", session_id, operation_id,))
@@ -408,10 +409,22 @@ mod tests {
         // E2 either changed coordinate derives another RunId. Constraints: the
         // derivation is domain-separated and owns no mapping store. Decision
         // rules: R1=C1+C2=>E1; R2=!C1|!C2=>E2.
-        let exact = session_run_id("session-1", "operation-1");
-        assert_eq!(exact, session_run_id("session-1", "operation-1"), "R1/E1");
-        assert_ne!(exact, session_run_id("session-2", "operation-1"), "R2/E2");
-        assert_ne!(exact, session_run_id("session-1", "operation-2"), "R2/E2");
+        let exact = session_run_id(&crate::SessionId::from("session-1"), "operation-1");
+        assert_eq!(
+            exact,
+            session_run_id(&crate::SessionId::from("session-1"), "operation-1"),
+            "R1/E1"
+        );
+        assert_ne!(
+            exact,
+            session_run_id(&crate::SessionId::from("session-2"), "operation-1"),
+            "R2/E2"
+        );
+        assert_ne!(
+            exact,
+            session_run_id(&crate::SessionId::from("session-1"), "operation-2"),
+            "R2/E2"
+        );
     }
 
     #[test]

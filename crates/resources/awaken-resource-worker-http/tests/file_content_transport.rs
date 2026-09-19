@@ -210,7 +210,10 @@ fn frozen_application_session(
     };
     let mut resource_state = awaken_session_contract::SessionResourceState::default();
     resource_state
-        .prepare(session_id, resources(file_id))
+        .prepare(
+            &awaken_session_contract::SessionId::from(session_id),
+            resources(file_id),
+        )
         .expect("prepare Worker Session resources");
     awaken_session_contract::PersistedSession {
         created_at_unix_ms: None,

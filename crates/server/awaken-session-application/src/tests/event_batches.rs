@@ -270,7 +270,7 @@ impl SessionRuntime for EventBatchRuntime {
             .lock()
             .unwrap()
             .values()
-            .find(|command| command.target.thread_id(session_id.as_str()).0 == thread_id)
+            .find(|command| command.target.thread_id(session_id).0 == thread_id)
             .map(|command| command.expected_run_id.clone());
         if let Some(run_id) = staged_run_id {
             let thread_id = ThreadId(thread_id.to_string());
@@ -576,8 +576,12 @@ fn planned_session(session_id: &str, inputs: Vec<SessionEventInput>) -> Persiste
     let mut session = persisted(session_id, false, "idle");
     session
         .install_initial_event_plan(
-            SessionInitialEventPlan::compile(session_id, format!("initial:{session_id}"), inputs)
-                .expect("valid initial Event plan"),
+            SessionInitialEventPlan::compile(
+                &awaken_session_contract::SessionId::from(session_id),
+                format!("initial:{session_id}"),
+                inputs,
+            )
+            .expect("valid initial Event plan"),
         )
         .expect("install initial Event plan");
     // The focused reconciler fixture starts after the ordinary realization
@@ -807,7 +811,10 @@ fn tool_reply_activity_operation_id(
         }
     });
     reply
-        .delivery_command(session_id, accompanying_system)
+        .delivery_command(
+            &awaken_session_contract::SessionId::from(session_id),
+            accompanying_system,
+        )
         .activity_operation_id()
 }
 
@@ -2147,11 +2154,22 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
             session
                 .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
                 .unwrap();
-            assert!(session.terminal_cleanup.request(&session_id));
+            assert!(
+                session
+                    .terminal_cleanup
+                    .request(&awaken_session_contract::SessionId::from(
+                        session_id.as_str()
+                    ))
+            );
             if cleanup == "requested" {
                 session
                     .terminal_cleanup
-                    .freeze_targets(&session_id, [], 0, 17)
+                    .freeze_targets(
+                        &awaken_session_contract::SessionId::from(session_id.as_str()),
+                        [],
+                        0,
+                        17,
+                    )
                     .unwrap();
             } else if cleanup == "legacy" {
                 let mut legacy = serde_json::to_value(&session).unwrap();
@@ -2182,7 +2200,12 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 let mut frozen = initial.clone();
                 frozen
                     .terminal_cleanup
-                    .freeze_targets(&session_id, [], 0, 23)
+                    .freeze_targets(
+                        &awaken_session_contract::SessionId::from(session_id.as_str()),
+                        [],
+                        0,
+                        23,
+                    )
                     .unwrap();
                 let expected_revision = frozen.revision;
                 let payload = awaken_session_contract::SessionMutationPayload::Replace(frozen);
@@ -4257,12 +4280,12 @@ async fn fresh_user_reservation_snapshots_the_recovered_resource_generation() {
     let mut session = persisted("generation-before-reservation", true, "preparing");
     let revision = session
         .resources
-        .prepare(session.session_id.as_str(), prior.clone())
+        .prepare(&session.session_id, prior.clone())
         .expect("G1 pending generation");
     assert_eq!(
         session
             .resources
-            .revise_unattempted_pending(session.session_id.as_str(), desired.clone())
+            .revise_unattempted_pending(&session.session_id, desired.clone())
             .expect("G1 amendment"),
         revision,
         "G1 same generation"
@@ -4384,7 +4407,7 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
         "C1/E1"
     );
     let operation = awaken_session_contract::session_run_activity_operation_id(
-        "reservation-before-activity",
+        &awaken_session_contract::SessionId::from("reservation-before-activity"),
         &command.run_id,
     );
     assert!(
@@ -4860,7 +4883,7 @@ async fn rejected_user_reservation_cannot_orphan_an_accompanying_system_case() {
         .expect("S1/E2 rejected reservation");
     assert!(projection < reservation, "S1/E2");
     let operation = awaken_session_contract::session_run_activity_operation_id(
-        "system-after-admission",
+        &awaken_session_contract::SessionId::from("system-after-admission"),
         &run_id,
     );
     assert!(
@@ -5196,12 +5219,12 @@ async fn ordinary_active_active_append_is_atomic_revision_ordered_and_activity_f
             .collect::<Vec<_>>(),
         vec![
             awaken_session_contract::session_event_batch_id(
-                "ordinary-atomic",
+                &awaken_session_contract::SessionId::from("ordinary-atomic"),
                 awaken_session_contract::SessionRevision(2),
             )
             .unwrap(),
             awaken_session_contract::session_event_batch_id(
-                "ordinary-atomic",
+                &awaken_session_contract::SessionId::from("ordinary-atomic"),
                 awaken_session_contract::SessionRevision(3),
             )
             .unwrap(),

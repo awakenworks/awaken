@@ -5667,7 +5667,9 @@ async fn profiled_release_projects_one_durable_repository_publication() {
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt("profiled-publication")
+            .repository_publication_receipt(&awaken_session_contract::SessionId::from(
+                "profiled-publication"
+            ))
             .unwrap()
             .is_some(),
         "P2/E2 receipt is durable before response"

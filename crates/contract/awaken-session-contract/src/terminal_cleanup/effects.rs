@@ -2,10 +2,11 @@
 
 use super::state::SessionCleanupState;
 use super::*;
+use crate::SessionId;
 
 pub(super) fn complete_cleanup(
     cleanup: &mut SessionCleanupOperation,
-    session_id: &str,
+    session_id: &SessionId,
     receipts: &[VerifiedSessionCleanupReceipt],
     repository_publication_outcome: Option<VerifiedRepositoryPublicationOutcome>,
 ) -> Result<bool, SessionCleanupError> {
@@ -39,7 +40,7 @@ pub(super) fn complete_cleanup(
         .iter()
         .map(|receipt| receipt.thread_id().to_string())
         .collect::<BTreeSet<_>>();
-    if !evidenced_threads.contains(session_id) {
+    if !evidenced_threads.contains(session_id.as_str()) {
         return Err(SessionCleanupError::MissingRootReceipt);
     }
     if evidenced_threads != *thread_ids {
@@ -115,9 +116,9 @@ pub struct SessionCleanupCommand {
 
 impl SessionCleanupCommand {
     #[must_use]
-    pub fn new(session_id: &str, thread_id: &str, root_effect_id: &str) -> Self {
+    pub fn new(session_id: &SessionId, thread_id: &str, root_effect_id: &str) -> Self {
         Self {
-            session_id: crate::SessionId::from(session_id),
+            session_id: session_id.clone(),
             thread_id: thread_id.to_string(),
             effect_id: crate::stable_fingerprint(&(
                 "session-terminal-cleanup-thread-v1",
@@ -676,6 +677,6 @@ pub enum SessionCleanupError {
     InvalidPhaseAdvance,
 }
 
-pub(super) fn cleanup_effect_id(session_id: &str) -> String {
+pub(super) fn cleanup_effect_id(session_id: &SessionId) -> String {
     crate::stable_fingerprint(&("session-terminal-cleanup-v1", session_id))
 }
