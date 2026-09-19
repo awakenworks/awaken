@@ -291,7 +291,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             original.clone()
         };
         let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
-        let store = awaken_dispatch::MemoryDispatchStore::new().with_clock(clock.clone());
+        let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());
         let activation = awaken_dispatch_testkit::worker_http::activation("cli-stop");
         let thread_id = activation.thread_id.clone();
         let request = awaken_dispatch::RunDispatch::new(activation)

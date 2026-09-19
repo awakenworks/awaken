@@ -171,7 +171,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         process_exit: None,
     }));
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
+    let dispatch = Arc::new(MemoryDispatchStore::new(clock.clock()));
     dispatch
         .enqueue(RunDispatch::new(activation(
             "typed-commit-run",

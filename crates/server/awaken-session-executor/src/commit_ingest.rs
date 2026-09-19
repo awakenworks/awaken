@@ -513,8 +513,10 @@ mod tests {
             .resolved_dispatch(activation)
             .expect("production root dispatch decoration");
 
-        let queue =
-            Arc::new(AnyDispatchStore::open_sqlite_in_memory().expect("durable dispatch store"));
+        let queue = Arc::new(
+            AnyDispatchStore::open_sqlite_in_memory(Arc::new(awaken_dispatch::SystemClock))
+                .expect("durable dispatch store"),
+        );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
                 .with_dispatch_store(queue.clone())
@@ -679,7 +681,7 @@ mod tests {
             "R1-R5/C6 target starts cold"
         );
         let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
-        let queue = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+        let queue = Arc::new(MemoryDispatchStore::new(clock.clone()));
         queue
             .enqueue(request)
             .await

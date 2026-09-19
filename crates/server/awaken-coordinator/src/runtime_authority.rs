@@ -288,7 +288,10 @@ async fn open_dispatch(
                     .to_owned()
             })?;
             std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
-            let store = AnyDispatchStore::open_sqlite(&root.join("dispatch.db").to_string_lossy())?;
+            let store = AnyDispatchStore::open_sqlite(
+                &root.join("dispatch.db").to_string_lossy(),
+                Arc::new(awaken_dispatch::SystemClock),
+            )?;
             Ok((Arc::new(store), None))
         }
         DispatchBackend::Postgres => {

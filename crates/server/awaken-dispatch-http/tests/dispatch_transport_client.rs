@@ -137,7 +137,7 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     // concurrent second special claim -> None because the first lease is live.
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
-    let mem = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let service = Arc::new(
         WorkerDispatchService::new(
@@ -259,7 +259,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // C1+C2+C3 branch over real HTTP and require one successful settlement.
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
-    let mem = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let recovery = Arc::new(MemoryCommitCoordinator::new());
     recovery
         .commit(ThreadCommit {
@@ -598,7 +598,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
 async fn credential_receipt_is_verified_and_fenced_over_real_http() {
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
-    let mem = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let (dispatch, capabilities) = credential_dispatch("credential-run", "credential-thread");
     let service = Arc::new(

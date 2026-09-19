@@ -1157,7 +1157,8 @@ mod durable_cancel_tests {
         let (_root, sandbox) = local_test_sandbox().await;
         let llm = Arc::new(CaptureAdvisorRequests::default());
         let store = Arc::new(
-            AnyDispatchStore::open_sqlite_in_memory().expect("durable advisor dispatch store"),
+            AnyDispatchStore::open_sqlite_in_memory(Arc::new(awaken_dispatch::SystemClock))
+                .expect("durable advisor dispatch store"),
         );
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let scheduler = RunScheduler {
@@ -1407,7 +1408,8 @@ mod durable_cancel_tests {
         // Decision rule: execute durable cancellation D1, then exact replay D2.
         let (_root, sandbox) = local_test_sandbox().await;
         let store = Arc::new(
-            AnyDispatchStore::open_sqlite_in_memory().expect("durable child dispatch store"),
+            AnyDispatchStore::open_sqlite_in_memory(Arc::new(awaken_dispatch::SystemClock))
+                .expect("durable child dispatch store"),
         );
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let scheduler = RunScheduler {

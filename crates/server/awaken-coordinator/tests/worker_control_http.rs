@@ -42,7 +42,9 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     let clock = Arc::new(ManualWorkerClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new()) as Arc<dyn DispatchQueue>,
+        Arc::new(MemoryDispatchStore::new(Arc::new(
+            awaken_dispatch::SystemClock,
+        ))) as Arc<dyn DispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -172,7 +174,9 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
 async fn authenticated_header_cannot_register_a_different_worker_id() {
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new()) as Arc<dyn DispatchQueue>,
+        Arc::new(MemoryDispatchStore::new(Arc::new(
+            awaken_dispatch::SystemClock,
+        ))) as Arc<dyn DispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         Arc::new(ManualWorkerClock::new(0)),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -256,7 +260,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
     // The dispatch port reads "now" from its store; the Worker registry keeps
     // its own clock, so this test drives both authorities explicitly.
     let dispatch_clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(100));
-    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
     dispatch
         .enqueue(dispatch_with_capability("gpu", "gpu"))
@@ -383,7 +387,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     // The dispatch port reads "now" from its store; the Worker registry keeps
     // its own clock, so this test drives both authorities to the same reading.
     let dispatch_clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(100));
-    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let required = WorkerCredentialRevision {
         id: "credential-source-worker-private".to_string(),
         revision: 12,

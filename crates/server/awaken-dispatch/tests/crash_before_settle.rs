@@ -119,7 +119,7 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     // reschedule, and no third claim.
     let (runtime, ran) = tool_runtime();
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-1".to_string());
 
@@ -255,9 +255,9 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
     if let Ok(root) = std::env::var(SQLITE_CRASH_MODE) {
         let root = std::path::Path::new(&root);
         let clock = Arc::new(ManualClock::new(0));
-        let store = SqliteDispatchStore::open(root.join("dispatch.db").to_str().unwrap())
-            .expect("PCR1 open child store")
-            .with_clock(clock.clone());
+        let store =
+            SqliteDispatchStore::open(root.join("dispatch.db").to_str().unwrap(), clock.clone())
+                .expect("PCR1 open child store");
         let run = RunId("run-process-crash".to_string());
         store
             .enqueue(RunDispatch::new(activation("run-process-crash")))
@@ -323,9 +323,11 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
     );
     let clock = Arc::new(ManualClock::new(LEASE + 1));
     {
-        let reopened = SqliteDispatchStore::open(root.path().join("dispatch.db").to_str().unwrap())
-            .expect("PCR1 reopen after crash")
-            .with_clock(clock.clone());
+        let reopened = SqliteDispatchStore::open(
+            root.path().join("dispatch.db").to_str().unwrap(),
+            clock.clone(),
+        )
+        .expect("PCR1 reopen after crash");
         clock.set(LEASE + 1);
         let recovered = reopened
             .claim_run(&run, "recovered", LEASE, &Default::default())
@@ -364,9 +366,11 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
             "PCR2/E4"
         );
     }
-    let reopened = SqliteDispatchStore::open(root.path().join("dispatch.db").to_str().unwrap())
-        .expect("PCR3 second reopen")
-        .with_clock(clock.clone());
+    let reopened = SqliteDispatchStore::open(
+        root.path().join("dispatch.db").to_str().unwrap(),
+        clock.clone(),
+    )
+    .expect("PCR3 second reopen");
     assert!(
         reopened
             .list(&thread)
@@ -405,7 +409,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     // later fresh run on the same thread once a settle has consumed it.
     let runtime = input_echo_runtime();
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
 
@@ -543,7 +547,7 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     awaken_observability::init(&awaken_observability::ObservabilityConfig::default());
     let runtime = input_echo_runtime();
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
     let run = RunId("run-1".to_string());
@@ -754,7 +758,7 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     // terminal commit) must be LEFT in the inbox on recovery, not swept away. No loss.
     let runtime = input_echo_runtime();
     let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
-    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
     let run = RunId("run-1".to_string());
@@ -853,7 +857,10 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
     // Drive the run and capture the committed truth, then drop everything.
     let (fence, messages, state) = {
         let (runtime, ran) = tool_runtime();
-        let store = Arc::new(SqliteDispatchStore::open_in_memory().expect("dispatch"));
+        let store = Arc::new(
+            SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
+                .expect("dispatch"),
+        );
         let commit = Arc::new(SqliteCommitCoordinator::open(&path).expect("commit"));
         let worker =
             DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);

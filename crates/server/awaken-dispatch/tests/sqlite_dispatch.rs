@@ -15,17 +15,13 @@ async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
     let path = directory.path().join("bound-attempt.db");
     let path = path.to_str().unwrap();
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open(path)
-        .unwrap()
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open(path, clock.clock()).unwrap();
     let (claim, binding, _) =
         harness::attempt_binding::bound_claim(&store, "reopened-binding", &clock).await;
     clock.set(0);
     store.begin_attempt(&claim, Some(&binding)).await.unwrap();
     drop(store);
-    let reopened = SqliteDispatchStore::open(path)
-        .unwrap()
-        .with_clock(clock.clock());
+    let reopened = SqliteDispatchStore::open(path, clock.clock()).unwrap();
     let expected = Some(awaken_dispatch::PhysicalAttempt {
         claim: claim.clone(),
         binding: Some(binding.clone()),
@@ -71,7 +67,7 @@ async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
     );
     drop(reopened);
     assert_eq!(
-        SqliteDispatchStore::open(path)
+        SqliteDispatchStore::open(path, clock.clock())
             .unwrap()
             .load_physical_attempt(&claim.run_id)
             .await
@@ -100,9 +96,7 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
     let path = directory.path().join("retirement.db");
     let path = path.to_str().unwrap();
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open(path)
-        .unwrap()
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open(path, clock.clock()).unwrap();
     store
         .enqueue(RunDispatch::new(harness::activation("retired")))
         .await
@@ -118,9 +112,7 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
     assert_eq!(store.begin_attempt(&a, None).await.unwrap(), A::Applied);
     assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied);
     drop(store);
-    let reopened = SqliteDispatchStore::open(path)
-        .unwrap()
-        .with_clock(clock.clock());
+    let reopened = SqliteDispatchStore::open(path, clock.clock()).unwrap();
     clock.set(0);
     assert_eq!(
         reopened.begin_attempt(&a, None).await.unwrap(),
@@ -204,9 +196,7 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
 #[tokio::test]
 async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
@@ -242,11 +232,7 @@ async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
 #[tokio::test]
 async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = Arc::new(
-        SqliteDispatchStore::open_in_memory()
-            .expect("dispatch")
-            .with_clock(clock.clock()),
-    );
+    let store = Arc::new(SqliteDispatchStore::open_in_memory(clock.clock()).expect("dispatch"));
     store
         .enqueue(RunDispatch::new(activation("guarded")))
         .await
@@ -291,7 +277,8 @@ async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
 
 #[tokio::test]
 async fn append_is_idempotent() {
-    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    let store = SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
+        .expect("open");
     let input = pending("msg-1", TICKET, true);
     assert!(
         store.append(input.clone()).await.unwrap(),
@@ -312,7 +299,10 @@ async fn durable_loop_runs_entirely_on_sqlite() {
     // Decision rule: cover Awaiting, stale-correlation, and exact-correlation
     // partitions through the SQLite adapters.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(SqliteDispatchStore::open_in_memory().expect("dispatch"));
+    let store = Arc::new(
+        SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
+            .expect("dispatch"),
+    );
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -347,40 +337,36 @@ async fn durable_loop_runs_entirely_on_sqlite() {
 
 #[tokio::test]
 async fn pending_revision_cas_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    let store = SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
+        .expect("open");
     harness::assert_pending_revision_cas(&store).await;
 }
 
 #[tokio::test]
 async fn cross_thread_outbox_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    let store = SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
+        .expect("open");
     harness::assert_cross_thread_outbox(&store).await;
 }
 
 #[tokio::test]
 async fn message_idempotency_conflicts_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .unwrap()
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).unwrap();
     harness::assert_message_idempotency_conflicts(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn scheduled_delivery_due_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_scheduled_due(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn millis_boundaries_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .unwrap()
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).unwrap();
     harness::assert_millis_boundaries(&store, &clock).await;
 }
 
@@ -393,18 +379,14 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
 
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     {
-        let store = SqliteDispatchStore::open(&path)
-            .expect("open a")
-            .with_clock(clock.clock());
+        let store = SqliteDispatchStore::open(&path, clock.clock()).expect("open a");
         store
             .enqueue(RunDispatch::new(activation("run-1")))
             .await
             .unwrap();
     }
     // A fresh handle on the same file still has the enqueued run.
-    let restarted = SqliteDispatchStore::open(&path)
-        .expect("open b")
-        .with_clock(clock.clock());
+    let restarted = SqliteDispatchStore::open(&path, clock.clock()).expect("open b");
     clock.set(0);
     let claimed = restarted
         .claim("w", 1_000, &Default::default())
@@ -414,9 +396,7 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
     assert_eq!(claimed.request.run_id().0, "run-1");
     drop(restarted);
 
-    let feed = SqliteDispatchStore::open(&path)
-        .expect("open feed reader")
-        .with_clock(clock.clock());
+    let feed = SqliteDispatchStore::open(&path, clock.clock()).expect("open feed reader");
     let page = feed
         .events_after(DispatchCursor(0), 10)
         .await
@@ -444,7 +424,10 @@ async fn legacy_completion_without_dispatch_identity_fails_closed() {
     ));
     let path = path.to_string_lossy().into_owned();
     let _ = std::fs::remove_file(&path);
-    drop(SqliteDispatchStore::open(&path).expect("migrate"));
+    drop(
+        SqliteDispatchStore::open(&path, Arc::new(awaken_dispatch::SystemClock))
+            .expect("migrate"),
+    );
     let connection = rusqlite::Connection::open(&path).expect("open legacy fixture");
     connection
         .execute(
@@ -455,7 +438,8 @@ async fn legacy_completion_without_dispatch_identity_fails_closed() {
         .expect("insert historical tombstone");
     drop(connection);
 
-    let store = SqliteDispatchStore::open(&path).expect("reopen migrated store");
+    let store = SqliteDispatchStore::open(&path, Arc::new(awaken_dispatch::SystemClock))
+        .expect("reopen migrated store");
     assert!(
         store
             .enqueue(RunDispatch::new(activation("legacy-completed")))
@@ -490,7 +474,9 @@ async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
     let run = RunId("cancel-after-restart".to_string());
 
     {
-        let store = SqliteDispatchStore::open(&dispatch_path).expect("first process store");
+        let store =
+            SqliteDispatchStore::open(&dispatch_path, Arc::new(awaken_dispatch::SystemClock))
+                .expect("first process store");
         store
             .enqueue(RunDispatch::new(activation("cancel-after-restart")))
             .await
@@ -499,7 +485,10 @@ async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
         // Process crashes here: no terminal commit and no settlement.
     }
 
-    let store = Arc::new(SqliteDispatchStore::open(&dispatch_path).expect("restarted store"));
+    let store = Arc::new(
+        SqliteDispatchStore::open(&dispatch_path, Arc::new(awaken_dispatch::SystemClock))
+            .expect("restarted store"),
+    );
     let commit = Arc::new(SqliteCommitCoordinator::open(&commit_path).expect("commit store"));
     let ingress = DispatchTestHarness::new(harness::text_runtime(), store.clone(), commit.clone());
     assert_eq!(
@@ -533,7 +522,8 @@ fn latest_schema_removes_the_obsolete_delegation_table() {
     ));
     let path = path.to_str().unwrap().to_string();
     let _ = std::fs::remove_file(&path);
-    let store = SqliteDispatchStore::open(&path).expect("migrate");
+    let store = SqliteDispatchStore::open(&path, Arc::new(awaken_dispatch::SystemClock))
+        .expect("migrate");
     drop(store);
 
     let connection = rusqlite::Connection::open(&path).expect("inspect");
@@ -553,136 +543,105 @@ fn latest_schema_removes_the_obsolete_delegation_table() {
 #[tokio::test]
 async fn dead_letter_budget_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_dead_letter(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn cancel_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_cancel(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn priority_dedupe_gc_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_priority_dedupe_gc(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn lease_renewal_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_lease_renewal(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn idle_thread_inbox_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_idle_thread_inbox(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn supersession_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_supersession(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = std::sync::Arc::new(
-        SqliteDispatchStore::open_in_memory()
-            .expect("open")
-            .with_clock(clock.clock()),
-    );
+    let store =
+        std::sync::Arc::new(SqliteDispatchStore::open_in_memory(clock.clock()).expect("open"));
     harness::assert_concurrent_recovery_yields_one_winner(store, &clock).await;
 }
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_dead_letter_ttl_gc(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn relinquish_claim_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_relinquish_claim(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn defer_claim_is_request_local_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_defer_claim_is_request_local(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_sqlite() {
     let clock = Arc::new(awaken_dispatch::ManualClock::new(100));
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clone());
+    let store = SqliteDispatchStore::open_in_memory(clock.clone()).expect("open");
     harness::assert_defer_claim_deadline_edge(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn physical_attempt_admission_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_physical_attempt_admission(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn list_dispatches_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_list_dispatches(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn dedupe_ignores_dead_lettered_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_dedupe_ignores_dead_lettered(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn wake_suppressed_while_thread_running_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory()
-        .expect("open")
-        .with_clock(clock.clock());
+    let store = SqliteDispatchStore::open_in_memory(clock.clock()).expect("open");
     harness::assert_wake_suppressed_while_thread_running(&store, &clock).await;
 }

@@ -220,7 +220,7 @@ mod tests {
         let now = awaken_dispatch::SystemClock.now_ms();
         let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
                 .expect("dispatch store"),
         );
         let host = Arc::new(

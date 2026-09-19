@@ -813,7 +813,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let directory = Arc::new(TestWorkerDirectory::default());
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
-    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl {
         clock: Some(clock.clone()),
         ..Default::default()
@@ -2694,10 +2694,9 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
     let directory = Arc::new(TestWorkerDirectory::default());
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
-    let service = WorkerDispatchService::local(Arc::new(
-        MemoryDispatchStore::new().with_clock(dispatch_clock.clone()),
-    ))
-    .with_worker_directory(directory.clone(), 30_000);
+    let service =
+        WorkerDispatchService::local(Arc::new(MemoryDispatchStore::new(dispatch_clock.clone())))
+            .with_worker_directory(directory.clone(), 30_000);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = dispatch_transport_router_with_service(Arc::new(service));
@@ -2840,7 +2839,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
     // empty queue would not expose accidentally claiming before rejection.
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
-    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     dispatch
         .enqueue(standard_worker_dispatch(activation()))
         .await
@@ -3087,7 +3086,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
 async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
-    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+    let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
     let service =

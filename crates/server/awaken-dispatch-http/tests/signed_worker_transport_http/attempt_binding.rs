@@ -54,7 +54,7 @@ impl Fixture {
         let record = ready.current(&identity.worker_id).await.unwrap().unwrap();
         let directory = Arc::new(TestWorkerDirectory(Mutex::new(Some(record.clone()))));
         let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10_000));
-        let store = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
+        let store = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
         store
             .enqueue(
                 RunDispatch::new(support::activation("binding-http"))

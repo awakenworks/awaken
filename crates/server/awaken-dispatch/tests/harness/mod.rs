@@ -816,10 +816,15 @@ pub struct FlakyDispatchStore {
 #[cfg(feature = "test-support")]
 impl FlakyDispatchStore {
     /// Wrap a fresh in-memory store that fails its first `fail_claims` claims.
-    pub fn new(fail_claims: usize) -> Self {
+    ///
+    /// `clock` is the wrapped store's own authority clock: lease expiry, retry
+    /// due, and reservation lapse are all judged against it. It is required so a
+    /// drive that means to control those deadlines cannot silently end up
+    /// reading wall time instead.
+    pub fn new(fail_claims: usize, clock: Arc<dyn awaken_dispatch::Clock>) -> Self {
         Self {
             maintenance_probe: None,
-            inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new()),
+            inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock)),
             local_maintenance: true,
             oversized_scan_page: false,
             scan_limits: std::sync::Mutex::new(Vec::new()),
@@ -835,14 +840,6 @@ impl FlakyDispatchStore {
             finish_fault: std::sync::Mutex::new(None),
             finish_claims: std::sync::Mutex::new(Vec::new()),
         }
-    }
-
-    /// Replace the wrapped store's clock so a test can drive the same logical
-    /// timeline the dispatch port now reads from the store itself.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn awaken_dispatch::Clock>) -> Self {
-        self.inner = Arc::new(awaken_dispatch::MemoryDispatchStore::new().with_clock(clock));
-        self
     }
 
     pub fn with_finish_fault(mut self, fault: FinishFault) -> Self {

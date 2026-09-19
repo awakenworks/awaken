@@ -41,7 +41,7 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
     // The remote `inner=None` row is covered through the transport E2E, where an
     // unverifiable local epoch delegates to the claim-bound upstream operations.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
+    let dispatch = Arc::new(MemoryDispatchStore::new(clock.clock()));
     dispatch
         .enqueue(RunDispatch::new(activation("run-fenced-checkpoint")))
         .await
