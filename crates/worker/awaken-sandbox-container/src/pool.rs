@@ -25,7 +25,8 @@ use awaken_provisioning_contract as pc;
 use crate::{
     ContainerEffectFence, ContainerEnvironment, ContainerEnvironmentCapacity,
     ContainerEnvironmentProvider, ContainerProvider, ContainerRealizationIntent, ContainerRuntime,
-    ContainerSandbox,
+    ContainerSandbox, RestorableContainerEnvironmentProvider,
+    RestoreTargetContainerEnvironmentProvider,
 };
 
 pub mod lease;
@@ -941,6 +942,22 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
             .await
     }
 
+    fn restore_targets(&self) -> Option<&dyn RestoreTargetContainerEnvironmentProvider> {
+        Some(self)
+    }
+
+    fn restorable(&self) -> Option<&dyn RestorableContainerEnvironmentProvider> {
+        // Warm capacity never changes what the inner provider can restore.
+        // The inner ContainerProvider owns restore targets but not byte
+        // restoration, so the pool advertises exactly that.
+        None
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> RestoreTargetContainerEnvironmentProvider
+    for WarmContainerPool<R>
+{
     async fn acquire_restore_environment(
         &self,
         spec: &pc::SandboxSpec,
@@ -950,15 +967,6 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         // disposal all bypass warm capacity and preserve the same immutable
         // request. The inner provider remains the sole physical target owner.
         self.inner.acquire_restore_environment(spec, request).await
-    }
-
-    async fn restore_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-        store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<pc::SandboxRestoreResult<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        self.inner.restore_environment(spec, request, store).await
     }
 
     async fn dispose_restored_environment(
@@ -1200,6 +1208,33 @@ mod tests {
             Arc::new(ContainerProvider::new(runtime, "agent:test")),
             size,
         )
+    }
+
+    #[test]
+    fn pool_advertises_exactly_the_inner_restore_ladder() {
+        // Restore capability ladder (ADR-0081): C1 the inner ContainerProvider
+        // owns restore targets but not checkpoint-byte restoration; C2 warm
+        // capacity wraps it. R1 both rungs are typed on the pool: restore
+        // targets present, restorable absent, so a composition root refuses
+        // byte restore at selection instead of at the physical effect; R2 the
+        // ladder law holds (restorable implies restore targets) for inner and
+        // pool alike; R3 the pool's rung is the pool itself, never a leaked
+        // inner reference, so warm-capacity bypass stays the pool's decision.
+        let runtime = Arc::new(RecordingRuntime::ready());
+        let inner = Arc::new(ContainerProvider::new(runtime, "agent:test"));
+        assert!(inner.restore_targets().is_some(), "R1 inner targets");
+        assert!(inner.restorable().is_none(), "R1 inner bytes");
+        let pool = WarmContainerPool::new(inner.clone(), 1);
+        assert!(pool.restore_targets().is_some(), "R1 pool targets");
+        assert!(pool.restorable().is_none(), "R1 pool bytes");
+        assert!(
+            crate::restore_ladder_is_consistent(inner.as_ref()),
+            "R2 inner"
+        );
+        assert!(crate::restore_ladder_is_consistent(&pool), "R2 pool");
+        let rung: *const dyn RestoreTargetContainerEnvironmentProvider =
+            pool.restore_targets().unwrap();
+        assert!(std::ptr::addr_eq(rung, &pool as *const _), "R3");
     }
 
     #[cfg(feature = "podman")]

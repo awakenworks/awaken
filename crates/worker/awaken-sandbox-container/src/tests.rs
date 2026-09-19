@@ -5620,7 +5620,7 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                             authority,
                         )
                     } else {
-                        ContainerEnvironmentProvider::dispose_restored_environment(
+                        RestoreTargetContainerEnvironmentProvider::dispose_restored_environment(
                             &provider,
                             &spec,
                             &request,
