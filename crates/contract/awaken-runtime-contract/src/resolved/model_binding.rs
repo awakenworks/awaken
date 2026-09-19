@@ -353,32 +353,35 @@ impl ModelBinding {
         model_ref: impl Into<String>,
         backend_ref: impl Into<String>,
     ) -> Self {
-        // Under Kani the string admission (byte loops over the coordinates,
-        // heap-allocated `String`s) makes every proof that merely *holds* a
-        // binding intractable, and none of those proofs claims admission:
-        // the admission decision is proven separately as the pure kernel
-        // `admission`, and the executable table/property tests run the real
-        // string path. So proofs build the literal directly.
-        #[cfg(kani)]
-        {
-            let (provider_identity_ref, model_ref, backend_ref) = model_binding_identity(
-                provider_identity_ref.into(),
-                model_ref.into(),
-                backend_ref.into(),
-            );
-            Self {
-                provider_identity_ref,
-                model_ref,
-                backend_ref,
-                coherence: BindingCoherence,
-            }
-        }
-        #[cfg(not(kani))]
         match Self::parse(provider_identity_ref, model_ref, backend_ref) {
             Ok(binding) => binding,
             Err(refusal) => {
                 panic!("ModelBinding::new was handed coordinates the wire refuses: {refusal}")
             }
+        }
+    }
+
+    /// A bounded admissible binding for proofs that merely *hold* one.
+    ///
+    /// `new` used to fork under `#[cfg(kani)]` and build the struct literal
+    /// directly, because the string admission (byte loops over heap `String`s)
+    /// makes a proof that only carries a binding intractable. The cost of that
+    /// fork was that any proof whose property depended on a binding having been
+    /// admitted was vacuous, and proofs did in fact hold bindings the wire
+    /// refuses outright -- `ModelBinding::new("", "", "")` names no executable
+    /// backend at all. The shortcut now lives here instead of inside the door
+    /// production calls: these two coordinate triples are admissible, which
+    /// `proof_representative_coordinates_are_exactly_what_the_wire_admits`
+    /// checks against the real `parse`, so a proof-built binding is one the
+    /// wire decodes even though the proof does not re-run the byte loops.
+    #[cfg(kani)]
+    #[must_use]
+    pub(crate) fn proof_representative(distinct: bool) -> Self {
+        Self {
+            provider_identity_ref: if distinct { "q" } else { "p" }.to_string(),
+            model_ref: "m".to_string(),
+            backend_ref: "native".to_string(),
+            coherence: BindingCoherence,
         }
     }
 
@@ -415,6 +418,29 @@ impl ModelBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The proof-only representative is a shortcut past the byte loops, never
+    /// past the rule. Its coordinates must be exactly what the wire admits, or
+    /// a proof would once again hold a binding production refuses -- which is
+    /// what the removed `#[cfg(kani)]` fork inside `new` allowed. Kani cannot
+    /// run this check itself (that is the whole reason the representative
+    /// exists), so the real `parse` runs it here.
+    #[test]
+    fn proof_representative_coordinates_are_exactly_what_the_wire_admits() {
+        for (distinct, provider) in [(false, "p"), (true, "q")] {
+            let parsed = ModelBinding::parse(provider, "m", "native")
+                .expect("the representative's coordinates are admissible");
+            assert_eq!(parsed.identity(), (provider, "m", "native"));
+            let _ = distinct;
+        }
+        // The fork was hiding a real difference, not only a slow one: two of
+        // the three proofs that held a binding used coordinates naming no
+        // executable backend at all, which the wire refuses outright.
+        assert!(ModelBinding::parse("", "", "").is_err());
+        // An external backend may legitimately leave both account coordinates
+        // blank, so the third proof's binding was admissible all along.
+        assert!(ModelBinding::parse("", "", "scripted").is_ok());
+    }
 
     /// Whether `new` accepts the coordinates, observed without unwinding the
     /// test: a panic is the refusal.

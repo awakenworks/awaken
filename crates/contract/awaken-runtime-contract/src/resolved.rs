@@ -313,11 +313,10 @@ impl ResolvedSpec {
             .advisor
             .as_ref()
             .map(|advisor| &advisor.candidate);
-        let advisor_is_duplicate = advisor.is_some_and(|advisor| {
-            candidates
-                .iter()
-                .any(|candidate| candidate.binding == advisor.binding)
-        });
+        let advisor_is_duplicate = advisor_binding_is_duplicate(
+            candidates.iter().map(|candidate| &candidate.binding),
+            advisor.map(|advisor| &advisor.binding),
+        );
         if advisor_candidate_is_admitted(
             !candidates.is_empty(),
             advisor.is_some(),
@@ -389,6 +388,21 @@ impl ResolvedSpec {
     }
 }
 
+/// Whether the Advisor's route is one an already-published candidate occupies.
+///
+/// This is the derivation behind `advisor_is_duplicate`, named so a proof can
+/// reach it: the de-duplication is a `ModelBinding` equality, and that equality
+/// is the whole reason a blank coordinate must never enter a binding (two
+/// candidates on *different* provider accounts would compare equal). An absent
+/// Advisor duplicates nothing.
+#[must_use]
+fn advisor_binding_is_duplicate<'a>(
+    mut candidates: impl Iterator<Item = &'a ModelBinding>,
+    advisor: Option<&ModelBinding>,
+) -> bool {
+    advisor.is_some_and(|advisor| candidates.any(|binding| binding == advisor))
+}
+
 /// Representation-free admission relation for the auxiliary Advisor route.
 /// An Advisor never creates primary admission and an identical binding never
 /// spends a second credential/claim slot.
@@ -403,13 +417,56 @@ const fn advisor_candidate_is_admitted(
 
 #[cfg(kani)]
 #[kani::proof]
+#[kani::unwind(8)]
 fn advisor_never_substitutes_for_primary_model_admission() {
-    let primary_admitted = kani::any();
-    let advisor_present = kani::any();
-    let advisor_is_duplicate = kani::any();
+    // The de-duplication fact enters through the production derivation over
+    // real bindings, not as a free bool: whether the Advisor duplicates a
+    // published route is decided by `ModelBinding` equality over admissible
+    // representatives, one of which may carry a different provider identity.
+    //
+    // Causes: whether any candidate is published, whether an Advisor exists,
+    // and whether the Advisor's binding is the published one. Effects: R1 no
+    // published candidate => never admitted (an Advisor cannot create primary
+    // admission); R2 no Advisor => never admitted; R3 an Advisor on an already
+    // published binding => never admitted (no second credential/claim slot);
+    // R4 otherwise admitted.
+    //
+    // Bounds: at most one published candidate. The fold over a longer candidate
+    // list is `Iterator::any` over the same equality, and a non-empty
+    // `Vec<ResolvedModelCandidate>` does not complete under Kani; the executable
+    // tests in this module cover multi-candidate pools.
+    let published = ModelBinding::proof_representative(false);
+    let advisor = ModelBinding::proof_representative(kani::any());
+    let has_candidate: bool = kani::any();
+    let has_advisor: bool = kani::any();
+
+    let candidates: &[&ModelBinding] = if has_candidate { &[&published] } else { &[] };
+    let advisor_ref = has_advisor.then_some(&advisor);
+    let advisor_is_duplicate =
+        advisor_binding_is_duplicate(candidates.iter().copied(), advisor_ref);
     assert_eq!(
-        advisor_candidate_is_admitted(primary_admitted, advisor_present, advisor_is_duplicate),
-        primary_admitted && advisor_present && !advisor_is_duplicate
+        advisor_is_duplicate,
+        has_advisor && has_candidate && advisor == published,
+        "an Advisor duplicates exactly a published candidate carrying its own binding"
+    );
+
+    let admitted = advisor_candidate_is_admitted(has_candidate, has_advisor, advisor_is_duplicate);
+    if !has_candidate {
+        assert!(!admitted, "R1 an Advisor never creates primary admission");
+    }
+    if !has_advisor {
+        assert!(!admitted, "R2 no Advisor, no advisory route");
+    }
+    if advisor_is_duplicate {
+        assert!(
+            !admitted,
+            "R3 a duplicate route spends no second claim slot"
+        );
+    }
+    assert_eq!(
+        admitted,
+        has_candidate && has_advisor && !advisor_is_duplicate,
+        "R4 an Advisor on its own route beside a published candidate is admitted"
     );
 }
 
