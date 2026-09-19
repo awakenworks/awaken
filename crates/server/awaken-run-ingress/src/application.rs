@@ -212,7 +212,7 @@ pub async fn stop_expired_predecessor(
     now_ms: u64,
 ) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
     if !dispatch
-        .claim_is_current(successor, now_ms)
+        .claim_is_current(successor)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?
     {

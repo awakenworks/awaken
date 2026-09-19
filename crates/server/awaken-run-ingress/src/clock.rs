@@ -1,8 +1,11 @@
 //! The clock at the edge of the durable host.
 //!
 //! The worker stays clock-free: an edge passes one clock source into each drive,
-//! so queue claims, lease renewal, pre-effect ownership checks, and settlement
-//! fencing share a timeline. Long-running services and pools own that source;
+//! so everything the attempt itself times — credential-binding expiry and the
+//! due time of a committed ScheduledAction — shares one timeline. Queue claims,
+//! lease renewal, ownership checks and settlement fencing are NOT among them:
+//! the store that owns the row judges those against its own clock, so no caller
+//! can disagree with it. Long-running services and pools own the drive source;
 //! direct tests pass [`ManualClock`] while production uses [`SystemClock`].
 
 pub use awaken_agent_contract::clock::{Clock, ManualClock, SystemClock};

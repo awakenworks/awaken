@@ -496,6 +496,7 @@ pub(crate) async fn claim(
     run: &str,
     owner: &str,
     now: u64,
+    clock: &awaken_run_ingress::ManualClock,
 ) -> awaken_run_ingress::Claimed {
     use awaken_run_ingress::DispatchQueue;
     store
@@ -504,8 +505,9 @@ pub(crate) async fn claim(
         )))
         .await
         .expect("enqueue deferred run");
+    clock.set(now);
     store
-        .claim(owner, 1_000, now, &Default::default())
+        .claim(owner, 1_000, &Default::default())
         .await
         .expect("claim deferred run")
         .expect("deferred run available")

@@ -1853,7 +1853,6 @@ mod tests {
             _request: RunDispatch,
             _owner: &str,
             _lease_ms: u64,
-            _now_ms: u64,
             _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
@@ -1863,7 +1862,6 @@ mod tests {
             _input: PendingInput,
             _owner: &str,
             _lease_ms: u64,
-            _now_ms: u64,
             _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
@@ -1872,7 +1870,6 @@ mod tests {
             &self,
             _owner: &str,
             _lease_ms: u64,
-            _now_ms: u64,
             _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
@@ -1883,7 +1880,6 @@ mod tests {
             _run_id: &RunId,
             _owner: &str,
             _lease_ms: u64,
-            _now_ms: u64,
             _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
@@ -1892,8 +1888,10 @@ mod tests {
             &self,
             _claim: &RunClaim,
             _lease_ms: u64,
-            _now_ms: u64,
         ) -> Result<LeaseRenewalOutcome, DispatchError> {
+            Self::unsupported()
+        }
+        async fn claim_is_current(&self, _claim: &RunClaim) -> Result<bool, DispatchError> {
             Self::unsupported()
         }
         async fn settle(

@@ -92,7 +92,6 @@ pub trait WorkerResolver<S>: Send + Sync {
         &self,
         _claimed: &Claimed,
         error: Error,
-        _clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         Err(error)
     }
@@ -104,14 +103,13 @@ pub trait WorkerResolver<S>: Send + Sync {
     async fn terminalize_retry_exhausted(
         &self,
         claimed: &Claimed,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error>
     where
         S: Dispatch + 'static,
     {
         self.worker_for_claimed(claimed)
             .await?
-            .terminalize_retry_exhausted(claimed, clock)
+            .terminalize_retry_exhausted(claimed)
             .await
     }
 
@@ -121,7 +119,6 @@ pub trait WorkerResolver<S>: Send + Sync {
     /// for its Session/commit ownership boundary.
     async fn reconcile_committed_terminals(
         &self,
-        _clock: Arc<dyn Clock>,
         _limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         Ok(Vec::new())
@@ -983,14 +980,13 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     completion: &Option<Arc<dyn CompletionSink>>,
     admission: &Arc<PoolAdmission>,
 ) -> Result<bool, ClaimAndDriveFailure> {
-    let now = clock.now_ms();
     let (claimed, retry_exhausted) = {
         let gate = admission.gate.read().await;
         if !gate.accepts_claim() {
             return Ok(false);
         }
         if let Some(claimed) = store
-            .claim_retry_exhausted(owner, lease_ms, now, admission.max_attempts)
+            .claim_retry_exhausted(owner, lease_ms, admission.max_attempts)
             .await
             .map_err(Error::from)?
         {
@@ -1001,7 +997,6 @@ async fn claim_and_drive<S: Dispatch + 'static>(
                     .claim(
                         owner,
                         lease_ms,
-                        now,
                         &resolver.credential_realization_capabilities(),
                     )
                     .await
@@ -1021,7 +1016,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // Session resolution can create/adopt a sandbox and materialize credentials
     // before `drive_claimed` installs its guard. Renew from queue exit onward.
     let claim = crate::RunClaim::from(&claimed.lease);
-    let claim_renewal = renew_claim_while_active(store.clone(), &claim, lease_ms, clock.clone());
+    let claim_renewal = renew_claim_while_active(store.clone(), &claim, lease_ms);
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
@@ -1034,9 +1029,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         // path calls the same Worker terminal method through this resolver seam;
         // a failure leaves the exact claim leased for later re-claim.
         admission.wake.notify_one();
-        resolver
-            .terminalize_retry_exhausted(&claimed, clock.clone())
-            .await
+        resolver.terminalize_retry_exhausted(&claimed).await
     } else {
         match resolver.worker_for_claimed(&claimed).await {
             Ok(worker) => {
@@ -1051,7 +1044,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
             }
             Err(error) if error.is_terminal_resolution() => {
                 resolver
-                    .settle_claimed_resolution_failure(&claimed, error, clock.clone())
+                    .settle_claimed_resolution_failure(&claimed, error)
                     .await
             }
             Err(error) => {
@@ -1238,10 +1231,7 @@ async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationConte
         if let Some(deadline) = next_terminal_reconciliation
             && tokio::time::Instant::now() >= deadline
         {
-            match resolver
-                .reconcile_committed_terminals(clock.clone(), 256)
-                .await
-            {
+            match resolver.reconcile_committed_terminals(256).await {
                 Ok(reconciled) => {
                     if let Some(sink) = &completion {
                         for (run_id, state) in reconciled {
@@ -1457,7 +1447,6 @@ mod in_flight_tests {
 
         async fn reconcile_committed_terminals(
             &self,
-            _clock: Arc<dyn Clock>,
             _limit: usize,
         ) -> Result<Vec<(RunId, RunState)>, Error> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -1584,7 +1573,6 @@ mod in_flight_tests {
             }
             async fn reconcile_committed_terminals(
                 &self,
-                _: Arc<dyn Clock>,
                 _: usize,
             ) -> Result<Vec<(RunId, RunState)>, Error> {
                 self.calls.fetch_add(1, Ordering::SeqCst);

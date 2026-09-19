@@ -430,12 +430,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         .unwrap();
     let (directory, identity) = support::ready_worker("worker-memory").await;
     let claimed = dispatch
-        .claim(
-            &identity.lease_owner(),
-            60_000,
-            support::unix_now_ms(),
-            &Default::default(),
-        )
+        .claim(&identity.lease_owner(), 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -801,12 +796,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         .unwrap();
     let (directory, identity) = support::ready_worker("worker-terminal-memory").await;
     let claimed = dispatch
-        .claim(
-            &identity.lease_owner(),
-            60_000,
-            support::unix_now_ms(),
-            &Default::default(),
-        )
+        .claim(&identity.lease_owner(), 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();

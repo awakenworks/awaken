@@ -28,7 +28,6 @@ async fn claim_exact_transaction(
     requested_run: &RunId,
     owner: &str,
     lease_ms: u64,
-    _now_ms: u64,
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {

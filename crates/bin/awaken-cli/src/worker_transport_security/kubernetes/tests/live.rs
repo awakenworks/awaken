@@ -324,22 +324,20 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         .unwrap();
     let old_dispatch =
         dispatch_transport_with_upstream(&old_upstream, worker.snapshot.identity.clone());
+    clock.set(100);
     let claimed = old_dispatch
         .claim(
             &worker.snapshot.identity.lease_owner(),
             TTL,
-            100,
             &Default::default(),
         )
         .await
         .unwrap()
         .unwrap();
     let old_claim = RunClaim::from(&claimed.lease);
+    clock.set(100);
     assert_eq!(
-        old_dispatch
-            .begin_attempt(&old_claim, 100, None)
-            .await
-            .unwrap(),
+        old_dispatch.begin_attempt(&old_claim, None).await.unwrap(),
         AttemptAdmission::Applied
     );
     let original = store
@@ -428,12 +426,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     let next_dispatch = dispatch_transport_with_upstream(&next_upstream, successor.clone());
     let next = RunClaim::from(
         &next_dispatch
-            .claim(
-                &successor.lease_owner(),
-                TTL,
-                100 + TTL + 1,
-                &Default::default(),
-            )
+            .claim(&successor.lease_owner(), TTL, &Default::default())
             .await
             .unwrap()
             .unwrap()
@@ -441,10 +434,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     );
     assert!(next.epoch > old_claim.epoch);
     assert_eq!(
-        next_dispatch
-            .begin_attempt(&next, 100 + TTL + 1, None)
-            .await
-            .unwrap(),
+        next_dispatch.begin_attempt(&next, None).await.unwrap(),
         AttemptAdmission::Blocked
     );
     let directory = SqliteWorkerDirectory::open(files.path().join("registry.sqlite")).unwrap();
@@ -505,10 +495,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         "L5"
     );
     assert_eq!(
-        next_dispatch
-            .begin_attempt(&next, 100 + TTL + 1, None)
-            .await
-            .unwrap(),
+        next_dispatch.begin_attempt(&next, None).await.unwrap(),
         AttemptAdmission::Applied,
         "L6"
     );

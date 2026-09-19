@@ -111,7 +111,6 @@ pub trait DispatchQueue: Send + Sync {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
@@ -120,7 +119,6 @@ pub trait DispatchQueue: Send + Sync {
         _request: RunDispatch,
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support registered-worker exact claims".to_string(),
@@ -139,7 +137,6 @@ pub trait DispatchQueue: Send + Sync {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
@@ -148,7 +145,6 @@ pub trait DispatchQueue: Send + Sync {
         _input: PendingInput,
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support registered-worker delivery claims".to_string(),
@@ -170,7 +166,6 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
@@ -181,7 +176,6 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support registered-worker claims".to_string(),
@@ -199,7 +193,6 @@ pub trait DispatchQueue: Send + Sync {
         _workers: Vec<WorkerSnapshot>,
         _policy: std::sync::Arc<dyn PlacementPolicy>,
         _lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support policy-based registered-worker claims".to_string(),
@@ -218,7 +211,6 @@ pub trait DispatchQueue: Send + Sync {
         run_id: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
@@ -241,7 +233,6 @@ pub trait DispatchQueue: Send + Sync {
         _run_id: &RunId,
         _owner: &str,
         _lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support committed-terminal dispatch recovery".to_string(),
@@ -256,7 +247,6 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _owner: &str,
         _lease_ms: u64,
-        _now_ms: u64,
         _max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
@@ -269,7 +259,6 @@ pub trait DispatchQueue: Send + Sync {
         _run_id: &RunId,
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support registered-worker run claims".to_string(),
@@ -287,7 +276,6 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         claim: &RunClaim,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<LeaseRenewalOutcome, DispatchError>;
 
     /// Acquire the physical executor slot for one exact, live claim.
@@ -307,7 +295,6 @@ pub trait DispatchQueue: Send + Sync {
     async fn begin_attempt(
         &self,
         _claim: &RunClaim,
-        _now_ms: u64,
         _binding: Option<&crate::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         Err(DispatchError::Rejected(
@@ -326,7 +313,6 @@ pub trait DispatchQueue: Send + Sync {
     async fn handoff_attempt(
         &self,
         _claim: &RunClaim,
-        _now_ms: u64,
         _binding: Option<&crate::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         Err(DispatchError::Rejected(
@@ -400,12 +386,11 @@ pub trait DispatchQueue: Send + Sync {
     ///
     /// The default reuses the backend's authoritative epoch guard instead of
     /// introducing another claim source or duplicating owner/epoch queries.
-    async fn claim_is_current(&self, claim: &RunClaim, now_ms: u64) -> Result<bool, DispatchError> {
-        Ok(self
-            .lock_commit_epoch(claim)
-            .await?
-            .is_some_and(|guard| guard.is_live_at(now_ms)))
-    }
+    /// Required, not defaulted: the answer is "is this claim live *now*", and
+    /// only the implementation knows which clock its rows are judged against.
+    /// A default would have to invent one or take it from the caller, and a
+    /// caller's clock cannot decide liveness for rows other nodes also claim.
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError>;
 
     /// Acquire the narrow authority for one live `ReservationLeased` repair.
     /// This guard may authorize only Session activity admission; commit, stream,
@@ -442,7 +427,6 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _identity: &WorkerIdentity,
         _run_id: &RunId,
-        _now_ms: u64,
     ) -> Result<Option<RunClaim>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not expose registered-worker run authority".to_string(),
@@ -548,10 +532,16 @@ pub trait DispatchQueue: Send + Sync {
     /// Moves rows to `DeadLetter`; automatic services use
     /// [`claim_retry_exhausted`](Self::claim_retry_exhausted), so the Run first
     /// receives committed terminal truth (ADR-0015).
+    ///
+    /// `expired_before_ms` is the one time on this port a caller still supplies,
+    /// and it is not a clock: this route is operator-driven, and the operator
+    /// chooses the cutoff ("quarantine what was already expired at T"). Naming it
+    /// `now_ms` is what let an implementation quietly answer with its own "now"
+    /// instead of the cutoff it was given, which is a different question.
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
-        now_ms: u64,
+        expired_before_ms: u64,
     ) -> Result<usize, DispatchError>;
 
     /// Bind a currently claimed run to the sandbox it was placed on (B-P3,
@@ -573,7 +563,7 @@ pub trait DispatchQueue: Send + Sync {
     /// return an exact value; composed/remote backends may return `None` until they
     /// expose an efficient server-side count. This is an operations query only and
     /// never participates in scheduling correctness.
-    async fn runnable_depth(&self, _now_ms: u64) -> Result<Option<u64>, DispatchError> {
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
         Ok(None)
     }
 

@@ -603,13 +603,16 @@ async fn terminal_recovery_rejects_conflicting_committed_identity_before_settlem
             .build(),
         Vec::new(),
     );
-    let store = Arc::new(MemoryDispatchStore::new());
+    // The store's own clock is the dispatch authority now; freeze it at the
+    // same t=0 this fixture always used.
+    let store =
+        Arc::new(MemoryDispatchStore::new().with_clock(Arc::new(crate::ManualClock::new(0))));
     store
         .enqueue(crate::RunDispatch::new(activation))
         .await
         .expect("enqueue terminal identity fixture");
     let claimed = store
-        .claim("worker", 1_000, 0, &Default::default())
+        .claim("worker", 1_000, &Default::default())
         .await
         .expect("claim terminal identity fixture")
         .expect("terminal identity fixture is runnable");
@@ -667,7 +670,8 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
     // | R1 | present | present and current | E1,E2,E3,E4 |
     // Decision rule: R1 is the only valid inherited-parent/claimed-child
     // product; assert every authority port resolves to the child claim.
-    let store = Arc::new(MemoryDispatchStore::new());
+    let store =
+        Arc::new(MemoryDispatchStore::new().with_clock(Arc::new(crate::ManualClock::new(0))));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let activation = |run: &str, thread: &str| {
         RunActivation::new(
@@ -686,7 +690,6 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
             crate::RunDispatch::new(activation("parent-run", "parent-thread")),
             "worker",
             1_000,
-            0,
             &Default::default(),
         )
         .await
@@ -706,7 +709,6 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
             crate::RunDispatch::new(activation(&child_run.0, &child_thread.0)),
             "worker",
             1_000,
-            0,
             &Default::default(),
         )
         .await
@@ -746,14 +748,7 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
     )
     .with_context(parent_context)
     .with_recovery_projection(projection.clone());
-    let context = worker.execution_context_with(
-        &child_claim,
-        None,
-        &None,
-        &[],
-        Arc::new(crate::ManualClock::new(0)),
-        None,
-    );
+    let context = worker.execution_context_with(&child_claim, None, &None, &[], None);
 
     assert_eq!(
         context

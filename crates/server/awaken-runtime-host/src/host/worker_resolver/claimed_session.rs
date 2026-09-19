@@ -134,7 +134,6 @@ pub(super) async fn install_claimed_session_projection(
     let ownership = awaken_run_ingress::claim_bound_ownership_verifier(
         dispatch,
         awaken_run_ingress::RunClaim::from(&claimed.lease),
-        Arc::new(awaken_run_ingress::SystemClock),
     );
     ownership.verify_current().await.map_err(|error| {
         HostWorkerResolver::execution_error(format!(

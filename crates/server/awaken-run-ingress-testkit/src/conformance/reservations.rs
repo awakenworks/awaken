@@ -127,13 +127,13 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         )
         .for_session(claim_session),
     );
+    clock.set(69_000);
     assert!(
         store
             .claim_new_run(
                 claim_request.clone(),
                 "reservation-ordinary-claim-owner",
                 LEASE_MS,
-                69_000,
                 &Default::default(),
             )
             .await
@@ -165,9 +165,10 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .for_session(compatible_session),
     );
     let worker = ready_dispatch_worker(ns, "reservation-ordinary-compatible");
+    clock.set(69_000);
     assert!(
         store
-            .claim_new_run_compatible(compatible_request.clone(), &worker, LEASE_MS, 69_000)
+            .claim_new_run_compatible(compatible_request.clone(), &worker, LEASE_MS)
             .await
             .is_err(),
         "SR0/E2 atomic compatible claim rejects an unreceipted Session root"
@@ -319,12 +320,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
     assert!(
         store
-            .claim(
-                "reservation-too-early",
-                LEASE_MS,
-                70_000,
-                &Default::default()
-            )
+            .claim("reservation-too-early", LEASE_MS, &Default::default())
             .await
             .expect("SR1 early claim")
             .is_none(),
@@ -458,14 +454,9 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         SessionRunReservationActivation::Conflict,
         "SR3/E2 epoch fence"
     );
+    clock.set(70_001);
     let activated = store
-        .claim_run(
-            &run,
-            "reservation-executor",
-            LEASE_MS,
-            70_001,
-            &Default::default(),
-        )
+        .claim_run(&run, "reservation-executor", LEASE_MS, &Default::default())
         .await
         .expect("SR3 ordinary claim")
         .expect("SR3 activated Run is Pending");
@@ -588,12 +579,12 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         },
         "L1/LE1"
     );
+    clock.set(70_002);
     let legacy_claim = store
         .claim_run(
             legacy_stored.run_id(),
             "reservation-legacy-worker",
             LEASE_MS,
-            70_002,
             &Default::default(),
         )
         .await
@@ -665,12 +656,12 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         SessionRunReservationOutcome::Conflict,
         "L3/LE2"
     );
+    clock.set(70_003);
     let unknown_claim = store
         .claim_run(
             unknown_stored.run_id(),
             "reservation-unknown-stored-worker",
             LEASE_MS,
-            70_003,
             &Default::default(),
         )
         .await
@@ -727,12 +718,12 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .activate_session_run_reservation(prior.run_id(), &replacement_session, 21)
         .await
         .expect("SR9 activate prior");
+    clock.set(70_010);
     let prior_claim = store
         .claim_run(
             prior.run_id(),
             "reservation-replacement-prior-worker",
             LEASE_MS,
-            70_010,
             &Default::default(),
         )
         .await
@@ -872,12 +863,12 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .all(|row| row.run_id != *unsafe_replacement.run_id()),
         "SR9/E4 rejected replacement leaves no partial row"
     );
+    clock.set(70_011);
     let unsafe_claim = store
         .claim_run(
             unsafe_prior.run_id(),
             "reservation-replacement-unsafe-worker",
             LEASE_MS,
-            70_011,
             &Default::default(),
         )
         .await
@@ -907,13 +898,13 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         Some(cancelled_session.clone()),
         "SR7/E9 records cancellation"
     );
+    clock.set(75_001);
     assert!(
         store
             .claim_run(
                 &cancelled_run,
                 "reservation-cancel-too-early",
                 LEASE_MS,
-                75_001,
                 &Default::default(),
             )
             .await
@@ -929,12 +920,12 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         SessionRunReservationActivation::Activated,
         "SR7/E9"
     );
+    clock.set(75_002);
     let cancelled = store
         .claim_run(
             &cancelled_run,
             "reservation-cancel-executor",
             LEASE_MS,
-            75_002,
             &Default::default(),
         )
         .await
@@ -967,12 +958,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     clock.set(80_002);
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     let first_repair = store
-        .claim(
-            "reservation-repairer",
-            LEASE_MS,
-            80_002,
-            &Default::default(),
-        )
+        .claim("reservation-repairer", LEASE_MS, &Default::default())
         .await
         .expect("SR4 repair claim")
         .expect("SR4 expired reservation");
@@ -1016,7 +1002,6 @@ async fn session_run_reservation_is_atomic_and_recoverable(
                     repair_request.clone(),
                     "reservation-repair-boundary",
                     LEASE_MS,
-                    first_repair.lease.expires_ms,
                     &Default::default(),
                 )
                 .await
@@ -1026,12 +1011,12 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         );
     }
     clock.advance_past(first_repair.lease.expires_ms).await;
+    clock.set(first_repair.lease.expires_ms.saturating_add(1));
     let mut repair = store
         .claim_new_run(
             repair_request.clone(),
             "reservation-repairer-after-crash",
             LEASE_MS,
-            first_repair.lease.expires_ms.saturating_add(1),
             &Default::default(),
         )
         .await
@@ -1121,13 +1106,12 @@ async fn session_run_reservation_is_atomic_and_recoverable(
                         repair_request.clone(),
                         &incompatible_worker,
                         LEASE_MS,
-                        deadline + 1,
                     )
                     .await
             }
             RepairClaimSurface::ExactCompatible => {
                 store
-                    .claim_run_compatible(&repair_run, &incompatible_worker, LEASE_MS, deadline + 1)
+                    .claim_run_compatible(&repair_run, &incompatible_worker, LEASE_MS)
                     .await
             }
             RepairClaimSurface::DeliverCompatible => {
@@ -1144,14 +1128,11 @@ async fn session_run_reservation_is_atomic_and_recoverable(
                         },
                         &incompatible_worker,
                         LEASE_MS,
-                        deadline + 1,
                     )
                     .await
             }
             RepairClaimSurface::BroadCompatible => {
-                store
-                    .claim_compatible(&incompatible_worker, LEASE_MS, deadline + 1)
-                    .await
+                store.claim_compatible(&incompatible_worker, LEASE_MS).await
             }
             RepairClaimSurface::Placed => {
                 store
@@ -1160,7 +1141,6 @@ async fn session_run_reservation_is_atomic_and_recoverable(
                         vec![incompatible_worker.clone()],
                         std::sync::Arc::new(LeastLoadedPolicy),
                         LEASE_MS,
-                        deadline + 1,
                     )
                     .await
             }
@@ -1202,8 +1182,9 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .manifest
         .fingerprint()
         .expect("reservation-compatible Worker manifest fingerprints");
+    clock.set(87_002);
     let repaired = store
-        .claim_run_compatible(&repair_run, &compatible_worker, LEASE_MS, 87_002)
+        .claim_run_compatible(&repair_run, &compatible_worker, LEASE_MS)
         .await
         .expect("SR5 ordinary compatible repaired claim")
         .expect("SR5 repaired reservation is compatible Pending work");
@@ -1241,12 +1222,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     clock.set(90_002);
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     let rejected = store
-        .claim(
-            "reservation-rejecter",
-            LEASE_MS,
-            90_002,
-            &Default::default(),
-        )
+        .claim("reservation-rejecter", LEASE_MS, &Default::default())
         .await
         .expect("SR5 rejection claim")
         .expect("SR5 rejection reservation");
@@ -1333,13 +1309,7 @@ async fn current_claim_guard_is_exact(
         .expect("enqueue guard run");
     let identity = WorkerIdentity::new(format!("{ns}-guard-worker"), "boot", 1);
     let claimed = store
-        .claim_run(
-            &run,
-            &identity.lease_owner(),
-            LEASE_MS,
-            20_000,
-            &Default::default(),
-        )
+        .claim_run(&run, &identity.lease_owner(), LEASE_MS, &Default::default())
         .await
         .expect("claim guard run")
         .expect("guard run is runnable");
@@ -1358,21 +1328,23 @@ async fn current_claim_guard_is_exact(
     );
     assert!(
         !store
-            .claim_is_current(&stale, 20_000)
+            .claim_is_current(&stale)
             .await
             .expect("stale current-claim query"),
         "a stale epoch is never current"
     );
+    clock.set(claimed.lease.expires_ms);
     assert!(
         store
-            .claim_is_current(&current, claimed.lease.expires_ms)
+            .claim_is_current(&current)
             .await
             .expect("exact-boundary current-claim query"),
         "the exact lease expiry boundary remains current"
     );
+    clock.set(claimed.lease.expires_ms);
     assert_eq!(
         store
-            .worker_owns_run(&identity, &run, claimed.lease.expires_ms)
+            .worker_owns_run(&identity, &run)
             .await
             .expect("registered Worker ownership query")
             .as_ref(),
@@ -1380,17 +1352,19 @@ async fn current_claim_guard_is_exact(
         "the exact Worker incarnation receives the live claim"
     );
     clock.advance_past(claimed.lease.expires_ms).await;
+    clock.set(claimed.lease.expires_ms.saturating_add(1));
     assert!(
         !store
-            .claim_is_current(&current, claimed.lease.expires_ms.saturating_add(1))
+            .claim_is_current(&current)
             .await
             .expect("expired current-claim query"),
         "an expired claim is not current before it is reclaimed"
     );
     let stale_identity = WorkerIdentity::new(identity.worker_id.clone(), "replacement", 2);
+    clock.set(20_000);
     assert!(
         store
-            .worker_owns_run(&stale_identity, &run, 20_000)
+            .worker_owns_run(&stale_identity, &run)
             .await
             .expect("stale Worker ownership query")
             .is_none(),
@@ -1409,9 +1383,10 @@ async fn current_claim_guard_is_exact(
             .expect("settle guarded run"),
         SettleOutcome::Applied
     );
+    clock.set(20_000);
     assert!(
         store
-            .worker_owns_run(&identity, &run, 20_000)
+            .worker_owns_run(&identity, &run)
             .await
             .expect("settled Worker ownership query")
             .is_none(),
@@ -1423,12 +1398,12 @@ async fn current_claim_guard_is_exact(
         .enqueue(dispatch(ns, "guard-cancel", "guard-cancel-thread"))
         .await
         .expect("enqueue cancellation guard run");
+    clock.set(20_000);
     let cancel_claimed = store
         .claim_run(
             &cancel_run,
             &identity.lease_owner(),
             LEASE_MS,
-            20_000,
             &Default::default(),
         )
         .await
@@ -1443,9 +1418,10 @@ async fn current_claim_guard_is_exact(
             .is_some(),
         "the live run accepts a durable cancellation intent"
     );
+    clock.set(20_000);
     assert!(
         store
-            .worker_owns_run(&identity, &cancel_run, 20_000)
+            .worker_owns_run(&identity, &cancel_run)
             .await
             .expect("cancelled Worker ownership query")
             .is_none(),
@@ -1459,12 +1435,12 @@ async fn current_claim_guard_is_exact(
             .is_none(),
         "the revoked claim epoch is fenced immediately"
     );
+    clock.set(20_000);
     let cancellation_claim = store
         .claim_run(
             &cancel_run,
             &identity.lease_owner(),
             LEASE_MS,
-            20_000,
             &Default::default(),
         )
         .await
@@ -1497,13 +1473,7 @@ async fn sandbox_binding_survives_recovery(
         .await
         .expect("enqueue sandbox run");
     let first = store
-        .claim_run(
-            &run,
-            "conformance-sandbox-a",
-            LEASE_MS,
-            30_000,
-            &Default::default(),
-        )
+        .claim_run(&run, "conformance-sandbox-a", LEASE_MS, &Default::default())
         .await
         .expect("claim sandbox run")
         .expect("sandbox run is runnable");
@@ -1514,14 +1484,9 @@ async fn sandbox_binding_survives_recovery(
         .expect("bind sandbox");
     assert_eq!(bound, SettleOutcome::Applied, "current claim binds sandbox");
     clock.advance_past(first.lease.expires_ms).await;
+    clock.set(first.lease.expires_ms.saturating_add(1));
     let recovered = store
-        .claim_run(
-            &run,
-            "conformance-sandbox-b",
-            LEASE_MS,
-            first.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim_run(&run, "conformance-sandbox-b", LEASE_MS, &Default::default())
         .await
         .expect("recover sandbox run")
         .expect("expired sandbox run is recoverable");
@@ -1569,7 +1534,6 @@ async fn completion_is_atomic_and_prevents_resurrection(
             &awaiting,
             "conformance-completion",
             LEASE_MS,
-            40_000,
             &Default::default(),
         )
         .await
@@ -1614,7 +1578,6 @@ async fn completion_is_atomic_and_prevents_resurrection(
             &done,
             "conformance-completion",
             LEASE_MS,
-            40_000,
             &Default::default(),
         )
         .await
@@ -1670,27 +1633,22 @@ async fn completion_is_atomic_and_prevents_resurrection(
         .enqueue(request.clone())
         .await
         .expect("replayed enqueue is accepted as a no-op");
+    clock.set(40_001);
     assert!(
         store
-            .claim_run(
-                &done,
-                "conformance-replay",
-                LEASE_MS,
-                40_001,
-                &Default::default(),
-            )
+            .claim_run(&done, "conformance-replay", LEASE_MS, &Default::default(),)
             .await
             .expect("exact claim after replay")
             .is_none(),
         "completed run id does not resurrect through enqueue"
     );
+    clock.set(40_001);
     assert!(
         store
             .claim_new_run(
                 request.clone(),
                 "conformance-replay",
                 LEASE_MS,
-                40_001,
                 &Default::default(),
             )
             .await
@@ -1699,9 +1657,10 @@ async fn completion_is_atomic_and_prevents_resurrection(
         "completed run id does not resurrect through claim_new_run"
     );
     let worker = ready_dispatch_worker(ns, "completion");
+    clock.set(40_001);
     assert!(
         store
-            .claim_new_run_compatible(request, &worker, LEASE_MS, 40_001)
+            .claim_new_run_compatible(request, &worker, LEASE_MS)
             .await
             .expect("compatible atomic admission after replay")
             .is_none(),

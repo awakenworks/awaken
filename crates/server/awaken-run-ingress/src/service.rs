@@ -234,7 +234,7 @@ async fn run_loop<S: Dispatch + 'static>(
                 return;
             }
             match worker
-                .resolve_one_retry_exhausted(config.max_attempts, clock.clone())
+                .resolve_one_retry_exhausted(config.max_attempts)
                 .await
             {
                 Ok(true) => continue,
@@ -271,10 +271,7 @@ async fn run_loop<S: Dispatch + 'static>(
             if let Some(deadline) = next_terminal_reconciliation
                 && tokio::time::Instant::now() >= deadline
             {
-                if let Err(error) = worker
-                    .reconcile_committed_terminals(clock.clone(), 256)
-                    .await
-                {
+                if let Err(error) = worker.reconcile_committed_terminals(256).await {
                     tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying");
                 }
                 let interval = config

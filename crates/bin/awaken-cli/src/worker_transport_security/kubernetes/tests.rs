@@ -290,7 +290,8 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         } else {
             original.clone()
         };
-        let store = awaken_run_ingress::MemoryDispatchStore::new();
+        let clock = std::sync::Arc::new(awaken_run_ingress::ManualClock::new(0));
+        let store = awaken_run_ingress::MemoryDispatchStore::new().with_clock(clock.clone());
         let activation = awaken_run_ingress_testkit::worker_http::activation("cli-stop");
         let thread_id = activation.thread_id.clone();
         let request = awaken_run_ingress::RunDispatch::new(activation)
@@ -298,23 +299,23 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         store.enqueue(request).await.unwrap();
         let mut snapshot = old.snapshot;
         snapshot.state = awaken_run_ingress::WorkerState::Ready;
+        clock.set(100);
         let old_claim = awaken_run_ingress::RunClaim::from(
             &store
-                .claim_compatible(&snapshot, 50, 100)
+                .claim_compatible(&snapshot, 50)
                 .await
                 .unwrap()
                 .unwrap()
                 .lease,
         );
-        store
-            .begin_attempt(&old_claim, 100, Some(&bound))
-            .await
-            .unwrap();
+        clock.set(100);
+        store.begin_attempt(&old_claim, Some(&bound)).await.unwrap();
         snapshot.identity = WorkerIdentity::new("successor", "successor-boot", 1);
         snapshot.expires_at_ms = 10_000;
+        clock.set(200);
         let next = awaken_run_ingress::RunClaim::from(
             &store
-                .claim_compatible(&snapshot, 10_000, 200)
+                .claim_compatible(&snapshot, 10_000)
                 .await
                 .unwrap()
                 .unwrap()
@@ -450,8 +451,9 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                 None,
                 "S4 complete evidence clears exactly the old slot"
             );
+            clock.set(200);
             assert_eq!(
-                store.begin_attempt(&next, 200, None).await.unwrap(),
+                store.begin_attempt(&next, None).await.unwrap(),
                 awaken_run_ingress::AttemptAdmission::Applied,
                 "S4 successor retries through fresh admission"
             );
@@ -465,8 +467,9 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                     .claim,
                 old_claim
             );
+            clock.set(200);
             assert_eq!(
-                store.begin_attempt(&next, 200, None).await.unwrap(),
+                store.begin_attempt(&next, None).await.unwrap(),
                 awaken_run_ingress::AttemptAdmission::Blocked,
                 "S3 remote veto"
             );

@@ -225,9 +225,10 @@ pub struct ConformanceCapabilities {
     pub completion_events: bool,
 }
 
-/// Optional bridge for transports whose authoritative clock lives on the server.
-/// Direct stores ignore it because their `now_ms` command argument is already the
-/// clock input under test.
+/// The suite's handle on the authority clock the store under test reads from.
+/// A direct store is built over an injected `ManualClock`, so `set` moves the
+/// exact time its rows are judged against; a live database/server clock cannot
+/// be moved and answers in real time instead.
 #[async_trait::async_trait]
 pub trait ConformanceClock: Send + Sync {
     fn set(&self, now_ms: u64);
@@ -266,21 +267,6 @@ impl ConformanceClock for AuthoritativeWallClock {
     }
 }
 
-/// A backend whose command `now_ms` argument is the complete authority clock.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LogicalCommandClock;
-
-#[async_trait::async_trait]
-impl ConformanceClock for LogicalCommandClock {
-    fn set(&self, _now_ms: u64) {}
-
-    fn exact_boundary_is_controllable(&self) -> bool {
-        true
-    }
-
-    async fn advance_past(&self, _deadline_ms: u64) {}
-}
-
 #[async_trait::async_trait]
 impl<F> ConformanceClock for F
 where
@@ -296,6 +282,44 @@ where
 
     async fn advance_past(&self, deadline_ms: u64) {
         self(deadline_ms.saturating_add(1));
+    }
+}
+
+/// A direct store's injected clock together with the suite handle that moves it.
+///
+/// `clock()` is what the store is built over (`with_clock`); the value itself is
+/// the [`ConformanceClock`] the suite drives, so `set` moves the exact
+/// millisecond that store's rows are judged against.
+#[derive(Debug, Clone, Default)]
+pub struct ManualStoreClock(std::sync::Arc<awaken_agent_contract::clock::ManualClock>);
+
+impl ManualStoreClock {
+    #[must_use]
+    pub fn new(now_ms: u64) -> Self {
+        Self(std::sync::Arc::new(
+            awaken_agent_contract::clock::ManualClock::new(now_ms),
+        ))
+    }
+
+    /// The handle to inject into the store under test.
+    #[must_use]
+    pub fn clock(&self) -> std::sync::Arc<dyn awaken_agent_contract::clock::Clock> {
+        self.0.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl ConformanceClock for ManualStoreClock {
+    fn set(&self, now_ms: u64) {
+        self.0.set(now_ms);
+    }
+
+    fn exact_boundary_is_controllable(&self) -> bool {
+        true
+    }
+
+    async fn advance_past(&self, deadline_ms: u64) {
+        self.0.set(deadline_ms.saturating_add(1));
     }
 }
 
@@ -336,18 +360,18 @@ pub async fn assert_dispatch_conformance_with_clock<S: Dispatch>(
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
 ) {
-    open_run_single_writer_is_uniform(store, namespace).await;
+    open_run_single_writer_is_uniform(store, namespace, clock).await;
     if capabilities.local_commit_guard {
-        local_claims_skip_remote_only_work(store, namespace).await;
+        local_claims_skip_remote_only_work(store, namespace, clock).await;
     }
     occupied_recovery_does_not_starve_other_threads(store, namespace, clock).await;
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
     settlement_fence_and_pending_input_are_atomic(store, namespace, capabilities, clock).await;
     retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace, clock).await;
     attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock).await;
-    incompatible_credentials_do_not_poison_broad_claims(store, namespace).await;
+    incompatible_credentials_do_not_poison_broad_claims(store, namespace, clock).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
-    caller_owned_run_identity_is_exact(store, namespace).await;
+    caller_owned_run_identity_is_exact(store, namespace, clock).await;
     session_run_reservation_is_atomic_and_recoverable(store, namespace, capabilities, clock).await;
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
@@ -358,7 +382,7 @@ pub async fn assert_dispatch_conformance_with_clock<S: Dispatch>(
     // This rule intentionally leaves 25 distinct unarchived child Threads as its
     // postcondition, so run it after every conformance rule that broadly claims
     // queue work.
-    session_child_admission_is_atomic_and_bounded(store, namespace).await;
+    session_child_admission_is_atomic_and_bounded(store, namespace, clock).await;
 }
 
 include!("conformance/dispatch_admission.rs");

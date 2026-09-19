@@ -237,7 +237,7 @@ async fn claimed_dispatch(dispatch: &Arc<MemoryDispatchStore>, owner: &str) -> R
         ));
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
-        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .claim(owner, 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
