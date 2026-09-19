@@ -15,6 +15,7 @@ use awaken_dispatch::{
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
+use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{THREAD, activation, text_runtime};
 
 #[test]
@@ -67,7 +68,8 @@ fn request_exposes_run_and_thread_ids() {
 /// no context stays `None` — a fresh, un-parented span.
 #[tokio::test]
 async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
-    let store = MemoryDispatchStore::new();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new().with_clock(clock.clock());
     let traceparent = "00-aa11bb22cc33dd44ee55ff6677889900-1122334455667788-01";
 
     store
@@ -84,8 +86,9 @@ async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
         .await
         .unwrap();
 
+    clock.set(0);
     let traced = store
-        .claim("w", 1_000, 0, &Default::default())
+        .claim("w", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("traced");
@@ -96,8 +99,9 @@ async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
         "the admitting traceparent is persisted and returned on the claimed request"
     );
 
+    clock.set(0);
     let untraced = store
-        .claim("w", 1_000, 0, &Default::default())
+        .claim("w", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("untraced");

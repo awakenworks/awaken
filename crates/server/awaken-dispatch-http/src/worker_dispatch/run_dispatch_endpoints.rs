@@ -32,12 +32,7 @@ pub(super) async fn claim_new_run(
         let claimed = if let Some(snapshot) = &authority.snapshot {
             service
                 .dispatch
-                .claim_new_run_compatible(
-                    request.request,
-                    snapshot,
-                    authority.lease_ms,
-                    authority.now_ms,
-                )
+                .claim_new_run_compatible(request.request, snapshot, authority.lease_ms)
                 .await
         } else {
             service
@@ -46,7 +41,6 @@ pub(super) async fn claim_new_run(
                     request.request,
                     &authority.owner,
                     authority.lease_ms,
-                    authority.now_ms,
                     &service.local_credential_capabilities,
                 )
                 .await
@@ -69,12 +63,7 @@ pub(super) async fn deliver_and_claim(
         let claimed = if let Some(snapshot) = &authority.snapshot {
             service
                 .dispatch
-                .deliver_and_claim_compatible(
-                    request.input,
-                    snapshot,
-                    authority.lease_ms,
-                    authority.now_ms,
-                )
+                .deliver_and_claim_compatible(request.input, snapshot, authority.lease_ms)
                 .await
         } else {
             service
@@ -83,7 +72,6 @@ pub(super) async fn deliver_and_claim(
                     request.input,
                     &authority.owner,
                     authority.lease_ms,
-                    authority.now_ms,
                     &service.local_credential_capabilities,
                 )
                 .await
@@ -114,18 +102,12 @@ pub(super) async fn claim(
                     .collect();
                 service
                     .dispatch
-                    .claim_placed(
-                        snapshot,
-                        workers,
-                        policy.clone(),
-                        authority.lease_ms,
-                        authority.now_ms,
-                    )
+                    .claim_placed(snapshot, workers, policy.clone(), authority.lease_ms)
                     .await
             } else {
                 service
                     .dispatch
-                    .claim_compatible(snapshot, authority.lease_ms, authority.now_ms)
+                    .claim_compatible(snapshot, authority.lease_ms)
                     .await
             }
         } else {
@@ -134,7 +116,6 @@ pub(super) async fn claim(
                 .claim(
                     &authority.owner,
                     authority.lease_ms,
-                    authority.now_ms,
                     &service.local_credential_capabilities,
                 )
                 .await
@@ -156,12 +137,7 @@ pub(super) async fn claim_retry_exhausted(
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
         let claimed = service
             .dispatch
-            .claim_retry_exhausted(
-                &authority.owner,
-                authority.lease_ms,
-                authority.now_ms,
-                service.max_attempts,
-            )
+            .claim_retry_exhausted(&authority.owner, authority.lease_ms, service.max_attempts)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
@@ -182,7 +158,7 @@ pub(super) async fn claim_run(
         let claimed = if let Some(snapshot) = &authority.snapshot {
             service
                 .dispatch
-                .claim_run_compatible(&run_id, snapshot, authority.lease_ms, authority.now_ms)
+                .claim_run_compatible(&run_id, snapshot, authority.lease_ms)
                 .await
         } else {
             service
@@ -191,7 +167,6 @@ pub(super) async fn claim_run(
                     &run_id,
                     &authority.owner,
                     authority.lease_ms,
-                    authority.now_ms,
                     &service.local_credential_capabilities,
                 )
                 .await
@@ -221,7 +196,6 @@ pub(super) async fn renew(
                     epoch: request.lease_epoch,
                 },
                 authority.lease_ms,
-                authority.now_ms,
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
@@ -266,7 +240,7 @@ async fn admit_attempt(
         // only a preflight; the final transaction still owns execution admission.
         if !service
             .dispatch
-            .claim_is_current(&request.claim, service.clock.now_ms())
+            .claim_is_current(&request.claim)
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))?
         {
@@ -299,16 +273,15 @@ async fn admit_attempt(
     } else {
         None
     };
-    let now_ms = service.clock.now_ms();
     let admission = if handoff {
         service
             .dispatch
-            .handoff_attempt(&request.claim, now_ms, binding.as_ref())
+            .handoff_attempt(&request.claim, binding.as_ref())
             .await
     } else {
         service
             .dispatch
-            .begin_attempt(&request.claim, now_ms, binding.as_ref())
+            .begin_attempt(&request.claim, binding.as_ref())
             .await
     }
     .map_err(|error| match error {

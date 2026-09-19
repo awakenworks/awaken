@@ -20,6 +20,7 @@ use awaken_dispatch::{
     WorkerState,
 };
 use awaken_dispatch_http::{ClaimedCommitHttpService, claimed_commit_router};
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -169,7 +170,8 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         drain_deadline_ms: None,
         process_exit: None,
     }));
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     dispatch
         .enqueue(RunDispatch::new(activation(
             "typed-commit-run",
@@ -177,18 +179,15 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         )))
         .await
         .unwrap();
+    clock.set(0);
     let stale = dispatch
-        .claim(&identity.lease_owner(), 30_000, 0, &Default::default())
+        .claim(&identity.lease_owner(), 30_000, &Default::default())
         .await
         .unwrap()
         .expect("initial claim");
+    clock.set(stale.lease.expires_ms.saturating_add(1));
     let current = dispatch
-        .claim(
-            &identity.lease_owner(),
-            30_000,
-            stale.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim(&identity.lease_owner(), 30_000, &Default::default())
         .await
         .unwrap()
         .expect("same-incarnation reclaim");

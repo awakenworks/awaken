@@ -803,6 +803,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness commit_epoch_guard_admits_only_complete_exact_claim \
     --harness pre_start_no_effect_ack_requires_fresh_install_admission \
     --harness lease_renewal_observation_preserves_claim_and_attempt_fences \
+    --harness a_deadline_passes_only_strictly_after_it_is_reached \
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
     --harness physical_binding_cannot_change_on_admission_retry \
     --harness retired_epoch_cannot_admit_another_execution \

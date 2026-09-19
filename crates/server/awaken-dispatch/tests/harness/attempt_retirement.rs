@@ -4,7 +4,11 @@ use awaken_dispatch::{
 };
 
 /// One oracle for Memory, SQLite and PostgreSQL; real stores, no shadow reducer.
-pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
+pub async fn assert_retirement(
+    store: &impl DispatchQueue,
+    now: u64,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
     // Causes: C1 current/expired claim; C2 empty/live/retired slot;
     // C3 ordinary begin/durable handoff; C4 exact/delayed predecessor ACK.
     // R1 live exact retry => AlreadyApplied, not a fresh execution.
@@ -19,43 +23,47 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
         .enqueue(RunDispatch::new(super::activation("retirement")))
         .await
         .unwrap();
+    clock.set(now);
     let a = store
-        .claim("worker-a", 60_000, now, &Default::default())
+        .claim("worker-a", 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
     let a = RunClaim::from(&a.lease);
+    clock.set(now);
+    assert_eq!(store.begin_attempt(&a, None).await.unwrap(), A::Applied);
+    clock.set(now);
     assert_eq!(
-        store.begin_attempt(&a, now, None).await.unwrap(),
-        A::Applied
-    );
-    assert_eq!(
-        store.begin_attempt(&a, now, None).await.unwrap(),
+        store.begin_attempt(&a, None).await.unwrap(),
         A::AlreadyApplied,
         "R1"
     );
     assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied);
+    clock.set(now);
     assert_eq!(
-        store.begin_attempt(&a, now, None).await.unwrap(),
+        store.begin_attempt(&a, None).await.unwrap(),
         A::Fenced,
         "R2 begin"
     );
+    clock.set(now);
     assert_eq!(
-        store.handoff_attempt(&a, now, None).await.unwrap(),
+        store.handoff_attempt(&a, None).await.unwrap(),
         A::Fenced,
         "R2 handoff"
     );
     assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied, "R3");
     store.relinquish_claim(&a).await.unwrap();
+    clock.set(now);
     let b = store
-        .claim("worker-b", 60_000, now, &Default::default())
+        .claim("worker-b", 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
     let b = RunClaim::from(&b.lease);
     assert!(b.epoch > a.epoch);
+    clock.set(now);
     assert_eq!(
-        store.begin_attempt(&b, now, None).await.unwrap(),
+        store.begin_attempt(&b, None).await.unwrap(),
         A::Applied,
         "R4"
     );
@@ -64,8 +72,9 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
         S::Fenced,
         "R4 delayed ACK"
     );
+    clock.set(now);
     assert_eq!(
-        store.begin_attempt(&b, now, None).await.unwrap(),
+        store.begin_attempt(&b, None).await.unwrap(),
         A::AlreadyApplied,
         "R4 preserved"
     );
@@ -76,45 +85,52 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
         )))
         .await
         .unwrap();
+    clock.set(now);
     let c = store
-        .claim("worker-c", 60_000, now, &Default::default())
+        .claim("worker-c", 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
     let c = RunClaim::from(&c.lease);
+    clock.set(now);
     assert_eq!(
-        store.begin_attempt(&c, now, None).await.unwrap(),
+        store.begin_attempt(&c, None).await.unwrap(),
         A::Applied,
         "R6"
     );
     assert_eq!(store.finish_attempt(&c).await.unwrap(), S::Applied);
+    clock.set(now);
     assert_eq!(
-        store.renew_lease(&b, 0, now).await.unwrap(),
+        store.renew_lease(&b, 0).await.unwrap(),
         L::Current,
         "R5 exact current claim receives the typed renewal outcome"
     );
     // Expire through the store-owned lease clock; expiry must retain B's slot.
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    clock.set(now + 1);
     let d = store
-        .claim("worker-d", 60_000, now + 1, &Default::default())
+        .claim("worker-d", 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
     let d = RunClaim::from(&d.lease);
     assert_eq!(d.run_id, b.run_id);
+    clock.set(now + 1);
     assert_eq!(
-        store.begin_attempt(&d, now + 1, None).await.unwrap(),
+        store.begin_attempt(&d, None).await.unwrap(),
         A::Blocked,
         "R5"
     );
     assert_eq!(store.finish_attempt(&b).await.unwrap(), S::Applied);
+    clock.set(now);
     assert_eq!(
-        store.begin_attempt(&b, now, None).await.unwrap(),
+        store.begin_attempt(&b, None).await.unwrap(),
         A::Fenced,
         "R2 successor"
     );
+    clock.set(now + 1);
     assert_eq!(
-        store.begin_attempt(&d, now + 1, None).await.unwrap(),
+        store.begin_attempt(&d, None).await.unwrap(),
         A::Applied,
         "R5 after ACK"
     );

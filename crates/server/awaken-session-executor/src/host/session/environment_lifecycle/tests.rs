@@ -2369,8 +2369,11 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.handle()).unwrap();
-        let store =
-            Arc::new(awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().unwrap());
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let store = Arc::new(
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+                .unwrap(),
+        );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
                 .with_dispatch_store(store.clone()),
@@ -2395,10 +2398,11 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             .unwrap();
         host.install_session_environment_owner_projection(thread, "workspace", &source)
             .unwrap();
-        let old = claim(&store, thread, "adoption-run", "worker-old", 1).await;
+        let old = claim(&store, thread, "adoption-run", "worker-old", 1, &clock).await;
         let current = if fenced {
+            clock.set(2_002);
             store
-                .claim("worker-current", 60_000, 2_002, &Default::default())
+                .claim("worker-current", 60_000, &Default::default())
                 .await
                 .unwrap()
                 .unwrap()
@@ -2476,8 +2480,9 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         )).unwrap(), "B direct/fenced paths publish the same current receipt");
         // Observe the persisted binding through the next claim; calling
         // bind_sandbox again here could repair a missing write and mask a bug.
+        clock.set(62_003);
         let readback = store
-            .claim("worker-readback", 60_000, 62_003, &Default::default())
+            .claim("worker-readback", 60_000, &Default::default())
             .await
             .unwrap()
             .unwrap();

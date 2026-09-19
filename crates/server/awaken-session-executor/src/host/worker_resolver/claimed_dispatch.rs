@@ -492,7 +492,6 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         &self,
         claimed: &awaken_dispatch::Claimed,
         error: awaken_dispatch::Error,
-        clock: Arc<dyn awaken_dispatch::Clock>,
     ) -> Result<Option<(RunId, RunState)>, awaken_dispatch::Error> {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
@@ -503,19 +502,13 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         );
         let worker = self.boundary_worker(&host, claimed, commit, false).await?;
         worker
-            .fail_claimed_before_execution(
-                claimed,
-                "dispatch_resolution_failed",
-                error.to_string(),
-                clock,
-            )
+            .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
             .await
     }
 
     async fn terminalize_retry_exhausted(
         &self,
         claimed: &awaken_dispatch::Claimed,
-        clock: Arc<dyn awaken_dispatch::Clock>,
     ) -> Result<Option<(RunId, RunState)>, awaken_dispatch::Error> {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
@@ -525,16 +518,14 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .map_err(|error| Self::execution_error(error.to_string()))?,
         );
         let worker = self.boundary_worker(&host, claimed, commit, false).await?;
-        worker.terminalize_retry_exhausted(claimed, clock).await
+        worker.terminalize_retry_exhausted(claimed).await
     }
 
     async fn reconcile_committed_terminals(
         &self,
-        clock: Arc<dyn awaken_dispatch::Clock>,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, awaken_dispatch::Error> {
-        crate::host::terminal_reconciliation::reconcile_committed_terminals(self, clock, limit)
-            .await
+        crate::host::terminal_reconciliation::reconcile_committed_terminals(self, limit).await
     }
 }
 

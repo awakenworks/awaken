@@ -304,9 +304,7 @@ impl<S: Dispatch + 'static> DispatchTestHarness<S> {
     /// Reclaim and re-run any dispatch whose lease expired (crash recovery), plus
     /// any work that became runnable. Returns each processed run and its state.
     pub async fn recover(&self, clock: Arc<dyn Clock>) -> Result<Vec<(RunId, RunState)>, Error> {
-        let mut processed = self
-            .reconcile_committed_terminals(clock.clone(), 256)
-            .await?;
+        let mut processed = self.reconcile_committed_terminals(256).await?;
         processed.extend(self.worker.run_until_idle(clock).await?);
         Ok(processed)
     }
@@ -318,12 +316,9 @@ impl<S: Dispatch + 'static> DispatchTestHarness<S> {
     /// fenced settlement.
     pub async fn reconcile_committed_terminals(
         &self,
-        clock: Arc<dyn Clock>,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
-        self.worker
-            .reconcile_committed_terminals(clock, limit)
-            .await
+        self.worker.reconcile_committed_terminals(limit).await
     }
 
     /// Stage a cross-thread delivery to another thread's awaiting run (M3b). It is
@@ -349,12 +344,12 @@ impl<S: Dispatch + 'static> DispatchTestHarness<S> {
     pub async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
-        now_ms: u64,
+        expired_before_ms: u64,
     ) -> Result<usize, Error> {
         Ok(self
             .worker
             .store()
-            .quarantine_retry_exhausted(max_attempts, now_ms)
+            .quarantine_retry_exhausted(max_attempts, expired_before_ms)
             .await?)
     }
 

@@ -6,8 +6,8 @@ impl DispatchQueue for SqliteDispatchStore {
         &self,
         identity: &crate::WorkerIdentity,
         run_id: &RunId,
-        now_ms: u64,
     ) -> Result<Option<RunClaim>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let run = run_id.0.clone();
         let owner = identity.lease_owner();
         self.with_conn(move |conn, p| {
@@ -436,9 +436,9 @@ impl DispatchQueue for SqliteDispatchStore {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let run_id = request.run_id().0.clone();
         let owner = owner.to_string();
         let capabilities = capabilities.clone();
@@ -485,8 +485,8 @@ impl DispatchQueue for SqliteDispatchStore {
         request: RunDispatch,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let run_id = request.run_id().0.clone();
         let worker = worker.clone();
         self.with_conn(move |conn, p| {
@@ -533,9 +533,9 @@ impl DispatchQueue for SqliteDispatchStore {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.0.clone();
         let owner = owner.to_string();
@@ -565,8 +565,8 @@ impl DispatchQueue for SqliteDispatchStore {
         input: PendingInput,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.0.clone();
         let worker = worker.clone();
@@ -609,9 +609,9 @@ impl DispatchQueue for SqliteDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let owner = owner.to_string();
         let capabilities = capabilities.clone();
         self.with_conn(move |conn, p| {
@@ -743,8 +743,8 @@ impl DispatchQueue for SqliteDispatchStore {
         &self,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let worker = worker.clone();
         self.with_conn(move |conn, p| {
             let tx = conn
@@ -849,8 +849,8 @@ impl DispatchQueue for SqliteDispatchStore {
         workers: Vec<WorkerSnapshot>,
         policy: Arc<dyn PlacementPolicy>,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let requester = requester.clone();
         self.with_conn(move |conn, p| {
             let tx = conn
@@ -956,9 +956,9 @@ impl DispatchQueue for SqliteDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let requested_run = requested_run.0.clone();
         let owner = owner.to_string();
         let capabilities = capabilities.clone();
@@ -986,8 +986,8 @@ impl DispatchQueue for SqliteDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let requested_run = requested_run.0.clone();
         let owner = owner.to_string();
         self.with_conn(move |conn, _p| {
@@ -1014,9 +1014,9 @@ impl DispatchQueue for SqliteDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let now_ms = crate::clock::normalize_millis(now_ms);
         let owner = owner.to_string();
         self.with_conn(move |conn, p| {
@@ -1030,8 +1030,8 @@ impl DispatchQueue for SqliteDispatchStore {
         requested_run: &RunId,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let requested_run = requested_run.0.clone();
         let worker = worker.clone();
         self.with_conn(move |conn, _p| {
@@ -1057,8 +1057,8 @@ impl DispatchQueue for SqliteDispatchStore {
         &self,
         claim: &RunClaim,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<LeaseRenewalOutcome, DispatchError> {
+        let now_ms = self.clock.now_ms();
         let claim = claim.clone();
         self.with_conn(move |conn, p| {
             let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
@@ -1235,7 +1235,20 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
-    async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
+    /// The store's own clock decides liveness, exactly as it does for every
+    /// other deadline this backend judges. This used to ride the trait default
+    /// on a caller-supplied `now_ms`; the caller no longer has a say in when
+    /// "now" is for rows this store owns.
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        Ok(self
+            .lock_commit_epoch(claim)
+            .await?
+            .is_some_and(|guard| guard.is_live_at(now_ms)))
+    }
+
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        let now_ms = self.clock.now_ms();
         self.with_conn(move |conn, p| {
             let thread_available = thread_available_for_claim(p);
             let depth: i64 = conn
@@ -1266,9 +1279,9 @@ impl DispatchQueue for SqliteDispatchStore {
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
+        let now_ms = self.clock.now_ms();
         self.admit_physical_attempt(claim, now_ms, false, _binding)
             .await
     }
@@ -1276,9 +1289,9 @@ impl DispatchQueue for SqliteDispatchStore {
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
+        let now_ms = self.clock.now_ms();
         self.admit_physical_attempt(claim, now_ms, true, _binding)
             .await
     }
@@ -1587,7 +1600,7 @@ impl DispatchQueue for SqliteDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
-        now_ms: u64,
+        expired_before_ms: u64,
     ) -> Result<usize, DispatchError> {
         self.with_conn(move |conn, p| {
             let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
@@ -1606,7 +1619,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     .map_err(store_error)?;
                 let rows = statement
                     .query_map(
-                        params![crate::clock::db_millis(now_ms), max_attempts_i64],
+                        params![crate::clock::db_millis(expired_before_ms), max_attempts_i64],
                         |row| {
                             Ok((
                                 row.get::<_, String>(0)?,
@@ -1646,7 +1659,7 @@ impl DispatchQueue for SqliteDispatchStore {
                              WHERE run_id = ?2 AND status = 'running' AND lease_epoch = ?3"
                         ),
                         params![
-                            crate::clock::db_millis(now_ms),
+                            crate::clock::db_millis(expired_before_ms),
                             run_id,
                             epoch,
                             crate::dispatch_state_db(next.state)

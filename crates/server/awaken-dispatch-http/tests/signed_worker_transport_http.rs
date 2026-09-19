@@ -811,7 +811,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .with_time_policy(60_000, 0);
     let authenticator: Arc<dyn WorkerRequestAuthenticator> = Arc::new(authenticator);
     let directory = Arc::new(TestWorkerDirectory::default());
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    // The dispatch port reads "now" from its store; mirror the service clock.
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl {
         clock: Some(clock.clone()),
         ..Default::default()
@@ -1023,7 +1025,6 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .claim(
             &registered.snapshot.identity.lease_owner(),
             30_000,
-            10_000,
             &Default::default(),
         )
         .await
@@ -1036,7 +1037,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
     assert!(
         queue
-            .claim_is_current(&claim, 10_000)
+            .claim_is_current(&claim)
             .await
             .expect("signed exact-claim verification")
     );
@@ -1053,24 +1054,18 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // does not require it to remain the current registry/Run owner, because that
     // would make safe handoff impossible after reclaim.
     assert_eq!(
-        queue
-            .begin_attempt(&claim, 10_000, None)
-            .await
-            .expect("P1 begin"),
+        queue.begin_attempt(&claim, None).await.expect("P1 begin"),
         AttemptAdmission::Applied,
         "P1 exact identity"
     );
     assert_eq!(
-        queue
-            .begin_attempt(&claim, 10_000, None)
-            .await
-            .expect("P2 retry"),
+        queue.begin_attempt(&claim, None).await.expect("P2 retry"),
         AttemptAdmission::AlreadyApplied,
         "P2 exact response-loss retry"
     );
     assert_eq!(
         queue
-            .handoff_attempt(&claim, 10_000, None)
+            .handoff_attempt(&claim, None)
             .await
             .expect("P2 handoff retry"),
         AttemptAdmission::AlreadyApplied,
@@ -1082,7 +1077,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert!(
         mismatched_queue
-            .handoff_attempt(&claim, 10_000, None)
+            .handoff_attempt(&claim, None)
             .await
             .is_err(),
         "P3 mismatched signed-body incarnation cannot replace the slot"
@@ -1104,12 +1099,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         snapshot.capability_fingerprint = snapshot.manifest.fingerprint().unwrap();
     }
     let occupied_before = dispatch.list_dispatches().await.unwrap();
+    assert!(queue.begin_attempt(&claim, None).await.is_err(), "U1 begin");
     assert!(
-        queue.begin_attempt(&claim, 10_000, None).await.is_err(),
-        "U1 begin"
-    );
-    assert!(
-        queue.handoff_attempt(&claim, 10_000, None).await.is_err(),
+        queue.handoff_attempt(&claim, None).await.is_err(),
         "U1 handoff"
     );
     assert_eq!(
@@ -1132,12 +1124,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // U4: neither an old peer nor a current replacement may re-admit the same
     // acknowledged identity; protocol rejection and epoch retirement compose.
     assert!(
-        queue.begin_attempt(&claim, 10_000, None).await.is_err(),
+        queue.begin_attempt(&claim, None).await.is_err(),
         "U4 old peer"
     );
     *directory.0.lock().unwrap() = before_upgrade;
     assert_eq!(
-        queue.begin_attempt(&claim, 10_000, None).await.unwrap(),
+        queue.begin_attempt(&claim, None).await.unwrap(),
         AttemptAdmission::Fenced,
         "U4 retired epoch"
     );
@@ -2306,7 +2298,6 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .claim(
             &registered.snapshot.identity.lease_owner(),
             30_000,
-            10_000,
             &Default::default(),
         )
         .await
@@ -2316,7 +2307,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     session_work.acquired_sessions.lock().unwrap().clear();
     assert!(
         queue
-            .claim_is_current(&child_claim, 10_000)
+            .claim_is_current(&child_claim)
             .await
             .expect("T22 child claim verification"),
         "T22"
@@ -2395,10 +2386,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // slot, after which the original idempotent boundary retries are admitted.
     // Neither claim validity nor a caller's terminal assertion replaces ACK.
     assert_eq!(
-        queue
-            .begin_attempt(&child_claim, 10_000, None)
-            .await
-            .unwrap(),
+        queue.begin_attempt(&child_claim, None).await.unwrap(),
         AttemptAdmission::Applied
     );
     assert!(
@@ -2573,7 +2561,6 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .claim(
             &registered.snapshot.identity.lease_owner(),
             30_000,
-            10_001,
             &Default::default(),
         )
         .await
@@ -2582,7 +2569,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
     assert!(
         queue
-            .claim_is_current(&claim, 10_001)
+            .claim_is_current(&claim)
             .await
             .expect("T20 next Session claim remains current"),
         "T20"
@@ -2590,6 +2577,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
 
     let begins_before_expired_claim = session_control.begins.lock().unwrap().len();
     clock.set(20_000);
+    dispatch_clock.set(20_000);
     WorkerControlClient::new(upstream.clone())
         .heartbeat(
             &registered.snapshot.identity,
@@ -2605,9 +2593,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("registry lease remains live while the dispatch lease expires");
     clock.set(claimed.lease.expires_ms + 1);
+    dispatch_clock.set(claimed.lease.expires_ms + 1);
     assert!(
         !queue
-            .claim_is_current(&claim, claimed.lease.expires_ms + 1)
+            .claim_is_current(&claim)
             .await
             .expect("signed expired-claim verification")
     );
@@ -2658,7 +2647,6 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .claim(
             &registered.snapshot.identity.lease_owner(),
             30_000,
-            claimed.lease.expires_ms + 1,
             &Default::default(),
         )
         .await
@@ -2704,8 +2692,12 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
     // never mutates a replacement. R4 old exact drain/quiesce/deregister remains
     // callable: protocol denial cannot remove the existing retirement route.
     let directory = Arc::new(TestWorkerDirectory::default());
-    let service = WorkerDispatchService::local(Arc::new(MemoryDispatchStore::new()))
-        .with_worker_directory(directory.clone(), 30_000);
+    // The dispatch port reads "now" from its store; mirror the service clock.
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let service = WorkerDispatchService::local(Arc::new(
+        MemoryDispatchStore::new().with_clock(dispatch_clock.clone()),
+    ))
+    .with_worker_directory(directory.clone(), 30_000);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = dispatch_transport_router_with_service(Arc::new(service));
@@ -2846,7 +2838,9 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
     let session_control = Arc::new(RecordingSessionControl::default());
     // A real queued v1 request must remain pending after every denial; an
     // empty queue would not expose accidentally claiming before rejection.
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    // The dispatch port reads "now" from its store; mirror the service clock.
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     dispatch
         .enqueue(standard_worker_dispatch(activation()))
         .await
@@ -3091,7 +3085,9 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
 /// require the Coordinator's current registry incarnation, never header identity.
 #[tokio::test]
 async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    // The dispatch port reads "now" from its store; mirror the service clock.
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
     let service =

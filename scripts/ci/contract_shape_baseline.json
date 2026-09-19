@@ -63,9 +63,12 @@
     },
     "awaken-dispatch-contract": {
       "depth": 4,
-      "production_lines": 2461,
+      "production_lines": 2469,
       "catch_all_errors": 3,
-      "capability_defaults": 35
+      "capability_defaults": 35,
+      "growth_reasons": {
+        "production_lines": "deadline_has_passed: the one rule deciding whether a durable deadline has passed, which was previously four separate Rust spellings (two normalizing now, two not) plus one hand-written predicate per SQL query. It is contract vocabulary because the transition rules and every backend must answer that question identically, and it carries the Kani proof none of the scattered spellings could"
+      }
     },
     "awaken-runtime-contract": {
       "depth": 2,

@@ -3059,8 +3059,9 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     // | R4 | trace changed | Reserved | E5 |
     let thread = "cold-session-reservation";
     let run_id = RunId("cold-session-reservation-run".into());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
             .expect("reservation dispatch"),
     );
     let host =
@@ -3201,12 +3202,12 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         awaken_session_contract::SessionRunReservation::Reserved,
         "R1/E5 Recovery precondition"
     );
+    clock.set(u64::MAX);
     let recovery_claim = dispatch
         .claim_run(
             &recovery_command.run_id,
             "reservation-recovery-owner",
             1_000,
-            u64::MAX,
             &Default::default(),
         )
         .await
@@ -3280,8 +3281,9 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         acp_capability_observations: Default::default(),
         expires_at_ms: 10_000,
     };
+    clock.set(0);
     let claimed = dispatch
-        .claim_compatible(&worker, 1_000, 0)
+        .claim_compatible(&worker, 1_000)
         .await
         .expect("R1 inspect executable dispatch")
         .expect("R1 exact executable dispatch");
@@ -3354,12 +3356,12 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         awaken_dispatch::SessionRunReservationActivation::Activated,
         "R3 Completed precondition"
     );
+    clock.set(0);
     let empty_capabilities_claim = dispatch
         .claim_run(
             &empty_capabilities.run_id,
             "empty-capability-completion-worker",
             1_000,
-            0,
             &Default::default(),
         )
         .await
@@ -3717,8 +3719,10 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     // | C3 | multiple | absent | any | accepted | reject (ambiguity sibling) |
     let thread = "cold-managed-interrupt";
     let run_id = RunId("cold-managed-interrupt-run".into());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("dispatch store"),
     );
     dispatch
         .enqueue(
@@ -3730,8 +3734,9 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
         )
         .await
         .expect("C1 executable Session dispatch");
+    clock.set(0);
     let claimed = dispatch
-        .claim("failed-worker", 1, 0, &Default::default())
+        .claim("failed-worker", 1, &Default::default())
         .await
         .expect("C1 claim")
         .expect("C1 exact claim");
@@ -3995,7 +4000,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     // settles Cancelled. Constraint/Invariant: selection uses durable dispatch
     // truth, never guessed process state. Decision rule: C0+unique C2+C3 yields
     // E1; ambiguity is owned by the fail-closed sibling test.
-    use awaken_dispatch::{Clock as _, DispatchQueue as _, RunDispatch};
+    use awaken_dispatch::{DispatchQueue as _, RunDispatch};
     use awaken_runtime_contract::execution::{
         Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
     };
@@ -4076,8 +4081,10 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
             "sha256:active-remote",
         )
         .expect("coherent active remote candidate");
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("dispatch store"),
     );
     dispatch
         .enqueue(
@@ -4088,12 +4095,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         .await
         .expect("M1 Managed Run admission");
     let previous = dispatch
-        .claim(
-            "previous-worker",
-            DEFAULT_LEASE_MS,
-            awaken_dispatch::SystemClock.now_ms(),
-            &Default::default(),
-        )
+        .claim("previous-worker", DEFAULT_LEASE_MS, &Default::default())
         .await
         .expect("M1 old Worker claim")
         .expect("M1 active dispatch");
@@ -16157,8 +16159,10 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     // | R2 | Ended | exact | yes | same | E3 |
     // | R3 | Ended | wrong | any | any | reject before mutation |
     // | R4 | Ended | exact | any | zero | reject before mutation |
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("in-memory dispatch"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("in-memory dispatch"),
     );
     let host = Arc::new(
         SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
@@ -16223,8 +16227,9 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
         .await;
     assert!(zero_epoch.is_err(), "R4");
     assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R4");
+    clock.set(1);
     let claimed = dispatch
-        .claim("report-epoch-inspector", 30_000, 1, &Default::default())
+        .claim("report-epoch-inspector", 30_000, &Default::default())
         .await
         .expect("R1 claim")
         .expect("R1 report root remains runnable");
@@ -16292,8 +16297,9 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     let parent = ThreadId("coordinated-reply-parent".into());
     let child = ThreadId("coordinated-reply-child".into());
     let child_run = RunId("coordinated-reply-run".into());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
             .expect("coordinated reply dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
@@ -16369,12 +16375,12 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .enqueue(request)
         .await
         .expect("enqueue child dispatch");
+    clock.set(0);
     let claimed = dispatch
         .claim_run(
             &child_run,
             "coordinated-reply-owner",
             DEFAULT_LEASE_MS,
-            0,
             &Default::default(),
         )
         .await
@@ -16455,13 +16461,13 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         }],
         "CR6/E8 one fresh Run owns one follow-up message"
     );
+    clock.set(1);
     assert!(
         dispatch
             .claim_run(
                 &follow_up_run,
                 "coordinated-reply-owner",
                 DEFAULT_LEASE_MS,
-                1,
                 &Default::default(),
             )
             .await
@@ -16521,12 +16527,12 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     })
     .await
     .expect("CR1 stage coordinated reply");
+    clock.set(1);
     let resumed = dispatch
         .claim_run(
             &child_run,
             "coordinated-reply-owner",
             DEFAULT_LEASE_MS,
-            1,
             &Default::default(),
         )
         .await
@@ -16555,13 +16561,13 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         vec![(&Role::System, "reply context".to_string())],
         "CR1/E1 the stable accompanying System is frozen in the same PendingInput"
     );
+    clock.set(2);
     assert!(
         dispatch
             .claim_run(
                 &follow_up_run,
                 "coordinated-reply-owner",
                 DEFAULT_LEASE_MS,
-                2,
                 &Default::default(),
             )
             .await
@@ -16743,12 +16749,12 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         awaken_dispatch::SettleOutcome::Applied,
         "CR5/E7"
     );
+    clock.set(3);
     let follow_up = dispatch
         .claim_run(
             &follow_up_run,
             "coordinated-reply-owner",
             DEFAULT_LEASE_MS,
-            3,
             &Default::default(),
         )
         .await
@@ -17042,8 +17048,9 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
     for extension in [false, true] {
         let parent = ThreadId(format!("primary-reply-session-{extension}"));
         let run_id = RunId("primary-reply-run".into());
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
                 .expect("primary reply dispatch"),
         );
         let (host, _managed) = dispatch_test_host(
@@ -17120,12 +17127,12 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             .enqueue(request)
             .await
             .expect("enqueue primary dispatch");
+        clock.set(0);
         let claimed = dispatch
             .claim_run(
                 &run_id,
                 "primary-reply-owner",
                 DEFAULT_LEASE_MS,
-                0,
                 &Default::default(),
             )
             .await
@@ -17236,12 +17243,12 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         })
         .await
         .expect("PR1 stage primary result");
+        clock.set(1);
         let resumed = dispatch
             .claim_run(
                 &run_id,
                 "primary-reply-owner",
                 DEFAULT_LEASE_MS,
-                1,
                 &Default::default(),
             )
             .await
@@ -17295,8 +17302,9 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     use awaken_dispatch::{DispatchOutcome, RunDispatch};
     use awaken_session_contract::{SessionBudgetResumeDelivery, SessionBudgetResumeDisposition};
 
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
             .expect("budget resume dispatch"),
     );
     let (host, _managed) = dispatch_test_host(
@@ -17433,12 +17441,12 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         )
         .await
         .expect("B2 child dispatch");
+    clock.set(0);
     let initial_child_claim = dispatch
         .claim_run(
             &child_run,
             "budget-resume-worker",
             DEFAULT_LEASE_MS,
-            0,
             &Default::default(),
         )
         .await
@@ -17484,12 +17492,12 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         SessionBudgetResumeDisposition::Dispatched,
         "B2 exact concurrent replay"
     );
+    clock.set(1);
     let resumed = dispatch
         .claim_run(
             &child_run,
             "budget-resume-worker",
             DEFAULT_LEASE_MS,
-            1,
             &Default::default(),
         )
         .await
@@ -17571,12 +17579,12 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         SessionBudgetResumeDisposition::Dispatched,
         "B3/E4"
     );
+    clock.set(2);
     let resumed_again = dispatch
         .claim_run(
             &child_run,
             "budget-resume-worker",
             DEFAULT_LEASE_MS,
-            2,
             &Default::default(),
         )
         .await
@@ -17645,12 +17653,12 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         )
         .await
         .expect("B5 action dispatch");
+    clock.set(3);
     let action_claim = dispatch
         .claim_run(
             &action_run,
             "budget-resume-worker",
             DEFAULT_LEASE_MS,
-            3,
             &Default::default(),
         )
         .await
@@ -21446,7 +21454,7 @@ async fn settle_cancelled_dispatch_rows(
             let mut settled = Vec::with_capacity(rows.len());
             for row in rows {
                 let claimed = dispatch
-                    .claim_run(&row.run_id, worker, 30_000, 1, &Default::default())
+                    .claim_run(&row.run_id, worker, 30_000, &Default::default())
                     .await
                     .unwrap()
                     .expect("cancelled dispatch remains claimable for exact settlement");
@@ -23657,8 +23665,9 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_dispatch::{DispatchOutcome, DispatchState, RunDispatch};
 
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
             .expect("archive saga dispatch"),
     );
     let host = Arc::new(
@@ -23727,8 +23736,9 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .cancel(&pending_run)
         .await
         .expect("A2 cleanup intent");
+    clock.set(0);
     let pending_cancel = dispatch
-        .claim("archive-test", 100, 0, &Default::default())
+        .claim("archive-test", 100, &Default::default())
         .await
         .expect("A2 cancellation claim")
         .expect("A2 cancellation work");
@@ -23766,8 +23776,9 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         )
         .await
         .expect("A3 child admission");
+    clock.set(0);
     let awaiting_claim = dispatch
-        .claim("archive-test", 100, 0, &Default::default())
+        .claim("archive-test", 100, &Default::default())
         .await
         .expect("A3 claim")
         .expect("A3 work");
@@ -23823,8 +23834,9 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     })
     .await
     .expect("A3 archive records ordinary cancellation before waiting");
+    clock.set(0);
     let awaiting_cancel = dispatch
-        .claim("archive-test", 100, 0, &Default::default())
+        .claim("archive-test", 100, &Default::default())
         .await
         .expect("A3 cancellation claim")
         .expect("A3 cancellation work");
@@ -23892,8 +23904,9 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     })
     .await
     .expect("A4 archived replay records cancellation before waiting");
+    clock.set(0);
     let raced_cancel = dispatch
-        .claim("archive-test", 100, 0, &Default::default())
+        .claim("archive-test", 100, &Default::default())
         .await
         .expect("A4 cancellation claim")
         .expect("A4 cancellation work");
@@ -23938,8 +23951,9 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_dispatch::{DispatchOutcome, RunDispatch};
 
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
             .expect("failed follow-up race dispatch"),
     );
     let host = SharedHost::new(Arc::new(OkModel), "stub")
@@ -23959,8 +23973,9 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
         )
         .await
         .expect("R1 current admission");
+    clock.set(0);
     let current_claim = dispatch
-        .claim("failed-race-worker", 100, 0, &Default::default())
+        .claim("failed-race-worker", 100, &Default::default())
         .await
         .expect("R1 claim")
         .expect("R1 current work");
@@ -24033,8 +24048,9 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
         .await
         .expect("R3 current settlement");
     assert!(settled.applied(), "R3/E4 current claim was not fenced");
+    clock.set(0);
     let cancellation = dispatch
-        .claim("failed-race-worker", 100, 0, &Default::default())
+        .claim("failed-race-worker", 100, &Default::default())
         .await
         .expect("R3 cancellation claim")
         .expect("R3 cancellation work");

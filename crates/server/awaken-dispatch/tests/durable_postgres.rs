@@ -51,7 +51,11 @@ async fn postgres_execution_binding_is_frozen_with_the_physical_slot() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .unwrap();
-    harness::attempt_binding::assert_binding_lifecycle(&store).await;
+    harness::attempt_binding::assert_binding_lifecycle(
+        &store,
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
     let error = sqlx::query(
         "UPDATE runtime_dispatch SET active_attempt_binding = '{}' WHERE run_id = 'bound-attempt'",
     )
@@ -75,7 +79,12 @@ async fn postgres_returned_attempt_epoch_is_not_reused() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .unwrap();
-    harness::attempt_retirement::assert_retirement(&store, 0).await;
+    harness::attempt_retirement::assert_retirement(
+        &store,
+        0,
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
     // R7 SQL bypass cannot reinstall an already retired epoch, even if a caller
     // skips the application reducer. The named row belongs only to this test.
     let error = sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = 'stale', active_attempt_epoch = retired_attempt_epoch WHERE run_id = 'retirement'")
@@ -291,8 +300,8 @@ async fn postgres_one_running_per_thread_under_concurrent_claimers() {
     let a = store.clone();
     let b = store.clone();
     let (ra, rb) = tokio::join!(
-        tokio::spawn(async move { a.claim("owner-a", 1_000, 0, &Default::default()).await }),
-        tokio::spawn(async move { b.claim("owner-b", 1_000, 0, &Default::default()).await }),
+        tokio::spawn(async move { a.claim("owner-a", 1_000, &Default::default()).await }),
+        tokio::spawn(async move { b.claim("owner-b", 1_000, &Default::default()).await }),
     );
     let won = ra.unwrap().expect("claim a ok").is_some() as u8
         + rb.unwrap().expect("claim b ok").is_some() as u8;
@@ -324,7 +333,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
         .await
         .unwrap();
     let lease = store
-        .claim("owner-a", 100, 0, &Default::default())
+        .claim("owner-a", 100, &Default::default())
         .await
         .unwrap()
         .expect("claim")
@@ -343,7 +352,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
     let reclaim_store = store.clone();
     let mut reclaiming = tokio::spawn(async move {
         reclaim_store
-            .claim("owner-b", 100, 200, &Default::default())
+            .claim("owner-b", 100, &Default::default())
             .await
     });
     // Claim intentionally uses SKIP LOCKED. Depending on scheduling it either
@@ -371,7 +380,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
     let reclaimed = match first_after_release {
         Some(reclaimed) => reclaimed,
         None => store
-            .claim("owner-b", 100, 200, &Default::default())
+            .claim("owner-b", 100, &Default::default())
             .await
             .unwrap()
             .expect("reclaim after the guard releases"),
@@ -472,7 +481,7 @@ async fn enqueued_dispatch_survives_a_restart() {
         .await
         .expect("dispatch b");
     let claimed = restarted
-        .claim("worker", 1_000, 0, &Default::default())
+        .claim("worker", 1_000, &Default::default())
         .await
         .expect("claim")
         .expect("the enqueued run survived restart");
@@ -515,15 +524,12 @@ async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
     // Claim with a zero lease, then a later claim reclaims the expired lease.
     assert!(
         store
-            .claim("a", 0, 100, &Default::default())
+            .claim("a", 0, &Default::default())
             .await
             .unwrap()
             .is_some()
     );
-    let recovered = store
-        .claim("b", 1_000, 101, &Default::default())
-        .await
-        .unwrap();
+    let recovered = store.claim("b", 1_000, &Default::default()).await.unwrap();
     assert_eq!(
         recovered.map(|c| c.lease.owner),
         Some("b".to_string()),
@@ -628,7 +634,11 @@ async fn message_idempotency_conflicts_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool)
         .await
         .expect("dispatch");
-    harness::assert_message_idempotency_conflicts(&store).await;
+    harness::assert_message_idempotency_conflicts(
+        &store,
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -674,7 +684,7 @@ async fn cancel_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_cancel(&store).await;
+    harness::assert_cancel(&store, &awaken_dispatch_testkit::AuthoritativeWallClock).await;
 }
 
 #[tokio::test]
@@ -734,8 +744,8 @@ async fn two_workers_claim_distinct_runs_on_postgres() {
 
     let capabilities = Default::default();
     let (a, b) = tokio::join!(
-        store.claim("wa", 1_000, 0, &capabilities),
-        store.claim("wb", 1_000, 0, &capabilities)
+        store.claim("wa", 1_000, &capabilities),
+        store.claim("wb", 1_000, &capabilities)
     );
     let a = a
         .unwrap()
@@ -762,7 +772,8 @@ async fn idle_thread_inbox_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_idle_thread_inbox(&store).await;
+    harness::assert_idle_thread_inbox(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 #[tokio::test]
@@ -773,7 +784,7 @@ async fn supersession_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_supersession(&store).await;
+    harness::assert_supersession(&store, &awaken_dispatch_testkit::AuthoritativeWallClock).await;
 }
 
 #[tokio::test]
@@ -814,7 +825,8 @@ async fn relinquish_claim_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_relinquish_claim(&store).await;
+    harness::assert_relinquish_claim(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 #[tokio::test]
@@ -825,7 +837,11 @@ async fn defer_claim_is_request_local_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_defer_claim_is_request_local(&store).await;
+    harness::assert_defer_claim_is_request_local(
+        &store,
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -864,14 +880,14 @@ async fn physical_attempt_admission_uses_the_postgres_authority_clock() {
         .await
         .expect("enqueue");
     let claimed = store
-        .claim("clock-owner", 5_000, 0, &Default::default())
+        .claim("clock-owner", 5_000, &Default::default())
         .await
         .expect("claim query")
         .expect("claim");
 
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&claimed.lease), u64::MAX, None)
+            .begin_attempt(&RunClaim::from(&claimed.lease), None)
             .await
             .expect("physical admission"),
         awaken_dispatch::AttemptAdmission::Applied,
@@ -902,7 +918,7 @@ async fn terminal_recovery_claim_rejects_caller_clock_skew() {
             .await
             .unwrap();
     let first = store
-        .claim_for_terminal_recovery(&RunId("terminal-clock".into()), "first", 60_000, 0)
+        .claim_for_terminal_recovery(&RunId("terminal-clock".into()), "first", 60_000)
         .await
         .unwrap()
         .unwrap();
@@ -913,7 +929,7 @@ async fn terminal_recovery_claim_rejects_caller_clock_skew() {
     );
     assert!(
         store
-            .claim_for_terminal_recovery(&first.lease.run_id, "skewed-successor", 60_000, u64::MAX)
+            .claim_for_terminal_recovery(&first.lease.run_id, "skewed-successor", 60_000)
             .await
             .unwrap()
             .is_none(),
@@ -921,7 +937,7 @@ async fn terminal_recovery_claim_rejects_caller_clock_skew() {
     );
     assert!(
         store
-            .claim_is_current(&RunClaim::from(&first.lease), 0)
+            .claim_is_current(&RunClaim::from(&first.lease))
             .await
             .unwrap(),
         "T2 exact original authority preserved"
@@ -943,13 +959,13 @@ async fn retry_exhaustion_claim_rejects_caller_clock_skew() {
         .await
         .unwrap();
     let first = store
-        .claim("first", 60_000, 0, &Default::default())
+        .claim("first", 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        store.claim_retry_exhausted("skewed-successor", 60_000, u64::MAX, 0),
+        store.claim_retry_exhausted("skewed-successor", 60_000, 0),
     )
     .await
     .expect("X1/X2 selection must terminate")
@@ -960,7 +976,7 @@ async fn retry_exhaustion_claim_rejects_caller_clock_skew() {
     );
     assert!(
         store
-            .claim_is_current(&RunClaim::from(&first.lease), 0)
+            .claim_is_current(&RunClaim::from(&first.lease))
             .await
             .unwrap(),
         "X1 unchanged original authority"
@@ -1007,7 +1023,7 @@ async fn exact_claim_mints_lease_after_waiting_for_thread_lock() {
             async move {
                 if terminal {
                     store
-                        .claim_for_terminal_recovery(&RunId(name.into()), "after-lock", 60_000, 0)
+                        .claim_for_terminal_recovery(&RunId(name.into()), "after-lock", 60_000)
                         .await
                 } else {
                     store
@@ -1015,7 +1031,6 @@ async fn exact_claim_mints_lease_after_waiting_for_thread_lock() {
                             &RunId(name.into()),
                             "after-lock",
                             60_000,
-                            0,
                             &Default::default(),
                         )
                         .await
@@ -1057,7 +1072,8 @@ async fn list_dispatches_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_list_dispatches(&store).await;
+    harness::assert_list_dispatches(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 /// Postgres parity for recovery after a process-bound non-recoverable tool has
@@ -1121,7 +1137,7 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     // exact lease lets the fixture observe the production return/renewal scope
     // without pretending a task abort is physical quiescence.
     let claimed_a = store
-        .claim("owner-a", A_EXPIRY_LEASE, 0, &Default::default())
+        .claim("owner-a", A_EXPIRY_LEASE, &Default::default())
         .await
         .expect("A claim query")
         .expect("A claims");

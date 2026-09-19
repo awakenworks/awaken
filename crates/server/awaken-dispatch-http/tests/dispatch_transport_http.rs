@@ -350,7 +350,8 @@ async fn claimed_terminal_dispatch(
     } else {
         thread_id.clone()
     };
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let mut request = RunDispatch::new(activation(&run_id.0, &thread_id.0))
         .for_session(session_thread_id.clone())
         .with_traceparent(Some(TERMINAL_TRACEPARENT.to_string()));
@@ -361,7 +362,7 @@ async fn claimed_terminal_dispatch(
     }
     store.enqueue(request).await.unwrap();
     let claimed = store
-        .claim("terminal-worker", 30_000, 0, &Default::default())
+        .claim("terminal-worker", 30_000, &Default::default())
         .await
         .unwrap()
         .expect("terminal fixture claim");
@@ -724,7 +725,7 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
     // must not unlock parent activity before the physical execution quiesces.
     for child in [false, true] {
         let (store, claim, session, thread) = claimed_terminal_dispatch("occupied", child).await;
-        store.begin_attempt(&claim, 0, None).await.unwrap();
+        store.begin_attempt(&claim, None).await.unwrap();
         let observer = Arc::new(FailFirstTerminalSettlement::default());
         let work = Arc::new(RecordingSessionWork::default());
         let recovery = terminal_recovery(
@@ -1275,7 +1276,8 @@ async fn work_release_response_loss_retries_done_from_the_same_committed_run() {
 /// | R6 | T | T | T | T | absent | E1+E4 |
 #[tokio::test(flavor = "multi_thread")]
 async fn worker_stream_transport_forwards_only_live_events_from_the_current_claim() {
-    let mem = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let mem = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let stream = Arc::new(MemoryStreamSink::new());
     let router = dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::new(
@@ -1290,7 +1292,7 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
         .await
         .unwrap();
     let claimed = mem
-        .claim("worker-live", 30_000, 0, &Default::default())
+        .claim("worker-live", 30_000, &Default::default())
         .await
         .unwrap()
         .expect("claim");

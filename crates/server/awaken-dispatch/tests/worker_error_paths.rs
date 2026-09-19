@@ -85,33 +85,33 @@ async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
     // completes once. Constraint/Invariant: failed terminal commit cannot consume
     // or quarantine the claim. Decision rule: execute T1, T2, then T3 in order.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let inner = Arc::new(MemoryCommitCoordinator::new());
     let commit = Arc::new(FailingCommit::new(inner.clone(), true));
     store
         .enqueue(RunDispatch::new(activation("exhausted")))
         .await
         .unwrap();
+    clock.set(0);
     store
-        .claim("crashed", 100, 0, &Default::default())
+        .claim("crashed", 100, &Default::default())
         .await
         .unwrap()
         .unwrap();
+    clock.set(200);
     store
-        .claim("crashed", 100, 200, &Default::default())
+        .claim("crashed", 100, &Default::default())
         .await
         .unwrap()
         .unwrap();
 
     let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "resolver")
         .with_lease_ms(LEASE);
-    assert!(
-        worker
-            .resolve_one_retry_exhausted(1, harness::clock(400))
-            .await
-            .is_err(),
-        "T1"
-    );
+    // The store's own clock decides retry-exhaustion claim liveness, so the
+    // decision table's time coordinates are set on that one clock.
+    clock.set(400);
+    assert!(worker.resolve_one_retry_exhausted(1).await.is_err(), "T1");
     assert!(inner.committed().latest_run.is_none(), "T1");
     assert!(store.dead_letters().await.unwrap().is_empty(), "T1");
     assert!(
@@ -124,20 +124,10 @@ async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
     );
 
     commit.set_failing(false);
-    assert!(
-        !worker
-            .resolve_one_retry_exhausted(1, harness::clock(1_400))
-            .await
-            .unwrap(),
-        "T2"
-    );
-    assert!(
-        worker
-            .resolve_one_retry_exhausted(1, harness::clock(1_401))
-            .await
-            .unwrap(),
-        "T3"
-    );
+    clock.set(1_400);
+    assert!(!worker.resolve_one_retry_exhausted(1).await.unwrap(), "T2");
+    clock.set(1_401);
+    assert!(worker.resolve_one_retry_exhausted(1).await.unwrap(), "T3");
     assert_eq!(
         inner.committed().latest_run.unwrap().state,
         RunState::Ended(EndCause::Indeterminate),
@@ -166,7 +156,8 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
     // re-raise the error — never mistake it for the benign lost-race "already done"
     // — and must NOT settle the dispatch, so a later claim re-runs it.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let inner = Arc::new(MemoryCommitCoordinator::new());
     let commit = Arc::new(FailingCommit::new(inner.clone(), true));
 
@@ -177,7 +168,7 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
 
     let err = worker
-        .tick(harness::clock(0))
+        .tick(harness::at(&clock, 0))
         .await
         .expect_err("a genuine commit fault must propagate, not settle as done");
     assert!(
@@ -201,9 +192,10 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
         1,
         "a failed drive does not settle the dispatch"
     );
+    clock.set(LEASE + 1);
     assert!(
         store
-            .claim("recovery", LEASE, LEASE + 1, &Default::default())
+            .claim("recovery", LEASE, &Default::default())
             .await
             .unwrap()
             .is_some(),

@@ -216,6 +216,54 @@ pub enum LeaseRenewalOutcome {
     Lost,
 }
 
+/// Decide whether a durable deadline has passed.
+///
+/// One rule with one name. Lease expiry and reservation expiry are the same
+/// question, and before this existed it was answered by four separate Rust
+/// spellings --- two of which normalized `now` and two of which did not --- plus
+/// one hand-written predicate per SQL query. A rule that must be re-derived
+/// correctly at every site is a rule that eventually is not, and only the Rust
+/// spellings were ever reachable by a proof.
+///
+/// The comparison is exclusive: a deadline equal to `now` has **not** passed, so
+/// a lease minted for a non-zero duration is never already expired at the
+/// instant it is written. An absent deadline never passes, because "this row
+/// holds no lease" and "this row's lease ran out" are different facts and only
+/// the second may be reclaimed by another owner.
+///
+/// Clamping a millisecond into the range a SQL backend can hold is a storage
+/// concern and stays with the stores; this function judges whatever values they
+/// hand it, so a caller that normalizes and a caller that does not both keep
+/// exactly the behaviour they had.
+#[must_use]
+pub const fn deadline_has_passed(deadline_ms: Option<u64>, now_ms: u64) -> bool {
+    match deadline_ms {
+        None => false,
+        Some(deadline_ms) => deadline_ms < now_ms,
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn a_deadline_passes_only_strictly_after_it_is_reached() {
+    // Cause/effect decision table: C1 the row carries a deadline or none;
+    // C2 the deadline is before / exactly at / after now.
+    // E1 absent never passes; E2 exactly at now has not passed; E3 strictly
+    // before now has passed; E4 strictly after now has not.
+    // R1 = !C1 -> E1. R2 = C1 + at -> E2. R3 = C1 + before -> E3.
+    // R4 = C1 + after -> E4. Arbitrary u64 inputs exhaust every partition,
+    // including both u64 boundaries.
+    let now_ms: u64 = kani::any();
+    let deadline_ms: u64 = kani::any();
+    assert!(!deadline_has_passed(None, now_ms), "R1/E1");
+    assert!(!deadline_has_passed(Some(now_ms), now_ms), "R2/E2");
+    assert_eq!(
+        deadline_has_passed(Some(deadline_ms), now_ms),
+        deadline_ms < now_ms,
+        "R3/E3 and R4/E4",
+    );
+}
+
 /// Apply the one backend-neutral renewal decision to facts read atomically from
 /// a Dispatch row. Backends own locking and lease writes; this function owns the
 /// meaning of those facts.
@@ -1805,7 +1853,6 @@ mod tests {
             _request: RunDispatch,
             _owner: &str,
             _lease_ms: u64,
-            _now_ms: u64,
             _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
@@ -1815,7 +1862,6 @@ mod tests {
             _input: PendingInput,
             _owner: &str,
             _lease_ms: u64,
-            _now_ms: u64,
             _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
@@ -1824,7 +1870,6 @@ mod tests {
             &self,
             _owner: &str,
             _lease_ms: u64,
-            _now_ms: u64,
             _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
@@ -1835,7 +1880,6 @@ mod tests {
             _run_id: &RunId,
             _owner: &str,
             _lease_ms: u64,
-            _now_ms: u64,
             _capabilities: &CredentialRealizationCapabilities,
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
@@ -1844,8 +1888,10 @@ mod tests {
             &self,
             _claim: &RunClaim,
             _lease_ms: u64,
-            _now_ms: u64,
         ) -> Result<LeaseRenewalOutcome, DispatchError> {
+            Self::unsupported()
+        }
+        async fn claim_is_current(&self, _claim: &RunClaim) -> Result<bool, DispatchError> {
             Self::unsupported()
         }
         async fn settle(

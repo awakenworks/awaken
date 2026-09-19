@@ -38,25 +38,25 @@ async fn settle_done(store: &dyn DispatchQueue, claim: &awaken_dispatch_contract
 /// | SW4 | Awaiting | fresh | compatible/exact-compatible | E1 then E3 |
 /// | SW5 | Awaiting | fresh | placed | E1 then E3 |
 /// | SW6 | two Awaiting | cancelled exact rows | broad local | E4 |
-async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) {
+async fn open_run_single_writer_is_uniform(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
     async fn checkpoint_awaiting(
         store: &dyn DispatchQueue,
         request: &RunDispatch,
         owner: &str,
         now_ms: u64,
+        clock: &dyn ConformanceClock,
     ) {
+        clock.set(now_ms);
         store
             .enqueue(request.clone())
             .await
             .expect("enqueue Run that will Await");
         let claim = store
-            .claim_run(
-                request.run_id(),
-                owner,
-                LEASE_MS,
-                now_ms,
-                &Default::default(),
-            )
+            .claim_run(request.run_id(), owner, LEASE_MS, &Default::default())
             .await
             .expect("claim Run that will Await")
             .expect("fresh Run is claimable");
@@ -89,15 +89,15 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
     // SW1/SW2: atomic fresh admission persists the peer but cannot claim it;
     // delivery names and wakes only the original Awaiting row.
     let exact_open = dispatch(ns, "single-writer-exact-open", "single-writer-exact-thread");
-    checkpoint_awaiting(store, &exact_open, "single-writer-exact-open", 1_000).await;
+    checkpoint_awaiting(store, &exact_open, "single-writer-exact-open", 1_000, clock).await;
     let exact_peer = dispatch(ns, "single-writer-exact-peer", "single-writer-exact-thread");
+    clock.set(1_001);
     assert!(
         store
             .claim_new_run(
                 exact_peer.clone(),
                 "single-writer-exact-peer",
                 LEASE_MS,
-                1_001,
                 &Default::default(),
             )
             .await
@@ -105,13 +105,13 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
             .is_none(),
         "SW1/E1 Awaiting keeps the fresh exact peer queued"
     );
+    clock.set(1_002);
     assert!(
         store
             .claim_run(
                 exact_peer.run_id(),
                 "single-writer-exact-peer-retry",
                 LEASE_MS,
-                1_002,
                 &Default::default(),
             )
             .await
@@ -119,19 +119,16 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
             .is_none(),
         "SW1/E1 exact selection uses the same open-Run fence"
     );
-    if let Some(depth) = store
-        .runnable_depth(1_002)
-        .await
-        .expect("SW1 runnable depth")
-    {
+    clock.set(1_002);
+    if let Some(depth) = store.runnable_depth().await.expect("SW1 runnable depth") {
         assert_eq!(depth, 0, "SW1/E1 blocked peers are not claimable depth");
     }
+    clock.set(1_003);
     let exact_wake = store
         .deliver_and_claim(
             reply(&exact_open, "exact"),
             "single-writer-exact-wake",
             LEASE_MS,
-            1_003,
             &Default::default(),
         )
         .await
@@ -139,19 +136,20 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         .expect("SW2 exact Awaiting row wakes");
     assert_eq!(exact_wake.request.run_id(), exact_open.run_id(), "SW2/E2");
     settle_done(store, &exact_wake).await;
+    clock.set(1_004);
     if let Some(depth) = store
-        .runnable_depth(1_004)
+        .runnable_depth()
         .await
         .expect("SW2 runnable depth after owner closes")
     {
         assert_eq!(depth, 1, "SW2/E3 the released peer is claimable depth");
     }
+    clock.set(1_004);
     let exact_peer_claim = store
         .claim_run(
             exact_peer.run_id(),
             "single-writer-exact-peer-after",
             LEASE_MS,
-            1_004,
             &Default::default(),
         )
         .await
@@ -162,44 +160,36 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
     // SW3: broad local selection must not skip the Awaiting owner and execute its
     // fresh peer. The same selector admits the peer after the owner closes.
     let broad_open = dispatch(ns, "single-writer-broad-open", "single-writer-broad-thread");
-    checkpoint_awaiting(store, &broad_open, "single-writer-broad-open", 2_000).await;
+    checkpoint_awaiting(store, &broad_open, "single-writer-broad-open", 2_000, clock).await;
     let broad_peer = dispatch(ns, "single-writer-broad-peer", "single-writer-broad-thread");
     store
         .enqueue(broad_peer.clone())
         .await
         .expect("SW3 enqueue peer");
+    clock.set(2_001);
     assert!(
         store
-            .claim(
-                "single-writer-broad-blocked",
-                LEASE_MS,
-                2_001,
-                &Default::default()
-            )
+            .claim("single-writer-broad-blocked", LEASE_MS, &Default::default())
             .await
             .expect("SW3 broad blocked claim")
             .is_none(),
         "SW3/E1 broad selection leaves the peer queued"
     );
+    clock.set(2_002);
     let broad_wake = store
         .deliver_and_claim(
             reply(&broad_open, "broad"),
             "single-writer-broad-wake",
             LEASE_MS,
-            2_002,
             &Default::default(),
         )
         .await
         .expect("SW3 wake owner")
         .expect("SW3 owner wakes");
     settle_done(store, &broad_wake).await;
+    clock.set(2_003);
     let broad_peer_claim = store
-        .claim(
-            "single-writer-broad-after",
-            LEASE_MS,
-            2_003,
-            &Default::default(),
-        )
+        .claim("single-writer-broad-after", LEASE_MS, &Default::default())
         .await
         .expect("SW3 broad peer claim")
         .expect("SW3 peer released after owner");
@@ -223,6 +213,7 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         &compatible_open,
         "single-writer-compatible-open",
         3_000,
+        clock,
     )
     .await;
     let compatible_peer = dispatch(
@@ -230,37 +221,36 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         "single-writer-compatible-peer",
         "single-writer-compatible-thread",
     );
+    clock.set(3_001);
     assert!(
         store
-            .claim_new_run_compatible(compatible_peer.clone(), &worker, LEASE_MS, 3_001)
+            .claim_new_run_compatible(compatible_peer.clone(), &worker, LEASE_MS)
             .await
             .expect("SW4 atomic compatible admission")
             .is_none(),
         "SW4/E1 compatible atomic claim leaves peer queued"
     );
+    clock.set(3_002);
     assert!(
         store
-            .claim_run_compatible(compatible_peer.run_id(), &worker, LEASE_MS, 3_002)
+            .claim_run_compatible(compatible_peer.run_id(), &worker, LEASE_MS)
             .await
             .expect("SW4 exact compatible peer claim")
             .is_none(),
         "SW4/E1 exact-compatible selection uses the same fence"
     );
+    clock.set(3_003);
     assert!(
         store
-            .claim_compatible(&worker, LEASE_MS, 3_003)
+            .claim_compatible(&worker, LEASE_MS)
             .await
             .expect("SW4 broad compatible peer claim")
             .is_none(),
         "SW4/E1 compatible selection uses the same fence"
     );
+    clock.set(3_004);
     let compatible_wake = store
-        .deliver_and_claim_compatible(
-            reply(&compatible_open, "compatible"),
-            &worker,
-            LEASE_MS,
-            3_004,
-        )
+        .deliver_and_claim_compatible(reply(&compatible_open, "compatible"), &worker, LEASE_MS)
         .await
         .expect("SW4 compatible exact delivery")
         .expect("SW4 exact Awaiting row wakes");
@@ -270,8 +260,9 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         "SW4/E2"
     );
     settle_done(store, &compatible_wake).await;
+    clock.set(3_005);
     let compatible_peer_claim = store
-        .claim_compatible(&worker, LEASE_MS, 3_005)
+        .claim_compatible(&worker, LEASE_MS)
         .await
         .expect("SW4 compatible peer claim after owner")
         .expect("SW4 compatible peer released");
@@ -288,7 +279,14 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         "single-writer-placed-open",
         "single-writer-placed-thread",
     );
-    checkpoint_awaiting(store, &placed_open, "single-writer-placed-open", 4_000).await;
+    checkpoint_awaiting(
+        store,
+        &placed_open,
+        "single-writer-placed-open",
+        4_000,
+        clock,
+    )
+    .await;
     let placed_peer = dispatch(
         ns,
         "single-writer-placed-peer",
@@ -298,6 +296,7 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         .enqueue(placed_peer.clone())
         .await
         .expect("SW5 enqueue peer");
+    clock.set(4_001);
     assert!(
         store
             .claim_placed(
@@ -305,26 +304,26 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
                 vec![worker.clone()],
                 std::sync::Arc::new(LeastLoadedPolicy),
                 LEASE_MS,
-                4_001,
             )
             .await
             .expect("SW5 placed blocked claim")
             .is_none(),
         "SW5/E1 placed selection leaves peer queued"
     );
+    clock.set(4_002);
     let placed_wake = store
-        .deliver_and_claim_compatible(reply(&placed_open, "placed"), &worker, LEASE_MS, 4_002)
+        .deliver_and_claim_compatible(reply(&placed_open, "placed"), &worker, LEASE_MS)
         .await
         .expect("SW5 wake owner")
         .expect("SW5 owner wakes");
     settle_done(store, &placed_wake).await;
+    clock.set(4_003);
     let placed_peer_claim = store
         .claim_placed(
             &worker,
             vec![worker.clone()],
             std::sync::Arc::new(LeastLoadedPolicy),
             LEASE_MS,
-            4_003,
         )
         .await
         .expect("SW5 placed peer claim")
@@ -345,7 +344,14 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         "single-writer-legacy-first",
         "single-writer-legacy-thread",
     );
-    checkpoint_awaiting(store, &legacy_first, "single-writer-legacy-first", 5_000).await;
+    checkpoint_awaiting(
+        store,
+        &legacy_first,
+        "single-writer-legacy-first",
+        5_000,
+        clock,
+    )
+    .await;
     let legacy_second = dispatch(
         ns,
         "single-writer-legacy-second",
@@ -360,12 +366,12 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         .await
         .expect("SW6 cancel historical peer")
         .expect("SW6 historical peer exists");
+    clock.set(5_001);
     let legacy_second_claim = store
         .claim_run(
             legacy_second.run_id(),
             "single-writer-legacy-shape",
             LEASE_MS,
-            5_001,
             &Default::default(),
         )
         .await
@@ -388,11 +394,11 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         .await
         .expect("SW6 cancel first Awaiting")
         .expect("SW6 first Awaiting exists");
+    clock.set(5_002);
     let first_cancel = store
         .claim(
             "single-writer-legacy-cancel-first",
             LEASE_MS,
-            5_002,
             &Default::default(),
         )
         .await
@@ -404,11 +410,11 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
         "SW6/E4"
     );
     settle_done(store, &first_cancel).await;
+    clock.set(5_003);
     let second_cancel = store
         .claim(
             "single-writer-legacy-cancel-second",
             LEASE_MS,
-            5_003,
             &Default::default(),
         )
         .await
@@ -451,7 +457,11 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
 /// | SC11 | - | - | completed | - | - | - | Y | N | E5 |
 /// | SC12 | - | - | completed | - | - | - | N | Y | E5 |
 /// | SC13 | Y | Y | exact/conflict after Done | - | N | N | N | N | E2/E3 |
-async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue, ns: &str) {
+async fn session_child_admission_is_atomic_and_bounded(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
     let parent = thread_id(ns, "managed-parent");
     let advisor_thread = thread_id(ns, "managed-advisor-thread");
     let admission = || {
@@ -500,12 +510,12 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
         SessionRunReservationActivation::Activated,
         "SC11 root is executable only after its activity receipt"
     );
+    clock.set(50_000);
     let root_claim = store
         .claim_run(
             session_root.run_id(),
             "managed-root-owner",
             LEASE_MS,
-            50_000,
             &Default::default(),
         )
         .await
@@ -531,12 +541,12 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
         .enqueue(advisor.clone())
         .await
         .expect("SC12 advisor uses ordinary durable child ingress");
+    clock.set(55_000);
     let advisor_claim = store
         .claim_run(
             advisor.run_id(),
             "managed-advisor-owner",
             LEASE_MS,
-            55_000,
             &Default::default(),
         )
         .await
@@ -652,12 +662,12 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
         "SC8"
     );
 
+    clock.set(89_000);
     let cancelled = store
         .claim_run(
             admitted[0].run_id(),
             "managed-cancel-owner",
             LEASE_MS,
-            89_000,
             &Default::default(),
         )
         .await
@@ -677,12 +687,12 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
         "SC8"
     );
 
+    clock.set(90_000);
     let completed = store
         .claim_run(
             admitted[1].run_id(),
             "managed-terminal-owner",
             LEASE_MS,
-            90_000,
             &Default::default(),
         )
         .await
@@ -711,13 +721,13 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
         .enqueue_session_child(admitted[1].clone(), admission())
         .await
         .expect("SC13 exact replay after Done is a no-op");
+    clock.set(91_000);
     assert!(
         store
             .claim_run(
                 admitted[1].run_id(),
                 "managed-completed-replay-owner",
                 LEASE_MS,
-                91_000,
                 &Default::default(),
             )
             .await

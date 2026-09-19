@@ -10,7 +10,6 @@ use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::clock::Clock;
 use crate::dispatch::{Dispatch, LeaseRenewalOutcome, RunClaim};
 
 /// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
@@ -80,7 +79,6 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
     store: Arc<S>,
     claim: &RunClaim,
     lease_ms: u64,
-    clock: Arc<dyn Clock>,
 ) -> ClaimLeaseRenewal {
     let claim = claim.clone();
     let timing = AuthorityLeaseTiming::from_ttl_ms(lease_ms);
@@ -124,7 +122,7 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                     }
                     let renewal = tokio::time::timeout(
                         attempt_timeout,
-                        store.renew_lease(&claim, lease_ms, clock.now_ms()),
+                        store.renew_lease(&claim, lease_ms),
                     )
                     .await;
                     match renewal {

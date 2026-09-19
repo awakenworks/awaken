@@ -21,6 +21,7 @@ use awaken_dispatch::{
     AnyDispatchStore, Dispatch, DispatchQueue, MemoryDispatchStore, RunDispatch, SubmitOptions,
 };
 use awaken_dispatch_http::durable_ops_router;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
@@ -110,7 +111,8 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // sequence also proves every Coordinator HTTP effect reaches the same queue.
     // Inject one in-memory dispatch store we also keep a handle to, so we can drive
     // the queue deterministically and then assert the host verbs route to it.
-    let mem = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let mem = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
@@ -125,8 +127,9 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     mem.enqueue(RunDispatch::new(activation("run-A", thread)))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
-        mem.claim("worker", 1, 0, &Default::default())
+        mem.claim("worker", 1, &Default::default())
             .await
             .unwrap()
             .is_some(),
@@ -183,8 +186,9 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v, json!({ "run_id": "run-A", "requeued": true }));
+    clock.set(1000);
     assert!(
-        mem.claim("worker", 1, 1000, &Default::default())
+        mem.claim("worker", 1, &Default::default())
             .await
             .unwrap()
             .is_some(),
@@ -257,7 +261,8 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
      * R1 C1+C2+C3+C4 => dispatches 200 with only requested rows; R2 same causes
      * => dead-letters 200 with only DeadLetter; R3 => superseded 200 with only
      * Superseded. The non-durable C1=false => 400 rule remains below. */
-    let mem = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let mem = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
@@ -266,8 +271,9 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
     mem.enqueue(RunDispatch::new(activation("run-dead", thread)))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
-        mem.claim("worker", 1, 0, &Default::default())
+        mem.claim("worker", 1, &Default::default())
             .await
             .unwrap()
             .is_some()

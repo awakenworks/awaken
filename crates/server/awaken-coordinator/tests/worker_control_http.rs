@@ -253,7 +253,10 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
     // sibling tests own alternate causes.
     let clock = Arc::new(ManualWorkerClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    // The dispatch port reads "now" from its store; the Worker registry keeps
+    // its own clock, so this test drives both authorities explicitly.
+    let dispatch_clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(100));
+    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
     dispatch
         .enqueue(dispatch_with_capability("gpu", "gpu"))
@@ -303,8 +306,9 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         format!("http://{address}"),
         registered.worker.snapshot.identity.clone(),
     );
+    dispatch_clock.set(99);
     let claimed = client
-        .claim("ignored-local-owner", 99, 99, &Default::default())
+        .claim("ignored-local-owner", 99, &Default::default())
         .await
         .unwrap()
         .expect("compatible work");
@@ -351,9 +355,10 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
             .unwrap(),
         RegistryMutation::Applied
     );
+    dispatch_clock.set(99);
     assert!(
         client
-            .claim("ignored", 99, 99, &Default::default())
+            .claim("ignored", 99, &Default::default())
             .await
             .is_err(),
         "a draining incarnation cannot receive new work"
@@ -375,7 +380,10 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     // R4 any/exact/expired=>reject; R5 stale sequence carrying N=>E3.
     let clock = Arc::new(ManualWorkerClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    // The dispatch port reads "now" from its store; the Worker registry keeps
+    // its own clock, so this test drives both authorities to the same reading.
+    let dispatch_clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(100));
+    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     let required = WorkerCredentialRevision {
         id: "credential-source-worker-private".to_string(),
         revision: 12,
@@ -452,9 +460,11 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     )
     .await;
     let wrong_queue = HttpDispatchQueue::new(format!("http://{address}"), wrong);
+    clock.set(100);
+    dispatch_clock.set(100);
     assert!(
         wrong_queue
-            .claim("ignored", 1_000, 100, &Default::default())
+            .claim("ignored", 1_000, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -464,9 +474,10 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     let exact = ready_worker(address, "worker-exact-revision", required.clone()).await;
     let exact_queue = HttpDispatchQueue::new(format!("http://{address}"), exact.clone());
     clock.set(130);
+    dispatch_clock.set(130);
     assert!(
         exact_queue
-            .claim("ignored", 1_000, 130, &Default::default())
+            .claim("ignored", 1_000, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -503,7 +514,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         RegistryMutation::Applied
     );
     let claimed = exact_queue
-        .claim("ignored", 1_000, 130, &Default::default())
+        .claim("ignored", 1_000, &Default::default())
         .await
         .unwrap()
         .expect("the worker reporting the exact revision can claim the run");
@@ -542,7 +553,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         .unwrap();
     assert!(
         exact_queue
-            .claim("ignored", 1_000, 130, &Default::default())
+            .claim("ignored", 1_000, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -550,6 +561,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     );
 
     clock.set(135);
+    dispatch_clock.set(135);
     assert_eq!(
         control
             .heartbeat(
@@ -603,7 +615,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     );
     assert_eq!(
         exact_queue
-            .claim("ignored", 1_000, 135, &Default::default())
+            .claim("ignored", 1_000, &Default::default())
             .await
             .unwrap()
             .expect("R3 rotated revision")

@@ -120,7 +120,7 @@ mod tests {
         AdoptionModel, eager_environment, install_complete_projection_for_snapshot,
         test_activation, with_empty_session_resources,
     };
-    use awaken_dispatch::{Clock as _, DispatchQueue as _, WorkerResolver as _};
+    use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
     use awaken_runtime_contract::resolved::ModelBinding;
 
     #[tokio::test]
@@ -174,12 +174,7 @@ mod tests {
         );
         store.enqueue(request).await.expect("enqueue S1");
         let claimed = store
-            .claim(
-                "worker-a",
-                30_000,
-                awaken_dispatch::SystemClock.now_ms(),
-                &Default::default(),
-            )
+            .claim("worker-a", 30_000, &Default::default())
             .await
             .expect("claim S1")
             .expect("S1 available");

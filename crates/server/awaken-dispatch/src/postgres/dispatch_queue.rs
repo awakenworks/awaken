@@ -4,7 +4,6 @@ impl PostgresDispatchStore {
     async fn admit_physical_attempt(
         &self,
         claim: &RunClaim,
-        _now_ms: u64,
         handoff: bool,
         binding: Option<&AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
@@ -235,8 +234,8 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         identity: &crate::WorkerIdentity,
         run_id: &RunId,
-        now_ms: u64,
     ) -> Result<Option<RunClaim>, DispatchError> {
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
         current_worker_claim(&self.pool, NS, identity, run_id, now_ms).await
     }
 
@@ -603,7 +602,6 @@ impl DispatchQueue for PostgresDispatchStore {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
@@ -611,16 +609,9 @@ impl DispatchQueue for PostgresDispatchStore {
         lock_run_identity(&mut tx, &request.run_id().0).await?;
         if exact_run_replay(&mut tx, p, &request).await? {
             let run_id = request.run_id().clone();
-            let claimed = claim_exact_transaction(
-                &mut tx,
-                &run_id,
-                owner,
-                lease_ms,
-                now_ms,
-                None,
-                capabilities,
-            )
-            .await?;
+            let claimed =
+                claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, None, capabilities)
+                    .await?;
             tx.commit().await.map_err(store_error)?;
             return Ok(claimed);
         }
@@ -631,16 +622,8 @@ impl DispatchQueue for PostgresDispatchStore {
         }
         insert_new_dispatch(&mut tx, p, &request, &SubmitOptions::default()).await?;
         let run_id = request.run_id().clone();
-        let claimed = claim_exact_transaction(
-            &mut tx,
-            &run_id,
-            owner,
-            lease_ms,
-            now_ms,
-            None,
-            capabilities,
-        )
-        .await?;
+        let claimed =
+            claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, None, capabilities).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
@@ -650,7 +633,6 @@ impl DispatchQueue for PostgresDispatchStore {
         request: RunDispatch,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let owner = worker.identity.lease_owner();
@@ -664,7 +646,6 @@ impl DispatchQueue for PostgresDispatchStore {
                 &run_id,
                 &owner,
                 lease_ms,
-                now_ms,
                 Some(worker),
                 &installed_worker_credential_capabilities(worker)?,
             )
@@ -684,7 +665,6 @@ impl DispatchQueue for PostgresDispatchStore {
             &run_id,
             &owner,
             lease_ms,
-            now_ms,
             Some(worker),
             &installed_worker_credential_capabilities(worker)?,
         )
@@ -698,23 +678,14 @@ impl DispatchQueue for PostgresDispatchStore {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         append_pending_transaction(&mut tx, NS, &input).await?;
-        let claimed = claim_exact_transaction(
-            &mut tx,
-            &run_id,
-            owner,
-            lease_ms,
-            now_ms,
-            None,
-            capabilities,
-        )
-        .await?;
+        let claimed =
+            claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, None, capabilities).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
@@ -724,7 +695,6 @@ impl DispatchQueue for PostgresDispatchStore {
         input: PendingInput,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
@@ -735,7 +705,6 @@ impl DispatchQueue for PostgresDispatchStore {
             &run_id,
             &worker.identity.lease_owner(),
             lease_ms,
-            now_ms,
             Some(worker),
             &installed_worker_credential_capabilities(worker)?,
         )
@@ -751,11 +720,7 @@ impl DispatchQueue for PostgresDispatchStore {
         self.lock_claim_epoch_in_status(claim, "running").await
     }
 
-    async fn claim_is_current(
-        &self,
-        claim: &RunClaim,
-        _now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         sqlx::query_scalar(&format!(
             "SELECT EXISTS(SELECT 1 FROM {NS}_dispatch WHERE run_id = $1 \
@@ -783,7 +748,6 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        _now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
@@ -849,7 +813,6 @@ impl DispatchQueue for PostgresDispatchStore {
                 &RunId(run_id),
                 owner,
                 lease_ms,
-                now_ms,
                 None,
                 capabilities,
             )
@@ -866,7 +829,6 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
@@ -931,7 +893,6 @@ impl DispatchQueue for PostgresDispatchStore {
                 &run_id,
                 &worker.identity.lease_owner(),
                 lease_ms,
-                now_ms,
                 Some(worker),
                 &capabilities,
             )
@@ -950,7 +911,6 @@ impl DispatchQueue for PostgresDispatchStore {
         workers: Vec<WorkerSnapshot>,
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
@@ -1018,7 +978,6 @@ impl DispatchQueue for PostgresDispatchStore {
                 &run_id,
                 &requester.identity.lease_owner(),
                 lease_ms,
-                now_ms,
                 Some(requester),
                 &capabilities,
             )
@@ -1036,20 +995,12 @@ impl DispatchQueue for PostgresDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let claimed = claim_exact_transaction(
-            &mut tx,
-            requested_run,
-            owner,
-            lease_ms,
-            now_ms,
-            None,
-            capabilities,
-        )
-        .await?;
+        let claimed =
+            claim_exact_transaction(&mut tx, requested_run, owner, lease_ms, None, capabilities)
+                .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
@@ -1059,7 +1010,6 @@ impl DispatchQueue for PostgresDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction_with_mode(
@@ -1080,7 +1030,6 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        _now_ms: u64,
         max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
@@ -1118,7 +1067,6 @@ impl DispatchQueue for PostgresDispatchStore {
         requested_run: &RunId,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction(
@@ -1126,7 +1074,6 @@ impl DispatchQueue for PostgresDispatchStore {
             requested_run,
             &worker.identity.lease_owner(),
             lease_ms,
-            now_ms,
             Some(worker),
             &installed_worker_credential_capabilities(worker)?,
         )
@@ -1139,7 +1086,6 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         claim: &RunClaim,
         lease_ms: u64,
-        _now_ms: u64,
     ) -> Result<LeaseRenewalOutcome, DispatchError> {
         let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let p = NS;
@@ -1292,7 +1238,8 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(SettleOutcome::Applied)
     }
 
-    async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
         let p = NS;
         let thread_available = thread_available_for_claim(p);
         let depth: i64 = sqlx::query_scalar(&format!(
@@ -1319,21 +1266,17 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        self.admit_physical_attempt(claim, now_ms, false, _binding)
-            .await
+        self.admit_physical_attempt(claim, false, _binding).await
     }
 
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        self.admit_physical_attempt(claim, now_ms, true, _binding)
-            .await
+        self.admit_physical_attempt(claim, true, _binding).await
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1588,7 +1531,7 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
-        now_ms: u64,
+        expired_before_ms: u64,
     ) -> Result<usize, DispatchError> {
         let p = NS;
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
@@ -1600,7 +1543,7 @@ impl DispatchQueue for PostgresDispatchStore {
              AND attempt_count >= $2 \
              AND active_attempt_epoch IS NULL FOR UPDATE"
         ))
-        .bind(crate::clock::db_millis(now_ms))
+        .bind(crate::clock::db_millis(expired_before_ms))
         .bind(max_attempts_i64)
         .fetch_all(&mut *tx)
         .await
@@ -1638,7 +1581,7 @@ impl DispatchQueue for PostgresDispatchStore {
                  lease_until = NULL, dead_lettered_at = $1 WHERE run_id = $2 \
                  AND status = 'running' AND lease_epoch = $3"
             ))
-            .bind(crate::clock::db_millis(now_ms))
+            .bind(crate::clock::db_millis(expired_before_ms))
             .bind(&run_id)
             .bind(epoch)
             .bind(crate::dispatch_state_db(next.state))

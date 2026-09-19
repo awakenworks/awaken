@@ -9,6 +9,7 @@ use awaken_dispatch::{
 };
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 
+use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::activation;
 
 /// The partial an observation found. An `Unknown` fails the assertion instead
@@ -39,13 +40,15 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
     // -> stale put/delete ignored; R3 new C1+C2+C3 -> replacement applies/deletes.
     // The remote `inner=None` row is covered through the transport E2E, where an
     // unverifiable local epoch delegates to the claim-bound upstream operations.
-    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let dispatch = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     dispatch
         .enqueue(RunDispatch::new(activation("run-fenced-checkpoint")))
         .await
         .unwrap();
+    clock.set(0);
     let first = dispatch
-        .claim("worker-a", 10, 0, &Default::default())
+        .claim("worker-a", 10, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -61,8 +64,9 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
         "first"
     );
 
+    clock.set(11);
     let second = dispatch
-        .claim("worker-b", 10, 11, &Default::default())
+        .claim("worker-b", 10, &Default::default())
         .await
         .unwrap()
         .unwrap();

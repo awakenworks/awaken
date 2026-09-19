@@ -135,7 +135,9 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     // lease expired -> one ordinary Claimed epoch; R4 caller-supplied max/clock
     // disagree with Control policy -> Control clock/max still decide; R5 a
     // concurrent second special claim -> None because the first lease is live.
-    let mem = Arc::new(MemoryDispatchStore::new());
+    // The dispatch port reads "now" from its store; mirror the service clock.
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let mem = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let service = Arc::new(
         WorkerDispatchService::new(
@@ -164,7 +166,7 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
 
     assert!(
         queue
-            .claim_retry_exhausted("ignored", 1, u64::MAX, 0)
+            .claim_retry_exhausted("ignored", 1, 0)
             .await
             .unwrap()
             .is_none(),
@@ -172,49 +174,53 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     );
     assert!(
         queue
-            .claim("ignored", 1, u64::MAX, &Default::default())
+            .claim("ignored", 1, &Default::default())
             .await
             .unwrap()
             .is_some(),
         "R1/R4"
     );
     clock.set(1_001);
+    dispatch_clock.set(1_001);
     assert!(
         queue
-            .claim("ignored", 1, u64::MAX, &Default::default())
+            .claim("ignored", 1, &Default::default())
             .await
             .unwrap()
             .is_some(),
         "one crash recovery is admitted"
     );
     clock.set(2_002);
+    dispatch_clock.set(2_002);
     assert!(
         queue
-            .claim("ignored", 1, u64::MAX, &Default::default())
+            .claim("ignored", 1, &Default::default())
             .await
             .unwrap()
             .is_some(),
         "the configured second crash recovery is admitted"
     );
     clock.set(3_002);
+    dispatch_clock.set(3_002);
     assert!(
         queue
-            .claim_retry_exhausted("ignored", 1, u64::MAX, 99)
+            .claim_retry_exhausted("ignored", 1, 99)
             .await
             .unwrap()
             .is_none(),
         "R2: exact lease expiry is not expired"
     );
     clock.set(3_003);
+    dispatch_clock.set(3_003);
     let terminal_claim = queue
-        .claim_retry_exhausted("ignored", 1, 0, 99)
+        .claim_retry_exhausted("ignored", 1, 99)
         .await
         .unwrap()
         .expect("R3/R4: server policy claims exhausted run");
     assert!(terminal_claim.credential_bindings.is_empty());
     assert!(
         queue
-            .claim_retry_exhausted("ignored", 1, u64::MAX, 0)
+            .claim_retry_exhausted("ignored", 1, 0)
             .await
             .unwrap()
             .is_none(),
@@ -251,7 +257,9 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // Constraint/Invariant: the Dispatch claim and committed Run remain the only
     // authorities when Session Work is absent. Decision rule: exercise the
     // C1+C2+C3 branch over real HTTP and require one successful settlement.
-    let mem = Arc::new(MemoryDispatchStore::new());
+    // The dispatch port reads "now" from its store; mirror the service clock.
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let mem = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     let recovery = Arc::new(MemoryCommitCoordinator::new());
     recovery
         .commit(ThreadCommit {
@@ -302,8 +310,9 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .expect("enqueue over http");
 
     clock.set(0);
+    dispatch_clock.set(0);
     let claimed = queue
-        .claim("worker-1", 30_000, 0, &Default::default())
+        .claim("worker-1", 30_000, &Default::default())
         .await
         .expect("claim over http")
         .expect("a run is claimable");
@@ -366,13 +375,14 @@ async fn db_less_worker_drives_runs_over_real_http() {
     );
 
     clock.set(1_000);
+    dispatch_clock.set(1_000);
     let wrong_epoch = RunClaim {
         epoch: original_claim.epoch.saturating_add(1),
         ..original_claim.clone()
     };
     assert_eq!(
         queue
-            .renew_lease(&wrong_epoch, 30_000, 1_000)
+            .renew_lease(&wrong_epoch, 30_000)
             .await
             .expect("wrong epoch is a normal fenced renewal outcome"),
         awaken_dispatch::LeaseRenewalOutcome::Lost,
@@ -380,7 +390,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     );
     assert_eq!(
         queue
-            .renew_lease(&original_claim, 30_000, 1_000)
+            .renew_lease(&original_claim, 30_000)
             .await
             .expect("renew over http"),
         awaken_dispatch::LeaseRenewalOutcome::Current,
@@ -391,8 +401,9 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // worker bumps the epoch, so the original owner's settle carrying its now-stale
     // epoch is fenced server-side and changes nothing.
     clock.set(40_000);
+    dispatch_clock.set(40_000);
     let reclaimed = recovery_queue
-        .claim("worker-2", 30_000, 40_000, &Default::default())
+        .claim("worker-2", 30_000, &Default::default())
         .await
         .expect("reclaim over http")
         .expect("the lapsed lease is reclaimable");
@@ -501,7 +512,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
 
     assert!(
         queue
-            .claim("worker-1", 30_000, 60_000, &Default::default())
+            .claim("worker-1", 30_000, &Default::default())
             .await
             .expect("claim over http")
             .is_none(),
@@ -512,12 +523,12 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // HTTP as one server-side transaction, so the co-located pool never observes
     // the row between enqueue/input delivery and the exact claim.
     clock.set(70_000);
+    dispatch_clock.set(70_000);
     let child = queue
         .claim_new_run(
             RunDispatch::new(activation("run-B", "child-thread")),
             "worker-1",
             30_000,
-            70_000,
             &Default::default(),
         )
         .await
@@ -534,6 +545,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .await
         .expect("child awaits over http");
     clock.set(70_001);
+    dispatch_clock.set(70_001);
     let resumed = queue
         .deliver_and_claim(
             PendingInput {
@@ -547,7 +559,6 @@ async fn db_less_worker_drives_runs_over_real_http() {
             },
             "worker-1",
             30_000,
-            70_001,
             &Default::default(),
         )
         .await
@@ -585,7 +596,9 @@ async fn db_less_worker_drives_runs_over_real_http() {
 /// | R3 | old owner | stale | exact | fenced |
 #[tokio::test(flavor = "multi_thread")]
 async fn credential_receipt_is_verified_and_fenced_over_real_http() {
-    let mem = Arc::new(MemoryDispatchStore::new());
+    // The dispatch port reads "now" from its store; mirror the service clock.
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let mem = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let (dispatch, capabilities) = credential_dispatch("credential-run", "credential-thread");
     let service = Arc::new(
@@ -614,7 +627,7 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
     );
     first_worker.enqueue(dispatch).await.unwrap();
     let first = first_worker
-        .claim("ignored", 30_000, 0, &Default::default())
+        .claim("ignored", 30_000, &Default::default())
         .await
         .unwrap()
         .expect("credential run claims");
@@ -653,13 +666,9 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
     );
 
     clock.set(first.lease.expires_ms + 1);
+    dispatch_clock.set(first.lease.expires_ms + 1);
     let recovered = recovery_worker
-        .claim(
-            "ignored",
-            30_000,
-            first.lease.expires_ms + 1,
-            &Default::default(),
-        )
+        .claim("ignored", 30_000, &Default::default())
         .await
         .unwrap()
         .expect("recovery advances the fence");

@@ -18,16 +18,18 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
         .enqueue(request)
         .await
         .expect("enqueue retry-exhaustion row");
+    clock.set(0);
     assert!(
         store
-            .claim_retry_exhausted("terminal", LEASE_MS, 0, 1)
+            .claim_retry_exhausted("terminal", LEASE_MS, 1)
             .await
             .expect("R1 query")
             .is_none(),
         "R1"
     );
+    clock.set(10_000);
     let fresh = store
-        .claim_run(&run_id, "crashed-a", LEASE_MS, 10_000, &Default::default())
+        .claim_run(&run_id, "crashed-a", LEASE_MS, &Default::default())
         .await
         .expect("fresh claim")
         .expect("fresh row claimable");
@@ -35,7 +37,7 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
         clock.set(fresh.lease.expires_ms);
         assert!(
             store
-                .claim_retry_exhausted("terminal", LEASE_MS, fresh.lease.expires_ms, 0)
+                .claim_retry_exhausted("terminal", LEASE_MS, 0)
                 .await
                 .expect("R2 query")
                 .is_none(),
@@ -43,35 +45,27 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
         );
     }
     clock.advance_past(fresh.lease.expires_ms).await;
+    clock.set(fresh.lease.expires_ms.saturating_add(1));
     assert!(
         store
-            .claim_retry_exhausted(
-                "terminal",
-                LEASE_MS,
-                fresh.lease.expires_ms.saturating_add(1),
-                1,
-            )
+            .claim_retry_exhausted("terminal", LEASE_MS, 1,)
             .await
             .expect("R3 query")
             .is_none(),
         "R3"
     );
+    clock.set(fresh.lease.expires_ms.saturating_add(1));
     let recovered = store
-        .claim_run(
-            &run_id,
-            "crashed-b",
-            LEASE_MS,
-            fresh.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim_run(&run_id, "crashed-b", LEASE_MS, &Default::default())
         .await
         .expect("ordinary recovery")
         .expect("ordinary recovery is claimable");
     clock.advance_past(recovered.lease.expires_ms).await;
     let terminal_now = recovered.lease.expires_ms.saturating_add(1);
+    clock.set(terminal_now);
     let (left, right) = tokio::join!(
-        store.claim_retry_exhausted("terminal", LEASE_MS, terminal_now, 1),
-        store.claim_retry_exhausted("terminal-racer", LEASE_MS, terminal_now, 1),
+        store.claim_retry_exhausted("terminal", LEASE_MS, 1),
+        store.claim_retry_exhausted("terminal-racer", LEASE_MS, 1),
     );
     let left = left.expect("R5 left query");
     let right = right.expect("R5 right query");
@@ -85,9 +79,10 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
         recovered.lease.epoch + 1,
         "R5 unique newer epoch"
     );
+    clock.set(terminal_now);
     assert!(
         store
-            .claim_retry_exhausted("terminal-third", LEASE_MS, terminal_now, 1)
+            .claim_retry_exhausted("terminal-third", LEASE_MS, 1)
             .await
             .expect("R5 barrier query")
             .is_none(),
@@ -126,7 +121,11 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
 /// I3=I1+C4(diff)=>E1+E3; I4=I2+C5=>E2 (identity precedes eligibility);
 /// I5=C1+C3(diff)+C6=>exactly one admission and one rejection.
 /// Both live and tombstone phases exercise every backend.
-async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str) {
+async fn caller_owned_run_identity_is_exact(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
     let request = dispatch(ns, "caller-owned", "caller-owned-thread");
     let run_id = request.run_id().clone();
     store
@@ -136,12 +135,12 @@ async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str)
 
     let mut retraced = request.clone();
     retraced.traceparent = Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
+    clock.set(90_000);
     let claim = store
         .claim_new_run(
             retraced.clone(),
             "caller-owned-worker",
             LEASE_MS,
-            90_000,
             &Default::default(),
         )
         .await
@@ -152,13 +151,13 @@ async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str)
     collision.activation.thread_id = ThreadId(format!("{ns}-collision-thread"));
     collision.placement = PlacementRequirements::remote_required();
     assert!(store.enqueue(collision.clone()).await.is_err(), "I2 live");
+    clock.set(89_999);
     assert!(
         store
             .claim_new_run(
                 collision.clone(),
                 "ineligible-local",
                 LEASE_MS,
-                89_999,
                 &Default::default(),
             )
             .await
@@ -177,9 +176,10 @@ async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str)
         acp_capability_observations: Default::default(),
         expires_at_ms: 100_000,
     };
+    clock.set(89_999);
     assert!(
         store
-            .claim_new_run_compatible(collision.clone(), &ineligible_worker, LEASE_MS, 89_999)
+            .claim_new_run_compatible(collision.clone(), &ineligible_worker, LEASE_MS)
             .await
             .is_err(),
         "I4 Worker eligibility cannot mask collision"
@@ -203,14 +203,9 @@ async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str)
     assert_ne!(left_result.is_ok(), right_result.is_ok(), "I5");
     let winner = if left_result.is_ok() { left } else { right };
     let winner_id = winner.run_id().clone();
+    clock.set(91_000);
     let winner_claim = store
-        .claim_new_run(
-            winner,
-            "caller-race-worker",
-            LEASE_MS,
-            91_000,
-            &Default::default(),
-        )
+        .claim_new_run(winner, "caller-race-worker", LEASE_MS, &Default::default())
         .await
         .expect("I5 winner replay")
         .expect("I5 winner remains claimable");
@@ -260,12 +255,12 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         .enqueue(awaiting)
         .await
         .expect("enqueue awaiting repair row");
+    clock.set(60_000);
     let initial = store
         .claim_run(
             &awaiting_id,
             "terminal-initial",
             LEASE_MS,
-            60_000,
             &Default::default(),
         )
         .await
@@ -280,15 +275,10 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         )
         .await
         .expect("settle awaiting checkpoint");
+    clock.set(60_001);
     assert!(
         store
-            .claim_run(
-                &awaiting_id,
-                "ordinary",
-                LEASE_MS,
-                60_001,
-                &Default::default()
-            )
+            .claim_run(&awaiting_id, "ordinary", LEASE_MS, &Default::default())
             .await
             .expect("ordinary exact claim")
             .is_none(),
@@ -301,15 +291,10 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         .enqueue(control)
         .await
         .expect("enqueue same-thread control");
+    clock.set(60_002);
     assert!(
         store
-            .claim_run(
-                &control_id,
-                "ordinary-peer",
-                LEASE_MS,
-                60_002,
-                &Default::default(),
-            )
+            .claim_run(&control_id, "ordinary-peer", LEASE_MS, &Default::default(),)
             .await
             .expect("ordinary peer claim")
             .is_none(),
@@ -320,20 +305,21 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         .await
         .expect("cancel control peer")
         .expect("control peer exists");
+    clock.set(60_003);
     let control_claim = store
         .claim_run(
             &control_id,
             "terminal-control",
             LEASE_MS,
-            60_003,
             &Default::default(),
         )
         .await
         .expect("claim cancelled control peer")
         .expect("cancellation may pass an Awaiting peer");
+    clock.set(60_004);
     assert!(
         store
-            .claim_for_terminal_recovery(&awaiting_id, "repair", LEASE_MS, 60_004)
+            .claim_for_terminal_recovery(&awaiting_id, "repair", LEASE_MS)
             .await
             .expect("repair blocked by Running control")
             .is_none(),
@@ -355,9 +341,10 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
     let peer = dispatch(ns, "terminal-peer", "terminal-thread");
     let peer_id = peer.run_id().clone();
     store.enqueue(peer).await.expect("enqueue same-thread peer");
+    clock.set(60_005);
     assert!(
         store
-            .claim_run(&peer_id, "peer", LEASE_MS, 60_005, &Default::default())
+            .claim_run(&peer_id, "peer", LEASE_MS, &Default::default())
             .await
             .expect("claim fresh peer")
             .is_none(),
@@ -370,8 +357,9 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         .enqueue(pending)
         .await
         .expect("enqueue pending control");
+    clock.set(60_003);
     let pending_repair = store
-        .claim_for_terminal_recovery(&pending_id, "pending-repair", LEASE_MS, 60_003)
+        .claim_for_terminal_recovery(&pending_id, "pending-repair", LEASE_MS)
         .await
         .expect("pending recovery query")
         .expect("T3: quiescent Pending is terminal-recovery claimable");
@@ -393,21 +381,22 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
     let occupied = dispatch(ns, "terminal-occupied", "terminal-occupied-thread");
     let occupied_id = occupied.run_id().clone();
     store.enqueue(occupied).await.expect("enqueue occupied row");
+    clock.set(60_004);
     let occupied_claim = store
         .claim_run(
             &occupied_id,
             "occupied-owner",
             LEASE_MS,
-            60_004,
             &Default::default(),
         )
         .await
         .expect("claim occupied row")
         .expect("occupied row is initially runnable");
     let occupied_claim = RunClaim::from(&occupied_claim.lease);
+    clock.set(60_004);
     assert_eq!(
         store
-            .begin_attempt(&occupied_claim, 60_004, None)
+            .begin_attempt(&occupied_claim, None)
             .await
             .expect("begin occupied attempt"),
         AttemptAdmission::Applied,
@@ -418,9 +407,10 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         .await
         .expect("cancel occupied row")
         .expect("occupied row remains present");
+    clock.set(60_005);
     assert!(
         store
-            .claim_for_terminal_recovery(&occupied_id, "occupied-repair", LEASE_MS, 60_005)
+            .claim_for_terminal_recovery(&occupied_id, "occupied-repair", LEASE_MS)
             .await
             .expect("occupied recovery query")
             .is_none(),
@@ -434,8 +424,9 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         SettleOutcome::Applied,
         "T4"
     );
+    clock.set(60_005);
     let after_ack = store
-        .claim_for_terminal_recovery(&occupied_id, "occupied-repair", LEASE_MS, 60_005)
+        .claim_for_terminal_recovery(&occupied_id, "occupied-repair", LEASE_MS)
         .await
         .expect("post-ACK recovery query")
         .expect("T4: exact physical ACK makes the Pending row claimable");
@@ -453,18 +444,19 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         "T4"
     );
 
+    clock.set(60_006);
     let repair = store
-        .claim_for_terminal_recovery(&awaiting_id, "repair", LEASE_MS, 60_006)
+        .claim_for_terminal_recovery(&awaiting_id, "repair", LEASE_MS)
         .await
         .expect("claim terminal repair")
         .expect("the exact Awaiting target ignores its Pending peer");
+    clock.set(60_007);
     assert!(
         store
             .claim_run(
                 &peer_id,
                 "peer-during-repair",
                 LEASE_MS,
-                60_007,
                 &Default::default(),
             )
             .await
@@ -472,9 +464,10 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
             .is_none(),
         "T5/T6: the repair claim remains the sole Running writer"
     );
+    clock.set(60_007);
     assert!(
         store
-            .claim_for_terminal_recovery(&awaiting_id, "other", LEASE_MS, 60_007)
+            .claim_for_terminal_recovery(&awaiting_id, "other", LEASE_MS)
             .await
             .expect("running repair claim query")
             .is_none(),
@@ -484,12 +477,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         clock.set(repair.lease.expires_ms);
         assert!(
             store
-                .claim_for_terminal_recovery(
-                    &awaiting_id,
-                    "boundary",
-                    LEASE_MS,
-                    repair.lease.expires_ms,
-                )
+                .claim_for_terminal_recovery(&awaiting_id, "boundary", LEASE_MS,)
                 .await
                 .expect("repair claim at lease boundary")
                 .is_none(),
@@ -497,13 +485,9 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         );
     }
     clock.advance_past(repair.lease.expires_ms).await;
+    clock.set(repair.lease.expires_ms.saturating_add(1));
     let repair_after_crash = store
-        .claim_for_terminal_recovery(
-            &awaiting_id,
-            "repair-after-crash",
-            LEASE_MS,
-            repair.lease.expires_ms.saturating_add(1),
-        )
+        .claim_for_terminal_recovery(&awaiting_id, "repair-after-crash", LEASE_MS)
         .await
         .expect("reclaim expired terminal repair")
         .expect("expired repair lease is recovery claimable");
@@ -541,14 +525,9 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
     assert_eq!(completion.len(), 1, "T8");
     assert_eq!(completion[0].run_id, awaiting_id, "T8");
 
+    clock.set(60_006 + LEASE_MS + 2);
     let peer_claim = store
-        .claim_run(
-            &peer_id,
-            "peer-after-repair",
-            LEASE_MS,
-            60_006 + LEASE_MS + 2,
-            &Default::default(),
-        )
+        .claim_run(&peer_id, "peer-after-repair", LEASE_MS, &Default::default())
         .await
         .expect("claim peer after repair")
         .expect("terminal settlement releases the fresh peer");
@@ -580,7 +559,11 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
 /// | Q7 | broad | malformed Session projection | - | valid row | skip malformed, claim valid |
 /// | Q8 | exact | malformed Session projection | - | - | typed admission error, no mutation |
 /// | Q9 | exact cancel | malformed Session projection | not used by cancel | - | claim without execution credentials |
-async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn DispatchQueue, ns: &str) {
+async fn incompatible_credentials_do_not_poison_broad_claims(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Worker,
         awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
@@ -606,8 +589,9 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         .await
         .expect("Q1 enqueue valid row");
     let worker = credential_worker(ns, &holder, true);
+    clock.set(50_000);
     let claimed = store
-        .claim_compatible(&worker, LEASE_MS, 50_000)
+        .claim_compatible(&worker, LEASE_MS)
         .await
         .expect("Q1 broad claim")
         .expect("Q1 later valid row is claimable");
@@ -621,9 +605,10 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         )
         .await
         .expect("Q1 settle valid row");
+    clock.set(50_002);
     assert!(
         store
-            .claim_run_compatible(invalid.run_id(), &worker, LEASE_MS, 50_002)
+            .claim_run_compatible(invalid.run_id(), &worker, LEASE_MS)
             .await
             .is_err(),
         "Q2 exact claim preserves the admission failure"
@@ -634,13 +619,13 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         .enqueue(placed.clone())
         .await
         .expect("Q3 enqueue valid row");
+    clock.set(50_003);
     let claimed = store
         .claim_placed(
             &worker,
             vec![worker.clone()],
             std::sync::Arc::new(LeastLoadedPolicy),
             LEASE_MS,
-            50_003,
         )
         .await
         .expect("Q3 policy broad claim")
@@ -685,8 +670,9 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         .cancel(nonremote_cancel.run_id())
         .await
         .expect("Q4 persist credential-free cancellation");
+    clock.set(50_004);
     let claimed = store
-        .claim_compatible(&worker, LEASE_MS, 50_004)
+        .claim_compatible(&worker, LEASE_MS)
         .await
         .expect("Q4 broad cancellation claim")
         .expect("Q4 later credential-free cancellation is claimable");
@@ -739,13 +725,13 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         .cancel(nonremote_placed_cancel.run_id())
         .await
         .expect("Q5 persist credential-free cancellation");
+    clock.set(50_005);
     let claimed = store
         .claim_placed(
             &worker,
             vec![worker.clone()],
             std::sync::Arc::new(LeastLoadedPolicy),
             LEASE_MS,
-            50_005,
         )
         .await
         .expect("Q5 policy cancellation claim")
@@ -807,11 +793,11 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         &worker.manifest.capabilities,
     )
     .expect("Q6 Worker capabilities decode");
+    clock.set(50_006);
     let claimed = store
         .claim(
             "credential-local-broad-worker",
             LEASE_MS,
-            50_006,
             &local_capabilities,
         )
         .await
@@ -854,11 +840,11 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         .enqueue(valid_runtime.clone())
         .await
         .expect("Q7 enqueue later valid row");
+    clock.set(50_007);
     let claimed = store
         .claim(
             "runtime-projection-broad-worker",
             LEASE_MS,
-            50_007,
             &Default::default(),
         )
         .await
@@ -874,12 +860,12 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         )
         .await
         .expect("Q7 settle valid row");
+    clock.set(50_008);
     let exact_error = store
         .claim_run(
             invalid_runtime.run_id(),
             "runtime-projection-exact-worker",
             LEASE_MS,
-            50_008,
             &Default::default(),
         )
         .await
@@ -894,12 +880,12 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         .cancel(invalid_runtime.run_id())
         .await
         .expect("Q9 persist cancel for malformed execution projection");
+    clock.set(50_009);
     let cancellation = store
         .claim_run(
             invalid_runtime.run_id(),
             "runtime-projection-cancel-worker",
             LEASE_MS,
-            50_009,
             &Default::default(),
         )
         .await
@@ -972,13 +958,13 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .await
         .expect("A2 enqueue local credential run");
     if conformance.local_commit_guard {
+        clock.set(50_000);
         assert!(
             store
                 .claim_run(
                     &local_id,
                     "credential-incapable-local-owner",
                     LEASE_MS,
-                    50_000,
                     &incapable_capabilities,
                 )
                 .await
@@ -986,12 +972,12 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
             "A3 local claim cannot synthesize capability evidence from the request"
         );
     }
+    clock.set(50_000);
     let first = store
         .claim_run(
             &local_id,
             "credential-local-owner",
             LEASE_MS,
-            50_000,
             &exact_capabilities,
         )
         .await
@@ -1038,12 +1024,12 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
     );
 
     clock.advance_past(first.lease.expires_ms).await;
+    clock.set(first.lease.expires_ms.saturating_add(1));
     let recovered = store
         .claim_run(
             &local_id,
             "credential-recovery-owner",
             LEASE_MS,
-            first.lease.expires_ms.saturating_add(1),
             &exact_capabilities,
         )
         .await
@@ -1074,15 +1060,17 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .enqueue(remote)
         .await
         .expect("A3 enqueue remote credential run");
+    clock.set(60_000);
     assert!(
         store
-            .claim_run_compatible(&remote_id, &incapable_worker, LEASE_MS, 60_000)
+            .claim_run_compatible(&remote_id, &incapable_worker, LEASE_MS)
             .await
             .is_err(),
         "A3 immutable Worker capability evidence rejects the claim"
     );
+    clock.set(60_000);
     let admitted = store
-        .claim_run_compatible(&remote_id, &exact_worker, LEASE_MS, 60_000)
+        .claim_run_compatible(&remote_id, &exact_worker, LEASE_MS)
         .await
         .expect("A4 exact-capability claim succeeds")
         .expect("A4 failed admission did not consume the runnable row");
@@ -1109,8 +1097,9 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .cancel(&cancellation_id)
         .await
         .expect("A5 cancellation becomes durable");
+    clock.set(70_000);
     let cancellation_claim = store
-        .claim_run_compatible(&cancellation_id, &incapable_worker, LEASE_MS, 70_000)
+        .claim_run_compatible(&cancellation_id, &incapable_worker, LEASE_MS)
         .await
         .expect("A5 control claim bypasses credential admission")
         .expect("A5 cancellation is runnable");
@@ -1145,16 +1134,18 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .cancel(&remote_cancel_id)
         .await
         .expect("A7 cancellation becomes durable");
+    clock.set(71_000);
     assert!(
         store
-            .claim_run_compatible(&remote_cancel_id, &incapable_worker, LEASE_MS, 71_000,)
+            .claim_run_compatible(&remote_cancel_id, &incapable_worker, LEASE_MS,)
             .await
             .is_err(),
         "A7 authenticated remote cancel cannot downgrade to anonymous"
     );
     let remote_worker = remote_credential_worker(ns, &holder);
+    clock.set(71_001);
     let remote_claim = store
-        .claim_run_compatible(&remote_cancel_id, &remote_worker, LEASE_MS, 71_001)
+        .claim_run_compatible(&remote_cancel_id, &remote_worker, LEASE_MS)
         .await
         .expect("A8 exact remote cancellation claim")
         .expect("A8 failed admission retained the runnable row");

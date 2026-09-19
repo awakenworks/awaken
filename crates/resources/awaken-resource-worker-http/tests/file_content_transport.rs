@@ -58,7 +58,7 @@ async fn claimed_dispatch(
         ));
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
-        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .claim(owner, 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -77,7 +77,7 @@ async fn claimed_application_dispatch(
         .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()));
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
-        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .claim(owner, 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -105,7 +105,7 @@ async fn claimed_model_dispatch(
     );
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
-        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .claim(owner, 60_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -177,7 +177,7 @@ async fn claimed_recovery_model_dispatch(
         .await
         .unwrap();
     let claimed = dispatch
-        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .claim(owner, 60_000, &Default::default())
         .await
         .unwrap()
         .expect("recovery-only child dispatch claim");

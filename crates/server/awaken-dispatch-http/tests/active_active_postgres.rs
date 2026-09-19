@@ -405,7 +405,7 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         .await
         .expect("enqueue through Control A");
     let claimed = queue_b
-        .claim(&identity.lease_owner(), 120_000, 0, &Default::default())
+        .claim(&identity.lease_owner(), 120_000, &Default::default())
         .await
         .expect("claim through Control B")
         .expect("shared dispatch is claimable");

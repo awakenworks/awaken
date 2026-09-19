@@ -64,6 +64,16 @@ impl AnyDispatchStore {
             .map_err(|e| e.to_string())
     }
 
+    /// Open an in-memory SQLite backend over a caller-owned clock, so a test can
+    /// drive the exact time the selected backend judges its rows against.
+    #[cfg(feature = "durable")]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_sqlite_in_memory_with_clock(clock: Arc<dyn crate::Clock>) -> Result<Self, String> {
+        SqliteDispatchStore::open_in_memory()
+            .map(|store| Self::from_store(store.with_clock(clock)))
+            .map_err(|e| e.to_string())
+    }
+
     /// Connect the shared Postgres backend at `url`: one queue for a multi-node
     /// fleet, `FOR UPDATE SKIP LOCKED` gives distinct-claim across processes.
     #[cfg(feature = "durable")]
@@ -321,13 +331,12 @@ impl DispatchQueue for AnyDispatchStore {
         &self,
         identity: &crate::WorkerIdentity,
         run_id: &RunId,
-        now_ms: u64,
     ) -> Result<Option<RunClaim>, DispatchError> {
-        delegate!(self, worker_owns_run(identity, run_id, now_ms))
+        delegate!(self, worker_owns_run(identity, run_id))
     }
 
-    async fn claim_is_current(&self, claim: &RunClaim, now_ms: u64) -> Result<bool, DispatchError> {
-        delegate!(self, claim_is_current(claim, now_ms))
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
+        delegate!(self, claim_is_current(claim))
     }
 
     async fn lock_session_run_reservation_epoch(
@@ -406,13 +415,9 @@ impl DispatchQueue for AnyDispatchStore {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(
-            self,
-            claim_new_run(request, owner, lease_ms, now_ms, capabilities)
-        )
+        delegate!(self, claim_new_run(request, owner, lease_ms, capabilities))
     }
 
     async fn claim_new_run_compatible(
@@ -420,12 +425,8 @@ impl DispatchQueue for AnyDispatchStore {
         request: RunDispatch,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(
-            self,
-            claim_new_run_compatible(request, worker, lease_ms, now_ms)
-        )
+        delegate!(self, claim_new_run_compatible(request, worker, lease_ms))
     }
 
     async fn deliver_and_claim(
@@ -433,12 +434,11 @@ impl DispatchQueue for AnyDispatchStore {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(
             self,
-            deliver_and_claim(input, owner, lease_ms, now_ms, capabilities)
+            deliver_and_claim(input, owner, lease_ms, capabilities)
         )
     }
 
@@ -447,31 +447,25 @@ impl DispatchQueue for AnyDispatchStore {
         input: PendingInput,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(
-            self,
-            deliver_and_claim_compatible(input, worker, lease_ms, now_ms)
-        )
+        delegate!(self, deliver_and_claim_compatible(input, worker, lease_ms))
     }
 
     async fn claim(
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, claim(owner, lease_ms, now_ms, capabilities))
+        delegate!(self, claim(owner, lease_ms, capabilities))
     }
 
     async fn claim_compatible(
         &self,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, claim_compatible(worker, lease_ms, now_ms))
+        delegate!(self, claim_compatible(worker, lease_ms))
     }
 
     async fn claim_placed(
@@ -480,12 +474,8 @@ impl DispatchQueue for AnyDispatchStore {
         workers: Vec<WorkerSnapshot>,
         policy: Arc<dyn PlacementPolicy>,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(
-            self,
-            claim_placed(requester, workers, policy, lease_ms, now_ms)
-        )
+        delegate!(self, claim_placed(requester, workers, policy, lease_ms))
     }
 
     async fn claim_run(
@@ -493,13 +483,9 @@ impl DispatchQueue for AnyDispatchStore {
         run_id: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(
-            self,
-            claim_run(run_id, owner, lease_ms, now_ms, capabilities)
-        )
+        delegate!(self, claim_run(run_id, owner, lease_ms, capabilities))
     }
 
     async fn claim_for_terminal_recovery(
@@ -507,25 +493,17 @@ impl DispatchQueue for AnyDispatchStore {
         run_id: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(
-            self,
-            claim_for_terminal_recovery(run_id, owner, lease_ms, now_ms)
-        )
+        delegate!(self, claim_for_terminal_recovery(run_id, owner, lease_ms))
     }
 
     async fn claim_retry_exhausted(
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(
-            self,
-            claim_retry_exhausted(owner, lease_ms, now_ms, max_attempts)
-        )
+        delegate!(self, claim_retry_exhausted(owner, lease_ms, max_attempts))
     }
 
     async fn claim_run_compatible(
@@ -533,36 +511,32 @@ impl DispatchQueue for AnyDispatchStore {
         run_id: &RunId,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, claim_run_compatible(run_id, worker, lease_ms, now_ms))
+        delegate!(self, claim_run_compatible(run_id, worker, lease_ms))
     }
 
     async fn renew_lease(
         &self,
         claim: &RunClaim,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<LeaseRenewalOutcome, DispatchError> {
-        delegate!(self, renew_lease(claim, lease_ms, now_ms))
+        delegate!(self, renew_lease(claim, lease_ms))
     }
 
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<crate::AttemptAdmission, DispatchError> {
-        delegate!(self, begin_attempt(claim, now_ms, _binding))
+        delegate!(self, begin_attempt(claim, _binding))
     }
 
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<crate::AttemptAdmission, DispatchError> {
-        delegate!(self, handoff_attempt(claim, now_ms, _binding))
+        delegate!(self, handoff_attempt(claim, _binding))
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -609,9 +583,12 @@ impl DispatchQueue for AnyDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
-        now_ms: u64,
+        expired_before_ms: u64,
     ) -> Result<usize, DispatchError> {
-        delegate!(self, quarantine_retry_exhausted(max_attempts, now_ms))
+        delegate!(
+            self,
+            quarantine_retry_exhausted(max_attempts, expired_before_ms)
+        )
     }
 
     async fn bind_sandbox(
@@ -622,8 +599,8 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, bind_sandbox(claim, sandbox_ref))
     }
 
-    async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
-        delegate!(self, runnable_depth(now_ms))
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        delegate!(self, runnable_depth())
     }
 
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {

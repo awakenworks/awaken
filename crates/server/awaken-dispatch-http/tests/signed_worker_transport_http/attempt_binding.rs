@@ -35,6 +35,8 @@ struct Fixture {
     store: Arc<MemoryDispatchStore>,
     directory: Arc<TestWorkerDirectory>,
     clock: Arc<ManualWorkerClock>,
+    /// The dispatch store's own clock, held at the same reading as `clock`.
+    dispatch_clock: Arc<awaken_dispatch::ManualClock>,
     claim: RunClaim,
     upstream: WorkerUpstream,
     server: tokio::task::JoinHandle<()>,
@@ -51,7 +53,8 @@ impl Fixture {
         let (ready, identity) = support::ready_worker("binding-http").await;
         let record = ready.current(&identity.worker_id).await.unwrap().unwrap();
         let directory = Arc::new(TestWorkerDirectory(Mutex::new(Some(record.clone()))));
-        let store = Arc::new(MemoryDispatchStore::new());
+        let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10_000));
+        let store = Arc::new(MemoryDispatchStore::new().with_clock(dispatch_clock.clone()));
         store
             .enqueue(
                 RunDispatch::new(support::activation("binding-http"))
@@ -60,7 +63,7 @@ impl Fixture {
             .await
             .unwrap();
         let claimed = store
-            .claim_compatible(&record.snapshot, 1_000, 10_000)
+            .claim_compatible(&record.snapshot, 1_000)
             .await
             .unwrap()
             .unwrap();
@@ -111,6 +114,7 @@ impl Fixture {
             store,
             directory,
             clock,
+            dispatch_clock,
             claim,
             upstream,
             server,
@@ -318,7 +322,7 @@ async fn provider_configuration_changes_cannot_rewrite_an_existing_slot() {
             let prior_binding = if configured { None } else { Some(&binding) };
             assert_eq!(
                 f.store
-                    .begin_attempt(&f.claim, 10_000, prior_binding)
+                    .begin_attempt(&f.claim, prior_binding)
                     .await
                     .unwrap(),
                 AttemptAdmission::Applied
@@ -410,10 +414,15 @@ async fn provider_wait_cannot_refresh_stale_authority_or_downgrade_failure() {
                         .snapshot
                         .expires_at_ms = 10_001;
                     f.clock.set(10_001);
+                    f.dispatch_clock.set(10_001);
                 }
-                "claim-expired" => f.clock.set(11_001),
+                "claim-expired" => {
+                    f.clock.set(11_001);
+                    f.dispatch_clock.set(11_001);
+                }
                 "claim-replaced" => {
                     f.clock.set(11_001);
+                    f.dispatch_clock.set(11_001);
                     let mut snapshot = f
                         .directory
                         .0
@@ -425,7 +434,7 @@ async fn provider_wait_cannot_refresh_stale_authority_or_downgrade_failure() {
                         .clone();
                     snapshot.identity = WorkerIdentity::new("replacement", "new-boot", 1);
                     f.store
-                        .claim_compatible(&snapshot, 10_000, 11_001)
+                        .claim_compatible(&snapshot, 10_000)
                         .await
                         .unwrap()
                         .unwrap();
@@ -438,12 +447,13 @@ async fn provider_wait_cannot_refresh_stale_authority_or_downgrade_failure() {
                     // awaiting the provider. Renew before expiry, finish after.
                     tokio::time::timeout(
                         std::time::Duration::from_secs(1),
-                        f.store.renew_lease(&f.claim, 10_000, 10_500),
+                        f.store.renew_lease(&f.claim, 10_000),
                     )
                     .await
                     .unwrap()
                     .unwrap();
                     f.clock.set(11_001);
+                    f.dispatch_clock.set(11_001);
                 }
                 _ => unreachable!(),
             }

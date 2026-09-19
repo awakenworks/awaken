@@ -350,11 +350,7 @@ impl DispatchQueue for HttpDispatchQueue {
         )
     }
 
-    async fn claim_is_current(
-        &self,
-        claim: &RunClaim,
-        _now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_is_current",
@@ -401,7 +397,6 @@ impl DispatchQueue for HttpDispatchQueue {
         &self,
         _identity: &WorkerIdentity,
         _run_id: &RunId,
-        _now_ms: u64,
     ) -> Result<Option<RunClaim>, DispatchError> {
         Self::server_local("worker_owns_run")
     }
@@ -553,7 +548,6 @@ impl DispatchQueue for HttpDispatchQueue {
         request: RunDispatch,
         _owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
@@ -573,7 +567,7 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        let _ = (lease_ms, now_ms);
+        let _ = lease_ms;
         Ok(claimed)
     }
 
@@ -582,14 +576,12 @@ impl DispatchQueue for HttpDispatchQueue {
         request: RunDispatch,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let capabilities = installed_worker_credential_capabilities(worker)?;
         self.claim_new_run(
             request,
             &worker.identity.lease_owner(),
             lease_ms,
-            now_ms,
             &capabilities,
         )
         .await
@@ -600,7 +592,6 @@ impl DispatchQueue for HttpDispatchQueue {
         input: PendingInput,
         _owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
@@ -620,7 +611,7 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        let _ = (lease_ms, now_ms);
+        let _ = lease_ms;
         Ok(claimed)
     }
 
@@ -629,14 +620,12 @@ impl DispatchQueue for HttpDispatchQueue {
         input: PendingInput,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let capabilities = installed_worker_credential_capabilities(worker)?;
         self.deliver_and_claim(
             input,
             &worker.identity.lease_owner(),
             lease_ms,
-            now_ms,
             &capabilities,
         )
         .await
@@ -646,7 +635,6 @@ impl DispatchQueue for HttpDispatchQueue {
         &self,
         _owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let v = self
@@ -661,7 +649,7 @@ impl DispatchQueue for HttpDispatchQueue {
         let claimed =
             serde_json::from_value(v.get("claimed").cloned().unwrap_or(serde_json::Value::Null))
                 .map_err(|e| DispatchError::Rejected(format!("decode claimed: {e}")))?;
-        let _ = (lease_ms, now_ms);
+        let _ = lease_ms;
         Ok(claimed)
     }
 
@@ -669,7 +657,6 @@ impl DispatchQueue for HttpDispatchQueue {
         &self,
         _owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         _max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         // Retry limit, clock, and lease are control-side policy. The Worker
@@ -691,7 +678,7 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        let _ = (lease_ms, now_ms);
+        let _ = lease_ms;
         Ok(claimed)
     }
 
@@ -699,16 +686,10 @@ impl DispatchQueue for HttpDispatchQueue {
         &self,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let capabilities = installed_worker_credential_capabilities(worker)?;
-        self.claim(
-            &self.worker_identity.lease_owner(),
-            lease_ms,
-            now_ms,
-            &capabilities,
-        )
-        .await
+        self.claim(&self.worker_identity.lease_owner(), lease_ms, &capabilities)
+            .await
     }
 
     async fn claim_run(
@@ -716,7 +697,6 @@ impl DispatchQueue for HttpDispatchQueue {
         run_id: &RunId,
         _owner: &str,
         lease_ms: u64,
-        now_ms: u64,
         _capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let value = self
@@ -736,7 +716,7 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        let _ = (lease_ms, now_ms);
+        let _ = lease_ms;
         Ok(claimed)
     }
 
@@ -745,14 +725,12 @@ impl DispatchQueue for HttpDispatchQueue {
         run_id: &RunId,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let capabilities = installed_worker_credential_capabilities(worker)?;
         self.claim_run(
             run_id,
             &worker.identity.lease_owner(),
             lease_ms,
-            now_ms,
             &capabilities,
         )
         .await
@@ -762,7 +740,6 @@ impl DispatchQueue for HttpDispatchQueue {
         &self,
         claim: &RunClaim,
         lease_ms: u64,
-        now_ms: u64,
     ) -> Result<LeaseRenewalOutcome, DispatchError> {
         let v = self
             .post(
@@ -775,7 +752,7 @@ impl DispatchQueue for HttpDispatchQueue {
                 self.worker_id(),
             )
             .await?;
-        let _ = (lease_ms, now_ms);
+        let _ = lease_ms;
         serde_json::from_value(
             v.get("outcome")
                 .cloned()
@@ -787,7 +764,6 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         reject_worker_supplied_execution_binding(binding)?;
@@ -801,7 +777,6 @@ impl DispatchQueue for HttpDispatchQueue {
                 self.worker_id(),
             )
             .await?;
-        let _ = now_ms;
         serde_json::from_value(
             value
                 .get("admission")
@@ -814,7 +789,6 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        now_ms: u64,
         binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         reject_worker_supplied_execution_binding(binding)?;
@@ -828,7 +802,6 @@ impl DispatchQueue for HttpDispatchQueue {
                 self.worker_id(),
             )
             .await?;
-        let _ = now_ms;
         serde_json::from_value(
             value
                 .get("admission")
@@ -955,7 +928,7 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn quarantine_retry_exhausted(
         &self,
         _max_attempts: u64,
-        _now_ms: u64,
+        _expired_before_ms: u64,
     ) -> Result<usize, DispatchError> {
         Self::server_local("quarantine_retry_exhausted")
     }

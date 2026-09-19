@@ -762,7 +762,7 @@ impl SharedHost {
         let worker = self.durable_worker(thread).await?;
         let clock: Arc<dyn awaken_dispatch::Clock> = Arc::new(awaken_dispatch::SystemClock);
         let mut processed = worker
-            .reconcile_committed_terminals(clock.clone(), 256)
+            .reconcile_committed_terminals(256)
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         processed.extend(

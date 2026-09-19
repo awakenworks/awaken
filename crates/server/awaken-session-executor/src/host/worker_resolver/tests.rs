@@ -25,8 +25,10 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     // fingerprints remain owned by the queue conformance table.
     use awaken_dispatch::{Clock, DispatchQueue};
 
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("dispatch store"),
     );
     let session_id = "reservation-repair";
     let run_id = "reservation-repair-run";
@@ -59,8 +61,9 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     // then sample the edge clock used by the existing execution-lease claim.
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     let repair_now = awaken_dispatch::SystemClock.now_ms();
+    clock.set(repair_now);
     let claimed = store
-        .claim("repair-worker", 1_000, repair_now, &Default::default())
+        .claim("repair-worker", 1_000, &Default::default())
         .await
         .expect("R1 recovery claim")
         .expect("R1 expired reservation is claimable");
@@ -133,7 +136,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .await
         .expect("E1 child admission");
     let claimed = store
-        .claim("ephemeral-worker", 1_000, 0, &Default::default())
+        .claim("ephemeral-worker", 1_000, &Default::default())
         .await
         .expect("E1 claim")
         .expect("E1 child work");
@@ -204,7 +207,6 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .claim(
             ephemeral.dispatch_owner(),
             awaken_dispatch::DEFAULT_LEASE_MS,
-            now,
             &Default::default(),
         )
         .await
@@ -239,8 +241,10 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         "R1/E2 report reached the root Run"
     );
 
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let durable_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("R2 dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("R2 dispatch store"),
     );
     let durable = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(durable_store),
@@ -265,7 +269,8 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     );
 
     let coordinator_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("R3 dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("R3 dispatch store"),
     );
     let coordinator = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub")
@@ -278,6 +283,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         "coordinator-only-run",
         "remote-worker",
         now,
+        &clock,
     )
     .await;
     let coordinator_resolver = HostWorkerResolver {
@@ -322,8 +328,10 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     };
 
     let now = awaken_dispatch::SystemClock.now_ms();
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("dispatch store"),
     );
     let host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
@@ -390,8 +398,9 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         ))
         .await
         .expect("enqueue D1");
+    clock.set(now);
     let complete = store
-        .claim("worker-a", 1_000, now, &Default::default())
+        .claim("worker-a", 1_000, &Default::default())
         .await
         .expect("claim D1")
         .expect("D1 available");
@@ -401,7 +410,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         .expect("D1/E1 claimed publication constructs delegation");
 
     let missing_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
             .expect("missing dispatch store"),
     );
     let missing_host = Arc::new(
@@ -423,8 +432,9 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         ))
         .await
         .expect("enqueue D2");
+    clock.set(now);
     let missing = missing_store
-        .claim("worker-a", 1_000, now, &Default::default())
+        .claim("worker-a", 1_000, &Default::default())
         .await
         .expect("claim D2")
         .expect("D2 available");
@@ -491,8 +501,10 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     let root = activation.snapshot.clone();
     let catalog = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([child_v1])
         .expect("warm catalog source");
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("dispatch store"),
     );
     let host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub")
@@ -516,8 +528,9 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         awaken_dispatch::RunDispatch::new(activation).with_agent_publications(vec![child_v2]);
     store.enqueue(request).await.expect("enqueue K1");
     let now = awaken_dispatch::SystemClock.now_ms();
+    clock.set(now);
     let claimed = store
-        .claim("worker-a", 30_000, now, &Default::default())
+        .claim("worker-a", 30_000, &Default::default())
         .await
         .expect("claim K1")
         .expect("K1 available");
@@ -544,8 +557,9 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         Some(&expected_identity),
         "K1/E2"
     );
+    clock.set(now + 31_000);
     let reclaimed = store
-        .claim("worker-b", 30_000, now + 31_000, &Default::default())
+        .claim("worker-b", 30_000, &Default::default())
         .await
         .expect("K2 reclaim")
         .expect("K2 expired claim available");
@@ -576,8 +590,9 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .enqueue(changed_model_request)
         .await
         .expect("enqueue K3");
+    clock.set(now + 32_000);
     let changed_model = store
-        .claim("worker-c", 30_000, now + 32_000, &Default::default())
+        .claim("worker-c", 30_000, &Default::default())
         .await
         .expect("claim K3")
         .expect("K3 dispatch available");
@@ -613,8 +628,10 @@ async fn durable_deferred_sandbox_publication_decision_table() {
 
     let now = awaken_dispatch::SystemClock.now_ms();
     let storage = tempfile::tempdir().expect("isolated deferred Sandbox root");
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("dispatch store"),
     );
     let host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub")
@@ -628,7 +645,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     });
     let managed = prepare_deferred_session(host.clone(), "durable-lazy").await;
     managed.install_environment_binding_sink(sink.clone());
-    let claimed = claim(&store, "durable-lazy", "run-lazy", "worker-a", now).await;
+    let claimed = claim(&store, "durable-lazy", "run-lazy", "worker-a", now, &clock).await;
     let resolver = HostWorkerResolver {
         host: Arc::downgrade(&host),
     };
@@ -641,8 +658,9 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         "D1"
     );
 
+    clock.set(now + 2_000);
     let replacement = store
-        .claim("worker-b", 1_000, now + 2_000, &Default::default())
+        .claim("worker-b", 1_000, &Default::default())
         .await
         .expect("replacement claim")
         .expect("expired claim is recoverable");
@@ -679,7 +697,8 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2, "D2+D3");
 
     let loss_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("loss dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("loss dispatch store"),
     );
     let loss_host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub")
@@ -700,6 +719,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         "run-durable-loss",
         "worker-loss-a",
         loss_now,
+        &clock,
     )
     .await;
     let loss_resolver = HostWorkerResolver {
@@ -736,13 +756,9 @@ async fn durable_deferred_sandbox_publication_decision_table() {
             .is_none(),
         "D4 hidden Candidate is not exposed"
     );
+    clock.set(loss_now + 2_000);
     let loss_retried = loss_store
-        .claim(
-            "worker-loss-b",
-            1_000,
-            loss_now + 2_000,
-            &Default::default(),
-        )
+        .claim("worker-loss-b", 1_000, &Default::default())
         .await
         .expect("D5 retry claim")
         .expect("D5 response-loss Run is recoverable");
@@ -840,7 +856,7 @@ impl awaken_session_contract::McpAttachmentRealizer for RecordingMcpRealizer {
 
 #[tokio::test]
 async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() {
-    use awaken_dispatch::{Clock, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
 
     /* Claimed sandbox-stdio recovery cause/effect decision table. Causes:
      * C1 a cold Worker has no process-local Agent publication; C2 the durable
@@ -855,8 +871,10 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
      * E4 never consult or synthesize a second publication source. Rule S1:
      * C1+C2+C3+C4=>E1+E2+E3+E4. The adjacent malformed-envelope and stale-
      * claim rules retain fail-closed coverage for invalid authority. */
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("dispatch store"),
     );
     let host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
@@ -922,12 +940,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         .await
         .expect("enqueue");
     let claimed = store
-        .claim(
-            "worker-a",
-            30_000,
-            awaken_dispatch::SystemClock.now_ms(),
-            &Default::default(),
-        )
+        .claim("worker-a", 30_000, &Default::default())
         .await
         .expect("claim")
         .expect("claimed Run");
@@ -1132,10 +1145,12 @@ fn ordinary_frozen_projection() -> awaken_session_contract::FrozenSessionProject
 /// | O5 | live Run without Session pointer | n/a | present | bypass Session control |
 #[tokio::test]
 async fn claimed_worker_uses_only_frozen_session_realization() {
-    use awaken_dispatch::{Clock, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
 
+    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("in-memory dispatch"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+            .expect("in-memory dispatch"),
     );
     let resume_calls = Arc::new(AtomicUsize::new(0));
     let continuations = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1176,12 +1191,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .await
         .expect("O1 enqueue");
     let claimed = dispatch
-        .claim(
-            "worker-a",
-            30_000,
-            awaken_dispatch::SystemClock.now_ms(),
-            &Default::default(),
-        )
+        .claim("worker-a", 30_000, &Default::default())
         .await
         .expect("O1 claim")
         .expect("O1 claimed Run");
@@ -1297,12 +1307,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .await
         .expect("O5 enqueue");
     let claimed = dispatch
-        .claim(
-            "worker-a",
-            30_000,
-            awaken_dispatch::SystemClock.now_ms(),
-            &Default::default(),
-        )
+        .claim("worker-a", 30_000, &Default::default())
         .await
         .expect("O5 claim")
         .expect("O5 claimed Run");
@@ -1317,7 +1322,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
 
 #[tokio::test]
 async fn claimed_resource_conflict_is_terminal_before_realization() {
-    use awaken_dispatch::{Clock, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
 
     // Cause/effect graph: C1 the Run claim is live; C2 its immutable Resource
     // envelope differs from Control's desired Workspace/revision/bindings.
@@ -1327,8 +1332,11 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
     // differing coordinate. Exact equality is covered by the projection table;
     // transient Control failures retain the contract-disposition table's retry.
     for rule in ["workspace", "revision", "bindings"] {
-        let dispatch =
-            Arc::new(awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().unwrap());
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let dispatch = Arc::new(
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+                .unwrap(),
+        );
         let mut projection = ordinary_frozen_projection();
         match rule {
             "workspace" => {
@@ -1376,12 +1384,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             .await
             .unwrap();
         let claimed = dispatch
-            .claim(
-                "worker-a",
-                30_000,
-                awaken_dispatch::SystemClock.now_ms(),
-                &Default::default(),
-            )
+            .claim("worker-a", 30_000, &Default::default())
             .await
             .unwrap()
             .unwrap();
@@ -2777,7 +2780,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
 
 #[tokio::test]
 async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session_use() {
-    use awaken_dispatch::{Clock, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
     // Cause/effect table: ordinary Run + Coordinator-issued Session Work receipt
     // -> canonical frozen realization before runtime. No receipt -> O5's existing
     // ordinary path. Wrong Session/owner receipt -> reject before environment effects.
@@ -2791,8 +2794,11 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             eager_environment(),
             &activation.snapshot,
         );
-        let dispatch =
-            Arc::new(awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().unwrap());
+        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let dispatch = Arc::new(
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clone())
+                .unwrap(),
+        );
         let calls = Arc::new(AtomicUsize::new(0));
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
@@ -2823,12 +2829,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             .await
             .unwrap();
         let mut claimed = dispatch
-            .claim(
-                "worker-a",
-                30000,
-                awaken_dispatch::SystemClock.now_ms(),
-                &Default::default(),
-            )
+            .claim("worker-a", 30000, &Default::default())
             .await
             .unwrap()
             .unwrap();

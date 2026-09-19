@@ -21,7 +21,7 @@ use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::dispatch::{
     DispatchOutcome, DispatchQueue, RunClaim, SettleOutcome,
 };
-use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock, LogicalCommandClock};
+use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock, ManualStoreClock};
 use awaken_runtime_contract::activation::RunActivation;
 
 mod harness;
@@ -80,8 +80,9 @@ async fn binding_survives_a_recovery_claim(
     store.enqueue(req("run-1", "thread-1")).await.unwrap();
 
     // First claim: no sandbox yet.
+    clock.set(0);
     let first = store
-        .claim("worker-a", 1_000, 0, &Default::default())
+        .claim("worker-a", 1_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -100,13 +101,9 @@ async fn binding_survives_a_recovery_claim(
     // The lease expires (worker-a crashed); a recovery claim re-adopts the SAME
     // sandbox — the binding is durable, so no sandbox is leaked.
     clock.advance_past(first.lease.expires_ms).await;
+    clock.set(first.lease.expires_ms.saturating_add(1));
     let recovered = store
-        .claim(
-            "worker-b",
-            1_000,
-            first.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim("worker-b", 1_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -133,13 +130,20 @@ async fn binding_survives_a_recovery_claim(
 
 #[tokio::test]
 async fn memory_backend_binds_and_recovers() {
-    binding_survives_a_recovery_claim(&MemoryDispatchStore::new(), &LogicalCommandClock).await;
+    let clock = ManualStoreClock::new(0);
+    binding_survives_a_recovery_claim(
+        &MemoryDispatchStore::new().with_clock(clock.clock()),
+        &clock,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn runtime_selected_store_delegates_the_sandbox_binding() {
-    let store = AnyDispatchStore::open_sqlite_in_memory().expect("sqlite adapter");
-    binding_survives_a_recovery_claim(&store, &LogicalCommandClock).await;
+    let clock = ManualStoreClock::new(0);
+    let store =
+        AnyDispatchStore::open_sqlite_in_memory_with_clock(clock.clock()).expect("sqlite adapter");
+    binding_survives_a_recovery_claim(&store, &clock).await;
 }
 
 #[tokio::test]

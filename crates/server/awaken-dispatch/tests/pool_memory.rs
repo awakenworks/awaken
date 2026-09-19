@@ -25,6 +25,7 @@ use awaken_dispatch::{
     DispatchWorker, Error, Inbox, LocalWakeSignal, ManualClock, MemoryDispatchStore, PendingInput,
     RunClaim, RunDispatch, SessionChildAdmission, SystemClock, WakeSignal, WorkerResolver,
 };
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_inmem::MemoryCommitCoordinator;
@@ -122,7 +123,8 @@ async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: b
                 ..Default::default()
             }),
     );
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-a").with_lease_ms(90);
@@ -130,8 +132,9 @@ async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: b
         .enqueue(RunDispatch::new(activation("native-unconfirmed")))
         .await
         .unwrap();
+    clock.set(0);
     let claim = store
-        .claim("owner-a", 90, 0, &Default::default())
+        .claim("owner-a", 90, &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -166,14 +169,16 @@ async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: b
         "provider is still executing, not merely a retained claim"
     );
     assert!(store.list_dispatches().await.unwrap()[0].physical_attempt_active);
+    clock.set(91);
     let replacement = store
-        .claim("owner-b", 90, 91, &Default::default())
+        .claim("owner-b", 90, &Default::default())
         .await
         .unwrap()
         .unwrap();
+    clock.set(91);
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&replacement.lease), 91, None)
+            .begin_attempt(&RunClaim::from(&replacement.lease), None)
             .await
             .unwrap(),
         awaken_dispatch::AttemptAdmission::Blocked
@@ -692,12 +697,11 @@ impl WorkerResolver<MemoryDispatchStore> for ExhaustionResolver {
     async fn terminalize_retry_exhausted(
         &self,
         claimed: &awaken_dispatch::Claimed,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         self.terminal_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.terminal_worker
-            .terminalize_retry_exhausted(claimed, clock)
+            .terminalize_retry_exhausted(claimed)
             .await
     }
 }
@@ -721,15 +725,9 @@ impl WorkerResolver<MemoryDispatchStore> for SettlingRejectingResolver {
         &self,
         claimed: &awaken_dispatch::Claimed,
         error: Error,
-        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         self.worker
-            .fail_claimed_before_execution(
-                claimed,
-                "dispatch_resolution_failed",
-                error.to_string(),
-                clock,
-            )
+            .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
             .await
     }
 }
@@ -1540,7 +1538,8 @@ async fn expired_replaced_claim_stops_the_only_renewal_and_executes_no_effect() 
     // effect. Decision rule RG4=C1+C2+C3=>E1+E2+E3.
     // Constraint/Invariant: replaced ownership fails closed before execution and
     // cannot leave a detached renewal task.
-    let store = Arc::new(FlakyDispatchStore::new(0));
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(FlakyDispatchStore::new(0).with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
         DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "pool")
@@ -1548,7 +1547,6 @@ async fn expired_replaced_claim_stops_the_only_renewal_and_executes_no_effect() 
     );
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let clock = Arc::new(ManualClock::new(0));
     store
         .enqueue(RunDispatch::new(activation("one-renewal-stale")))
         .await
@@ -1575,7 +1573,7 @@ async fn expired_replaced_claim_stops_the_only_renewal_and_executes_no_effect() 
     clock.set(91);
     assert!(
         store
-            .claim("replacement", 90, 91, &Default::default())
+            .claim("replacement", 90, &Default::default())
             .await
             .unwrap()
             .is_some(),
@@ -1616,7 +1614,12 @@ async fn physical_return_ack_retries_transport_without_reexecuting_the_attempt()
         harness::FinishFault::Rejected,
     ] {
         let rejected = matches!(fault, harness::FinishFault::Rejected);
-        let store = Arc::new(FlakyDispatchStore::new(0).with_finish_fault(fault));
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+        let store = Arc::new(
+            FlakyDispatchStore::new(0)
+                .with_clock(clock.clock())
+                .with_finish_fault(fault),
+        );
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let (runtime, infers) = counting_text_runtime();
         let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "ack-owner")
@@ -1625,8 +1628,9 @@ async fn physical_return_ack_retries_transport_without_reexecuting_the_attempt()
             .enqueue(RunDispatch::new(activation("ack-retry")))
             .await
             .unwrap();
+        clock.set(0);
         let claimed = store
-            .claim("ack-owner", 90, 0, &Default::default())
+            .claim("ack-owner", 90, &Default::default())
             .await
             .unwrap()
             .unwrap();
@@ -1677,7 +1681,8 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
     // executor future beyond the lease request budget. Only its later return
     // may clear the slot; a timed-out observer must remain attached.
     let cleanup_release = Arc::new(tokio::sync::Semaphore::new(0));
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
         DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "owner-a")
@@ -1690,13 +1695,13 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
         cancellation_observed: cancellation_observed.clone(),
         cleanup_release: Some(cleanup_release.clone()),
     }));
-    let clock = Arc::new(ManualClock::new(0));
     store
         .enqueue(RunDispatch::new(activation("renewal-loss-cancels-attempt")))
         .await
         .unwrap();
+    clock.set(0);
     let claimed = store
-        .claim("owner-a", 90, 0, &Default::default())
+        .claim("owner-a", 90, &Default::default())
         .await
         .unwrap()
         .expect("owner A claims the Run");
@@ -1712,7 +1717,7 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
     clock.set(91);
     assert!(
         store
-            .claim("owner-b", 90, 91, &Default::default())
+            .claim("owner-b", 90, &Default::default())
             .await
             .unwrap()
             .is_some(),
@@ -1749,7 +1754,8 @@ async fn durable_cancel_signals_the_exact_live_attempt_before_lease_expiry() {
     // worker are covered by the shared three-backend LR6/LR7 table.
     // Constraint: this uses the sole renewal loop; no direct live-control signal,
     // extra poller, or cancellation registry participates.
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
         DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "owner-a")
@@ -1767,8 +1773,9 @@ async fn durable_cancel_signals_the_exact_live_attempt_before_lease_expiry() {
         .enqueue(RunDispatch::new(activation(&run_id.0)))
         .await
         .unwrap();
+    clock.set(0);
     let claimed = store
-        .claim("owner-a", 90, 0, &Default::default())
+        .claim("owner-a", 90, &Default::default())
         .await
         .unwrap()
         .expect("C1 current claim");
@@ -1805,7 +1812,8 @@ async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
     // exact begin is Blocked. Constraint: timeout/lease expiry is not fabricated
     // quiescence. A trusted provider/process termination receipt is required to
     // recover availability; absent that proof, safety intentionally wins.
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
         DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "owner-a")
@@ -1815,13 +1823,13 @@ async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
     worker.install_attempt_executor(Arc::new(NonQuiescingAttemptExecutor {
         entered: entered.clone(),
     }));
-    let clock = Arc::new(ManualClock::new(0));
     store
         .enqueue(RunDispatch::new(activation("non-quiescing")))
         .await
         .unwrap();
+    clock.set(0);
     let claimed = store
-        .claim("owner-a", 30, 0, &Default::default())
+        .claim("owner-a", 30, &Default::default())
         .await
         .unwrap()
         .expect("RG9 A claim");
@@ -1835,7 +1843,7 @@ async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
 
     clock.set(31);
     let replacement = store
-        .claim("owner-b", 30, 31, &Default::default())
+        .claim("owner-b", 30, &Default::default())
         .await
         .unwrap()
         .expect("RG9 B mutation claim");
@@ -1858,7 +1866,6 @@ async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
         store
             .begin_attempt(
                 &awaken_dispatch::RunClaim::from(&replacement.lease),
-                31,
                 None
             )
             .await
@@ -1875,7 +1882,8 @@ async fn aborting_a_drive_never_fabricates_remote_quiescence() {
     // and B takes the mutation claim. Effects: E1 A's physical slot remains;
     // E2 B's begin is Blocked; E3 no second executor enters. Constraint: Future
     // drop stops local polling but is not a provider cancellation/terminal ACK.
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
         DispatchWorker::new(text_runtime(), store.clone(), commit, "owner-a").with_lease_ms(30),
@@ -1884,13 +1892,13 @@ async fn aborting_a_drive_never_fabricates_remote_quiescence() {
     worker.install_attempt_executor(Arc::new(NonQuiescingAttemptExecutor {
         entered: entered.clone(),
     }));
-    let clock = Arc::new(ManualClock::new(0));
     store
         .enqueue(RunDispatch::new(activation("aborted-opaque-attempt")))
         .await
         .expect("RG10 fixture enqueued");
+    clock.set(0);
     let claimed = store
-        .claim("owner-a", 30, 0, &Default::default())
+        .claim("owner-a", 30, &Default::default())
         .await
         .expect("RG10 A claim query")
         .expect("RG10 A claim");
@@ -1917,7 +1925,7 @@ async fn aborting_a_drive_never_fabricates_remote_quiescence() {
 
     clock.set(31);
     let replacement = store
-        .claim("owner-b", 30, 31, &Default::default())
+        .claim("owner-b", 30, &Default::default())
         .await
         .expect("RG10 B claim query")
         .expect("RG10 B mutation claim");
@@ -1925,7 +1933,6 @@ async fn aborting_a_drive_never_fabricates_remote_quiescence() {
         store
             .begin_attempt(
                 &awaken_dispatch::RunClaim::from(&replacement.lease),
-                31,
                 None
             )
             .await
@@ -1944,7 +1951,12 @@ async fn transient_renewal_errors_retry_inside_the_same_guard() {
     // completes normally. No retry attempt authors lease state outside Dispatch.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let store = Arc::new(FlakyDispatchStore::new(0).with_renewal_failures(2));
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(
+        FlakyDispatchStore::new(0)
+            .with_clock(clock.clock())
+            .with_renewal_failures(2),
+    );
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-a").with_lease_ms(90),
@@ -1953,8 +1965,9 @@ async fn transient_renewal_errors_retry_inside_the_same_guard() {
         .enqueue(RunDispatch::new(activation("transient-renewal-retry")))
         .await
         .unwrap();
+    clock.set(0);
     let claimed = store
-        .claim("owner-a", 90, 0, &Default::default())
+        .claim("owner-a", 90, &Default::default())
         .await
         .unwrap()
         .expect("RG6 exact claim");
@@ -1998,7 +2011,12 @@ async fn stalled_renewal_call_cancels_before_the_lease_can_be_recovered() {
     // Effects: E1 calls are bounded and retried by the same guard; E2 Runtime is
     // cancelled before the durable lease expires; E3 no Thread commit occurs.
     let renewal_gate = Arc::new(tokio::sync::Semaphore::new(0));
-    let store = Arc::new(FlakyDispatchStore::new(0).with_renewal_gate(renewal_gate));
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(
+        FlakyDispatchStore::new(0)
+            .with_clock(clock.clock())
+            .with_renewal_gate(renewal_gate),
+    );
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let entered = Arc::new(tokio::sync::Notify::new());
     let cancellation_observed = Arc::new(tokio::sync::Notify::new());
@@ -2015,8 +2033,9 @@ async fn stalled_renewal_call_cancels_before_the_lease_can_be_recovered() {
         .enqueue(RunDispatch::new(activation("stalled-renewal-call")))
         .await
         .unwrap();
+    clock.set(0);
     let claimed = store
-        .claim("owner-a", 90, 0, &Default::default())
+        .claim("owner-a", 90, &Default::default())
         .await
         .unwrap()
         .expect("RG7 exact claim");
@@ -2067,8 +2086,12 @@ async fn ambiguous_renewal_response_retries_the_same_exact_claim() {
     let response_gate = Arc::new(tokio::sync::Semaphore::new(0));
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let store =
-        Arc::new(FlakyDispatchStore::new(0).with_renewal_response_gate(response_gate.clone()));
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(
+        FlakyDispatchStore::new(0)
+            .with_clock(clock.clock())
+            .with_renewal_response_gate(response_gate.clone()),
+    );
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-a").with_lease_ms(90),
@@ -2077,8 +2100,9 @@ async fn ambiguous_renewal_response_retries_the_same_exact_claim() {
         .enqueue(RunDispatch::new(activation("ambiguous-renewal-response")))
         .await
         .unwrap();
+    clock.set(0);
     let claimed = store
-        .claim("owner-a", 90, 0, &Default::default())
+        .claim("owner-a", 90, &Default::default())
         .await
         .unwrap()
         .expect("RG8 exact claim");
@@ -2516,7 +2540,10 @@ async fn dropped_wake_still_drains_via_poll() {
 /// re-driven to completion — recovery is driven by the pool's clock.
 #[tokio::test]
 async fn crashed_lease_is_recovered_and_redriven() {
-    let store = Arc::new(MemoryDispatchStore::new());
+    // One hand-driven clock: the store judges lease expiry against the same
+    // reading the pool polls with, so only the advance recovers the run.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -2528,17 +2555,16 @@ async fn crashed_lease_is_recovered_and_redriven() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
         store
-            .claim("dead-worker", 1_000, 0, &Default::default())
+            .claim("dead-worker", 1_000, &Default::default())
             .await
             .unwrap()
             .is_some()
     );
     assert_eq!(commit.commit_count(), 0);
 
-    // A hand-driven clock so only the advance recovers it, not a fast poll.
-    let clock = Arc::new(ManualClock::new(0));
     let pool = DispatchPool::spawn(
         store.clone(),
         clock.clone(),
@@ -2867,19 +2893,22 @@ async fn duplicated_exact_claim_never_enters_the_executor_twice() {
     // not permission for two local drive tasks to execute the same Claim.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, calls, active, maximum) = concurrency_tracking_tool_runtime(release.clone());
-    let store = Arc::new(MemoryDispatchStore::new());
+    // The store and both drive tasks read one hand-driven t=0 reading.
+    let manual = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(manual.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(runtime, store.clone(), commit);
     store
         .enqueue(RunDispatch::new(activation("duplicated-exact-claim")))
         .await
         .expect("D1 fixture enqueued");
+    manual.set(0);
     let claimed = store
-        .claim("pool", DEFAULT_LEASE_MS, 0, &Default::default())
+        .claim("pool", DEFAULT_LEASE_MS, &Default::default())
         .await
         .expect("D1 claim query")
         .expect("D1 exact claim");
-    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(0));
+    let clock: Arc<dyn Clock> = manual;
     let first = tokio::spawn({
         let worker = worker.clone();
         let claimed = claimed.clone();
@@ -3077,10 +3106,9 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
     // Across a window far beyond the base lease, a thief owner can never reclaim it —
     // the renewal loop keeps the lease from expiring.
     for _ in 0..30 {
-        let now = clock.now_ms();
         assert!(
             store
-                .claim("thief", lease_ms, now, &Default::default())
+                .claim("thief", lease_ms, &Default::default())
                 .await
                 .unwrap()
                 .is_none(),
@@ -3178,7 +3206,7 @@ async fn pool_renews_claim_while_worker_resolution_is_blocked() {
     }
     assert!(
         store
-            .claim("thief", lease_ms, clock.now_ms(), &Default::default())
+            .claim("thief", lease_ms, &Default::default())
             .await
             .unwrap()
             .is_none(),
@@ -3235,8 +3263,9 @@ async fn renewal_stops_when_claim_resolution_fails() {
         "R2 resolver failure observed"
     );
     let _drain_fence = pool.begin_drain().await;
+    clock.set(0);
     let premature = store
-        .claim("recovery-owner", lease_ms, 0, &Default::default())
+        .claim("recovery-owner", lease_ms, &Default::default())
         .await
         .unwrap();
     assert!(
@@ -3245,7 +3274,7 @@ async fn renewal_stops_when_claim_resolution_fails() {
     );
     clock.set(250);
     let reclaimed = store
-        .claim("recovery-owner", lease_ms, 250, &Default::default())
+        .claim("recovery-owner", lease_ms, &Default::default())
         .await
         .unwrap();
     let reclaimed = reclaimed.expect("R2 failed claim is available after its deadline");
@@ -3474,12 +3503,7 @@ async fn session_work_backpressure_defers_only_that_request_then_retries() {
     assert_eq!(calls.load(Ordering::SeqCst), 1, "B1/E2");
     assert!(
         store
-            .claim(
-                "ready-owner",
-                DEFAULT_LEASE_MS,
-                SystemClock.now_ms(),
-                &Default::default(),
-            )
+            .claim("ready-owner", DEFAULT_LEASE_MS, &Default::default(),)
             .await
             .unwrap()
             .is_none(),
@@ -3732,29 +3756,33 @@ async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that
 async fn drain_terminalizes_retry_exhaustion_without_execution_resolution() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     store
         .enqueue(RunDispatch::new(activation_on("poison", "thread-poison")))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
         store
-            .claim("failed-worker", 1, 0, &Default::default())
+            .claim("failed-worker", 1, &Default::default())
             .await
             .unwrap()
             .is_some()
     );
+    clock.set(2);
     assert!(
         store
-            .claim("failed-worker", 1, 2, &Default::default())
+            .claim("failed-worker", 1, &Default::default())
             .await
             .unwrap()
             .is_some()
     );
+    clock.set(4);
     assert!(
         store
-            .claim("failed-worker", 1, 4, &Default::default())
+            .claim("failed-worker", 1, &Default::default())
             .await
             .unwrap()
             .is_some()
@@ -3763,9 +3791,10 @@ async fn drain_terminalizes_retry_exhaustion_without_execution_resolution() {
     let ordinary_calls = Arc::new(AtomicUsize::new(0));
     let terminal_calls = Arc::new(AtomicUsize::new(0));
     let terminal_worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    clock.set(6);
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(ManualClock::new(6)),
+        clock.clone(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -3805,31 +3834,35 @@ async fn drain_terminalizes_retry_exhaustion_without_execution_resolution() {
 async fn coordinator_maintenance_preserves_exhaustion_until_a_drainer_returns() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let store = Arc::new(MemoryDispatchStore::new());
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     store
         .enqueue(RunDispatch::new(activation_on("poison", "thread-poison")))
         .await
         .unwrap();
+    clock.set(0);
     assert!(
         store
-            .claim("dead", 1, 0, &Default::default())
+            .claim("dead", 1, &Default::default())
             .await
             .unwrap()
             .is_some()
     );
+    clock.set(2);
     assert!(
         store
-            .claim("dead", 1, 2, &Default::default())
+            .claim("dead", 1, &Default::default())
             .await
             .unwrap()
             .is_some()
     );
     let ordinary_calls = Arc::new(AtomicUsize::new(0));
     let terminal_calls = Arc::new(AtomicUsize::new(0));
+    clock.set(4);
     let maintenance = DispatchReconciler::spawn(
         store.clone(),
-        Arc::new(ManualClock::new(4)),
+        clock.clone(),
         Arc::new(BlackholeWake),
         DispatchServiceConfig {
             poll_interval: Duration::from_millis(5),
@@ -3853,7 +3886,7 @@ async fn coordinator_maintenance_preserves_exhaustion_until_a_drainer_returns() 
 
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(ManualClock::new(4)),
+        clock.clone(),
         "remote-worker",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
