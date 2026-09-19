@@ -400,21 +400,38 @@ if command -v cargo-kani >/dev/null 2>&1; then
     # `awaken_configure_kani_driver_target`; scripts/ci/kani.sh applies the same
     # one for a person invoking a harness directly.
     awaken_configure_kani_driver_target
+    # Tee'd because the deadline alone cannot say *why* a batch did not finish.
+    # A harness whose formula does not fit in RAM does not fail fast: CBMC
+    # allocates until the machine thrashes, and the batch then dies on the
+    # deadline. Reporting that as "timed out" sends the reader after more time
+    # or a faster solver, and neither is the fix -- a 54.9 GiB peak on a 60 GiB
+    # host needs a smaller proof or a bigger host. CBMC says so in its own
+    # output; the gate has to carry the sentence rather than overwrite it.
+    local kani_transcript
+    kani_transcript="$(mktemp)"
     if run_with_deadline "$kani_batch_timeout_seconds" \
-        cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"; then
+        cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@" \
+        2>&1 | tee "$kani_transcript"; then
+      rm -f "$kani_transcript"
       return 0
     else
-      result=$?
+      result=${PIPESTATUS[0]}
     fi
     formal_failure_kind="execution-failed"
     formal_failure_stage="cargo-kani"
     formal_failure_subject="$package"
     formal_failure_deadline_seconds=""
-    if [ "$result" -eq 124 ]; then
+    if grep -qF "CBMC appears to have run out of memory" "$kani_transcript"; then
+      formal_failure_kind="memory-bound"
+      echo "cargo-kani batch ran out of memory: $package" >&2
+      echo "  the formula did not fit, so more time and a faster solver do not help;" >&2
+      echo "  shrink the harness's symbolic state or verify it on a larger host" >&2
+    elif [ "$result" -eq 124 ]; then
       formal_failure_kind="resource-bound"
       formal_failure_deadline_seconds="$kani_batch_timeout_seconds"
       echo "cargo-kani batch timed out: $package (${kani_batch_timeout_seconds}s)" >&2
     fi
+    rm -f "$kani_transcript"
     return "$result"
   }
   # Present and exactly the pinned version; a different Z3 is a hard error,
