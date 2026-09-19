@@ -100,7 +100,10 @@ pub(super) fn projected_environment_owner(
         }),
         SessionEnvironmentState::Restoring { .. } => Ok(ProjectedEnvironmentOwner::Restoring {
             request: state
-                .restoring_request(workspace_id, session_id)
+                .restoring_request(
+                    workspace_id,
+                    &awaken_session_contract::SessionId::from(session_id),
+                )
                 .expect("Restoring state projects one exact restore request"),
         }),
     }

@@ -13,6 +13,7 @@ use super::{
     checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
     source_release_preparation_receipt_admitted,
 };
+use crate::SessionId;
 
 impl SessionEnvironmentOperation {
     /// Construct the complete workspace-bound operation identity. The writer
@@ -21,7 +22,7 @@ impl SessionEnvironmentOperation {
     #[must_use]
     pub fn new(
         workspace_id: &str,
-        session_id: &str,
+        session_id: &SessionId,
         kind: &str,
         generation: &SandboxGeneration,
         activity_epoch: u64,
@@ -46,7 +47,7 @@ impl SessionEnvironmentOperation {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_started_at(
         workspace_id: &str,
-        session_id: &str,
+        session_id: &SessionId,
         kind: &str,
         generation: &SandboxGeneration,
         activity_epoch: u64,
@@ -64,7 +65,7 @@ impl SessionEnvironmentOperation {
             checkpoint.map(|value| serde_json::to_vec(value).expect("checkpoint serializes"));
         let mut components = vec![
             workspace_id.as_bytes(),
-            session_id.as_bytes(),
+            session_id.as_str().as_bytes(),
             kind.as_bytes(),
             generation_bytes.as_slice(),
             activity_epoch_bytes.as_slice(),
@@ -509,7 +510,7 @@ impl SessionEnvironmentState {
     pub fn begin_suspend(
         &mut self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &SessionId,
         activity_epoch: u64,
         realization: Option<crate::SessionRealizationLease>,
     ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
@@ -519,7 +520,7 @@ impl SessionEnvironmentState {
     pub fn begin_suspend_at(
         &mut self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &SessionId,
         activity_epoch: u64,
         realization: Option<crate::SessionRealizationLease>,
         started_at_unix_ms: u64,
@@ -707,7 +708,7 @@ impl SessionEnvironmentState {
     pub fn begin_restore(
         &mut self,
         workspace_id: &str,
-        session_id: &str,
+        session_id: &SessionId,
         activity_epoch: u64,
         realization: Option<crate::SessionRealizationLease>,
         now_unix_ms: u64,
@@ -787,7 +788,7 @@ mod tests {
             expires_at_unix_ms: 10_000,
         };
         let generation = SandboxGeneration::new(
-            "source-wire",
+            &crate::SessionId::from("source-wire"),
             1,
             90_000,
             "source-wire-environment",
@@ -795,7 +796,7 @@ mod tests {
         );
         let operation = SessionEnvironmentOperation::new(
             "workspace",
-            "source-wire",
+            &crate::SessionId::from("source-wire"),
             "suspend",
             &generation,
             1,

@@ -919,7 +919,7 @@ impl PostgresManagedSessionRepository {
              WHERE ($1::text IS NULL OR session.session_id > $1) \
              ORDER BY session.session_id LIMIT $2",
         )
-        .bind(after.map(awaken_session_contract::SessionScanCursor::session_id))
+        .bind(after.map(|cursor| cursor.session_id().as_str()))
         .bind(RECOVERY_BATCH_SIZE + 1)
         .fetch_all(&mut *tx)
         .await

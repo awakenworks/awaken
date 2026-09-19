@@ -406,7 +406,7 @@ impl SessionApplication {
             return Ok(None);
         }
         let command = terminal_cleanup
-            .publication_command(session_id.as_str())
+            .publication_command(session_id)
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
         let Some(command) = command else {
             return Ok(None);
@@ -493,13 +493,13 @@ impl SessionApplication {
                 awaken_session_contract::SessionRepositoryPublicationEffect::Published(receipt) => {
                     session
                         .terminal_cleanup
-                        .record_repository_publication_receipt(session_id.as_str(), receipt)
+                        .record_repository_publication_receipt(session_id, receipt)
                 }
                 awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(
                     rejection,
                 ) => session
                     .terminal_cleanup
-                    .record_repository_publication_rejection(session_id.as_str(), rejection),
+                    .record_repository_publication_rejection(session_id, rejection),
             }
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
             if changed {
@@ -1361,7 +1361,7 @@ impl SessionApplication {
                 .await
                 .map_err(SessionPreparationError::Rejected)?;
             if session.resources.activations.is_empty() {
-                session.resources.adopt_legacy_active(session_id.as_str());
+                session.resources.adopt_legacy_active(&session_id);
                 session = self
                     .commit_resource_snapshot(
                         owner_scope,
@@ -1552,7 +1552,7 @@ impl SessionApplication {
         // effects are replay-safe through their existing Vault/Registry
         // authorities until the same root accepts physical disposal.
         let receipt = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-            session.session_id.as_str(),
+            &session.session_id,
             owner_scope,
             &session.resources,
         )

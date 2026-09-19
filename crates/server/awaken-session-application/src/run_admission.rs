@@ -222,7 +222,7 @@ impl SessionApplication {
             let session_id = command.session_id.clone();
             let agent_id = command.agent_id.clone();
             let run_id = command.run_id.clone();
-            let operation = session_run_activity_operation_id(session_id.as_str(), &run_id);
+            let operation = session_run_activity_operation_id(&session_id, &run_id);
             // Cause/effect decision table: an existing exact activity receipt is
             // response-loss truth and outranks current policy, but it says nothing
             // about this process's disposable Runtime projection. Every admission
@@ -1094,7 +1094,10 @@ impl SessionRunApplication {
             session_id: awaken_session_contract::SessionId::from(thread),
             agent_id: self.agent_for(thread, requested_agent),
             operation_id: operation_id.to_string(),
-            run_id: awaken_session_contract::session_run_id(thread, operation_id),
+            run_id: awaken_session_contract::session_run_id(
+                &awaken_session_contract::SessionId::from(thread),
+                operation_id,
+            ),
             messages,
             data_subject_id: None,
             traceparent,

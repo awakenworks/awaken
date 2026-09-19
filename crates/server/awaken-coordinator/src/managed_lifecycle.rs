@@ -229,7 +229,10 @@ mod tests {
                     session_id: awaken_session_contract::SessionId::from(&session.id),
                     agent_id: "coder".into(),
                     operation_id: operation_id.into(),
-                    run_id: session_run_id(&session.id, operation_id),
+                    run_id: session_run_id(
+                        &awaken_session_contract::SessionId::from(session.id.as_str()),
+                        operation_id,
+                    ),
                     messages: vec![Message::text(
                         MessageId::session_event_input(&session.id, operation_id),
                         Role::User,

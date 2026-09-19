@@ -653,7 +653,7 @@ mod tests {
         session.freeze_terminal_cleanup_targets([], 3, 5).unwrap();
         let command = session
             .terminal_cleanup
-            .publication_command(session_id.as_str())
+            .publication_command(&session_id)
             .unwrap()
             .unwrap();
         if rejected {
@@ -664,7 +664,7 @@ mod tests {
             .unwrap();
             session
                 .terminal_cleanup
-                .record_repository_publication_rejection(session_id.as_str(), rejection)
+                .record_repository_publication_rejection(&session_id, rejection)
                 .unwrap();
         } else {
             let receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
@@ -678,7 +678,7 @@ mod tests {
             );
             session
                 .terminal_cleanup
-                .record_repository_publication_receipt(session_id.as_str(), receipt)
+                .record_repository_publication_receipt(&session_id, receipt)
                 .unwrap();
         }
         let Some(awaken_session_contract::SessionTerminalCleanupAction::Prepare { mut commands }) =
@@ -698,7 +698,7 @@ mod tests {
         .unwrap();
         let repository_preparation =
             awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-                session_id.as_str(),
+                &session_id,
                 "default",
                 &session.resources,
             )
@@ -834,7 +834,7 @@ mod tests {
             .is_ok()
         );
         let accepted = awaken_session_contract::SessionEventBatch::compile(
-            "codec-admission",
+            &awaken_session_contract::SessionId::from("codec-admission"),
             "accepted",
             vec![awaken_session_contract::SessionEventInput::UserMessage {
                 content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -868,7 +868,7 @@ mod tests {
         // coordinate synthesis or compatibility projection.
         let mut session = sample("codec-admission-fence");
         let mut batch = awaken_session_contract::SessionEventBatch::compile(
-            session.session_id.as_str(),
+            &session.session_id,
             "accepted",
             vec![awaken_session_contract::SessionEventInput::UserMessage {
                 content: vec![awaken_agent_contract::agent::content::ContentBlock::text(

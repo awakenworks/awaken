@@ -499,7 +499,10 @@ impl DreamExecutor for BuiltInDreamAgent {
             request.job_id
         );
         let operation_id = format!("dream-job:{}", request.job_id);
-        let run_id = session_run_id(&preparation.session_id, &operation_id);
+        let run_id = session_run_id(
+            &awaken_session_contract::SessionId::from(preparation.session_id.as_str()),
+            &operation_id,
+        );
         let message = Message::text(
             MessageId::session_event_input(&preparation.session_id, &operation_id),
             Role::User,

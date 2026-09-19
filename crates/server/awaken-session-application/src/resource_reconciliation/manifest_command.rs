@@ -167,11 +167,9 @@ impl SessionApplication {
             let result = if session.resources.pending.is_some() {
                 session
                     .resources
-                    .revise_unattempted_pending(session.session_id.as_str(), desired.clone())
+                    .revise_unattempted_pending(&session.session_id, desired.clone())
             } else {
-                session
-                    .resources
-                    .prepare(session.session_id.as_str(), desired)
+                session.resources.prepare(&session.session_id, desired)
             };
             result.map_err(|error| match error {
                 awaken_session_contract::ResourceActivationError::Pending => {

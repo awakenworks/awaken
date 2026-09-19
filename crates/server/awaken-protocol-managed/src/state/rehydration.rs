@@ -346,7 +346,10 @@ mod tests {
                             persisted.resources = Default::default();
                             persisted
                                 .resources
-                                .prepare(&id, sample_inputs())
+                                .prepare(
+                                    &awaken_session_contract::SessionId::from(id.as_str()),
+                                    sample_inputs(),
+                                )
                                 .expect("pending Worker Resource projection");
                         }
                         persisted.environment.set_resident("worker-opaque-binding");

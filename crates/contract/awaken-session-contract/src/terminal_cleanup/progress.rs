@@ -7,6 +7,7 @@
 use super::completion::canonical_thread_artifact_receipt_fingerprint;
 use super::state::SessionCleanupState;
 use super::*;
+use crate::SessionId;
 use awaken_provisioning_contract::FenceToken;
 use awaken_resource_contract::ArtifactPublicationReceipt;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -27,11 +28,11 @@ pub struct SessionCleanupRepositoryPreparation {
 
 impl SessionCleanupRepositoryPreparation {
     pub fn new(
-        session_id: &str,
+        session_id: &SessionId,
         workspace_id: &str,
         resources: &crate::SessionResourceState,
     ) -> Result<Self, SessionCleanupError> {
-        if session_id.trim().is_empty() || workspace_id.trim().is_empty() {
+        if session_id.as_str().trim().is_empty() || workspace_id.trim().is_empty() {
             return Err(SessionCleanupError::RepositoryPreparationReceiptMismatch);
         }
         let cleanup_effect_id = cleanup_effect_id(session_id);
@@ -50,7 +51,7 @@ impl SessionCleanupRepositoryPreparation {
             plan_fingerprint.as_str(),
         ));
         Ok(Self {
-            session_id: crate::SessionId::from(session_id),
+            session_id: session_id.clone(),
             workspace_id: workspace_id.to_string(),
             cleanup_effect_id,
             plan_fingerprint,
@@ -60,7 +61,7 @@ impl SessionCleanupRepositoryPreparation {
 
     fn verify_identity(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         effect_id: &str,
     ) -> Result<(), SessionCleanupError> {
         let receipt_fingerprint = crate::stable_fingerprint(&(
@@ -83,7 +84,7 @@ impl SessionCleanupRepositoryPreparation {
 
     pub(crate) fn verify_for_resources(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         workspace_id: &str,
         resources: &crate::SessionResourceState,
     ) -> Result<(), SessionCleanupError> {
@@ -312,7 +313,7 @@ pub struct SessionCleanupDisposalCommand {
 
 impl SessionCleanupDisposalCommand {
     fn new(
-        session_id: &str,
+        session_id: &SessionId,
         root_effect_id: &str,
         preparation_fingerprint: String,
         provider_disposal: awaken_provisioning_contract::SandboxDisposalPreparation,
@@ -324,7 +325,7 @@ impl SessionCleanupDisposalCommand {
             .operation_id()
             .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?;
         Ok(Self {
-            session_id: crate::SessionId::from(session_id),
+            session_id: session_id.clone(),
             effect_id,
             preparation_fingerprint,
             provider_disposal,
@@ -407,8 +408,8 @@ impl SessionCleanupDisposalReceipt {
         if self
             != &Self::new(
                 &SessionCleanupDisposalCommand::new(
-                    command.session_id.as_str(),
-                    &cleanup_effect_id(command.session_id.as_str()),
+                    &command.session_id,
+                    &cleanup_effect_id(&command.session_id),
                     command.preparation_fingerprint.clone(),
                     command.provider_disposal.clone(),
                 )?
@@ -483,11 +484,11 @@ fn requested_view(
 }
 
 impl SessionCleanupProgress {
-    fn session_id(&self) -> Result<&str, SessionCleanupError> {
+    fn session_id(&self) -> Result<&SessionId, SessionCleanupError> {
         self.preparations
             .values()
             .next()
-            .map(|preparation| preparation.effect.command.session_id.as_str())
+            .map(|preparation| &preparation.effect.command.session_id)
             .ok_or(SessionCleanupError::PreparationReceiptMismatch)
     }
 
@@ -498,7 +499,8 @@ impl SessionCleanupProgress {
     ) -> Result<(), SessionCleanupError> {
         let view = requested_view(&self.cleanup)?;
         let session_id = self.session_id()?;
-        if view.effect_id != cleanup_effect_id(session_id) || !view.thread_ids.contains(session_id)
+        if view.effect_id != cleanup_effect_id(session_id)
+            || !view.thread_ids.contains(session_id.as_str())
         {
             return Err(SessionCleanupError::OperationMismatch);
         }
@@ -536,7 +538,7 @@ impl SessionCleanupProgress {
         if view.publication_outcome_present && !children_ready {
             return Err(SessionCleanupError::PreparationReceiptMismatch);
         }
-        if self.preparations.contains_key(session_id)
+        if self.preparations.contains_key(session_id.as_str())
             && view.publication_required
             && !view.publication_outcome_present
         {
@@ -552,7 +554,7 @@ impl SessionCleanupProgress {
                 SessionCleanupError::PreparationReceiptMismatch
             });
         }
-        if complete && !self.preparations.contains_key(session_id) {
+        if complete && !self.preparations.contains_key(session_id.as_str()) {
             // Historical root completion already means physical deletion and
             // uses the legacy completion path. A new Disposing state must
             // always preserve the exact root preparation fence that precedes
@@ -586,7 +588,10 @@ impl SessionCleanupProgress {
         Ok(())
     }
 
-    fn preparation_fingerprint(&self, session_id: &str) -> Result<String, SessionCleanupError> {
+    fn preparation_fingerprint(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<String, SessionCleanupError> {
         self.validate(true)?;
         let repository = &self
             .repository_preparation
@@ -597,7 +602,7 @@ impl SessionCleanupProgress {
 
     fn preparation_fingerprint_with_repository(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         repository: &SessionCleanupRepositoryPreparation,
     ) -> Result<String, SessionCleanupError> {
         self.validate_preparation_evidence(true, Some(repository))?;
@@ -756,7 +761,7 @@ fn completed_fingerprint_from_parts(
 
 fn complete_progress(
     progress: &SessionCleanupProgress,
-    session_id: &str,
+    session_id: &SessionId,
     receipt: &SessionCleanupDisposalReceipt,
 ) -> Result<SessionCleanupOperation, SessionCleanupError> {
     let view = requested_view(&progress.cleanup)?;
@@ -793,7 +798,7 @@ impl SessionCleanupOperation {
     /// inventing a second queue or exposing the root preparation early.
     pub(crate) fn terminal_work_action(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         provider_disposal: Option<&awaken_provisioning_contract::SandboxDisposalPreparation>,
     ) -> Result<Option<SessionTerminalCleanupAction>, SessionCleanupError> {
         self.verify_for(session_id)?;
@@ -824,7 +829,7 @@ impl SessionCleanupOperation {
     /// being reinterpreted or rewritten.
     pub(crate) fn pending_preparation_commands(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Result<Vec<SessionCleanupCommand>, SessionCleanupError> {
         self.verify_for(session_id)?;
         if matches!(self.state(), SessionCleanupState::Disposing(_)) || self.is_completed() {
@@ -866,10 +871,11 @@ impl SessionCleanupOperation {
         }
         Ok(view
             .thread_ids
-            .contains(session_id)
+            .contains(session_id.as_str())
             .then(|| {
-                (!is_covered(&session_id.to_string()))
-                    .then(|| SessionCleanupCommand::new(session_id, session_id, view.effect_id))
+                (!is_covered(&session_id.to_string())).then(|| {
+                    SessionCleanupCommand::new(session_id, session_id.as_str(), view.effect_id)
+                })
             })
             .flatten()
             .into_iter()
@@ -881,7 +887,7 @@ impl SessionCleanupOperation {
     /// Disposing, making that root CAS the physical-deletion gate.
     pub(crate) fn record_preparation(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         preparation: SessionCleanupPreparation,
         repository_preparation: Option<SessionCleanupRepositoryPreparation>,
     ) -> Result<bool, SessionCleanupError> {
@@ -1014,7 +1020,7 @@ impl SessionCleanupOperation {
     /// its closed Disposing subphase.
     pub(crate) fn disposal_command(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         provider_disposal: Option<&awaken_provisioning_contract::SandboxDisposalPreparation>,
     ) -> Result<Option<SessionCleanupDisposalCommand>, SessionCleanupError> {
         self.verify_for(session_id)?;
@@ -1034,7 +1040,7 @@ impl SessionCleanupOperation {
                 let restore_target = disposing
                     .progress
                     .preparations
-                    .get(session_id)
+                    .get(session_id.as_str())
                     .and_then(|preparation| preparation.effect.command.restore_target.clone());
                 Ok(Some(command.with_optional_restore_target(restore_target)?))
             }
@@ -1061,7 +1067,7 @@ impl SessionCleanupOperation {
     /// same aggregate fingerprint, which closes final-CAS response loss.
     pub(crate) fn record_disposal(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         provider_disposal: Option<&awaken_provisioning_contract::SandboxDisposalPreparation>,
         receipt: SessionCleanupDisposalReceipt,
     ) -> Result<bool, SessionCleanupError> {
@@ -1131,7 +1137,7 @@ impl SessionCleanupOperation {
     /// from its frozen Environment state.
     pub(crate) fn terminal_provider_disposal_preparation(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> Result<Option<awaken_provisioning_contract::SandboxDisposalPreparation>, SessionCleanupError>
     {
         self.verify_for(session_id)?;
@@ -1142,7 +1148,7 @@ impl SessionCleanupOperation {
         let preparation_fingerprint = progress.preparation_fingerprint(session_id)?;
         let root = progress
             .preparations
-            .get(session_id)
+            .get(session_id.as_str())
             .ok_or(SessionCleanupError::DisposalNotReady)?;
         awaken_provisioning_contract::SandboxDisposalPreparation::new(
             root.provider_prepared_effect_fence.clone(),
@@ -1203,7 +1209,7 @@ mod tests {
 
     fn repository_preparation(session_id: &str) -> SessionCleanupRepositoryPreparation {
         SessionCleanupRepositoryPreparation::new(
-            session_id,
+            &crate::SessionId::from(session_id),
             "workspace",
             &crate::SessionResourceState::default(),
         )
@@ -1215,10 +1221,10 @@ mod tests {
         session_id: &str,
     ) -> Option<SessionCleanupDisposalCommand> {
         let provider = cleanup
-            .terminal_provider_disposal_preparation(session_id)
+            .terminal_provider_disposal_preparation(&crate::SessionId::from(session_id))
             .expect("provider preparation projection");
         cleanup
-            .disposal_command(session_id, provider.as_ref())
+            .disposal_command(&crate::SessionId::from(session_id), provider.as_ref())
             .expect("disposal command projection")
     }
 
@@ -1227,10 +1233,10 @@ mod tests {
         session_id: &str,
     ) -> Option<SessionTerminalCleanupAction> {
         let provider = cleanup
-            .terminal_provider_disposal_preparation(session_id)
+            .terminal_provider_disposal_preparation(&crate::SessionId::from(session_id))
             .expect("provider preparation projection");
         cleanup
-            .terminal_work_action(session_id, provider.as_ref())
+            .terminal_work_action(&crate::SessionId::from(session_id), provider.as_ref())
             .expect("terminal action projection")
     }
 
@@ -1308,21 +1314,32 @@ mod tests {
         // | P4 | all exact | Disposing | foreign dispose | reject/no change |
         // | P5 | all exact | Completed | final-CAS retry | E4/E5 |
         let mut state = SessionCleanupOperation::default();
-        assert!(state.request("prepared-session"));
+        assert!(state.request(&crate::SessionId::from("prepared-session")));
         assert!(
             state
-                .freeze_targets("prepared-session", ["prepared-child".to_string()], 19, 23,)
+                .freeze_targets(
+                    &crate::SessionId::from("prepared-session"),
+                    ["prepared-child".to_string()],
+                    19,
+                    23,
+                )
                 .unwrap()
         );
         let child = state
-            .command_for("prepared-session", "prepared-child")
+            .command_for(
+                &crate::SessionId::from("prepared-session"),
+                "prepared-child",
+            )
             .unwrap();
         let root = state
-            .command_for("prepared-session", "prepared-session")
+            .command_for(
+                &crate::SessionId::from("prepared-session"),
+                "prepared-session",
+            )
             .unwrap();
         assert_eq!(
             state
-                .pending_preparation_commands("prepared-session")
+                .pending_preparation_commands(&crate::SessionId::from("prepared-session"))
                 .unwrap(),
             vec![child.clone()],
             "P1/E1"
@@ -1335,7 +1352,11 @@ mod tests {
         let child_preparation = preparation(&child);
         assert!(
             state
-                .record_preparation("prepared-session", child_preparation, None)
+                .record_preparation(
+                    &crate::SessionId::from("prepared-session"),
+                    child_preparation,
+                    None
+                )
                 .unwrap(),
             "P2"
         );
@@ -1343,7 +1364,7 @@ mod tests {
         let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
         assert_eq!(
             recovered
-                .pending_preparation_commands("prepared-session")
+                .pending_preparation_commands(&crate::SessionId::from("prepared-session"))
                 .unwrap(),
             vec![root.clone()],
             "P2/E2"
@@ -1353,7 +1374,7 @@ mod tests {
         assert!(
             recovered
                 .record_preparation(
-                    "prepared-session",
+                    &crate::SessionId::from("prepared-session"),
                     root_preparation.clone(),
                     Some(repository_preparation("prepared-session")),
                 )
@@ -1363,7 +1384,7 @@ mod tests {
         assert!(
             !recovered
                 .record_preparation(
-                    "prepared-session",
+                    &crate::SessionId::from("prepared-session"),
                     root_preparation,
                     Some(repository_preparation("prepared-session")),
                 )
@@ -1383,7 +1404,7 @@ mod tests {
         conflicting.preparation_fingerprint.push_str("-foreign");
         assert_eq!(
             recovered.record_disposal(
-                "prepared-session",
+                &crate::SessionId::from("prepared-session"),
                 Some(&disposal.provider_disposal),
                 conflicting,
             ),
@@ -1396,7 +1417,7 @@ mod tests {
         assert!(
             recovered
                 .record_disposal(
-                    "prepared-session",
+                    &crate::SessionId::from("prepared-session"),
                     Some(&disposal.provider_disposal),
                     exact.clone(),
                 )
@@ -1406,7 +1427,7 @@ mod tests {
         assert!(recovered.is_completed(), "P5/E5");
         assert!(
             !recovered
-                .record_disposal("prepared-session", None, exact)
+                .record_disposal(&crate::SessionId::from("prepared-session"), None, exact)
                 .unwrap(),
             "P5/E4 final CAS response loss"
         );
@@ -1428,16 +1449,23 @@ mod tests {
         // | A4 | all prepared | Dispose(root aggregate) / E3 |
         // | A5 | historical or new Completed | None / E4 |
         let mut state = SessionCleanupOperation::default();
-        assert!(state.request("action-session"));
+        assert!(state.request(&crate::SessionId::from("action-session")));
         assert_eq!(
             terminal_action(&state, "action-session"),
             Some(SessionTerminalCleanupAction::Waiting),
             "A1/E1"
         );
         state
-            .freeze_targets("action-session", ["action-child".into()], 5, 8)
+            .freeze_targets(
+                &crate::SessionId::from("action-session"),
+                ["action-child".into()],
+                5,
+                8,
+            )
             .unwrap();
-        let child = state.command_for("action-session", "action-child").unwrap();
+        let child = state
+            .command_for(&crate::SessionId::from("action-session"), "action-child")
+            .unwrap();
         assert_eq!(
             terminal_action(&state, "action-session"),
             Some(SessionTerminalCleanupAction::Prepare {
@@ -1447,10 +1475,14 @@ mod tests {
         );
 
         let root = state
-            .command_for("action-session", "action-session")
+            .command_for(&crate::SessionId::from("action-session"), "action-session")
             .unwrap();
         state
-            .record_preparation("action-session", preparation(&child), None)
+            .record_preparation(
+                &crate::SessionId::from("action-session"),
+                preparation(&child),
+                None,
+            )
             .unwrap();
         assert_eq!(
             terminal_action(&state, "action-session"),
@@ -1461,7 +1493,7 @@ mod tests {
         );
         state
             .record_preparation(
-                "action-session",
+                &crate::SessionId::from("action-session"),
                 preparation(&root),
                 Some(repository_preparation("action-session")),
             )
@@ -1476,7 +1508,7 @@ mod tests {
         );
         state
             .record_disposal(
-                "action-session",
+                &crate::SessionId::from("action-session"),
                 Some(&disposal.provider_disposal),
                 SessionCleanupDisposalReceipt::new(&disposal),
             )
@@ -1485,16 +1517,31 @@ mod tests {
 
         let mut publication = SessionCleanupOperation::default();
         publication
-            .request_with_publication("publication-session", publication_intent())
+            .request_with_publication(
+                &crate::SessionId::from("publication-session"),
+                publication_intent(),
+            )
             .unwrap();
         publication
-            .freeze_targets("publication-session", ["publication-child".into()], 5, 8)
+            .freeze_targets(
+                &crate::SessionId::from("publication-session"),
+                ["publication-child".into()],
+                5,
+                8,
+            )
             .unwrap();
         let child = publication
-            .command_for("publication-session", "publication-child")
+            .command_for(
+                &crate::SessionId::from("publication-session"),
+                "publication-child",
+            )
             .unwrap();
         publication
-            .record_preparation("publication-session", preparation(&child), None)
+            .record_preparation(
+                &crate::SessionId::from("publication-session"),
+                preparation(&child),
+                None,
+            )
             .unwrap();
         assert_eq!(
             terminal_action(&publication, "publication-session"),
@@ -1526,35 +1573,49 @@ mod tests {
         // | W6 | complete | exact | Disposing + unknown sibling | E4/E5 |
         let mut state = SessionCleanupOperation::default();
         state
-            .request_with_publication("repo-session", publication_intent())
+            .request_with_publication(
+                &crate::SessionId::from("repo-session"),
+                publication_intent(),
+            )
             .unwrap();
         state
-            .freeze_targets("repo-session", ["repo-child".into()], 4, 8)
+            .freeze_targets(
+                &crate::SessionId::from("repo-session"),
+                ["repo-child".into()],
+                4,
+                8,
+            )
             .unwrap();
-        let child = state.command_for("repo-session", "repo-child").unwrap();
+        let child = state
+            .command_for(&crate::SessionId::from("repo-session"), "repo-child")
+            .unwrap();
         state
-            .record_preparation("repo-session", preparation(&child), None)
+            .record_preparation(
+                &crate::SessionId::from("repo-session"),
+                preparation(&child),
+                None,
+            )
             .unwrap();
         let partial = serde_json::to_value(&state).unwrap();
         assert_eq!(partial["state"], "preparing", "W1/E1");
         assert!(decode_persisted_cleanup(partial.clone()).is_ok(), "W1/E1");
         let publication = state
-            .publication_command("repo-session")
+            .publication_command(&crate::SessionId::from("repo-session"))
             .unwrap()
             .expect("W1/E3");
         let mut rejected = state.clone();
         rejected
             .record_repository_publication_rejection(
-                "repo-session",
+                &crate::SessionId::from("repo-session"),
                 publication_rejection(&publication),
             )
             .unwrap();
         let rejected_root = rejected
-            .command_for("repo-session", "repo-session")
+            .command_for(&crate::SessionId::from("repo-session"), "repo-session")
             .unwrap();
         rejected
             .record_preparation(
-                "repo-session",
+                &crate::SessionId::from("repo-session"),
                 preparation(&rejected_root),
                 Some(repository_preparation("repo-session")),
             )
@@ -1564,7 +1625,7 @@ mod tests {
         assert!(
             rejected
                 .record_disposal(
-                    "repo-session",
+                    &crate::SessionId::from("repo-session"),
                     Some(&rejected_disposal.provider_disposal),
                     rejected_disposal_receipt.clone(),
                 )
@@ -1574,7 +1635,7 @@ mod tests {
         assert!(
             !rejected
                 .record_disposal(
-                    "repo-session",
+                    &crate::SessionId::from("repo-session"),
                     Some(&rejected_disposal.provider_disposal),
                     rejected_disposal_receipt,
                 )
@@ -1583,31 +1644,39 @@ mod tests {
         );
         assert!(
             rejected
-                .repository_publication_rejection("repo-session")
+                .repository_publication_rejection(&crate::SessionId::from("repo-session"))
                 .unwrap()
                 .is_some(),
             "W2R/E6 rejection remains the verified sidecar outcome"
         );
-        let root = state.command_for("repo-session", "repo-session").unwrap();
+        let root = state
+            .command_for(&crate::SessionId::from("repo-session"), "repo-session")
+            .unwrap();
         assert_eq!(
-            state.record_preparation("repo-session", preparation(&root), None),
+            state.record_preparation(
+                &crate::SessionId::from("repo-session"),
+                preparation(&root),
+                None
+            ),
             Err(SessionCleanupError::CommandNotPending),
             "W1/E3"
         );
         state
             .record_repository_publication_receipt(
-                "repo-session",
+                &crate::SessionId::from("repo-session"),
                 publication_receipt(&publication),
             )
             .unwrap();
         assert_eq!(
-            state.pending_preparation_commands("repo-session").unwrap(),
+            state
+                .pending_preparation_commands(&crate::SessionId::from("repo-session"))
+                .unwrap(),
             vec![root.clone()],
             "W2/E3"
         );
         state
             .record_preparation(
-                "repo-session",
+                &crate::SessionId::from("repo-session"),
                 preparation(&root),
                 Some(repository_preparation("repo-session")),
             )
@@ -1659,13 +1728,17 @@ mod tests {
             expires_at_unix_ms: 40_000,
         };
         let mut state = SessionCleanupOperation::default();
-        assert!(state.request("prepared-root"));
-        state.freeze_targets("prepared-root", [], 7, 11).unwrap();
-        let command = state.command_for("prepared-root", "prepared-root").unwrap();
+        assert!(state.request(&crate::SessionId::from("prepared-root")));
+        state
+            .freeze_targets(&crate::SessionId::from("prepared-root"), [], 7, 11)
+            .unwrap();
+        let command = state
+            .command_for(&crate::SessionId::from("prepared-root"), "prepared-root")
+            .unwrap();
         let prepared_effect = SessionTerminalCleanupEffect::new(command, prepared_lease.clone());
         state
             .record_preparation(
-                "prepared-root",
+                &crate::SessionId::from("prepared-root"),
                 SessionCleanupPreparation::try_new(
                     &prepared_effect,
                     prepared_effect.sandbox_effect_fence().unwrap(),
@@ -1699,10 +1772,12 @@ mod tests {
         // explicit P; E3 v1 with explicit distinct P is rejected. No Option is
         // retained in the domain value or emitted by a current writer.
         let mut operation = SessionCleanupOperation::default();
-        assert!(operation.request("wire-session"));
-        operation.freeze_targets("wire-session", [], 1, 1).unwrap();
+        assert!(operation.request(&crate::SessionId::from("wire-session")));
+        operation
+            .freeze_targets(&crate::SessionId::from("wire-session"), [], 1, 1)
+            .unwrap();
         let command = operation
-            .command_for("wire-session", "wire-session")
+            .command_for(&crate::SessionId::from("wire-session"), "wire-session")
             .unwrap();
         let lease = crate::SessionRealizationLease {
             owner: "wire-owner".into(),

@@ -620,7 +620,11 @@ impl SharedHost {
             })?;
             Some(
                 state
-                    .checkpoint_request(workspace_id, thread, &checkpoint_policy)
+                    .checkpoint_request(
+                        workspace_id,
+                        &awaken_session_contract::SessionId::from(thread),
+                        &checkpoint_policy,
+                    )
                     .map_err(|error| HostError::internal(error.to_string()))?
                     .ok_or_else(|| {
                         HostError::internal(
@@ -680,7 +684,7 @@ impl SharedHost {
                             "Restoring terminal projection has no frozen Workspace",
                         )
                     })?,
-                    thread,
+                    &awaken_session_contract::SessionId::from(thread),
                 )
                 .ok_or_else(|| {
                     HostError::internal("Restoring state did not project an exact request")

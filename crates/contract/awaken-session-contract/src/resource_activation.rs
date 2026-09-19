@@ -8,6 +8,7 @@
 use awaken_resource_contract::{InputResourceId, ResourceAccess};
 use serde::{Deserialize, Serialize};
 
+use crate::SessionId;
 use crate::{ResolvedInput, ResolvedInputSource, ResolvedSessionResources};
 
 /// One Session-local realization of one resolved input.
@@ -409,7 +410,7 @@ impl SessionResourceState {
     /// Persist a new desired manifest before invoking any external realizer.
     pub fn prepare(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         desired: ResolvedSessionResources,
     ) -> Result<u64, ResourceActivationError> {
         if self.has_repository_retirement_conflict(&desired)
@@ -464,7 +465,7 @@ impl SessionResourceState {
     /// fence remains absorbing until commit/rollback/recovery settles it.
     pub fn revise_unattempted_pending(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         desired: ResolvedSessionResources,
     ) -> Result<u64, ResourceActivationError> {
         if self.pending.is_none() {
@@ -624,7 +625,7 @@ impl SessionResourceState {
     }
 
     /// Adopt a legacy active manifest after it has been re-realized once.
-    pub fn adopt_legacy_active(&mut self, session_id: &str) {
+    pub fn adopt_legacy_active(&mut self, session_id: &SessionId) {
         if !self.activations.is_empty() || self.active.inputs().is_empty() {
             return;
         }
@@ -804,7 +805,7 @@ fn upsert_repository_retirement(retirements: &mut Vec<ResolvedInput>, candidate:
 }
 
 fn prepared_activation(
-    session_id: &str,
+    session_id: &SessionId,
     revision: u64,
     input: &ResolvedInput,
 ) -> SessionResourceActivation {
@@ -819,7 +820,7 @@ fn prepared_activation(
     };
     SessionResourceActivation {
         activation_id: format!("{session_id}:{revision}:{}", input.binding_id),
-        session_id: crate::SessionId::from(session_id),
+        session_id: session_id.clone(),
         revision,
         binding_id: input.binding_id.clone(),
         resource_id,
@@ -930,7 +931,9 @@ mod tests {
             "R1/E1"
         );
 
-        state.prepare("session", manifest("pending")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session"), manifest("pending"))
+            .unwrap();
         let (revision, selected) = state.desired_generation();
         assert_eq!(revision, state.revision, "R2/E2 revision");
         assert_eq!(selected, state.pending.as_ref().unwrap(), "R2/E2 manifest");
@@ -939,7 +942,12 @@ mod tests {
     #[test]
     fn prepare_attempt_commit_is_exactly_one_active_generation() {
         let mut state = SessionResourceState::default();
-        assert_eq!(state.prepare("session-1", manifest("a")).unwrap(), 1);
+        assert_eq!(
+            state
+                .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+                .unwrap(),
+            1
+        );
         state.start_attempt().unwrap();
         state.commit().unwrap();
         assert_eq!(state.active, manifest("a"));
@@ -951,9 +959,13 @@ mod tests {
     #[test]
     fn replacement_keeps_old_active_until_commit_and_records_release() {
         let mut state = SessionResourceState::default();
-        state.prepare("session-1", manifest("a")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+            .unwrap();
         state.commit().unwrap();
-        state.prepare("session-1", manifest("b")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session-1"), manifest("b"))
+            .unwrap();
         assert_eq!(state.active_revision(), 1);
         assert_eq!(state.active, manifest("a"));
         assert_eq!(state.activations[0].state, ActivationState::Releasing);
@@ -985,7 +997,10 @@ mod tests {
 
         let mut committed = SessionResourceState::from_active(repository.clone());
         committed
-            .prepare("session-1", ResolvedSessionResources::default())
+            .prepare(
+                &crate::SessionId::from("session-1"),
+                ResolvedSessionResources::default(),
+            )
             .unwrap();
         committed.commit().unwrap();
         assert_eq!(
@@ -997,13 +1012,16 @@ mod tests {
 
         let mut rolled_back = SessionResourceState::from_active(repository.clone());
         rolled_back
-            .prepare("session-1", ResolvedSessionResources::default())
+            .prepare(
+                &crate::SessionId::from("session-1"),
+                ResolvedSessionResources::default(),
+            )
             .unwrap();
         rolled_back.rollback("injected").unwrap();
         assert!(rolled_back.repository_retirements().is_empty(), "R2/E2");
 
         assert_eq!(
-            committed.prepare("session-1", repository.clone()),
+            committed.prepare(&crate::SessionId::from("session-1"), repository.clone()),
             Err(ResourceActivationError::Pending),
             "R3/E3"
         );
@@ -1011,7 +1029,9 @@ mod tests {
         assert!(committed.has_references(), "R3/E4");
 
         assert!(committed.complete_repository_retirement(&repository.inputs()[0]));
-        committed.prepare("session-1", repository).unwrap();
+        committed
+            .prepare(&crate::SessionId::from("session-1"), repository)
+            .unwrap();
         assert!(committed.pending.is_some(), "R4/E5");
     }
 
@@ -1138,13 +1158,19 @@ mod tests {
             "V2/E2"
         );
 
-        legacy.prepare("session-legacy", manifest("next")).unwrap();
+        legacy
+            .prepare(&crate::SessionId::from("session-legacy"), manifest("next"))
+            .unwrap();
         assert_eq!(legacy.active_revision(), 1, "V3/E3");
 
         let mut activated = SessionResourceState::default();
-        activated.prepare("session-1", manifest("a")).unwrap();
+        activated
+            .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+            .unwrap();
         activated.commit().unwrap();
-        activated.prepare("session-1", manifest("b")).unwrap();
+        activated
+            .prepare(&crate::SessionId::from("session-1"), manifest("b"))
+            .unwrap();
         assert_eq!(activated.active_revision(), 1, "V4/E3");
     }
 
@@ -1163,9 +1189,13 @@ mod tests {
     #[test]
     fn rollback_restores_old_authority_and_fails_only_new_generation() {
         let mut state = SessionResourceState::default();
-        state.prepare("session-1", manifest("a")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+            .unwrap();
         state.commit().unwrap();
-        state.prepare("session-1", manifest("b")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session-1"), manifest("b"))
+            .unwrap();
         assert_eq!(state.active_generation(), (1, &manifest("a")), "R1/E1");
         assert_eq!(state.desired_generation(), (2, &manifest("b")), "R1/E1");
         state.start_attempt().unwrap();
@@ -1212,7 +1242,10 @@ mod tests {
                 }
                 for attempt in 1..=3 {
                     state
-                        .prepare("session", ResolvedSessionResources::default())
+                        .prepare(
+                            &crate::SessionId::from("session"),
+                            ResolvedSessionResources::default(),
+                        )
                         .unwrap();
                     state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
                     assert_eq!(state.active_generation(), (initial_revision, &active));
@@ -1222,7 +1255,9 @@ mod tests {
                     assert_eq!(state.active_generation(), (initial_revision, &active));
                     assert_eq!(state.desired_generation(), state.active_generation());
                 }
-                state.prepare("session", manifest("next")).unwrap();
+                state
+                    .prepare(&crate::SessionId::from("session"), manifest("next"))
+                    .unwrap();
                 state.commit().unwrap();
                 assert_eq!(
                     state.active_generation(),
@@ -1235,9 +1270,11 @@ mod tests {
     #[test]
     fn pending_transition_cannot_be_overwritten() {
         let mut state = SessionResourceState::default();
-        state.prepare("session-1", manifest("a")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+            .unwrap();
         assert_eq!(
-            state.prepare("session-1", manifest("b")),
+            state.prepare(&crate::SessionId::from("session-1"), manifest("b")),
             Err(ResourceActivationError::Pending)
         );
         assert_eq!(state.pending, Some(manifest("a")));
@@ -1258,16 +1295,18 @@ mod tests {
     fn only_an_unattempted_pending_generation_can_be_revised() {
         let mut absent = SessionResourceState::default();
         assert_eq!(
-            absent.revise_unattempted_pending("session-1", manifest("b")),
+            absent.revise_unattempted_pending(&crate::SessionId::from("session-1"), manifest("b")),
             Err(ResourceActivationError::NoPending),
             "P3"
         );
 
         let mut mutable = SessionResourceState::default();
-        let revision = mutable.prepare("session-1", manifest("a")).unwrap();
+        let revision = mutable
+            .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+            .unwrap();
         assert_eq!(
             mutable
-                .revise_unattempted_pending("session-1", manifest("b"))
+                .revise_unattempted_pending(&crate::SessionId::from("session-1"), manifest("b"))
                 .unwrap(),
             revision,
             "P1"
@@ -1279,7 +1318,7 @@ mod tests {
         mutable.start_attempt().unwrap();
         let before = mutable.clone();
         assert_eq!(
-            mutable.revise_unattempted_pending("session-1", manifest("c")),
+            mutable.revise_unattempted_pending(&crate::SessionId::from("session-1"), manifest("c")),
             Err(ResourceActivationError::Pending),
             "P2"
         );
@@ -1304,14 +1343,18 @@ mod tests {
         assert!(!empty.has_references(), "G1");
 
         let mut commit = SessionResourceState::default();
-        commit.prepare("session-1", manifest("a")).unwrap();
+        commit
+            .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+            .unwrap();
         commit.commit().unwrap();
         assert_eq!(
             commit.resource_references().inputs(),
             manifest("a").inputs(),
             "G2"
         );
-        commit.prepare("session-1", manifest("b")).unwrap();
+        commit
+            .prepare(&crate::SessionId::from("session-1"), manifest("b"))
+            .unwrap();
         let retained = commit.resource_references();
         assert_eq!(retained.inputs().len(), 2, "G3");
         assert!(commit.has_references(), "G3");
@@ -1323,9 +1366,13 @@ mod tests {
         );
 
         let mut rollback = SessionResourceState::default();
-        rollback.prepare("session-2", manifest("a")).unwrap();
+        rollback
+            .prepare(&crate::SessionId::from("session-2"), manifest("a"))
+            .unwrap();
         rollback.commit().unwrap();
-        rollback.prepare("session-2", manifest("b")).unwrap();
+        rollback
+            .prepare(&crate::SessionId::from("session-2"), manifest("b"))
+            .unwrap();
         rollback.rollback("injected").unwrap();
         assert_eq!(
             rollback.resource_references().inputs(),
@@ -1337,7 +1384,9 @@ mod tests {
     #[test]
     fn release_is_durable_and_idempotently_completes() {
         let mut state = SessionResourceState::default();
-        state.prepare("session-1", manifest("a")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+            .unwrap();
         state.commit().unwrap();
         state.begin_release().unwrap();
         assert!(state.needs_reconciliation());
@@ -1360,9 +1409,13 @@ mod tests {
     #[test]
     fn terminal_release_clears_the_reference_authority_after_teardown() {
         let mut state = SessionResourceState::default();
-        state.prepare("session-1", manifest("a")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session-1"), manifest("a"))
+            .unwrap();
         state.commit().unwrap();
-        state.prepare("session-1", manifest("b")).unwrap();
+        state
+            .prepare(&crate::SessionId::from("session-1"), manifest("b"))
+            .unwrap();
         state.complete_terminal_release("terminated");
 
         assert!(state.active.inputs().is_empty(), "T2/E3");
@@ -1394,7 +1447,10 @@ mod tests {
         let mut state = SessionResourceState::default();
         for revision in 0..400 {
             state
-                .prepare("session-history", manifest(&format!("success-{revision}")))
+                .prepare(
+                    &crate::SessionId::from("session-history"),
+                    manifest(&format!("success-{revision}")),
+                )
                 .unwrap();
             state.start_attempt().unwrap();
             state.commit().unwrap();
@@ -1419,7 +1475,10 @@ mod tests {
         );
 
         state
-            .prepare("session-history", manifest("failed-400"))
+            .prepare(
+                &crate::SessionId::from("session-history"),
+                manifest("failed-400"),
+            )
             .unwrap();
         state.start_attempt().unwrap();
         state.rollback("injected failure").unwrap();

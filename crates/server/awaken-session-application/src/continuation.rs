@@ -20,7 +20,7 @@ fn expected_mcp_generations(
 ) -> Result<Vec<awaken_session_contract::McpGenerationRef>, SessionContinuationError> {
     session
         .mcp
-        .active_generation_refs(session.session_id.as_str())
+        .active_generation_refs(&session.session_id)
         .map_err(|error| {
             SessionContinuationError::Runtime(RunError::internal(format!(
                 "durable MCP quiescence set is invalid: {error}"
@@ -217,7 +217,7 @@ impl SessionApplication {
                 validate_suspend_memory_preflight(&session)?;
                 session.environment.begin_suspend_at(
                     &owner_scope,
-                    session_id.as_str(),
+                    session_id,
                     session.activity_epoch,
                     session.realization.clone(),
                     now_unix_ms,
@@ -251,10 +251,7 @@ impl SessionApplication {
                     .record_quiescence(&receipt, &expected_mcp_generations)?;
                 session
                     .mcp
-                    .require_reprojection_after_quiescence(
-                        session_id.as_str(),
-                        &receipt.mcp_generations,
-                    )
+                    .require_reprojection_after_quiescence(session_id, &receipt.mcp_generations)
                     .map_err(|error| {
                         SessionContinuationError::Repository(format!(
                             "MCP quiescence transition failed: {error}"
@@ -280,7 +277,7 @@ impl SessionApplication {
                 let policy = &baseline.environment.idle_retention;
                 let request = session
                     .environment
-                    .checkpoint_request(&owner_scope, session_id.as_str(), policy)?
+                    .checkpoint_request(&owner_scope, session_id, policy)?
                     .ok_or(SessionEnvironmentTransitionError::WrongPhase)?;
                 let receipt = tokio::time::timeout(
                     std::time::Duration::from_secs(policy.max_checkpoint_duration_secs),
@@ -448,7 +445,7 @@ impl SessionApplication {
                     })?;
                     session.environment.begin_restore(
                         &owner_scope,
-                        session_id.as_str(),
+                        session_id,
                         next_epoch,
                         session.realization.clone(),
                         now_unix_ms,
@@ -459,7 +456,7 @@ impl SessionApplication {
                 SessionEnvironmentState::Restoring { .. } => {
                     let request = session
                         .environment
-                        .restoring_request(&owner_scope, session_id.as_str())
+                        .restoring_request(&owner_scope, session_id)
                         .ok_or(SessionEnvironmentTransitionError::NotRestoring)?;
                     let receipt = self
                         .runtime()

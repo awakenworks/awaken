@@ -657,11 +657,16 @@ mod tests {
             host.session_slots
                 .update(rule, |slot| slot.realization_authority = authority);
             let managed = ManagedHost::new(host);
-            let generation =
-                awaken_session_contract::SandboxGeneration::new(rule, 1, 30_000, "env", "image");
+            let generation = awaken_session_contract::SandboxGeneration::new(
+                &awaken_session_contract::SessionId::from(rule),
+                1,
+                30_000,
+                "env",
+                "image",
+            );
             let operation = awaken_session_contract::SessionEnvironmentOperation::new(
                 "workspace",
-                rule,
+                &awaken_session_contract::SessionId::from(rule),
                 "suspend",
                 &generation,
                 1,

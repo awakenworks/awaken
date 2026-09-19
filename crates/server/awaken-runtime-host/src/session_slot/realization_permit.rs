@@ -26,7 +26,7 @@ impl SessionRuntimeSlots {
     ) -> (SessionRealizationPermit, R) {
         let slots = self;
         SessionRealizationPermit::acquire(
-            session,
+            &awaken_session_contract::SessionId::from(session),
             move || {
                 let identity: Arc<tokio::sync::Mutex<()>> =
                     slots.update(session, |slot| slot.realization.clone());

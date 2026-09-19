@@ -554,7 +554,7 @@ mod tests {
         // aggregate mutation; otherwise the last activity could disappear
         // while the initial batch still had retained work.
         let mut batch = SessionEventBatch::compile(
-            "session",
+            &crate::SessionId::from("session"),
             "batch",
             vec![
                 SessionEventInput::UserMessage {

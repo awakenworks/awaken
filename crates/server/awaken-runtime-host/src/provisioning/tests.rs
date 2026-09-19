@@ -250,7 +250,10 @@ async fn root_terminal_cleanup_effect(
         .unwrap();
     let command = session
         .terminal_cleanup
-        .command_for(session_id, session_id)
+        .command_for(
+            &awaken_session_contract::SessionId::from(session_id),
+            session_id,
+        )
         .unwrap();
     host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
@@ -1546,7 +1549,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         "R3 exact owner remains Retiring until aggregate-authorized Disposal"
     );
     let repository_preparation = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-        "session-artifacts",
+        &awaken_session_contract::SessionId::from("session-artifacts"),
         &workspace_id,
         &session.resources,
     )
@@ -1787,13 +1790,16 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
     install_batch_artifact_environment(host.as_ref(), thread, "workspace-a").await;
 
     let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
-    assert!(cleanup.request(thread), "B2 terminal request");
+    assert!(
+        cleanup.request(&awaken_session_contract::SessionId::from(thread)),
+        "B2 terminal request"
+    );
     cleanup
-        .freeze_targets(thread, [], 0, 0)
+        .freeze_targets(&awaken_session_contract::SessionId::from(thread), [], 0, 0)
         .expect("B2 freeze root target");
     let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         cleanup
-            .command_for(thread, thread)
+            .command_for(&awaken_session_contract::SessionId::from(thread), thread)
             .expect("B2 root command"),
         terminal_cleanup_test_lease(),
     );
@@ -1869,12 +1875,20 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     // fail-closed complement to H2/H3 above; the root assignment is the
     // only tenant authority for both live publication and readback.
     let mut operation = awaken_session_contract::SessionCleanupOperation::default();
-    assert!(operation.request("missing-root"));
+    assert!(operation.request(&awaken_session_contract::SessionId::from("missing-root")));
     operation
-        .freeze_targets("missing-root", ["missing-child".to_string()], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from("missing-root"),
+            ["missing-child".to_string()],
+            0,
+            0,
+        )
         .unwrap();
     let command = operation
-        .command_for("missing-root", "missing-child")
+        .command_for(
+            &awaken_session_contract::SessionId::from("missing-root"),
+            "missing-child",
+        )
         .unwrap();
     let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         command,

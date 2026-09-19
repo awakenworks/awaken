@@ -806,7 +806,7 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
     let mut command = creation_command("initial-root");
     command.initial_events = Some(
         awaken_session_contract::SessionInitialEventPlan::compile(
-            "initial-root",
+            &awaken_session_contract::SessionId::from("initial-root"),
             "initial:initial-root",
             vec![awaken_session_contract::SessionEventInput::UserMessage {
                 content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -850,7 +850,10 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
     };
     assert_eq!(
         run_id,
-        &awaken_session_contract::session_event_user_run_id("initial-root", operation_id),
+        &awaken_session_contract::session_event_user_run_id(
+            &awaken_session_contract::SessionId::from("initial-root"),
+            operation_id
+        ),
         "I1/E1 stable Run id"
     );
 }
@@ -952,7 +955,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 if initial_batch {
                     command.initial_events = Some(
                         awaken_session_contract::SessionInitialEventPlan::compile(
-                            &id,
+                            &awaken_session_contract::SessionId::from(id.as_str()),
                             format!("initial:{id}"),
                             ["first", "second"].into_iter().map(|text| {
                                 awaken_session_contract::SessionEventInput::UserMessage {

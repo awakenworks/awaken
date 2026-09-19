@@ -23,6 +23,7 @@
 //! to the one kernel and the one constructor below, so there is a single rule
 //! and a single proof with two identity sources — not two rules.
 
+use crate::SessionId;
 use std::any::Any;
 use std::future::Future;
 
@@ -62,7 +63,7 @@ pub const fn session_realization_exclusion_admits(
 /// Dropping the permit drops the owner, which is what releases the exclusion —
 /// the permit is the lifetime, not a copy of a decision made elsewhere.
 pub struct SessionRealizationPermit {
-    session_id: String,
+    session_id: SessionId,
     /// Retained so the exclusion cannot be released while a phase runs, and so
     /// a registry-owning caller can release its entry from this value's `Drop`.
     _exclusion_owner: Box<dyn Any + Send + Sync>,
@@ -81,7 +82,7 @@ impl SessionRealizationPermit {
     /// this call was waiting: the stale owner is dropped and the whole
     /// acquisition is retried against the replacement.
     pub async fn acquire<Identity, Owner, Enter, Entered, Admit, Admitted>(
-        session_id: &str,
+        session_id: &SessionId,
         mut enter: Enter,
         mut admit: Admit,
     ) -> (Self, Admitted)
@@ -101,7 +102,7 @@ impl SessionRealizationPermit {
                         admitted.expect("the admitted decision carries the caller's projection");
                     return (
                         Self {
-                            session_id: session_id.to_string(),
+                            session_id: crate::SessionId::from(session_id.to_string()),
                             _exclusion_owner: Box::new(owner),
                             _registered_identity: Box::new(identity),
                         },
@@ -116,7 +117,7 @@ impl SessionRealizationPermit {
     /// The Session this permit excludes. The phase driver takes its Session
     /// from here, so a permit for another Session cannot drive this one.
     #[must_use]
-    pub fn session_id(&self) -> &str {
+    pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 }
@@ -193,7 +194,7 @@ mod tests {
         let observed = Arc::clone(&entered);
         let replace = Arc::clone(&registered);
         let (permit, admitted) = SessionRealizationPermit::acquire(
-            "session-a",
+            &crate::SessionId::from("session-a"),
             || {
                 let identity = *replace.lock().unwrap();
                 observed.lock().unwrap().push(identity);

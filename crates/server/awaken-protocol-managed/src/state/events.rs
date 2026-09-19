@@ -240,7 +240,8 @@ fn public_inbound_kind_from_command(
         }
         SessionEventCommand::Interrupt { interrupt, .. } => OutboundKind::UserInterrupt {
             session_thread_id: interrupt.requested_target.as_ref().map(|target| {
-                let internal = target.thread_id(session_id);
+                let internal =
+                    target.thread_id(&awaken_session_contract::SessionId::from(session_id));
                 public_thread_id(session_id, &internal.0)
             }),
         },

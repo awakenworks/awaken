@@ -860,7 +860,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
     let now_unix_ms = support::unix_now_ms();
     let asserted = awaken_session_contract::SessionTerminalCleanupEffect::new(
         awaken_session_contract::SessionCleanupCommand::new(
-            "session-terminal-artifact",
+            &awaken_session_contract::SessionId::from("session-terminal-artifact"),
             "session-terminal-artifact",
             "cleanup-root",
         ),
@@ -1082,7 +1082,7 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     };
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace-artifacts",
-        "session-checkpoint-artifact",
+        &awaken_session_contract::SessionId::from("session-checkpoint-artifact"),
         "suspend",
         &generation,
         3,
@@ -1091,7 +1091,7 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     );
     let terminal_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         awaken_session_contract::SessionCleanupCommand::new(
-            "session-checkpoint-artifact",
+            &awaken_session_contract::SessionId::from("session-checkpoint-artifact"),
             "session-checkpoint-artifact",
             "cleanup-root",
         ),
@@ -1277,7 +1277,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
     let now_unix_ms = support::unix_now_ms();
     let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         awaken_session_contract::SessionCleanupCommand::new(
-            "session-terminal-recovery",
+            &awaken_session_contract::SessionId::from("session-terminal-recovery"),
             "session-terminal-recovery",
             "cleanup-root",
         ),

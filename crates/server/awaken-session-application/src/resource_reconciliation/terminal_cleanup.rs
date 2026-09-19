@@ -21,7 +21,7 @@ pub(super) fn terminal_restore_target_for_thread(
         .then(|| {
             session
                 .environment
-                .restoring_request(workspace_id, session.session_id.as_str())
+                .restoring_request(workspace_id, &session.session_id)
         })
         .flatten()
 }

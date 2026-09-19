@@ -9,20 +9,8 @@
 //! The suite lives in `awaken_store_conformance::session_store`; this file only
 //! supplies the backends.
 
-use awaken_deployment_contract::{
-    DeploymentAgent, DeploymentLifecycleFact, DeploymentRecord, DeploymentRepository,
-    DeploymentRunRecord, DeploymentRunView, DeploymentSchedule, DeploymentStatus,
-    DeploymentTrigger, DeploymentView, DeploymentWriteOutcome, ScheduledRunClaimOutcome,
-};
+use awaken_deployment_contract::{DeploymentRepository, DeploymentWriteOutcome};
 use awaken_session_contract::LifecycleOutbox as _;
-use awaken_session_contract::SessionId;
-use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, McpAttachmentDraft, McpAttachmentOrigin, McpTarget,
-    PersistedSession, ScopedPersistedSession, SessionCreateResult, SessionEnvironmentPhase,
-    SessionEventProjectionAnchor, SessionExecutionState, SessionMutation, SessionMutationPayload,
-    SessionMutationResult, SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
-    SessionTombstone,
-};
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_store_conformance::session_store::*;
 

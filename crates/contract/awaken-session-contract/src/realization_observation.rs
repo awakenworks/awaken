@@ -2,6 +2,7 @@
 //! Installed once by the scenario executable. Production builds omit the port.
 use std::sync::{Arc, OnceLock};
 
+use crate::SessionId;
 use crate::{McpGeneration, McpGenerationRef};
 
 /// The canonical key that names one complete MCP generation in an observation
@@ -39,7 +40,7 @@ pub fn observed_generation(reference: &McpGenerationRef) -> serde_json::Value {
 
 #[async_trait::async_trait]
 pub trait RealizationObserver: Send + Sync {
-    async fn observe(&self, point: &'static str, session_id: &str, data: serde_json::Value);
+    async fn observe(&self, point: &'static str, session_id: &SessionId, data: serde_json::Value);
 }
 static OBSERVER: OnceLock<Arc<dyn RealizationObserver>> = OnceLock::new();
 pub fn install(observer: Arc<dyn RealizationObserver>) {
@@ -51,7 +52,7 @@ pub fn install(observer: Arc<dyn RealizationObserver>) {
 pub fn enabled() -> bool {
     OBSERVER.get().is_some()
 }
-pub async fn checkpoint(point: &'static str, session_id: &str, data: serde_json::Value) {
+pub async fn checkpoint(point: &'static str, session_id: &SessionId, data: serde_json::Value) {
     if let Some(observer) = OBSERVER.get() {
         observer.observe(point, session_id, data).await;
     }

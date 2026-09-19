@@ -717,12 +717,27 @@ mod tests {
         // complete success path C1+C2+C3 => E1→E2→E3→E4.
         let lease = lease();
         let mut cleanup = SessionCleanupOperation::default();
-        assert!(cleanup.request("session"));
+        assert!(cleanup.request(&awaken_session_contract::SessionId::from("session")));
         cleanup
-            .freeze_targets("session", ["child".into()], 1, 2)
+            .freeze_targets(
+                &awaken_session_contract::SessionId::from("session"),
+                ["child".into()],
+                1,
+                2,
+            )
             .unwrap();
-        let child = cleanup.command_for("session", "child").unwrap();
-        let root = cleanup.command_for("session", "session").unwrap();
+        let child = cleanup
+            .command_for(
+                &awaken_session_contract::SessionId::from("session"),
+                "child",
+            )
+            .unwrap();
+        let root = cleanup
+            .command_for(
+                &awaken_session_contract::SessionId::from("session"),
+                "session",
+            )
+            .unwrap();
         let child_work = work(
             SessionTerminalCleanupAction::Prepare {
                 commands: vec![child.clone()],
@@ -818,8 +833,16 @@ mod tests {
         // R1=C1+!C2 => ordinary authorize/prepare/record; R2=C1+C2+C3 =>
         // reobserve(E2), suppress stale effect(E1), execute fresh(E3).
         let lease = lease();
-        let stale = SessionCleanupCommand::new("session", "stale", "root-effect");
-        let fresh = SessionCleanupCommand::new("session", "fresh", "root-effect");
+        let stale = SessionCleanupCommand::new(
+            &awaken_session_contract::SessionId::from("session"),
+            "stale",
+            "root-effect",
+        );
+        let fresh = SessionCleanupCommand::new(
+            &awaken_session_contract::SessionId::from("session"),
+            "fresh",
+            "root-effect",
+        );
         let events = Arc::new(Mutex::new(Vec::new()));
         let control = RecordingControl {
             work: Mutex::new(VecDeque::from([
@@ -885,8 +908,16 @@ mod tests {
         // effect error so the existing retry driver re-polls the aggregate.
         // Decision rule F1=C1+C2 => E1+E2+E3.
         let lease = lease();
-        let failing = SessionCleanupCommand::new("session", "failing", "root-effect");
-        let succeeding = SessionCleanupCommand::new("session", "succeeding", "root-effect");
+        let failing = SessionCleanupCommand::new(
+            &awaken_session_contract::SessionId::from("session"),
+            "failing",
+            "root-effect",
+        );
+        let succeeding = SessionCleanupCommand::new(
+            &awaken_session_contract::SessionId::from("session"),
+            "succeeding",
+            "root-effect",
+        );
         let events = Arc::new(Mutex::new(Vec::new()));
         let control = RecordingControl {
             work: Mutex::new(VecDeque::from([work(

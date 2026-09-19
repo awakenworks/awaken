@@ -40,7 +40,7 @@ fn observed_session(id: &str) -> PersistedSession {
 
 fn bind_user_command(session: &mut PersistedSession, idempotency_key: &str) -> RunId {
     let mut batch = awaken_session_contract::SessionEventBatch::compile(
-        session.session_id.as_str(),
+        &session.session_id,
         format!("batch:{idempotency_key}"),
         vec![awaken_session_contract::SessionEventInput::UserMessage {
             content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -120,7 +120,7 @@ fn user_run_retry_identity_has_one_aggregate_owner_and_fails_closed_on_ambiguity
 
     let mut initial = observed_session("session-initial");
     let batch = awaken_session_contract::SessionEventBatch::compile(
-        initial.session_id.as_str(),
+        &initial.session_id,
         "initial-batch",
         vec![awaken_session_contract::SessionEventInput::UserMessage {
             content: vec![awaken_agent_contract::agent::content::ContentBlock::text(

@@ -215,7 +215,7 @@ mod mutation_tests {
         // mutation boundary; the Kani table exhausts its scalar eligibility.
         let mut root = session("initial-plan", SessionRevision(0));
         let mut invalid = crate::SessionInitialEventPlan::compile(
-            "initial-plan",
+            &crate::SessionId::from("initial-plan"),
             "initial:initial-plan",
             vec![crate::SessionEventInput::UserMessage {
                 content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -234,7 +234,7 @@ mod mutation_tests {
         assert_eq!(root, before, "R2 root stutters atomically");
 
         let valid = crate::SessionInitialEventPlan::compile(
-            "initial-plan",
+            &crate::SessionId::from("initial-plan"),
             "initial:initial-plan",
             vec![crate::SessionEventInput::UserMessage {
                 content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -561,7 +561,7 @@ mod mutation_tests {
         assert!(terminal_disposal_command(&aggregate).is_none(), "A1/E1");
         let command = aggregate
             .terminal_cleanup
-            .pending_preparation_commands("prepared-root")
+            .pending_preparation_commands(&crate::SessionId::from("prepared-root"))
             .unwrap()
             .pop()
             .unwrap();
@@ -573,7 +573,7 @@ mod mutation_tests {
         )
         .unwrap();
         let repository_preparation = crate::SessionCleanupRepositoryPreparation::new(
-            "prepared-root",
+            &crate::SessionId::from("prepared-root"),
             "workspace",
             &aggregate.resources,
         )
@@ -685,7 +685,7 @@ mod mutation_tests {
             expires_at_unix_ms: u64::MAX,
         };
         let generation = crate::SandboxGeneration::new(
-            session_id,
+            &crate::SessionId::from(session_id),
             1,
             90_000,
             "legacy-restoring-environment",
@@ -705,7 +705,7 @@ mod mutation_tests {
         };
         let operation = crate::SessionEnvironmentOperation::new(
             workspace_id,
-            session_id,
+            &crate::SessionId::from(session_id),
             "restore",
             &generation,
             1,
@@ -723,7 +723,7 @@ mod mutation_tests {
         assert!(aggregate.freeze_terminal_cleanup_targets([], 0, 0).unwrap());
         let command = aggregate
             .terminal_cleanup
-            .command_for(session_id, session_id)
+            .command_for(&crate::SessionId::from(session_id), session_id)
             .expect("L1 legacy root command");
         let artifact_evidence = Vec::<(&str, &str)>::new();
         let receipt_fingerprint = crate::stable_fingerprint(&(
@@ -802,7 +802,7 @@ mod mutation_tests {
         assert!(base.freeze_terminal_cleanup_targets([], 3, 5).unwrap());
         let command = base
             .terminal_cleanup
-            .pending_preparation_commands("provider-race")
+            .pending_preparation_commands(&crate::SessionId::from("provider-race"))
             .unwrap()
             .pop()
             .unwrap();
@@ -818,7 +818,7 @@ mod mutation_tests {
             crate::SessionCleanupPreparation::try_new(&effect_d, provider_c.clone(), Vec::new())
                 .unwrap();
         let repository_preparation = crate::SessionCleanupRepositoryPreparation::new(
-            "provider-race",
+            &crate::SessionId::from("provider-race"),
             "workspace",
             &base.resources,
         )
@@ -914,7 +914,7 @@ mod mutation_tests {
         let lease_c = lease(30_000);
         let lease_d = lease(40_000);
         let generation = crate::SandboxGeneration::new(
-            "continuation-race",
+            &crate::SessionId::from("continuation-race"),
             1,
             90_000,
             "continuation-env",
@@ -932,7 +932,7 @@ mod mutation_tests {
             .environment
             .begin_suspend_at(
                 "workspace",
-                "continuation-race",
+                &crate::SessionId::from("continuation-race"),
                 base.activity_epoch,
                 Some(lease_a.clone()),
                 1_000,
@@ -1061,7 +1061,7 @@ mod mutation_tests {
             expires_at_unix_ms: 40_000,
         };
         let generation = crate::SandboxGeneration::new(
-            "takeover-session",
+            &crate::SessionId::from("takeover-session"),
             3,
             30_000,
             "environment-fingerprint",
@@ -1079,7 +1079,7 @@ mod mutation_tests {
             .environment
             .begin_suspend_at(
                 "workspace",
-                "takeover-session",
+                &crate::SessionId::from("takeover-session"),
                 aggregate.activity_epoch,
                 Some(source_lease.clone()),
                 1_000,
@@ -1151,7 +1151,7 @@ mod mutation_tests {
         assert!(terminal_disposal_command(&aggregate).is_none(), "X3");
         let root = aggregate
             .terminal_cleanup
-            .pending_preparation_commands("takeover-session")
+            .pending_preparation_commands(&crate::SessionId::from("takeover-session"))
             .unwrap()
             .pop()
             .unwrap();
@@ -1170,7 +1170,7 @@ mod mutation_tests {
                     .unwrap(),
                     Some(
                         crate::SessionCleanupRepositoryPreparation::new(
-                            "takeover-session",
+                            &crate::SessionId::from("takeover-session"),
                             "workspace",
                             &aggregate.resources,
                         )
@@ -1550,7 +1550,7 @@ mod mutation_tests {
             if active {
                 value
                     .resources
-                    .prepare("session-1", desired.clone())
+                    .prepare(&crate::SessionId::from("session-1"), desired.clone())
                     .expect("active generation prepare");
                 value.resources.start_attempt().expect("active attempt");
                 value.resources.commit().expect("active commit");
@@ -1558,7 +1558,7 @@ mod mutation_tests {
             if pending {
                 value
                     .resources
-                    .prepare("session-1", desired)
+                    .prepare(&crate::SessionId::from("session-1"), desired)
                     .expect("L5 pending generation");
             }
             assert_eq!(value.is_terminal(), terminal, "{rule}");

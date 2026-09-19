@@ -500,7 +500,7 @@ impl PersistedSession {
             self.execution = SessionExecutionState::Terminated;
         }
         self.active_activity_epochs.clear();
-        self.terminal_cleanup.request(self.session_id.as_str());
+        self.terminal_cleanup.request(&self.session_id);
         self.disposition = SessionDisposition::Archived {
             archived_at: archived_at.into(),
         };
@@ -517,11 +517,11 @@ impl PersistedSession {
         owner_scope: &str,
         requested_at_unix_s: i64,
     ) -> Result<Option<crate::ManagedLifecycleFact>, crate::SessionCleanupError> {
-        let session_id = self.session_id.as_str();
+        let session_id = self.session_id.clone();
         let plan = session_delete_request_plan(
             SessionDeleteDispositionClass::from(&self.disposition),
             self.execution.is_terminal(),
-            session_id,
+            &session_id,
             owner_scope,
             requested_at_unix_s,
         );
@@ -529,7 +529,7 @@ impl PersistedSession {
             return Ok(None);
         };
         self.terminal_cleanup
-            .request_exact(session_id, &cleanup_identity)?;
+            .request_exact(&session_id, &cleanup_identity)?;
         if terminalize_execution {
             self.execution = SessionExecutionState::Terminated;
         }
@@ -545,7 +545,7 @@ impl PersistedSession {
     /// reconciler, so no external cleanup effect needs to infer authority from a
     /// protocol projection.
     pub fn ensure_terminal_cleanup_fence(&mut self) -> bool {
-        self.terminal_cleanup.request(self.session_id.as_str())
+        self.terminal_cleanup.request(&self.session_id)
     }
 
     /// Freeze the exact Runtime target set and begin release of the currently
@@ -557,7 +557,7 @@ impl PersistedSession {
         runtime_commit_cursor: u64,
     ) -> Result<bool, crate::SessionCleanupError> {
         let mut changed = self.terminal_cleanup.freeze_targets(
-            self.session_id.as_str(),
+            &self.session_id,
             thread_ids,
             delegation_watermark,
             runtime_commit_cursor,
@@ -629,7 +629,7 @@ impl PersistedSession {
         let expected_restore_target = (preparation.effect.command.thread_id == self.session_id)
             .then(|| {
                 self.environment
-                    .restoring_request(workspace_id, self.session_id.as_str())
+                    .restoring_request(workspace_id, &self.session_id)
             })
             .flatten();
         if preparation.effect.command.restore_target != expected_restore_target {
@@ -652,13 +652,13 @@ impl PersistedSession {
         }
         if let Some(repository_preparation) = &repository_preparation {
             repository_preparation.verify_for_resources(
-                self.session_id.as_str(),
+                &self.session_id,
                 workspace_id,
                 &self.resources,
             )?;
         }
         self.terminal_cleanup.record_preparation(
-            self.session_id.as_str(),
+            &self.session_id,
             preparation,
             repository_preparation,
         )
@@ -677,7 +677,7 @@ impl PersistedSession {
     > {
         let Some(ordinary) = self
             .terminal_cleanup
-            .terminal_provider_disposal_preparation(self.session_id.as_str())?
+            .terminal_provider_disposal_preparation(&self.session_id)?
         else {
             return Ok(None);
         };
@@ -695,7 +695,7 @@ impl PersistedSession {
     ) -> Result<Option<crate::SessionTerminalCleanupAction>, crate::SessionCleanupError> {
         let provider_disposal = self.terminal_provider_disposal_preparation()?;
         self.terminal_cleanup
-            .terminal_work_action(self.session_id.as_str(), provider_disposal.as_ref())
+            .terminal_work_action(&self.session_id, provider_disposal.as_ref())
     }
 
     /// Admit the one exact physical-disposal receipt and retire the
@@ -714,7 +714,7 @@ impl PersistedSession {
             // Environment, or Resource projection.
             return self
                 .terminal_cleanup
-                .record_disposal(self.session_id.as_str(), None, receipt);
+                .record_disposal(&self.session_id, None, receipt);
         }
         if !self
             .realization
@@ -728,14 +728,14 @@ impl PersistedSession {
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
         let command = self
             .terminal_cleanup
-            .disposal_command(self.session_id.as_str(), Some(&provider_disposal))?
+            .disposal_command(&self.session_id, Some(&provider_disposal))?
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
         self.authorize_terminal_cleanup_disposal_effect(
             workspace_id,
             &crate::SessionTerminalCleanupDisposalEffect::new(command, lease.clone()),
         )?;
         let changed = self.terminal_cleanup.record_disposal(
-            self.session_id.as_str(),
+            &self.session_id,
             Some(&provider_disposal),
             receipt,
         )?;
@@ -767,7 +767,7 @@ impl PersistedSession {
         }
         if !self
             .terminal_cleanup
-            .pending_preparation_commands(self.session_id.as_str())?
+            .pending_preparation_commands(&self.session_id)?
             .contains(&effect.command.without_restore_target())
         {
             return Err(crate::SessionCleanupError::CommandNotPending);
@@ -800,7 +800,7 @@ impl PersistedSession {
             .repository_preparation()
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
         repository_preparation.verify_for_resources(
-            self.session_id.as_str(),
+            &self.session_id,
             workspace_id,
             &self.resources,
         )?;
@@ -812,7 +812,7 @@ impl PersistedSession {
             .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
         if self
             .terminal_cleanup
-            .disposal_command(self.session_id.as_str(), Some(&provider_disposal))?
+            .disposal_command(&self.session_id, Some(&provider_disposal))?
             .as_ref()
             != Some(&effect.command)
         {

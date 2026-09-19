@@ -88,7 +88,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
     terminal
         .install_initial_event_plan(
             SessionInitialEventPlan::compile(
-                "cutover-z-terminal-incomplete",
+                &awaken_session_contract::SessionId::from("cutover-z-terminal-incomplete"),
                 "initial:cutover-z-terminal-incomplete",
                 vec![SessionEventInput::UserMessage {
                     content: vec![ContentBlock::text("accepted before cutover")],

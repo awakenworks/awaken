@@ -38,7 +38,7 @@ fn coordinated_session(id: &str) -> PersistedSession {
 fn session_with_unsettled_event(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
     let mut batch = awaken_session_contract::SessionEventBatch::compile(
-        id,
+        &awaken_session_contract::SessionId::from(id),
         format!("batch:{id}"),
         vec![awaken_session_contract::SessionEventInput::UserMessage {
             content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
@@ -263,7 +263,7 @@ fn session_with_repository_retirement(
     session
         .resources
         .prepare(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             awaken_session_contract::ResolvedSessionResources::default(),
         )
         .expect("prepare omission");
@@ -1835,7 +1835,9 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt("profiled-publication")
+            .repository_publication_receipt(&awaken_session_contract::SessionId::from(
+                "profiled-publication"
+            ))
             .unwrap(),
         Some(&first.publication_receipt),
         "R5/E5"
@@ -1917,7 +1919,9 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         rejected_durable
             .terminal_cleanup
-            .repository_publication_rejection("profiled-rejected")
+            .repository_publication_rejection(&awaken_session_contract::SessionId::from(
+                "profiled-rejected"
+            ))
             .unwrap()
             .is_some(),
         "R6 rejection durable before completion"
@@ -1980,7 +1984,9 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         pending
             .terminal_cleanup
-            .publication_command("profiled-unavailable")
+            .publication_command(&awaken_session_contract::SessionId::from(
+                "profiled-unavailable"
+            ))
             .unwrap()
             .is_some(),
         "R8 exact command retained"
@@ -7464,12 +7470,12 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             );
             session
                 .resources
-                .prepare(session.session_id.as_str(), active_resources.clone())
+                .prepare(&session.session_id, active_resources.clone())
                 .unwrap();
             session.resources.commit().unwrap();
             session
                 .resources
-                .prepare(session.session_id.as_str(), desired_resources.clone())
+                .prepare(&session.session_id, desired_resources.clone())
                 .unwrap();
             session.resources.start_attempt().unwrap();
         }

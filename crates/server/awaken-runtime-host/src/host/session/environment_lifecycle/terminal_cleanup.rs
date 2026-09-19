@@ -73,7 +73,7 @@ impl SharedHost {
         if let Some(prepared) = root_environment.as_ref() {
             let expected_restore = prepared
                 .state
-                .restoring_request(&workspace_id, effect.command.session_id.as_str());
+                .restoring_request(&workspace_id, &effect.command.session_id);
             if expected_restore.as_ref() != effect.command.restore_target.as_ref() {
                 return Err(HostError::unavailable_classified(
                     "session_terminal_restore_target_mismatch",

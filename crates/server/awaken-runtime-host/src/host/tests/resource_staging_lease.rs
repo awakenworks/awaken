@@ -187,7 +187,7 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
                 identity: BoundSessionEnvironmentIdentity::Durable {
                     effect_id: "unadopted-effect".into(),
                     generation: awaken_session_contract::SandboxGeneration::new(
-                        unknown,
+                        &awaken_session_contract::SessionId::from(unknown.as_str()),
                         1,
                         u64::MAX,
                         "environment",

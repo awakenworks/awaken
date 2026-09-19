@@ -158,13 +158,21 @@ fn terminal_publication_command(
     .expect("terminal publication intent");
     let mut operation = awaken_session_contract::SessionCleanupOperation::default();
     operation
-        .request_with_publication(session_id, intent)
+        .request_with_publication(
+            &awaken_session_contract::SessionId::from(session_id),
+            intent,
+        )
         .expect("terminal publication fence");
     operation
-        .freeze_targets(session_id, [], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from(session_id),
+            [],
+            0,
+            0,
+        )
         .expect("terminal publication target");
     operation
-        .publication_command(session_id)
+        .publication_command(&awaken_session_contract::SessionId::from(session_id))
         .expect("terminal publication projection")
         .expect("terminal publication command")
 }

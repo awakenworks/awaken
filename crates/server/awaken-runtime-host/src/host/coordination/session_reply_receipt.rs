@@ -134,7 +134,7 @@ impl SharedHost {
                 "Session Thread tool reply is incomplete",
             ));
         }
-        let thread_id = command.target.thread_id(command.session_id.as_str());
+        let thread_id = command.target.thread_id(&command.session_id);
         let commit = self.commit_for_read(command.session_id.as_str()).await?;
         let snapshot = commit
             .recovery_snapshot(&thread_id, &command.expected_run_id)

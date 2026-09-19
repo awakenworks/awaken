@@ -265,7 +265,8 @@ mod tests {
         // target-bound receipt; T3 either receipt is checked against the other
         // command => reject. This prevents a Phase-A Worker from acknowledging
         // cleanup without disposing the already-created exact target.
-        let base = SessionCleanupCommand::new("session", "session", "root");
+        let base =
+            SessionCleanupCommand::new(&crate::SessionId::from("session"), "session", "root");
         let exact = base
             .clone()
             .with_restore_target(crate::SandboxRestoreRequest {

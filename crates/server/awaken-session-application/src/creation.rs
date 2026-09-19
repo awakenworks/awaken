@@ -42,7 +42,10 @@ impl CompleteSessionRoot {
             .clone();
         let mut resources = awaken_session_contract::SessionResourceState::default();
         resources
-            .prepare(&session_id, compiled.initial_resources)
+            .prepare(
+                &awaken_session_contract::SessionId::from(session_id.as_str()),
+                compiled.initial_resources,
+            )
             .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
         let mcp = SessionMcpAttachmentSet::from_initial(compiled.initial_mcp, Some(holder))
             .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;

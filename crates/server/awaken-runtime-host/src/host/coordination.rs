@@ -275,7 +275,7 @@ fn apply_coordination_result(
     ) {
         (Some(agent_id), None) => {
             let expected = awaken_session_contract::coordinated_thread_id(
-                session_id.as_str(),
+                session_id,
                 &call.run_id,
                 &operation_id,
             );
@@ -371,7 +371,7 @@ impl SharedHost {
                 "Session Thread tool reply is incomplete",
             ));
         }
-        let thread_id = command.target.thread_id(command.session_id.as_str());
+        let thread_id = command.target.thread_id(&command.session_id);
         if command
             .target
             .child_thread_id()
@@ -1513,12 +1513,12 @@ mod tests {
         let gap_call = "gap-send";
         let advisor_call = "advisor-call";
         let published_child = awaken_session_contract::coordinated_thread_id(
-            session,
+            &awaken_session_contract::SessionId::from(session),
             &run_id,
             &ToolBatch::operation_id_for_step(&run_id, step, published_call),
         );
         let gap_child = awaken_session_contract::coordinated_thread_id(
-            session,
+            &awaken_session_contract::SessionId::from(session),
             &run_id,
             &ToolBatch::operation_id_for_step(&run_id, step, gap_call),
         );

@@ -146,7 +146,7 @@ mod tests {
         // stored spelling, including ids outside the minted `sesn_` shape and
         // the empty string, because the newtype adds no validation rule.
         for raw in ["sesn_01HZX", "legacy-thread-id", "with/slash and space", ""] {
-            let id = SessionId::from(raw);
+            let id = crate::SessionId::from(raw);
             assert_eq!(
                 serde_json::to_value(&id).unwrap(),
                 serde_json::json!(raw),
@@ -176,8 +176,8 @@ mod tests {
     #[test]
     fn keyed_collections_are_queried_by_borrowed_string() {
         let mut map = std::collections::BTreeMap::new();
-        map.insert(SessionId::from("b"), 2);
-        map.insert(SessionId::from("a"), 1);
+        map.insert(crate::SessionId::from("b"), 2);
+        map.insert(crate::SessionId::from("a"), 1);
         assert_eq!(map.get("a"), Some(&1));
         assert_eq!(
             map.keys().map(SessionId::as_str).collect::<Vec<_>>(),

@@ -2089,7 +2089,7 @@ impl SessionRuntime for ToolAwaitingFake {
                 source_thread_id: delivery
                     .command
                     .target
-                    .thread_id(delivery.command.session_id.as_str()),
+                    .thread_id(&delivery.command.session_id),
                 source_run_id: delivery.command.expected_run_id.clone(),
                 source_agent_id: String::new(),
                 session_activity_epoch: delivery

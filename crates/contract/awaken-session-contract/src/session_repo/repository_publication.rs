@@ -28,7 +28,7 @@ impl PersistedSession {
     pub fn verified_terminal_cleanup(
         &self,
     ) -> Result<&crate::SessionCleanupOperation, crate::SessionCleanupError> {
-        self.terminal_cleanup.verify_for(self.session_id.as_str())?;
+        self.terminal_cleanup.verify_for(&self.session_id)?;
         Ok(&self.terminal_cleanup)
     }
 
@@ -59,7 +59,7 @@ impl PersistedSession {
             }
             SessionDisposition::Archived { .. } => {
                 self.terminal_cleanup
-                    .request_with_publication(self.session_id.as_str(), intent)?;
+                    .request_with_publication(&self.session_id, intent)?;
                 return Ok(false);
             }
             SessionDisposition::Active => {}
@@ -86,7 +86,7 @@ impl PersistedSession {
             );
         }
         self.terminal_cleanup
-            .request_with_publication(self.session_id.as_str(), intent)?;
+            .request_with_publication(&self.session_id, intent)?;
         self.archive(archived_at).map_err(Into::into)
     }
 }
@@ -178,7 +178,7 @@ mod tests {
         active.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
         let publication = active
             .terminal_cleanup
-            .publication_command("publish-archive")
+            .publication_command(&crate::SessionId::from("publish-archive"))
             .unwrap()
             .unwrap();
         let publication_receipt = crate::SessionRepositoryPublicationReceipt::new(
@@ -192,11 +192,17 @@ mod tests {
         );
         active
             .terminal_cleanup
-            .record_repository_publication_receipt("publish-archive", publication_receipt)
+            .record_repository_publication_receipt(
+                &crate::SessionId::from("publish-archive"),
+                publication_receipt,
+            )
             .unwrap();
         let root = active
             .terminal_cleanup
-            .command_for("publish-archive", "publish-archive")
+            .command_for(
+                &crate::SessionId::from("publish-archive"),
+                "publish-archive",
+            )
             .unwrap();
         let receipt_fingerprint = crate::stable_fingerprint(&(
             "session-terminal-cleanup-thread-receipt-v1",

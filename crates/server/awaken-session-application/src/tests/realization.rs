@@ -171,7 +171,10 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
                 assert_eq!(
                     session
                         .resources
-                        .prepare(session_id, active.clone())
+                        .prepare(
+                            &awaken_session_contract::SessionId::from(session_id),
+                            active.clone()
+                        )
                         .unwrap(),
                     1
                 );
@@ -181,7 +184,10 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
                     assert_eq!(
                         session
                             .resources
-                            .prepare(session_id, file_resources("failed"))
+                            .prepare(
+                                &awaken_session_contract::SessionId::from(session_id),
+                                file_resources("failed")
+                            )
                             .unwrap(),
                         revision,
                     );
@@ -191,14 +197,19 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
             } else {
                 session.resources =
                     awaken_session_contract::SessionResourceState::from_active(active.clone());
-                session.resources.adopt_legacy_active(session_id);
+                session
+                    .resources
+                    .adopt_legacy_active(&awaken_session_contract::SessionId::from(session_id));
             }
             let watermark = if rollback_twice { 3 } else { active_revision };
             let desired_revision = if let Some(attempted) = pending {
                 assert_eq!(
                     session
                         .resources
-                        .prepare(session_id, desired.clone())
+                        .prepare(
+                            &awaken_session_contract::SessionId::from(session_id),
+                            desired.clone()
+                        )
                         .unwrap(),
                     watermark + 1,
                 );
@@ -489,12 +500,12 @@ async fn rolled_back_resource_generation_recovers_only_the_installed_pair() {
     let mut session = persisted("resource-rollback-recovery", false, "idle");
     session
         .resources
-        .prepare(session.session_id.as_str(), installed.clone())
+        .prepare(&session.session_id, installed.clone())
         .unwrap();
     session.resources.commit().unwrap();
     session
         .resources
-        .prepare(session.session_id.as_str(), attempted)
+        .prepare(&session.session_id, attempted)
         .unwrap();
     session.resources.start_attempt().unwrap();
     session
@@ -717,7 +728,10 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         }
         session
             .resources
-            .prepare(session_id, desired.clone())
+            .prepare(
+                &awaken_session_contract::SessionId::from(session_id),
+                desired.clone(),
+            )
             .expect("prepare exact Memory generation");
         if active {
             session
@@ -1434,7 +1448,7 @@ async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
     assert!(
         session
             .terminal_cleanup
-            .request(session.session_id.clone().as_str())
+            .request(&session.session_id.clone())
     );
     session.realization = Some(current.clone());
     session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
@@ -1661,7 +1675,10 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     let original_revision = rejected.revision;
     rejected
         .resources
-        .prepare("reference-fence", skill_resources("new"))
+        .prepare(
+            &awaken_session_contract::SessionId::from("reference-fence"),
+            skill_resources("new"),
+        )
         .unwrap();
     references.fail_replace.store(true, Ordering::SeqCst);
     assert!(
@@ -1690,7 +1707,10 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         .unwrap();
     stale
         .resources
-        .prepare("reference-fence", skill_resources("new"))
+        .prepare(
+            &awaken_session_contract::SessionId::from("reference-fence"),
+            skill_resources("new"),
+        )
         .unwrap();
     assert!(matches!(
         application
@@ -1712,7 +1732,10 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     let mut accepted = repo.get(&SessionId::from("reference-fence")).await.unwrap();
     accepted
         .resources
-        .prepare("reference-fence", skill_resources("new"))
+        .prepare(
+            &awaken_session_contract::SessionId::from("reference-fence"),
+            skill_resources("new"),
+        )
         .unwrap();
     application
         .commit_resource_snapshot("workspace", accepted, "R3", Vec::new())
@@ -1860,7 +1883,10 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
 
     let mut live = worker_baseline("worker-live", "idle");
     live.resources
-        .prepare("worker-live", file_resources("live"))
+        .prepare(
+            &awaken_session_contract::SessionId::from("worker-live"),
+            file_resources("live"),
+        )
         .expect("W1 prepared generation");
     create(repo.as_ref(), live).await;
 
@@ -1878,7 +1904,9 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
     terminal.realization = Some(terminal_lease.clone());
     terminal.resources =
         awaken_session_contract::SessionResourceState::from_active(file_resources("terminal"));
-    terminal.resources.adopt_legacy_active("worker-terminal");
+    terminal
+        .resources
+        .adopt_legacy_active(&awaken_session_contract::SessionId::from("worker-terminal"));
     terminal
         .resources
         .begin_release()
@@ -2148,7 +2176,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
         expires_at_unix_ms: crate::activity::now_unix_ms().saturating_add(30_000),
     };
     let generation = awaken_session_contract::SandboxGeneration::new(
-        session_id,
+        &awaken_session_contract::SessionId::from(session_id),
         1,
         90_000,
         "restoring-environment",
@@ -2168,7 +2196,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
     };
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
-        session_id,
+        &awaken_session_contract::SessionId::from(session_id),
         "restore",
         &generation,
         1,
@@ -2184,7 +2212,10 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
     };
     let exact_restore = session
         .environment
-        .restoring_request("workspace", session_id)
+        .restoring_request(
+            "workspace",
+            &awaken_session_contract::SessionId::from(session_id),
+        )
         .expect("R3 exact durable restore request");
     create(repo.as_ref(), session).await;
 
@@ -2327,11 +2358,19 @@ fn repository_publication_terminal_session(
     session.resources = awaken_session_contract::SessionResourceState::from_active(resources);
     session
         .terminal_cleanup
-        .request_with_publication(session_id, intent)
+        .request_with_publication(
+            &awaken_session_contract::SessionId::from(session_id),
+            intent,
+        )
         .expect("publication fence");
     session
         .terminal_cleanup
-        .freeze_targets(session_id, child.into_iter().map(str::to_string), 17, 19)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from(session_id),
+            child.into_iter().map(str::to_string),
+            17,
+            19,
+        )
         .expect("publication cleanup target");
     session.realization = lease;
     session
@@ -2401,11 +2440,19 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     rejected.resources = awaken_session_contract::SessionResourceState::from_active(resources);
     rejected
         .terminal_cleanup
-        .request_with_publication("publication-rejected", rejected_intent)
+        .request_with_publication(
+            &awaken_session_contract::SessionId::from("publication-rejected"),
+            rejected_intent,
+        )
         .unwrap();
     rejected
         .terminal_cleanup
-        .freeze_targets("publication-rejected", [], 17, 19)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from("publication-rejected"),
+            [],
+            17,
+            19,
+        )
         .unwrap();
     create(repo.as_ref(), rejected).await;
     let application = application_with_configuration(
@@ -2586,7 +2633,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt(assignment.session_id.as_str())
+            .repository_publication_receipt(&assignment.session_id)
             .unwrap()
             .is_none(),
         "P4/E4 no mutation"
@@ -2622,7 +2669,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt(assignment.session_id.as_str())
+            .repository_publication_receipt(&assignment.session_id)
             .unwrap(),
         Some(&exact),
         "P5/E5"
@@ -2759,7 +2806,9 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert_eq!(
         durable
             .terminal_cleanup
-            .repository_publication_rejection("publication-rejected")
+            .repository_publication_rejection(&awaken_session_contract::SessionId::from(
+                "publication-rejected"
+            ))
             .unwrap(),
         Some(&rejection),
         "P6/E8 rejection survives the same root CAS lifecycle"
@@ -2935,10 +2984,14 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     };
     let requested = |id: &str, current| {
         let mut session = persisted(id, true, "terminated");
-        assert!(session.terminal_cleanup.request(id));
+        assert!(
+            session
+                .terminal_cleanup
+                .request(&awaken_session_contract::SessionId::from(id))
+        );
         session
             .terminal_cleanup
-            .freeze_targets(id, [], 0, 0)
+            .freeze_targets(&awaken_session_contract::SessionId::from(id), [], 0, 0)
             .expect("freeze root cleanup target");
         session.realization = current;
         session
@@ -2994,7 +3047,11 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     )
     .await;
     let mut fenced = persisted("claim-g-fenced", true, "terminated");
-    assert!(fenced.terminal_cleanup.request("claim-g-fenced"));
+    assert!(
+        fenced
+            .terminal_cleanup
+            .request(&awaken_session_contract::SessionId::from("claim-g-fenced"))
+    );
     create(repo.as_ref(), fenced).await;
     let mut local = requested("claim-h-local", None);
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut local.baseline
@@ -3141,10 +3198,19 @@ fn registry_race_terminal_session(
     realization: Option<awaken_session_contract::SessionRealizationLease>,
 ) -> PersistedSession {
     let mut session = persisted(session_id, true, "terminated");
-    assert!(session.terminal_cleanup.request(session_id));
+    assert!(
+        session
+            .terminal_cleanup
+            .request(&awaken_session_contract::SessionId::from(session_id))
+    );
     session
         .terminal_cleanup
-        .freeze_targets(session_id, [], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from(session_id),
+            [],
+            0,
+            0,
+        )
         .expect("freeze Registry-race cleanup target");
     session.realization = realization;
     session
@@ -3813,10 +3879,21 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     requested.resources = awaken_session_contract::SessionResourceState::from_active(
         file_resources("claim-compatible-file"),
     );
-    assert!(requested.terminal_cleanup.request("claim-compatible"));
+    assert!(
+        requested
+            .terminal_cleanup
+            .request(&awaken_session_contract::SessionId::from(
+                "claim-compatible"
+            ))
+    );
     requested
         .terminal_cleanup
-        .freeze_targets("claim-compatible", [], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from("claim-compatible"),
+            [],
+            0,
+            0,
+        )
         .expect("freeze compatible cleanup target");
     create(repo.as_ref(), requested).await;
 
@@ -3964,11 +4041,18 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     assert!(
         credentialed
             .terminal_cleanup
-            .request(credentialed_session_id)
+            .request(&awaken_session_contract::SessionId::from(
+                credentialed_session_id
+            ))
     );
     credentialed
         .terminal_cleanup
-        .freeze_targets(credentialed_session_id, [], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from(credentialed_session_id),
+            [],
+            0,
+            0,
+        )
         .expect("freeze credentialed cleanup target");
     create(repo.as_ref(), credentialed).await;
     let mut resource_only_manifest = terminal_cleanup_manifest();
@@ -4006,17 +4090,28 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
 
     let checkpoint_session_id = "claim-checkpoint";
     let generation = awaken_session_contract::SandboxGeneration::new(
-        checkpoint_session_id,
+        &awaken_session_contract::SessionId::from(checkpoint_session_id),
         1,
         u64::MAX,
         "env-7",
         "base-image",
     );
     let mut checkpoint = persisted(checkpoint_session_id, true, "terminated");
-    assert!(checkpoint.terminal_cleanup.request(checkpoint_session_id));
+    assert!(
+        checkpoint
+            .terminal_cleanup
+            .request(&awaken_session_contract::SessionId::from(
+                checkpoint_session_id
+            ))
+    );
     checkpoint
         .terminal_cleanup
-        .freeze_targets(checkpoint_session_id, [], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from(checkpoint_session_id),
+            [],
+            0,
+            0,
+        )
         .expect("freeze checkpoint cleanup target");
     checkpoint.environment = awaken_session_contract::SessionEnvironmentState::Hibernated {
         checkpoint: awaken_session_contract::SandboxCheckpointRef {
@@ -4068,10 +4163,21 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     );
 
     let mut unowned = persisted("claim-unowned-resident", true, "terminated");
-    assert!(unowned.terminal_cleanup.request("claim-unowned-resident"));
+    assert!(
+        unowned
+            .terminal_cleanup
+            .request(&awaken_session_contract::SessionId::from(
+                "claim-unowned-resident"
+            ))
+    );
     unowned
         .terminal_cleanup
-        .freeze_targets("claim-unowned-resident", [], 0, 0)
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from("claim-unowned-resident"),
+            [],
+            0,
+            0,
+        )
         .expect("freeze unowned cleanup target");
     unowned.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "physical-without-owner".into(),
@@ -4131,10 +4237,14 @@ async fn local_terminal_cleanup_claim_reads_the_exact_root_beyond_the_recovery_b
             unreachable!("fixture is frozen")
         };
         baseline.runtime_placement = SessionRuntimePlacement::Local;
-        assert!(session.terminal_cleanup.request(id));
+        assert!(
+            session
+                .terminal_cleanup
+                .request(&awaken_session_contract::SessionId::from(id))
+        );
         session
             .terminal_cleanup
-            .freeze_targets(id, [], 0, 0)
+            .freeze_targets(&awaken_session_contract::SessionId::from(id), [], 0, 0)
             .expect("freeze local cleanup target");
         session
     };
@@ -5728,7 +5838,10 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     recovering.realization = Some(lease.clone());
     recovering
         .resources
-        .prepare("running-realization", file_resources("running-realization"))
+        .prepare(
+            &awaken_session_contract::SessionId::from("running-realization"),
+            file_resources("running-realization"),
+        )
         .expect("R1 pending Resource generation");
     let prepared_resource_revision = recovering.resources.revision;
     create(repo.as_ref(), recovering).await;

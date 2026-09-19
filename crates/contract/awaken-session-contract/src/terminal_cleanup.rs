@@ -183,29 +183,33 @@ mod tests {
         // the identity effects consumed by the aggregate Delete plan; later
         // cleanup phases retain the same identity through their own owner.
         let mut cleanup = SessionCleanupOperation::default();
-        let exact = SessionCleanupRequestIdentity::new("session-1");
+        let session = crate::SessionId::from("session-1");
+        let exact = SessionCleanupRequestIdentity::new(&session);
         assert_eq!(
-            cleanup.request_exact("session-1", &exact),
+            cleanup.request_exact(&crate::SessionId::from("session-1"), &exact),
             Ok(true),
             "R1 apply"
         );
         let installed = cleanup.clone();
         assert_eq!(
-            cleanup.request_exact("session-1", &exact),
+            cleanup.request_exact(&crate::SessionId::from("session-1"), &exact),
             Ok(false),
             "R2 stutter"
         );
         assert_eq!(cleanup, installed, "R2 retained identity");
         assert_eq!(
-            cleanup.request_exact("session-1", &SessionCleanupRequestIdentity::new("foreign"),),
+            cleanup.request_exact(
+                &crate::SessionId::from("session-1"),
+                &SessionCleanupRequestIdentity::new(&crate::SessionId::from("foreign")),
+            ),
             Err(SessionCleanupError::OperationMismatch),
             "R3 reject foreign identity"
         );
         assert_eq!(cleanup, installed, "R3 no mutation");
         assert_eq!(
             cleanup.request_exact(
-                "session-2",
-                &SessionCleanupRequestIdentity::new("session-2"),
+                &crate::SessionId::from("session-2"),
+                &SessionCleanupRequestIdentity::new(&crate::SessionId::from("session-2")),
             ),
             Err(SessionCleanupError::OperationMismatch),
             "R4 reject foreign Session"
@@ -251,7 +255,11 @@ mod tests {
         // access, materialization and root-effect validation remain in
         // SessionTerminalMemoryIntent::try_new.
         let effect = SessionTerminalCleanupEffect::new(
-            SessionCleanupCommand::new("session-memory", "session-memory", "cleanup-root"),
+            SessionCleanupCommand::new(
+                &crate::SessionId::from("session-memory"),
+                "session-memory",
+                "cleanup-root",
+            ),
             crate::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker:boot".into(),
@@ -638,7 +646,7 @@ mod tests {
         let intent = publication_intent();
         let mut state = SessionCleanupOperation::default();
         state
-            .request_with_publication("boxed-wire", intent.clone())
+            .request_with_publication(&crate::SessionId::from("boxed-wire"), intent.clone())
             .unwrap();
         let encoded = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -665,7 +673,7 @@ mod tests {
         let intent = publication_intent();
         let mut state = SessionCleanupOperation::default();
         state
-            .request_with_publication("decode-shape", intent.clone())
+            .request_with_publication(&crate::SessionId::from("decode-shape"), intent.clone())
             .unwrap();
         let valid = serde_json::to_value(&state).unwrap();
         assert!(decode_persisted_cleanup(valid.clone()).is_ok(), "D1/E1");
@@ -694,7 +702,7 @@ mod tests {
             "state": "repository_publication",
             "cleanup": {
                 "state": "completed",
-                "effect_id": cleanup_effect_id("decode-shape"),
+                "effect_id": cleanup_effect_id(&crate::SessionId::from("decode-shape")),
                 "thread_ids": ["decode-shape"],
                 "delegation_watermark": 0,
                 "runtime_commit_cursor": 0,
@@ -711,11 +719,19 @@ mod tests {
     #[test]
     fn intent_and_receipt_are_stable_across_recovery() {
         let mut state = SessionCleanupOperation::default();
-        assert!(state.request("session-1"));
+        assert!(state.request(&crate::SessionId::from("session-1")));
         assert!(state.is_fenced());
-        assert!(state.freeze_targets("session-1", [], 7, 13).unwrap());
-        let first = state.command_for("session-1", "session-1").unwrap();
-        let replay = state.command_for("session-1", "session-1").unwrap();
+        assert!(
+            state
+                .freeze_targets(&crate::SessionId::from("session-1"), [], 7, 13)
+                .unwrap()
+        );
+        let first = state
+            .command_for(&crate::SessionId::from("session-1"), "session-1")
+            .unwrap();
+        let replay = state
+            .command_for(&crate::SessionId::from("session-1"), "session-1")
+            .unwrap();
         assert_eq!(first, replay);
         let receipt = verified(&first);
         assert!(state.complete("session-1", &[receipt]).unwrap());
@@ -744,21 +760,25 @@ mod tests {
         // These constants were produced by the authoritative v1 implementation
         // before optional Repository publication fields were introduced.
         let mut state = SessionCleanupOperation::default();
-        assert!(state.request("legacy-session"));
+        assert!(state.request(&crate::SessionId::from("legacy-session")));
         assert_eq!(
             serde_json::to_string(&state).unwrap(),
             r#"{"state":"fenced","effect_id":"fnv1a64:0f89047907a93a47"}"#,
             "L1/E1"
         );
 
-        assert!(state.freeze_targets("legacy-session", [], 7, 11).unwrap());
+        assert!(
+            state
+                .freeze_targets(&crate::SessionId::from("legacy-session"), [], 7, 11)
+                .unwrap()
+        );
         let requested = r#"{"state":"requested","effect_id":"fnv1a64:0f89047907a93a47","thread_ids":["legacy-session"],"delegation_watermark":7,"runtime_commit_cursor":11}"#;
         assert_eq!(serde_json::to_string(&state).unwrap(), requested, "L2/E1");
         let decoded = decode_persisted_cleanup_str(requested).unwrap();
         assert!(decoded.repository_publication_intent().is_none(), "L2/E3");
 
         let command = state
-            .command_for("legacy-session", "legacy-session")
+            .command_for(&crate::SessionId::from("legacy-session"), "legacy-session")
             .unwrap();
         assert_eq!(command.effect_id, "fnv1a64:34c458e86e3a9559", "L2/E2");
         let completion = SessionCleanupCompletion::new(&command, Vec::new());
@@ -777,7 +797,7 @@ mod tests {
         assert!(decoded.repository_publication_intent().is_none(), "L3/E3");
         assert!(
             decoded
-                .repository_publication_receipt("legacy-session")
+                .repository_publication_receipt(&crate::SessionId::from("legacy-session"))
                 .unwrap()
                 .is_none(),
             "L3/E3"
@@ -806,23 +826,34 @@ mod tests {
         let intent = publication_intent();
         assert!(
             state
-                .request_with_publication("publish-session", intent.clone())
+                .request_with_publication(
+                    &crate::SessionId::from("publish-session"),
+                    intent.clone()
+                )
                 .unwrap()
         );
         assert!(
             !state
-                .request_with_publication("publish-session", intent)
+                .request_with_publication(&crate::SessionId::from("publish-session"), intent)
                 .unwrap(),
             "R1 exact request replay"
         );
         state
-            .freeze_targets("publish-session", ["publish-child".to_string()], 17, 23)
+            .freeze_targets(
+                &crate::SessionId::from("publish-session"),
+                ["publish-child".to_string()],
+                17,
+                23,
+            )
             .unwrap();
         let child = state
-            .command_for("publish-session", "publish-child")
+            .command_for(&crate::SessionId::from("publish-session"), "publish-child")
             .unwrap();
         let root = state
-            .command_for("publish-session", "publish-session")
+            .command_for(
+                &crate::SessionId::from("publish-session"),
+                "publish-session",
+            )
             .unwrap();
         assert_eq!(
             state
@@ -836,20 +867,20 @@ mod tests {
         );
         assert!(
             state
-                .publication_command("publish-session")
+                .publication_command(&crate::SessionId::from("publish-session"))
                 .unwrap()
                 .is_none(),
             "R1/E1"
         );
         let early_command = SessionRepositoryPublicationCommand::new(
-            "publish-session",
-            &cleanup_effect_id("publish-session"),
+            &crate::SessionId::from("publish-session"),
+            &cleanup_effect_id(&crate::SessionId::from("publish-session")),
             state.repository_publication_intent().unwrap(),
         )
         .unwrap();
         assert_eq!(
             state.record_repository_publication_receipt(
-                "publish-session",
+                &crate::SessionId::from("publish-session"),
                 publication_receipt(&early_command),
             ),
             Err(SessionCleanupError::RepositoryPublicationNotReady),
@@ -868,7 +899,7 @@ mod tests {
             "R2/E3"
         );
         let publication = state
-            .publication_command("publish-session")
+            .publication_command(&crate::SessionId::from("publish-session"))
             .unwrap()
             .expect("R2/E2");
         assert_eq!(publication.session_id, "publish-session", "R2 root-only");
@@ -887,20 +918,28 @@ mod tests {
         let encoded = serde_json::to_vec(&state).unwrap();
         let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
         assert_eq!(
-            recovered.publication_command("publish-session").unwrap(),
+            recovered
+                .publication_command(&crate::SessionId::from("publish-session"))
+                .unwrap(),
             Some(publication.clone()),
             "R2/E5"
         );
         let receipt = publication_receipt(&publication);
         assert!(
             recovered
-                .record_repository_publication_receipt("publish-session", receipt.clone())
+                .record_repository_publication_receipt(
+                    &crate::SessionId::from("publish-session"),
+                    receipt.clone()
+                )
                 .unwrap(),
             "R4/E4"
         );
         assert!(
             !recovered
-                .record_repository_publication_receipt("publish-session", receipt.clone())
+                .record_repository_publication_receipt(
+                    &crate::SessionId::from("publish-session"),
+                    receipt.clone()
+                )
                 .unwrap(),
             "R4/E4 exact replay"
         );
@@ -919,7 +958,7 @@ mod tests {
         );
         assert!(
             recovered
-                .publication_command("publish-session")
+                .publication_command(&crate::SessionId::from("publish-session"))
                 .unwrap()
                 .is_none(),
             "R5"
@@ -935,7 +974,7 @@ mod tests {
         );
         assert!(
             recovered
-                .repository_publication_receipt("publish-session")
+                .repository_publication_receipt(&crate::SessionId::from("publish-session"))
                 .unwrap()
                 .is_some(),
             "R6"
@@ -962,13 +1001,13 @@ mod tests {
             .collect::<Vec<_>>();
         let would_be_v1 = crate::stable_fingerprint(&(
             "session-terminal-cleanup-receipt-v1",
-            cleanup_effect_id("publish-session"),
+            cleanup_effect_id(&crate::SessionId::from("publish-session")),
             17_u64,
             cleanup_evidence.clone(),
         ));
         let expected_v2 = crate::stable_fingerprint(&(
             "session-terminal-cleanup-receipt-v2",
-            cleanup_effect_id("publish-session"),
+            cleanup_effect_id(&crate::SessionId::from("publish-session")),
             17_u64,
             cleanup_evidence,
             receipt.receipt_fingerprint.as_str(),
@@ -988,7 +1027,10 @@ mod tests {
         );
         assert!(
             !recovered
-                .record_repository_publication_receipt("publish-session", receipt)
+                .record_repository_publication_receipt(
+                    &crate::SessionId::from("publish-session"),
+                    receipt
+                )
                 .unwrap(),
             "R6 exact completed replay"
         );
@@ -1041,7 +1083,7 @@ mod tests {
             let mut state = SessionCleanupOperation::default();
             assert!(
                 matches!(
-                    state.request_with_publication("invalid", invalid),
+                    state.request_with_publication(&crate::SessionId::from("invalid"), invalid),
                     Err(SessionCleanupError::InvalidRepositoryPublicationIntent(_))
                 ),
                 "V{}",
@@ -1053,18 +1095,20 @@ mod tests {
         let mut state = SessionCleanupOperation::default();
         let intent = publication_intent();
         state
-            .request_with_publication("exact", intent.clone())
+            .request_with_publication(&crate::SessionId::from("exact"), intent.clone())
             .unwrap();
         let mut changed_intent = intent;
         changed_intent.expectation.commit = "1123456789abcdef0123456789abcdef01234567".into();
         assert_eq!(
-            state.request_with_publication("exact", changed_intent),
+            state.request_with_publication(&crate::SessionId::from("exact"), changed_intent),
             Err(SessionCleanupError::FrozenRepositoryPublicationMismatch),
             "frozen intent cannot change"
         );
-        state.freeze_targets("exact", [], 0, 0).unwrap();
+        state
+            .freeze_targets(&crate::SessionId::from("exact"), [], 0, 0)
+            .unwrap();
         let command = state
-            .publication_command("exact")
+            .publication_command(&crate::SessionId::from("exact"))
             .unwrap()
             .expect("V1 command");
         let exact = publication_receipt(&command);
@@ -1090,13 +1134,16 @@ mod tests {
 
         for mismatch in mismatches {
             assert_eq!(
-                state.record_repository_publication_receipt("exact", mismatch),
+                state.record_repository_publication_receipt(
+                    &crate::SessionId::from("exact"),
+                    mismatch
+                ),
                 Err(SessionCleanupError::RepositoryPublicationReceiptMismatch),
                 "V7/E2"
             );
             assert!(
                 state
-                    .repository_publication_receipt("exact")
+                    .repository_publication_receipt(&crate::SessionId::from("exact"))
                     .unwrap()
                     .is_none(),
                 "V7/E2"
@@ -1104,7 +1151,7 @@ mod tests {
         }
         assert!(
             state
-                .record_repository_publication_receipt("exact", exact)
+                .record_repository_publication_receipt(&crate::SessionId::from("exact"), exact)
                 .unwrap(),
             "V1/E1"
         );
@@ -1124,8 +1171,12 @@ mod tests {
         // The distinction is required because zero is a valid Runtime
         // high-water, not a migration sentinel.
         let mut requested = SessionCleanupOperation::default();
-        assert!(requested.request("never-run"));
-        assert!(requested.freeze_targets("never-run", [], 0, 0).unwrap());
+        assert!(requested.request(&crate::SessionId::from("never-run")));
+        assert!(
+            requested
+                .freeze_targets(&crate::SessionId::from("never-run"), [], 0, 0)
+                .unwrap()
+        );
         assert_eq!(requested.runtime_commit_cursor(), Some(0), "L2 Requested");
 
         let mut legacy_requested = serde_json::to_value(&requested).unwrap();
@@ -1140,7 +1191,9 @@ mod tests {
             "L1 Requested"
         );
 
-        let root = requested.command_for("never-run", "never-run").unwrap();
+        let root = requested
+            .command_for(&crate::SessionId::from("never-run"), "never-run")
+            .unwrap();
         assert!(requested.complete("never-run", &[verified(&root)]).unwrap());
         assert_eq!(requested.runtime_commit_cursor(), Some(0), "L2 Completed");
         let mut legacy_completed = serde_json::to_value(&requested).unwrap();
@@ -1159,14 +1212,23 @@ mod tests {
     #[test]
     fn child_threads_are_part_of_the_durable_intent_and_required_evidence() {
         let mut state = SessionCleanupOperation::default();
-        state.request("session-1");
+        state.request(&crate::SessionId::from("session-1"));
         assert!(
             state
-                .freeze_targets("session-1", ["child-1".to_string()], 11, 13)
+                .freeze_targets(
+                    &crate::SessionId::from("session-1"),
+                    ["child-1".to_string()],
+                    11,
+                    13
+                )
                 .unwrap()
         );
-        let root = state.command_for("session-1", "session-1").unwrap();
-        let child = state.command_for("session-1", "child-1").unwrap();
+        let root = state
+            .command_for(&crate::SessionId::from("session-1"), "session-1")
+            .unwrap();
+        let child = state
+            .command_for(&crate::SessionId::from("session-1"), "child-1")
+            .unwrap();
         assert_eq!(
             state.complete("session-1", &[verified(&root)]),
             Err(SessionCleanupError::MissingReceipt)
@@ -1181,9 +1243,13 @@ mod tests {
     #[test]
     fn mismatched_or_incomplete_receipts_fail_closed() {
         let mut state = SessionCleanupOperation::default();
-        state.request("session-1");
-        state.freeze_targets("session-1", [], 0, 0).unwrap();
-        let command = state.command_for("session-1", "session-1").unwrap();
+        state.request(&crate::SessionId::from("session-1"));
+        state
+            .freeze_targets(&crate::SessionId::from("session-1"), [], 0, 0)
+            .unwrap();
+        let command = state
+            .command_for(&crate::SessionId::from("session-1"), "session-1")
+            .unwrap();
         let mut completion = SessionCleanupCompletion::new(&command, Vec::new());
         completion.effect_id.push_str("-stale");
         assert_eq!(
@@ -1196,20 +1262,30 @@ mod tests {
     #[test]
     fn frozen_targets_cannot_be_expanded_by_a_late_projection() {
         let mut state = SessionCleanupOperation::default();
-        assert!(state.request("session-1"));
+        assert!(state.request(&crate::SessionId::from("session-1")));
         assert!(
             state
-                .freeze_targets("session-1", ["child-1".to_string()], 19, 0)
+                .freeze_targets(
+                    &crate::SessionId::from("session-1"),
+                    ["child-1".to_string()],
+                    19,
+                    0
+                )
                 .unwrap()
         );
         assert!(
             !state
-                .freeze_targets("session-1", ["child-1".to_string()], 19, 0)
+                .freeze_targets(
+                    &crate::SessionId::from("session-1"),
+                    ["child-1".to_string()],
+                    19,
+                    0
+                )
                 .unwrap()
         );
         assert_eq!(
             state.freeze_targets(
-                "session-1",
+                &crate::SessionId::from("session-1"),
                 ["child-1".to_string(), "child-2".to_string()],
                 20,
                 0,
@@ -1231,21 +1307,30 @@ mod tests {
         // | T07 | exact | present | yes | exact | DuplicateThread |
         // | T04 | exact | present | no | expanded after freeze | FrozenTargetsMismatch |
         let mut foreign = SessionCleanupOperation::default();
-        foreign.request("session-a");
+        foreign.request(&crate::SessionId::from("session-a"));
         assert_eq!(
-            foreign.freeze_targets("session-b", [], 1, 0),
+            foreign.freeze_targets(&crate::SessionId::from("session-b"), [], 1, 0),
             Err(SessionCleanupError::OperationMismatch),
             "T05"
         );
         assert!(foreign.is_fenced(), "T05 leaves Session-A unchanged");
 
         let mut state = SessionCleanupOperation::default();
-        state.request("session-a");
+        state.request(&crate::SessionId::from("session-a"));
         state
-            .freeze_targets("session-a", ["child-a".to_string()], 7, 0)
+            .freeze_targets(
+                &crate::SessionId::from("session-a"),
+                ["child-a".to_string()],
+                7,
+                0,
+            )
             .unwrap();
-        let root = state.command_for("session-a", "session-a").unwrap();
-        let child = state.command_for("session-a", "child-a").unwrap();
+        let root = state
+            .command_for(&crate::SessionId::from("session-a"), "session-a")
+            .unwrap();
+        let child = state
+            .command_for(&crate::SessionId::from("session-a"), "child-a")
+            .unwrap();
         let root_receipt = verified(&root);
         let child_receipt = verified(&child);
         assert_eq!(
@@ -1280,12 +1365,21 @@ mod tests {
 
         fn completed_with_order(reverse: bool) -> SessionCleanupOperation {
             let mut state = SessionCleanupOperation::default();
-            state.request("session-order");
+            state.request(&crate::SessionId::from("session-order"));
             state
-                .freeze_targets("session-order", ["child-order".to_string()], 9, 0)
+                .freeze_targets(
+                    &crate::SessionId::from("session-order"),
+                    ["child-order".to_string()],
+                    9,
+                    0,
+                )
                 .unwrap();
-            let root = state.command_for("session-order", "session-order").unwrap();
-            let child = state.command_for("session-order", "child-order").unwrap();
+            let root = state
+                .command_for(&crate::SessionId::from("session-order"), "session-order")
+                .unwrap();
+            let child = state
+                .command_for(&crate::SessionId::from("session-order"), "child-order")
+                .unwrap();
             let mut receipts = vec![verified(&root), verified(&child)];
             if reverse {
                 receipts.reverse();
@@ -1298,12 +1392,22 @@ mod tests {
         assert_eq!(forward, reverse, "T09 canonical receipt order");
 
         let mut watermark = SessionCleanupOperation::default();
-        watermark.request("session-watermark");
+        watermark.request(&crate::SessionId::from("session-watermark"));
         watermark
-            .freeze_targets("session-watermark", ["child".to_string()], 10, 0)
+            .freeze_targets(
+                &crate::SessionId::from("session-watermark"),
+                ["child".to_string()],
+                10,
+                0,
+            )
             .unwrap();
         assert_eq!(
-            watermark.freeze_targets("session-watermark", ["child".to_string()], 11, 0),
+            watermark.freeze_targets(
+                &crate::SessionId::from("session-watermark"),
+                ["child".to_string()],
+                11,
+                0
+            ),
             Err(SessionCleanupError::FrozenTargetsMismatch),
             "T10"
         );
@@ -1330,11 +1434,18 @@ mod tests {
         // identity never change across recovery, and no production port can
         // author another one-stage completion.
         let mut state = SessionCleanupOperation::default();
-        state.request("remote-session");
+        state.request(&crate::SessionId::from("remote-session"));
         state
-            .freeze_targets("remote-session", ["remote-child".to_string()], 17, 0)
+            .freeze_targets(
+                &crate::SessionId::from("remote-session"),
+                ["remote-child".to_string()],
+                17,
+                0,
+            )
             .unwrap();
-        let child = state.command_for("remote-session", "remote-child").unwrap();
+        let child = state
+            .command_for(&crate::SessionId::from("remote-session"), "remote-child")
+            .unwrap();
         let child_completion = SessionCleanupCompletion::new(&child, Vec::new());
         install_legacy_completion_wire(&mut state, child_completion.clone());
         assert_eq!(state.pending_commands("remote-session").unwrap().len(), 1);
@@ -1351,7 +1462,7 @@ mod tests {
         conflicting.receipt_fingerprint.push_str("-stale");
         let mut conflicting_wire = state.clone();
         let conflicting_root = conflicting_wire
-            .command_for("remote-session", "remote-session")
+            .command_for(&crate::SessionId::from("remote-session"), "remote-session")
             .unwrap();
         install_legacy_completion_wire(
             &mut conflicting_wire,
@@ -1366,7 +1477,7 @@ mod tests {
 
         let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
         let root = recovered
-            .command_for("remote-session", "remote-session")
+            .command_for(&crate::SessionId::from("remote-session"), "remote-session")
             .unwrap();
         install_legacy_completion_wire(
             &mut recovered,
@@ -1397,12 +1508,12 @@ mod tests {
             "R5/E5 Completed never recreates provider work"
         );
         assert_eq!(
-            recovered.command_for("remote-session", "remote-child"),
+            recovered.command_for(&crate::SessionId::from("remote-session"), "remote-child"),
             Some(child),
             "R5/E5 child acknowledgement uses the frozen target"
         );
         assert_eq!(
-            recovered.command_for("remote-session", "remote-session"),
+            recovered.command_for(&crate::SessionId::from("remote-session"), "remote-session"),
             Some(root),
             "R5/E5 root acknowledgement uses the frozen target"
         );
@@ -1446,11 +1557,11 @@ mod tests {
                 let before_rank = cleanup_rank(&before);
                 match action {
                     0 | 4 => {
-                        state.request("model-session");
+                        state.request(&crate::SessionId::from("model-session"));
                     }
                     1 => {
                         let _ = state.freeze_targets(
-                            "model-session",
+                            &crate::SessionId::from("model-session"),
                             ["model-child".to_string()],
                             watermark,
                             0,
@@ -1464,7 +1575,7 @@ mod tests {
                                 .iter()
                                 .map(|thread_id| {
                                     let command = state
-                                        .command_for("model-session", thread_id)
+                                        .command_for(&crate::SessionId::from("model-session"), thread_id)
                                         .unwrap();
                                     SessionCleanupCompletion::new(&command, Vec::new())
                                     .verify(&command)
@@ -1482,11 +1593,11 @@ mod tests {
                         }
                     }
                     3 => {
-                        let _ = state.freeze_targets("foreign-session", [], watermark, 0);
+                        let _ = state.freeze_targets(&crate::SessionId::from("foreign-session"), [], watermark, 0);
                     }
                     5 => {
                         let _ = state.freeze_targets(
-                            "model-session",
+                            &crate::SessionId::from("model-session"),
                             ["late-child".to_string()],
                             watermark.wrapping_add(1),
                             0,
@@ -1499,7 +1610,7 @@ mod tests {
                     prop_assert_eq!(&state, &before, "E2");
                 }
                 prop_assert_eq!(
-                    state.command_for("model-session", "model-session").is_some(),
+                    state.command_for(&crate::SessionId::from("model-session"), "model-session").is_some(),
                     state.is_requested() || state.is_completed(),
                     "E3 frozen command projection",
                 );

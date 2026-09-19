@@ -458,7 +458,7 @@ impl SessionAgentCoordination for SessionApplication {
         run_id: &RunId,
         mode: SessionRunActivityAdmissionMode,
     ) -> Result<SessionRunActivityAdmission, RunError> {
-        let operation_id = session_run_activity_operation_id(session_id.as_str(), run_id);
+        let operation_id = session_run_activity_operation_id(session_id, run_id);
         let admitted = match mode {
             SessionRunActivityAdmissionMode::RecoverOrAdmit => self
                 .begin_admitted_activity_for_operation(agent_id, session_id, &operation_id)
@@ -597,7 +597,7 @@ impl SessionAgentCoordination for SessionApplication {
                     })?;
                 (
                     awaken_session_contract::coordinated_thread_id(
-                        command.session_id.as_str(),
+                        &command.session_id,
                         &command.source_run_id,
                         &command.operation_id,
                     ),

@@ -21,7 +21,12 @@ struct FileObserver {
 }
 #[async_trait::async_trait]
 impl RealizationObserver for FileObserver {
-    async fn observe(&self, point: &'static str, session_id: &str, data: serde_json::Value) {
+    async fn observe(
+        &self,
+        point: &'static str,
+        session_id: &awaken_session_contract::SessionId,
+        data: serde_json::Value,
+    ) {
         let should_pause = {
             let _guard = self.serial.lock().unwrap();
             let bytes = match std::fs::read(self.directory.join("armed.json")) {
@@ -31,7 +36,7 @@ impl RealizationObserver for FileObserver {
             };
             let config: serde_json::Value =
                 serde_json::from_slice(&bytes).expect("observation config");
-            if config["session_id"] != session_id {
+            if config["session_id"] != session_id.as_str() {
                 return;
             }
             let path = self.directory.join("trace.ndjson");
@@ -144,7 +149,11 @@ mod tests {
             // regression fails here instead of hanging the test binary.
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                observer.observe(point, "S", json!({})),
+                observer.observe(
+                    point,
+                    &awaken_session_contract::SessionId::from("S"),
+                    json!({}),
+                ),
             )
             .await
             .unwrap_or_else(|_| panic!("E1 in-flight {point} took the boundary"));
@@ -155,9 +164,19 @@ mod tests {
             "E1 boundary"
         );
         observer
-            .observe("begin-before", "S", json!({"attachments": []}))
+            .observe(
+                "begin-before",
+                &awaken_session_contract::SessionId::from("S"),
+                json!({"attachments": []}),
+            )
             .await;
-        observer.observe("complete", "S", json!({})).await;
+        observer
+            .observe(
+                "complete",
+                &awaken_session_contract::SessionId::from("S"),
+                json!({}),
+            )
+            .await;
         let trace = std::fs::read_to_string(directory.path().join("trace.ndjson")).unwrap();
         let events = trace
             .lines()

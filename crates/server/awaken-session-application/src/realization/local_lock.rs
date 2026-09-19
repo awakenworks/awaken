@@ -38,7 +38,7 @@ impl LocalRealizationLocks {
     pub(crate) async fn acquire(self: &Arc<Self>, session_id: &str) -> SessionRealizationPermit {
         let locks = self;
         SessionRealizationPermit::acquire(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             move || {
                 let identity = {
                     let mut registry = locks.0.lock().expect("local realization registry poisoned");

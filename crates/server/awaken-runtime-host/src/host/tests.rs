@@ -8052,7 +8052,7 @@ fn test_committed_environment(
     receipt: awaken_session_contract::SessionEnvironmentReceipt,
 ) -> awaken_session_contract::SessionEnvironmentState {
     let generation = awaken_session_contract::SandboxGeneration::new(
-        receipt.session_id.as_str(),
+        &receipt.session_id,
         1,
         u64::MAX,
         "test-environment",
@@ -9838,7 +9838,10 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     );
     let child_cleanup = publication_ready
         .terminal_cleanup
-        .command_for(session_id, child_id)
+        .command_for(
+            &awaken_session_contract::SessionId::from(session_id),
+            child_id,
+        )
         .expect("P4 child cleanup command");
     let child_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         child_cleanup.clone(),
@@ -9859,7 +9862,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         .expect("P4 aggregate admits durable child preparation before publication");
     let command = publication_ready
         .terminal_cleanup
-        .publication_command(session_id)
+        .publication_command(&awaken_session_contract::SessionId::from(session_id))
         .expect("P1 command projection")
         .expect("P1 command");
     let mut terminal_projection = ordinary_projection.clone();
@@ -9967,16 +9970,17 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         Some(intent),
     );
     assert_eq!(
-        control_session
-            .terminal_cleanup
-            .command_for(session_id, child_id),
+        control_session.terminal_cleanup.command_for(
+            &awaken_session_contract::SessionId::from(session_id),
+            child_id
+        ),
         Some(child_cleanup),
         "P4 Control consumes the same aggregate-derived child command",
     );
     assert_eq!(
         control_session
             .terminal_cleanup
-            .publication_command(session_id)
+            .publication_command(&awaken_session_contract::SessionId::from(session_id))
             .expect("P4 aggregate-owned Repository publication projection"),
         None,
         "P4 fresh aggregate keeps publication behind child preparation",
@@ -12521,7 +12525,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     host.insert_mcp_projection(projection.clone()).unwrap();
 
     let sandbox_generation = awaken_session_contract::SandboxGeneration::new(
-        "mcp-staging-quiescence",
+        &awaken_session_contract::SessionId::from("mcp-staging-quiescence"),
         1,
         100,
         "environment",
@@ -12529,7 +12533,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     );
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace-a",
-        "mcp-staging-quiescence",
+        &awaken_session_contract::SessionId::from("mcp-staging-quiescence"),
         "suspend",
         &sandbox_generation,
         3,
@@ -18966,7 +18970,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         );
     });
     let generation = awaken_session_contract::SandboxGeneration::new(
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         1,
         u64::MAX,
         "environment-a",
@@ -18974,7 +18978,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     );
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "terminal-workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "dispose-source",
         &generation,
         1,
@@ -19142,9 +19146,13 @@ pub(super) fn terminal_recovery_effect(
         expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
     };
     let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
-    assert!(cleanup.request(thread));
-    cleanup.freeze_targets(thread, [], 0, 0).unwrap();
-    let command = cleanup.command_for(thread, thread).unwrap();
+    assert!(cleanup.request(&awaken_session_contract::SessionId::from(thread)));
+    cleanup
+        .freeze_targets(&awaken_session_contract::SessionId::from(thread), [], 0, 0)
+        .unwrap();
+    let command = cleanup
+        .command_for(&awaken_session_contract::SessionId::from(thread), thread)
+        .unwrap();
     let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
     (lease, effect)
 }
@@ -19160,7 +19168,7 @@ pub(super) fn disposing_terminal_environment(
     awaken_session_contract::SourceReleasePreparedReceipt,
 ) {
     let generation = awaken_session_contract::SandboxGeneration::new(
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         1,
         u64::MAX,
         "environment-disposing",
@@ -19168,7 +19176,7 @@ pub(super) fn disposing_terminal_environment(
     );
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "terminal-workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &generation,
         7,
@@ -19235,7 +19243,10 @@ fn terminal_test_session(
         Some(intent) => {
             session
                 .terminal_cleanup
-                .request_with_publication(session_id, intent)
+                .request_with_publication(
+                    &awaken_session_contract::SessionId::from(session_id),
+                    intent,
+                )
                 .expect("request the aggregate-owned terminal publication");
         }
         None => assert!(session.ensure_terminal_cleanup_fence()),
@@ -19286,12 +19297,12 @@ fn terminal_disposal_effect(
     );
     let mut expected_command = session
         .terminal_cleanup
-        .command_for(session_id.as_str(), &thread_id)
+        .command_for(&session_id, &thread_id)
         .expect("the aggregate retains the exact preparation command");
     if thread_id == session_id
         && let Some(request) = projection
             .environment
-            .restoring_request(&projection.workspace_id, session_id.as_str())
+            .restoring_request(&projection.workspace_id, &session_id)
     {
         expected_command = expected_command
             .with_restore_target(request)
@@ -19302,7 +19313,7 @@ fn terminal_disposal_effect(
         "the Host receipt must bind the aggregate-derived command",
     );
     let repository_preparation = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-        session_id.as_str(),
+        &session_id,
         &projection.workspace_id,
         &session.resources,
     )
@@ -19372,7 +19383,10 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         asserted_session
             .terminal_cleanup
-            .command_for(session_id, session_id)
+            .command_for(
+                &awaken_session_contract::SessionId::from(session_id),
+                session_id,
+            )
             .expect("R1 canonical terminal command"),
         expired_lease.clone(),
     );
@@ -19578,7 +19592,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         .with_memory_materializations(vec![terminal_memory_evidence()])
         .expect("install exact writable Memory evidence");
     let generation = awaken_session_contract::SandboxGeneration::new(
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         1,
         u64::MAX,
         "terminal-refresh-environment",
@@ -19586,7 +19600,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     );
     let checkpoint_operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "terminal-workspace",
-        thread,
+        &awaken_session_contract::SessionId::from(thread),
         "suspend",
         &generation,
         7,
@@ -20761,7 +20775,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     ));
     let binding = serde_json::to_string(&env.handle()).expect("encode terminal binding");
     let environment_generation = awaken_session_contract::SandboxGeneration::new(
-        "t-end",
+        &awaken_session_contract::SessionId::from("t-end"),
         lease.epoch,
         lease.expires_at_unix_ms,
         "terminal-test-environment",
@@ -20840,12 +20854,15 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // | T3 | T | T | T | T | F | E5 |
     // | T4 | F | F | F | F | T | E6 |
     let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
-    assert!(cleanup.request("t-end"), "T1 freezes the terminal fence");
+    assert!(
+        cleanup.request(&awaken_session_contract::SessionId::from("t-end")),
+        "T1 freezes the terminal fence"
+    );
     cleanup
-        .freeze_targets("t-end", [], 0, 0)
+        .freeze_targets(&awaken_session_contract::SessionId::from("t-end"), [], 0, 0)
         .expect("T1 freezes the root target");
     let command = cleanup
-        .command_for("t-end", "t-end")
+        .command_for(&awaken_session_contract::SessionId::from("t-end"), "t-end")
         .expect("T1 exact root command");
     // A changed aggregate Environment is a new root-CAS snapshot.
     terminal_projection.revision.0 += 1;
@@ -21019,11 +21036,21 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         awaken_session_contract::RunErrorKind::Unavailable
     );
     let mut missing = awaken_session_contract::SessionCleanupOperation::default();
-    assert!(missing.request("never-existed"));
-    missing.freeze_targets("never-existed", [], 0, 0).unwrap();
+    assert!(missing.request(&awaken_session_contract::SessionId::from("never-existed")));
+    missing
+        .freeze_targets(
+            &awaken_session_contract::SessionId::from("never-existed"),
+            [],
+            0,
+            0,
+        )
+        .unwrap();
     let missing_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         missing
-            .command_for("never-existed", "never-existed")
+            .command_for(
+                &awaken_session_contract::SessionId::from("never-existed"),
+                "never-existed",
+            )
             .unwrap(),
         awaken_session_contract::SessionRealizationLease {
             owner: "terminal-test-worker".into(),
@@ -21080,7 +21107,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         let thread = "restoring-terminal-response-loss";
         let (lease, base_effect) = terminal_recovery_effect(thread, "restoring-terminal-worker");
         let generation = awaken_session_contract::SandboxGeneration::new(
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             lease.epoch,
             lease.expires_at_unix_ms,
             "restoring-terminal-environment",
@@ -21088,7 +21115,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
         let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
             "terminal-workspace",
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             "suspend",
             &generation,
             6,
@@ -21109,7 +21136,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         };
         let restore = awaken_session_contract::SessionEnvironmentOperation::new(
             "terminal-workspace",
-            thread,
+            &awaken_session_contract::SessionId::from(thread),
             "restore",
             &generation,
             7,
@@ -21122,7 +21149,10 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             generation,
         };
         let restore_target = restoring
-            .restoring_request("terminal-workspace", thread)
+            .restoring_request(
+                "terminal-workspace",
+                &awaken_session_contract::SessionId::from(thread),
+            )
             .expect("TR1 exact aggregate restore target");
         let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
             base_effect
@@ -21352,10 +21382,10 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     });
 
     let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
-    assert!(cleanup.request(session_id));
+    assert!(cleanup.request(&awaken_session_contract::SessionId::from(session_id)));
     cleanup
         .freeze_targets(
-            session_id,
+            &awaken_session_contract::SessionId::from(session_id),
             [
                 "terminal-retire-done".to_string(),
                 "terminal-retire-pending".to_string(),
@@ -21367,7 +21397,10 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .unwrap();
     let completed_child = awaken_session_contract::SessionTerminalCleanupEffect::new(
         cleanup
-            .command_for(session_id, "terminal-retire-done")
+            .command_for(
+                &awaken_session_contract::SessionId::from(session_id),
+                "terminal-retire-done",
+            )
             .unwrap(),
         lease.clone(),
     );
@@ -21385,7 +21418,12 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     assert!(host.session_slots.contains(foreign), "P3/E3");
 
     let stale_foreign = awaken_session_contract::SessionTerminalCleanupEffect::new(
-        cleanup.command_for(session_id, foreign).unwrap(),
+        cleanup
+            .command_for(
+                &awaken_session_contract::SessionId::from(session_id),
+                foreign,
+            )
+            .unwrap(),
         lease.clone(),
     );
     host.acknowledge_terminal_cleanup_preparation(&stale_foreign)
@@ -21393,7 +21431,12 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     assert!(host.session_slots.contains(foreign), "P3/E3");
 
     let root = awaken_session_contract::SessionTerminalCleanupEffect::new(
-        cleanup.command_for(session_id, session_id).unwrap(),
+        cleanup
+            .command_for(
+                &awaken_session_contract::SessionId::from(session_id),
+                session_id,
+            )
+            .unwrap(),
         lease,
     );
     host.acknowledge_terminal_cleanup_preparation(&root).await;
@@ -22000,7 +22043,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         }
         session
             .terminal_cleanup
-            .publication_command(session_id.as_str())
+            .publication_command(session_id)
             .map(|command| {
                 command.map(|command| {
                     awaken_session_contract::SessionRepositoryPublicationProjection {
@@ -22039,7 +22082,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             .as_mut()
             .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?
             .terminal_cleanup
-            .record_repository_publication_receipt(session_id.as_str(), receipt.clone())
+            .record_repository_publication_receipt(session_id, receipt.clone())
             .map_err(|error| {
                 awaken_session_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
@@ -22075,7 +22118,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             .as_mut()
             .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?
             .terminal_cleanup
-            .record_repository_publication_rejection(session_id.as_str(), rejection.clone())
+            .record_repository_publication_rejection(session_id, rejection.clone())
             .map_err(|error| {
                 awaken_session_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
@@ -22121,7 +22164,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             ) => {
                 let repository_preparation =
                     awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-                        preparation.effect.command.session_id.as_str(),
+                        &preparation.effect.command.session_id,
                         &projection.workspace_id,
                         &session.resources,
                     )
@@ -23294,7 +23337,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     let binding =
         serde_json::to_string(&environment.handle()).expect("R1 encode live Environment binding");
     let environment_generation = awaken_session_contract::SandboxGeneration::new(
-        "remote-terminal-worker",
+        &awaken_session_contract::SessionId::from("remote-terminal-worker"),
         lease.epoch,
         lease.expires_at_unix_ms,
         "remote-terminal-environment",
@@ -23346,7 +23389,10 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     );
     let command = terminal_session
         .terminal_cleanup
-        .command_for("remote-terminal-worker", "remote-terminal-worker")
+        .command_for(
+            &awaken_session_contract::SessionId::from("remote-terminal-worker"),
+            "remote-terminal-worker",
+        )
         .expect("R1 canonical command");
     *control.session.lock().unwrap() = Some(terminal_session);
     let target = awaken_session_contract::SessionRealizationTarget {
@@ -23629,7 +23675,10 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     );
     let command = terminal_session
         .terminal_cleanup
-        .command_for(session_id, session_id)
+        .command_for(
+            &awaken_session_contract::SessionId::from(session_id),
+            session_id,
+        )
         .expect("C3 canonical root command");
     *control.session.lock().unwrap() = Some(terminal_session);
     let target = awaken_session_contract::SessionRealizationTarget {

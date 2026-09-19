@@ -77,7 +77,7 @@ impl McpNotificationHandler for SessionMcpInput {
                     &input_event_id,
                 );
                 let target = awaken_session_contract::session_run_id(
-                    self.generation.session_id.as_str(),
+                    &self.generation.session_id,
                     &operation,
                 );
                 if host

@@ -1204,7 +1204,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                     });
                 session.environment.assign_generation(
                     awaken_session_contract::SandboxGeneration::new(
-                        session_id.as_str(),
+                        session_id,
                         now_unix_ms,
                         expires_at_unix_ms,
                         environment_fingerprint,
