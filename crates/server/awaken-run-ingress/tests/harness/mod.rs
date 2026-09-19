@@ -2970,15 +2970,28 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
         .unwrap()
         .expect("owner-a claim");
 
-    // owner-a renews at t=50 (extends to 150); a recovery claim at t=120 cannot
-    // steal it because the lease has not expired.
+    // owner-a renews before its deadline; a recovery claim after the *original*
+    // deadline cannot steal the run, because renewal moved it.
+    //
+    // The renewal is deliberately long and the arms are split. A backend whose
+    // authority clock is the database judges this in real time no matter what
+    // `now_ms` the caller passes, so an arm that asserts "still held" is a race
+    // between the renewed margin and however long the host takes to run the next
+    // two statements. With the original 100ms lease that margin was 35ms, and
+    // this assertion failed roughly one run in ten on a loaded machine. Widening
+    // it is not a magic number: each arm is made robust in its own direction.
+    // "Still held" fails only if the entire margin elapses between two
+    // statements; "eventually recovered" below only becomes more true the longer
+    // the host takes, so it keeps a deadline that is already in the past.
+    const HELD_LEASE_MS: u64 = 30_000;
+    const EXPIRING_LEASE_MS: u64 = 1;
     let renew_at = first.lease.expires_ms.saturating_sub(40);
     clock.advance_past(renew_at.saturating_sub(1)).await;
     assert_eq!(
         store
             .renew_lease(
                 &awaken_run_ingress::RunClaim::from(&first.lease),
-                100,
+                HELD_LEASE_MS,
                 renew_at,
             )
             .await
@@ -3016,6 +3029,24 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
             .unwrap(),
         awaken_run_ingress::LeaseRenewalOutcome::Lost,
         "LR2/E2 a non-owner receives typed loss",
+    );
+
+    // Bring the deadline back down so the recovery arm does not have to wait out
+    // the long renewal above. A renewal *sets* the deadline rather than extending
+    // it to the later of the two, on every backend, so the owner can shorten its
+    // own lease; asserting that here is what lets the next arm hold without a
+    // timing window.
+    assert_eq!(
+        store
+            .renew_lease(
+                &awaken_run_ingress::RunClaim::from(&first.lease),
+                EXPIRING_LEASE_MS,
+                first.lease.expires_ms.saturating_add(3),
+            )
+            .await
+            .unwrap(),
+        awaken_run_ingress::LeaseRenewalOutcome::Current,
+        "LR1/E1 an owner may shorten its own lease",
     );
 
     // Once the renewed lease expires, recovery reclaims for the new owner.
