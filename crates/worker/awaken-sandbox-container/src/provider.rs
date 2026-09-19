@@ -226,10 +226,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     /// Dispose never-used capacity that a cancelled creator left at `scope`.
     ///
     /// There is deliberately no handle, fence or spec here: the caller was
-    /// dropped before any of them could exist, and demanding one is exactly why
-    /// the container became unreachable. The runtime addresses the object by
-    /// the scope name alone, which only a warm pool mints, so this port cannot
-    /// reach a Session-owned environment.
+    /// dropped (or its process died) before any of them could exist, and
+    /// demanding one is exactly why the container became unreachable. The
+    /// runtime addresses the object by the scope name alone, which only a warm
+    /// pool mints, and a reclaimer reaches it only through a claim on an
+    /// expired, never-checked-out lease record (`pool::lease`), so this port
+    /// cannot reach a Session-owned environment.
     #[cfg(any(feature = "connection", test))]
     pub(crate) async fn dispose_unreceipted_capacity(
         &self,

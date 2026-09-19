@@ -73,28 +73,41 @@ pub struct ContainerEnvironmentComponents {
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
+async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     provider: ContainerProvider<R>,
+    leased: bool,
     settings: &crate::deployment_config::SandboxSettings,
-) -> BuiltContainerEnvironment {
+) -> Result<BuiltContainerEnvironment, String> {
     let size = settings.warm_pool_size;
     if size == 0 {
-        BuiltContainerEnvironment {
+        return Ok(BuiltContainerEnvironment {
             provider: Arc::new(provider),
             capacity: None,
-        }
-    } else {
-        let pool = Arc::new(awaken_sandbox_container::WarmContainerPool::with_limits(
-            Arc::new(provider),
-            size,
-            settings.warm_pool_total_size,
-            std::time::Duration::from_secs(settings.warm_pool_idle_ttl_secs),
-        ));
-        BuiltContainerEnvironment {
-            provider: pool.clone(),
-            capacity: Some(pool),
-        }
+        });
     }
+    let mut pool = awaken_sandbox_container::WarmContainerPool::with_limits(
+        Arc::new(provider),
+        size,
+        settings.warm_pool_total_size,
+        std::time::Duration::from_secs(settings.warm_pool_idle_ttl_secs),
+    );
+    // Warm capacity outlives this process only as far as its host lease
+    // records reach: this reclaims what a dead incarnation left once its lease
+    // expired, and keeps this pool's own records renewed. A runtime that names
+    // no lease domain (Kubernetes) keeps process-local warm capacity.
+    if leased {
+        let leases = awaken_sandbox_container::pool::WarmCapacityLeases::host_default()
+            .map_err(|error| format!("warm capacity leases: {error}"))?;
+        pool = pool
+            .with_capacity_leases(leases)
+            .await
+            .map_err(|error| format!("warm capacity leases: {error}"))?;
+    }
+    let pool = Arc::new(pool);
+    Ok(BuiltContainerEnvironment {
+        provider: pool.clone(),
+        capacity: Some(pool),
+    })
 }
 
 #[cfg(any(
@@ -102,12 +115,13 @@ fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
+async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     runtime: Arc<R>,
     image: Option<&str>,
     settings: &crate::deployment_config::SandboxSettings,
     package_provisioner: Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>,
 ) -> Result<BuiltContainerEnvironment, String> {
+    let leased = runtime.capacity_lease_domain().is_some();
     let mut provider = ContainerProvider::new(runtime, container_image(image)?);
     if settings.container_hand_residency == ContainerHandResidency::Resident {
         provider = provider.with_resident_hand(awaken_sandbox_container::ResidentHandConfig::new(
@@ -130,7 +144,7 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     if let Some(proxy) = &settings.container_allowlist_proxy {
         provider = provider.with_allowlist_proxy(proxy.clone());
     }
-    Ok(wrap(provider, settings))
+    wrap(provider, leased, settings).await
 }
 
 #[cfg(feature = "container-docker")]
@@ -349,7 +363,7 @@ pub async fn build_container_environment_for_realization(
                 realization_namespace.clone(),
                 settings,
             )?);
-            finish(runtime.clone(), image, settings, Some(runtime))?
+            finish(runtime.clone(), image, settings, Some(runtime)).await?
         }
         #[cfg(feature = "container-podman")]
         SandboxTier::Podman => {
@@ -357,7 +371,7 @@ pub async fn build_container_environment_for_realization(
                 realization_namespace.clone(),
                 settings,
             )?);
-            finish(runtime.clone(), image, settings, Some(runtime))?
+            finish(runtime.clone(), image, settings, Some(runtime)).await?
         }
         #[cfg(feature = "container-k8s")]
         SandboxTier::K8s => {
@@ -383,7 +397,7 @@ pub async fn build_container_environment_for_realization(
             }
             let runtime = Arc::new(runtime);
             let package_provisioner = k8s_package_provisioner(settings).await?;
-            finish(runtime, image, settings, package_provisioner)?
+            finish(runtime, image, settings, package_provisioner).await?
         }
         SandboxTier::Local | SandboxTier::Namespace => {
             return Err("local/namespace tiers do not use a container provider".into());
@@ -481,8 +495,8 @@ mod tests {
         assert!(error.contains("requires the Kubernetes Pod channel"));
     }
 
-    #[test]
-    fn provider_selection_supports_direct_and_warm_pool_shapes() {
+    #[tokio::test]
+    async fn provider_selection_supports_direct_and_warm_pool_shapes() {
         use awaken_sandbox_container::podman::PodmanRuntime;
 
         let settings = crate::deployment_config::SandboxSettings {
@@ -490,22 +504,28 @@ mod tests {
             ..Default::default()
         };
         let direct = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
-        let _ = wrap(direct, &settings);
+        let direct = wrap(direct, false, &settings).await.unwrap();
+        assert!(direct.capacity.is_none());
 
         let settings = crate::deployment_config::SandboxSettings {
             warm_pool_size: 2,
             ..Default::default()
         };
         let pooled = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
-        let _ = wrap(pooled, &settings);
+        let pooled = wrap(pooled, false, &settings).await.unwrap();
+        assert!(pooled.capacity.is_some());
     }
 
-    #[test]
-    fn provider_selection_requires_an_image() {
+    #[tokio::test]
+    async fn provider_selection_requires_an_image() {
         use awaken_sandbox_container::podman::PodmanRuntime;
 
         let settings = crate::deployment_config::SandboxSettings::default();
-        assert!(finish(Arc::new(PodmanRuntime::new(8080)), None, &settings, None).is_err());
+        assert!(
+            finish(Arc::new(PodmanRuntime::new(8080)), None, &settings, None)
+                .await
+                .is_err()
+        );
         assert!(
             finish(
                 Arc::new(PodmanRuntime::new(8080)),
@@ -513,8 +533,101 @@ mod tests {
                 &settings,
                 None
             )
+            .await
             .is_ok()
         );
+    }
+
+    /// L7 (warm-capacity lease table in `awaken_sandbox_container::pool::lease`):
+    /// the production builder — not a test-only constructor — puts Podman warm
+    /// capacity under host lease records, and capacity shutdown releases them.
+    /// Real rootless Podman; self-skips when it is unavailable.
+    #[tokio::test]
+    async fn l7_the_production_builder_puts_warm_capacity_under_host_leases() {
+        const IMAGE: &str = "docker.io/library/busybox:latest";
+        let podman_runs = std::process::Command::new("podman")
+            .args(["run", "--rm", "--network=none", IMAGE, "true"])
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !podman_runs {
+            eprintln!("skipping: rootless Podman cannot start {IMAGE}");
+            return;
+        }
+        let nonce = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let namespace =
+            awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+                "l7-production-warm-lease",
+                nonce.as_str(),
+            ])
+            .unwrap();
+        let domain = format!("podman/{}", namespace.as_str());
+        let settings = crate::deployment_config::SandboxSettings {
+            warm_pool_size: 1,
+            ..Default::default()
+        };
+        let components = build_container_environment_for_realization(
+            namespace,
+            SandboxTier::Podman,
+            Some(IMAGE),
+            &settings,
+        )
+        .await
+        .expect("production Podman composition");
+        let capacity = components.capacity.expect("warm capacity is configured");
+        let records = || {
+            let root = awaken_sandbox_container::pool::WarmCapacityLeases::host_default()
+                .unwrap()
+                .root()
+                .to_path_buf();
+            std::fs::read_dir(root)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .flat_map(|dir| std::fs::read_dir(dir.path()).into_iter().flatten())
+                .flatten()
+                // Every record of this run's lease domain, lease or claim: a
+                // shutdown that disposed its container must leave neither.
+                .filter(|entry| {
+                    std::fs::read_to_string(entry.path())
+                        .is_ok_and(|record| record.contains(&domain))
+                })
+                .count()
+        };
+        // The one poolable row: mount-less and Ephemeral.
+        let spec = pc::SandboxSpec {
+            process_tree_supervision: false,
+            scope: "l7-warm-lease".into(),
+            isolation: pc::IsolationClass::Container,
+            environment: None,
+            command: vec!["sh".into(), "-c".into(), "sleep 3600".into()],
+            deny_tool_egress: false,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            packages: Default::default(),
+            network: pc::NetworkPolicy::None,
+            outputs_path: "/mnt/session/outputs".into(),
+            requests: Default::default(),
+            limits: Default::default(),
+            filesystem_continuity: pc::FilesystemContinuity::Ephemeral,
+            control_services: Default::default(),
+            lease_ttl_secs: None,
+        };
+        let warmed = capacity.prewarm_to(&spec, 1).await;
+        let leased_while_warm = records();
+        capacity.shutdown_capacity().await;
+        assert_eq!(warmed.expect("L7 prewarm"), 1);
+        assert_eq!(
+            leased_while_warm, 1,
+            "L7 the warm container has a host record"
+        );
+        assert_eq!(records(), 0, "L7 shutdown released it after disposal");
     }
 
     #[cfg(feature = "container-k8s")]

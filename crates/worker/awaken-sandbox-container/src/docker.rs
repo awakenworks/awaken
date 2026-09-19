@@ -1877,6 +1877,10 @@ impl ContainerRuntime for DockerRuntime {
             .map_err(backend)
     }
 
+    fn capacity_lease_domain(&self) -> Option<String> {
+        Some(format!("docker/{}", self.realization_namespace.as_str()))
+    }
+
     async fn remove_unreceipted_scope(&self, scope: &str) -> Result<(), RuntimeError> {
         // The daemon-global name is a pure function of namespace + scope, so
         // the cancelled creator's object is addressable without any handle it

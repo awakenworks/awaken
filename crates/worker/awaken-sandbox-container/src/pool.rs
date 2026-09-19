@@ -28,6 +28,13 @@ use crate::{
     ContainerSandbox,
 };
 
+pub mod lease;
+use lease::{LeaseStore, WARM_LEASE_RECONCILER, WarmLeaseLedger};
+pub use lease::{
+    SystemWarmLeaseClock, WarmCapacityLeasePolicy, WarmCapacityLeases, WarmCapacityReclamation,
+    WarmLeaseClock,
+};
+
 /// A process-global sequence for warm container scopes, so names are unique across
 /// every pool in this process (a per-pool counter would collide when two pools warm
 /// the same shape). Paired with the pool incarnation below, warm names are unique
@@ -59,16 +66,106 @@ fn poolable_shape(spec: &pc::SandboxSpec) -> Option<pc::SandboxCapacityShapeId> 
 /// * The leaked container carries that same incarnation in its owner label, so
 ///   a leak is attributable to the dead Worker rather than anonymous.
 ///
-/// What it does **not** buy, and what no naming scheme in this crate can: a
-/// restarted Worker still cannot *reclaim* the leftover. Unfenced removal is
-/// restricted to a scope this process minted, and the fenced disposal path
-/// needs a durable receipt warm capacity deliberately never has. Cross-restart
-/// reclamation therefore needs a lease over warm capacity, not a better name.
+/// What a name does **not** buy is reclamation: the fenced disposal path needs a
+/// durable receipt warm capacity deliberately never has, and a deterministic
+/// cross-process name would collide with a container already checked out to a
+/// Session. Reclamation is instead owned by the lease in [`lease`]: when the
+/// pool runs with [`WarmContainerPool::with_capacity_leases`], every warm scope
+/// minted here gets an enumerable host record *before* its create can be
+/// polled, and a later incarnation removes the scope's container through the
+/// unreceipted-capacity port once — and only once — that record has expired
+/// without being checked out. What that covers and what it does not (a runtime
+/// with no lease domain such as Kubernetes; a daemon create that lands more than
+/// one TTL after its creator's last renewal) is stated in [`lease`].
 fn next_warm_scope(incarnation: &str) -> String {
     format!(
         "warmpool-{incarnation}-{}",
         WARM_SEQ.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+/// A freshly minted warm scope. When the pool is leased its record already
+/// exists; this value is the only way to reach [`WarmContainerPool::claimed_warm_create`],
+/// so no create can be built for a scope whose record was not published first.
+struct WarmScope {
+    scope: String,
+    leased: bool,
+}
+
+fn mint_warm_scope(
+    leases: Option<&WarmLeaseLedger>,
+    incarnation: &str,
+) -> Result<WarmScope, pc::SandboxError> {
+    let scope = next_warm_scope(incarnation);
+    if let Some(leases) = leases {
+        leases.mint(&scope)?;
+    }
+    Ok(WarmScope {
+        scope,
+        leased: leases.is_some(),
+    })
+}
+
+/// Dispose one never-checked-out warm container and settle its record. A leased
+/// pool first claims its own record (L5), so a container whose record a
+/// reclaimer already took is left to that reclaimer; the claim is deleted once
+/// the runtime confirmed removal, otherwise left to expire so reclamation
+/// (which treats absence as success) finishes the job.
+async fn retire<R: ContainerRuntime + 'static>(
+    leases: Option<&WarmLeaseLedger>,
+    sandbox: ContainerSandbox<R>,
+) {
+    let Some(leases) = leases else {
+        let _ = sandbox.dispose().await;
+        return;
+    };
+    let Some(claim) = leases.begin_disposal(&sandbox.id) else {
+        return;
+    };
+    let removed = sandbox.dispose().await.is_ok();
+    leases.finish_disposal(&claim, removed);
+}
+
+/// L5/L6: renew every record this pool holds, forget ready containers whose
+/// record a reclaimer took, and retire ready containers the runtime no longer
+/// reports running.
+async fn renew_capacity<R: ContainerRuntime + 'static>(
+    leases: &WarmLeaseLedger,
+    warm: &Mutex<HashMap<pc::SandboxCapacityShapeId, WarmEntry<R>>>,
+    inner: &ContainerProvider<R>,
+) {
+    let lost = leases.renew_held();
+    let probes = {
+        let mut map = warm.lock().expect("warm pool mutex");
+        let mut probes = Vec::new();
+        for entry in map.values_mut() {
+            // A lost record belongs to the reclaimer that claimed it; this pool
+            // must neither hand the container out nor remove it a second time.
+            entry.ready.retain(|sandbox| !lost.contains(&sandbox.id));
+            probes.extend(
+                entry
+                    .ready
+                    .iter()
+                    .map(|sandbox| (sandbox.id.clone(), sandbox.container_id.clone())),
+            );
+        }
+        probes
+    };
+    for (scope, container_id) in probes {
+        if inner.runtime.touch_lease(&container_id).await.is_ok() {
+            continue;
+        }
+        let vanished = {
+            let mut map = warm.lock().expect("warm pool mutex");
+            map.values_mut().find_map(|entry| {
+                let index = entry.ready.iter().position(|sandbox| sandbox.id == scope)?;
+                Some(entry.ready.remove(index))
+            })
+        };
+        if let Some(sandbox) = vanished {
+            retire(Some(leases), sandbox).await;
+        }
+    }
 }
 
 /// One shape's warm capacity: the template spec to replenish from and the ready set.
@@ -141,6 +238,13 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
     /// This pool's incarnation, mixed into every warm scope. See
     /// [`next_warm_scope`].
     incarnation: String,
+    /// Host lease records over this pool's warm capacity, when enabled by
+    /// [`Self::with_capacity_leases`].
+    leases: Option<Arc<WarmLeaseLedger>>,
+    /// The renewal/reclamation loop, stopped at the end of [`Self::shutdown`].
+    maintenance: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Completed maintenance rounds, observable by tests without timing.
+    maintenance_rounds: tokio::sync::watch::Sender<u64>,
 }
 
 impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
@@ -175,13 +279,117 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             create_changed: Arc::new(tokio::sync::Notify::new()),
             unreceipted_scopes: Arc::new(Mutex::new(BTreeSet::new())),
             incarnation: crate::runtime_owner_id(),
+            leases: None,
+            maintenance: Mutex::new(None),
+            maintenance_rounds: tokio::sync::watch::channel(0).0,
         }
     }
 
-    /// A unique per-warm container scope, so pre-warmed names never collide with a
-    /// session's thread-scoped name or each other.
-    fn warm_scope(&self) -> String {
-        next_warm_scope(&self.incarnation)
+    /// Put this pool's warm capacity under host lease records (see [`lease`]).
+    ///
+    /// Before returning it runs one reclamation pass, so a restarted Worker
+    /// removes whatever a dead incarnation left behind whose lease has already
+    /// expired; and unless the configuration opted out it spawns the loop that
+    /// renews this pool's records every renew interval and reclaims expired
+    /// ones every reclaim interval. A runtime that names no lease domain cannot
+    /// participate and is refused rather than silently left unleased.
+    pub async fn with_capacity_leases(
+        mut self,
+        config: WarmCapacityLeases,
+    ) -> Result<Self, pc::SandboxError> {
+        let domain = self.inner.runtime.capacity_lease_domain().ok_or_else(|| {
+            pc::SandboxError::unsupported(
+                "this container runtime names no warm capacity lease domain",
+            )
+        })?;
+        let store = LeaseStore::open(&config, &domain, &self.incarnation)?;
+        let leases = Arc::new(WarmLeaseLedger::new(store));
+        self.leases = Some(leases.clone());
+        leases.reclaim(&self.inner).await?;
+        if config.maintained() {
+            let handle = self.spawn_lease_maintenance(&leases, config.policy());
+            *self
+                .maintenance
+                .lock()
+                .expect("warm lease maintenance mutex") = Some(handle);
+        }
+        Ok(self)
+    }
+
+    /// L5: the loop that keeps this pool's records alive. It holds only weak
+    /// references, so a pool dropped without `shutdown` stops renewing and its
+    /// capacity becomes reclaimable one TTL later.
+    fn spawn_lease_maintenance(
+        &self,
+        leases: &Arc<WarmLeaseLedger>,
+        policy: WarmCapacityLeasePolicy,
+    ) -> tokio::task::JoinHandle<()> {
+        let leases = Arc::downgrade(leases);
+        let warm = Arc::downgrade(&self.warm);
+        let inner = Arc::downgrade(&self.inner);
+        let closed = self.closed.clone();
+        let rounds = self.maintenance_rounds.clone();
+        let renew_interval = policy.renew_interval();
+        let reclaim_every = policy
+            .reclaim_interval()
+            .as_millis()
+            .div_ceil(renew_interval.as_millis().max(1))
+            .max(1);
+        tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(renew_interval);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut round: u128 = 0;
+            loop {
+                ticks.tick().await;
+                if closed.load(Ordering::SeqCst) {
+                    return;
+                }
+                let (Some(leases), Some(warm), Some(inner)) =
+                    (leases.upgrade(), warm.upgrade(), inner.upgrade())
+                else {
+                    return;
+                };
+                renew_capacity(&leases, &warm, &inner).await;
+                round += 1;
+                if round.is_multiple_of(reclaim_every) {
+                    let _ = leases.reclaim(&inner).await;
+                }
+                rounds.send_modify(|completed| *completed += 1);
+            }
+        })
+    }
+
+    /// Renew this pool's lease records now (L5), and drop ready capacity whose
+    /// record was lost or whose container stopped (L6). The maintenance loop
+    /// calls this every renew interval; a caller that opted out of it must.
+    pub async fn renew_capacity_leases(&self) -> Result<(), pc::SandboxError> {
+        let leases = self.lease_ledger()?;
+        renew_capacity(leases, &self.warm, &self.inner).await;
+        Ok(())
+    }
+
+    /// Reclaim every expired, never-checked-out warm scope in this pool's lease
+    /// domain — whichever incarnation minted it (L1/L2/L6).
+    pub async fn reclaim_expired_capacity(
+        &self,
+    ) -> Result<WarmCapacityReclamation, pc::SandboxError> {
+        self.lease_ledger()?.reclaim(&self.inner).await
+    }
+
+    fn lease_ledger(&self) -> Result<&WarmLeaseLedger, pc::SandboxError> {
+        self.leases
+            .as_deref()
+            .ok_or_else(|| pc::SandboxError::unsupported("warm capacity is not under host leases"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn maintenance_rounds(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.maintenance_rounds.subscribe()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lease_ledger_for_test(&self) -> &WarmLeaseLedger {
+        self.leases.as_deref().expect("leased pool")
     }
 
     /// Start one warm create whose responsibility record exists before the
@@ -198,20 +406,35 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// both windows strand the same container: the probe's own disposal is an
     /// await, and a task dropped there leaves a running container the pool has
     /// otherwise never heard of.
+    ///
+    /// A leased scope's claim is durable: its host record was published by
+    /// [`mint_warm_scope`] before `warm` existed, and [`WARM_LEASE_RECONCILER`]
+    /// reads it back after this process is gone. An unleased pool keeps the
+    /// in-process claim, which covers cancellation but not process death.
     fn claimed_warm_create<'a>(
         inner: &'a ContainerProvider<R>,
         unreceipted_scopes: &Arc<Mutex<BTreeSet<String>>>,
+        warm: WarmScope,
         warm_spec: &'a pc::SandboxSpec,
     ) -> pc::ClaimedEffect<'a, ContainerSandbox<R>> {
+        debug_assert_eq!(
+            warm.scope, warm_spec.scope,
+            "the spec realizes the minted scope"
+        );
         let scopes = unreceipted_scopes.clone();
-        let scope = warm_spec.scope.clone();
+        let scope = warm.scope;
         let in_flight = move || {
             scopes
                 .lock()
                 .expect("warm unreceipted scope mutex")
                 .insert(scope);
         };
-        pc::ClaimedEffect::new(pc::EffectClaim::in_process(in_flight), async move {
+        let claim = if warm.leased {
+            pc::EffectClaim::durable(WARM_LEASE_RECONCILER, in_flight)
+        } else {
+            pc::EffectClaim::in_process(in_flight)
+        };
+        pc::ClaimedEffect::new(claim, async move {
             ready_candidate(inner.create_container(warm_spec).await?).await
         })
     }
@@ -233,16 +456,33 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// not happen.
     async fn dispose_unreceipted_scopes(&self) {
         for scope in self.unreceipted_warm_scopes() {
-            if self
+            let claim = match self.leases.as_deref() {
+                None => None,
+                Some(leases) => match leases.begin_disposal(&scope) {
+                    Some(claim) => Some(claim),
+                    // A reclaimer holds the record: the removal is its own.
+                    None => {
+                        self.unreceipted_scopes
+                            .lock()
+                            .expect("warm unreceipted scope mutex")
+                            .remove(&scope);
+                        continue;
+                    }
+                },
+            };
+            let removed = self
                 .inner
                 .dispose_unreceipted_capacity(&scope)
                 .await
-                .is_ok()
-            {
+                .is_ok();
+            if removed {
                 self.unreceipted_scopes
                     .lock()
                     .expect("warm unreceipted scope mutex")
                     .remove(&scope);
+            }
+            if let (Some(leases), Some(claim)) = (self.leases.as_deref(), claim) {
+                leases.finish_disposal(&claim, removed);
             }
         }
     }
@@ -308,17 +548,28 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 (ready, expired)
             };
             for sandbox in expired {
-                let _ = sandbox.dispose().await;
+                retire(self.leases.as_deref(), sandbox).await;
             }
             if ready >= target {
                 return Ok(ready);
             }
             let create = self.begin_create()?;
+            let warm = mint_warm_scope(self.leases.as_deref(), &self.incarnation)?;
             let mut warm_spec = spec.clone();
-            warm_spec.scope = self.warm_scope();
+            warm_spec.scope = warm.scope.clone();
             let in_flight =
-                Self::claimed_warm_create(&self.inner, &self.unreceipted_scopes, &warm_spec);
-            let sandbox = in_flight.await?;
+                Self::claimed_warm_create(&self.inner, &self.unreceipted_scopes, warm, &warm_spec);
+            let sandbox = match in_flight.await {
+                Ok(sandbox) => sandbox,
+                Err(error) => {
+                    // A returned error owns what it half-created; the record
+                    // is left to expire so reclamation removes any remainder.
+                    if let Some(leases) = &self.leases {
+                        leases.abandon(&warm_spec.scope);
+                    }
+                    return Err(error);
+                }
+            };
             let (excess, evicted) = {
                 let mut map = self.warm.lock().expect("warm pool mutex");
                 let mut evicted = Vec::new();
@@ -356,10 +607,10 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 }
             };
             for sandbox in evicted {
-                let _ = sandbox.dispose().await;
+                retire(self.leases.as_deref(), sandbox).await;
             }
             if let Some(excess) = excess {
-                let _ = excess.dispose().await;
+                retire(self.leases.as_deref(), excess).await;
                 if self.closed.load(Ordering::SeqCst) {
                     return Err(pc::SandboxError::gone(
                         "warm container capacity is shut down",
@@ -402,7 +653,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             .expect("warm prewarm gate mutex")
             .remove(&key);
         for sandbox in ready {
-            let _ = sandbox.dispose().await;
+            retire(self.leases.as_deref(), sandbox).await;
         }
     }
 
@@ -417,7 +668,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 map.drain().flat_map(|(_, e)| e.ready).collect()
             };
             for sandbox in batch {
-                let _ = sandbox.dispose().await;
+                retire(self.leases.as_deref(), sandbox).await;
             }
             // The ready set is only the capacity that arrived. A create whose
             // caller was cancelled never reaches it, so draining `warm` alone is
@@ -447,6 +698,20 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             }
             changed.await;
         }
+        // L5: every record for a container this drain disposed is already
+        // released. What is still held names capacity whose removal failed; it
+        // stops being renewed so a later reclaimer finishes it.
+        if let Some(handle) = self
+            .maintenance
+            .lock()
+            .expect("warm lease maintenance mutex")
+            .take()
+        {
+            handle.abort();
+        }
+        if let Some(leases) = &self.leases {
+            leases.abandon_all();
+        }
     }
 
     /// Replenish `key` back to `size` off the request path (bounded). Concurrent
@@ -463,6 +728,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let create_changed = self.create_changed.clone();
         let unreceipted_scopes = self.unreceipted_scopes.clone();
         let incarnation = self.incarnation.clone();
+        let leases = self.leases.clone();
         let size = self.size;
         let total_size = self.total_size;
         in_flight_creates.fetch_add(1, Ordering::SeqCst);
@@ -488,13 +754,18 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                         _ => return,
                     }
                 };
+                let Ok(minted) = mint_warm_scope(leases.as_deref(), &incarnation) else {
+                    // No record, no create (L4): fail closed, no spin.
+                    return;
+                };
                 let mut warm_spec = template;
-                warm_spec.scope = next_warm_scope(&incarnation);
+                warm_spec.scope = minted.scope.clone();
                 // The same claim as the request path. A detached task is not
                 // cancelled by its caller, but it is still dropped when the
                 // runtime it was spawned onto shuts down, and that drop strands
                 // the identical container.
-                let in_flight = Self::claimed_warm_create(&inner, &unreceipted_scopes, &warm_spec);
+                let in_flight =
+                    Self::claimed_warm_create(&inner, &unreceipted_scopes, minted, &warm_spec);
                 match in_flight.await {
                     Ok(sandbox) => {
                         // Re-check the cap under the lock; dispose an over-cap create.
@@ -510,13 +781,18 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                             }
                         };
                         if let Some(excess) = over {
-                            let _ = excess.dispose().await;
+                            retire(leases.as_deref(), excess).await;
                             return;
                         }
                     }
                     // A create or readiness failure stops replenishing this key
-                    // (fail closed, no spin).
-                    Err(_) => return,
+                    // (fail closed, no spin); its record is left to expire.
+                    Err(_) => {
+                        if let Some(leases) = &leases {
+                            leases.abandon(&warm_spec.scope);
+                        }
+                        return;
+                    }
                 }
             }
         });
@@ -571,19 +847,30 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         let Some(key) = poolable_shape(spec) else {
             return self.inner.create_unattached_environment(spec).await;
         };
-        let warm = {
-            let mut map = self.warm.lock().expect("warm pool mutex");
-            let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
-                template: spec.clone(),
-                ready: Vec::new(),
-                last_desired: Instant::now(),
-            });
-            entry.last_desired = Instant::now();
-            entry.ready.pop()
-        };
-        let environment = match warm {
-            Some(environment) => environment.bind_scope(spec.scope.clone()),
-            None => self.inner.create_container(spec).await?,
+        let environment = loop {
+            let warm = {
+                let mut map = self.warm.lock().expect("warm pool mutex");
+                let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
+                    template: spec.clone(),
+                    ready: Vec::new(),
+                    last_desired: Instant::now(),
+                });
+                entry.last_desired = Instant::now();
+                entry.ready.pop()
+            };
+            let Some(candidate) = warm else {
+                break self.inner.create_container(spec).await?;
+            };
+            // L3: the container leaves warm capacity only by consuming its
+            // lease path. A candidate whose record a reclaimer already claimed
+            // is the claimant's to remove, so it is forgotten, never handed out.
+            if self
+                .leases
+                .as_deref()
+                .is_none_or(|leases| leases.check_out(&candidate.id))
+            {
+                break candidate.bind_scope(spec.scope.clone());
+            }
         };
         self.spawn_replenish(key);
         Ok(Arc::new(environment))
@@ -691,6 +978,11 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
 /// it, so the drop-mid-create scenarios stay readable next to each other.
 #[cfg(test)]
 mod cancellation_tests;
+
+/// Warm-capacity lease cases (rules L1–L7 in [`lease`]), against a fake daemon
+/// shared by several pools so a restart is two pools, not one.
+#[cfg(test)]
+mod lease_tests;
 
 #[cfg(test)]
 mod tests {
