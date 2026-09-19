@@ -87,6 +87,27 @@ def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = No
         subprocess.run(["git", *arguments], cwd=root, check=True, capture_output=True)
 
 
+# Beside Cargo and the pinned solver, the batch runner uses four ordinary
+# POSIX tools: it captures the Kani transcript (mktemp, tee), reads it for
+# CBMC's own out-of-memory sentence (grep) and removes it (rm). The fake PATH
+# in the tests below is hermetic on purpose -- a solver the host happens to
+# have installed must not decide a case that is about an absent one -- so the
+# tools the runner may use are linked in explicitly and named here rather than
+# inherited. A runner that reaches for a fifth tool fails these tests, which is
+# the point: the dependency is a decision, not an accident.
+RUNNER_TOOLS = ("mktemp", "tee", "grep", "rm")
+
+
+def link_runner_tools(bindir: Path) -> None:
+    """Put exactly the runner's declared tools on an otherwise empty PATH."""
+
+    for tool in RUNNER_TOOLS:
+        resolved = shutil.which(tool)
+        if resolved is None:
+            raise RuntimeError(f"the batch runner needs {tool}, which is not installed")
+        (bindir / tool).symlink_to(resolved)
+
+
 class EvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awaken-proof-receipt-test-")
@@ -109,6 +130,7 @@ class EvidenceTests(unittest.TestCase):
         function = nested_shell_function(source, "run_kani")
         bindir = Path(self.temporary.name) / "kani-bin"
         bindir.mkdir()
+        link_runner_tools(bindir)
         cargo = bindir / "cargo"
         cargo.write_text(
             '#!/bin/sh\nprintf \'%s\\n%s\\n\' "$CARGO_BUILD_BUILD_DIR" "$*" > "$CALLS"\n'
@@ -209,6 +231,7 @@ class EvidenceTests(unittest.TestCase):
         ):
             with self.subTest(installed=installed, reported=reported, strict=strict, proof_exit=proof_exit), tempfile.TemporaryDirectory() as temporary:
                 bindir = Path(temporary)
+                link_runner_tools(bindir)
                 if installed:
                     tool = bindir / "z3"
                     tool.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(reported) + f"\nexit {version_exit}\n")
