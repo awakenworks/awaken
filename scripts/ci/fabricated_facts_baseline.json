@@ -85,7 +85,7 @@
         "crates/server/awaken-dispatch/src/worker.rs": 2,
         "crates/server/awaken-dispatch/src/worker/claim_renewal.rs": 7,
         "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs": 1,
-        "crates/server/awaken-session-executor/src/agent_runner/child_execution.rs": 1,
+        "crates/server/awaken-session-executor/src/agent_runner/child_attempt.rs": 1,
         "crates/server/awaken-session-executor/src/host/build.rs": 4,
         "crates/server/awaken-session-executor/src/host/run/quiescence.rs": 6,
         "crates/server/awaken-session-executor/src/managed_host_mcp_attachment.rs": 2,
