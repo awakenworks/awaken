@@ -17,6 +17,228 @@ where
     .await;
 }
 
+/// Prove that an operator can quarantine a dispatch whose physical predecessor
+/// vanished without acknowledging quiescence, and only then.
+///
+/// This reproduces the exact durable shape observed in a deployed cluster: the
+/// Run is committed terminal, cancellation intent is recorded, and the physical
+/// attempt slot still names a Worker incarnation that will never return. Before
+/// the shared kernel gained `quarantine_admits_occupation`, such a row could not
+/// be settled (fenced by the slot), could not admit a successor (blocked by the
+/// slot), and could not be quarantined (filtered out) — so it re-leased forever
+/// while holding execution capacity it could never use.
+///
+/// Causes: C1 the physical attempt slot is occupied by a predecessor;
+/// C2 cancellation intent is recorded; C3 the lease is expired at/above the
+/// retry budget.
+/// Effects: E1 C1+C2+C3 quarantines exactly that row; E2 C1+C3 without C2 is
+/// untouched, because an uncancelled predecessor may still legitimately finish;
+/// E3 quarantine never clears the slot, so a returning predecessor can still
+/// acknowledge its own quiescence exactly.
+///
+/// R3..R6 cover the neighbouring dispositions that share this slot guard, so a
+/// later change cannot widen one of them by accident:
+/// E4 execution stays blocked, E5 automatic terminalization stays blocked
+/// (it would fabricate Run outcome truth), E6 the sweep is idempotent, and
+/// E7 a quarantined row never re-enters execution.
+///
+/// | Rule | C1 slot | C2 cancel | C3 expired+exhausted | Effect |
+/// |---|---|---|---|---|
+/// | R1 | occupied | yes | yes | E1 dead-lettered |
+/// | R2 | occupied | no  | yes | E2 retained as running |
+/// | R3 | occupied | yes | yes | E4 successor execution still Blocked |
+/// | R4 | occupied | yes | yes | E5 `claim_retry_exhausted` still finds nothing |
+/// | R5 | occupied | yes | already swept | E6 second sweep is a no-op |
+/// | R6 | occupied | yes | dead-lettered | E7 requeue and claim both refused |
+pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
+    store: &S,
+    namespace: &str,
+    clock: &dyn ConformanceClock,
+) where
+    S: DispatchQueue + ?Sized,
+{
+    // Both cases need a row that has actually burned its retry budget, so each
+    // one claims, loses the lease, and is recovered by a successor. Only the
+    // recovery re-claim spends retry budget, exactly as the deployed row did.
+
+    // R2: an occupied slot without cancellation intent stays untouched.
+    let retained = run_id(namespace, "occupied-retained");
+    store
+        .enqueue(dispatch(
+            namespace,
+            "occupied-retained",
+            "occupied-retained-thread",
+        ))
+        .await
+        .expect("enqueue retained run");
+    let retained_first = store
+        .claim_run(
+            &retained,
+            "occupied-a",
+            LEASE_MS,
+            1_000,
+            &Default::default(),
+        )
+        .await
+        .expect("retained claim")
+        .expect("retained run is runnable");
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&retained_first.lease), 1_000, None)
+            .await
+            .expect("install retained physical attempt"),
+        AttemptAdmission::Applied,
+        "R2 predecessor occupies the slot"
+    );
+    clock.advance_past(retained_first.lease.expires_ms).await;
+    let retained_recovered = store
+        .claim_run(
+            &retained,
+            "occupied-a2",
+            LEASE_MS,
+            retained_first.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .expect("retained recovery")
+        .expect("retained run is recoverable");
+    clock
+        .advance_past(retained_recovered.lease.expires_ms)
+        .await;
+    assert_eq!(
+        store
+            .quarantine_retry_exhausted(1, retained_recovered.lease.expires_ms.saturating_add(1))
+            .await
+            .expect("quarantine sweep without cancellation intent"),
+        0,
+        "R2/E2 an uncancelled occupied row is never quarantined"
+    );
+
+    // R1: the same shape with recorded cancellation intent is quarantinable.
+    // Cancelling before the first claim records the intent without revoking a
+    // lease, so the successor's recovery re-claim reproduces the deployed row:
+    // running, cancellation recorded, slot naming an incarnation that never
+    // returned.
+    let stuck = run_id(namespace, "occupied-stuck");
+    store
+        .enqueue(dispatch(
+            namespace,
+            "occupied-stuck",
+            "occupied-stuck-thread",
+        ))
+        .await
+        .expect("enqueue stuck run");
+    store.cancel(&stuck).await.expect("record cancel intent");
+    let stuck_first = store
+        .claim_run(&stuck, "occupied-b", LEASE_MS, 5_000, &Default::default())
+        .await
+        .expect("stuck claim")
+        .expect("a cancelled row is still claimable");
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&stuck_first.lease), 5_000, None)
+            .await
+            .expect("install stuck physical attempt"),
+        AttemptAdmission::Applied,
+        "R1 predecessor occupies the slot"
+    );
+    clock.advance_past(stuck_first.lease.expires_ms).await;
+    let stuck_successor = store
+        .claim_run(
+            &stuck,
+            "occupied-c",
+            LEASE_MS,
+            stuck_first.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .expect("successor recovery")
+        .expect("the stuck run is recoverable");
+    clock.advance_past(stuck_successor.lease.expires_ms).await;
+    let sweep_now = stuck_successor.lease.expires_ms.saturating_add(1);
+
+    // R3/E4: the successor is still refused physical execution. Quarantine is
+    // reachable precisely because it grants nobody the executor.
+    // The refusal reason depends on whether the successor's own lease is still
+    // live (Blocked) or has since expired (Fenced). The invariant under test is
+    // that neither ever grants the executor.
+    let successor_admission = store
+        .begin_attempt(&RunClaim::from(&stuck_successor.lease), sweep_now, None)
+        .await
+        .expect("successor admission is decidable");
+    assert!(
+        matches!(
+            successor_admission,
+            AttemptAdmission::Blocked | AttemptAdmission::Fenced
+        ),
+        "R3/E4 an occupied slot never grants execution, got {successor_admission:?}"
+    );
+
+    // R4/E5: automatic maintenance must stay blocked. `claim_retry_exhausted`
+    // commits `Ended(Indeterminate)` through the Worker/`Done` path, so it would
+    // fabricate Run outcome truth while an opaque predecessor may still be
+    // running (ADR-0065). Only the explicit operator hatch may proceed. This is
+    // the asymmetry the fix depends on; widening it here would be a regression.
+    assert!(
+        store
+            .claim_retry_exhausted("occupied-auto", LEASE_MS, sweep_now, 1)
+            .await
+            .expect("automatic retry exhaustion is decidable")
+            .is_none(),
+        "R4/E5 automatic terminalization never reaches an occupied slot"
+    );
+
+    assert_eq!(
+        store
+            .quarantine_retry_exhausted(1, sweep_now)
+            .await
+            .expect("quarantine the stuck run"),
+        1,
+        "R1/E1 the operator escape hatch reaches a vanished predecessor"
+    );
+
+    // R5/E6: the sweep is idempotent — a dead-lettered row is not swept twice.
+    assert_eq!(
+        store
+            .quarantine_retry_exhausted(1, sweep_now.saturating_add(1))
+            .await
+            .expect("second quarantine sweep"),
+        0,
+        "R5/E6 quarantine never dead-letters the same row twice"
+    );
+
+    // R6/E7: the quarantined row can never re-enter execution. Cancellation is
+    // terminal intent, so requeue is refused and the row cannot be handed back
+    // to a claimant while its predecessor remains unaccounted for.
+    assert!(
+        !store.requeue(&stuck).await.expect("requeue is decidable"),
+        "R6/E7 a cancelled dead letter is never requeued into execution"
+    );
+    assert!(
+        store
+            .claim_run(
+                &stuck,
+                "occupied-d",
+                LEASE_MS,
+                sweep_now.saturating_add(2),
+                &Default::default(),
+            )
+            .await
+            .expect("claiming a dead letter is decidable")
+            .is_none(),
+        "R6/E7 a quarantined row leaves the claim pool for good"
+    );
+    // E3: the slot survives quarantine, so physical truth is never fabricated.
+    assert_eq!(
+        store
+            .finish_attempt(&RunClaim::from(&stuck_first.lease))
+            .await
+            .expect("a returning predecessor still settles its own slot"),
+        SettleOutcome::Applied,
+        "R1/E3 quarantine never cleared the physical slot"
+    );
+}
+
 /// Clock-explicit variant used by deterministic reference backends.
 pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
     store: &S,

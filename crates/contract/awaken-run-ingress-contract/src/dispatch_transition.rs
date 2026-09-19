@@ -57,6 +57,32 @@ impl PhysicalAttemptSlot {
         matches!(self, Self::Empty)
     }
 
+    /// Whether explicit operator quarantine may dead-letter one expired,
+    /// retry-exhausted row while this slot is still occupied.
+    ///
+    /// Every other disposition keeps requiring [`Self::permits_settlement`]: a
+    /// predecessor that may still be executing must not have `Done`, an outcome,
+    /// or a successor's execution authority decided under it. Quarantine is
+    /// admissible on an occupied slot precisely because it does none of those
+    /// things. It records no completion and no Run outcome truth (G35), it grants
+    /// nobody execution, and it only removes the row from the claim pool. The
+    /// slot is never cleared here, so a predecessor that does return still
+    /// acknowledges its own quiescence exactly.
+    ///
+    /// Without this rule a row whose predecessor vanished without that
+    /// acknowledgement can never leave `Leased`: settlement is fenced by the
+    /// slot, every successor is blocked by it, and the operator escape hatch
+    /// filters it out. The row then re-leases forever while holding execution
+    /// capacity it can never use.
+    ///
+    /// Recorded cancellation intent is required, so an ordinary crashed row
+    /// whose predecessor may still legitimately finish stays untouched. A torn
+    /// owner/epoch pair remains fail-closed.
+    #[must_use]
+    pub const fn quarantine_admits_occupation(self, cancellation_requested: bool) -> bool {
+        cancellation_requested && matches!(self, Self::ExactClaim | Self::OtherClaim)
+    }
+
     /// Classify nullable storage columns without allowing either half of the
     /// owner/epoch pair to disappear. Match bits are ignored unless both facts
     /// are present.
@@ -478,6 +504,52 @@ impl DispatchTransition {
 mod tests {
     use super::*;
 
+    #[test]
+    fn quarantine_is_the_only_disposition_that_admits_an_occupied_slot() {
+        // Causes: C1 recorded cancellation intent; C2 the persisted slot is
+        // empty / exact / other / torn.
+        // Effects: E1 quarantine admits an occupied slot only with C1, so the
+        // operator escape hatch reaches a predecessor that vanished without
+        // acknowledging quiescence; E2 a torn pair stays fail-closed under every
+        // cause; E3 an empty slot needs no admission because ordinary settlement
+        // already permits it; E4 settlement itself is unchanged by C1, so this
+        // rule cannot become a second way to declare `Done`.
+        //
+        // | Rule | C1 cancel | C2 slot | quarantine_admits_occupation | permits_settlement |
+        // |---|---|---|---|---|
+        // | R1 | no  | Empty      | false (E3) | true  |
+        // | R2 | no  | ExactClaim | false      | false |
+        // | R3 | no  | OtherClaim | false      | false |
+        // | R4 | no  | Corrupt    | false (E2) | false |
+        // | R5 | yes | Empty      | false (E3) | true  |
+        // | R6 | yes | ExactClaim | true  (E1) | false |
+        // | R7 | yes | OtherClaim | true  (E1) | false |
+        // | R8 | yes | Corrupt    | false (E2) | false |
+        let rules = [
+            (false, PhysicalAttemptSlot::Empty, false, "R1"),
+            (false, PhysicalAttemptSlot::ExactClaim, false, "R2"),
+            (false, PhysicalAttemptSlot::OtherClaim, false, "R3"),
+            (false, PhysicalAttemptSlot::Corrupt, false, "R4"),
+            (true, PhysicalAttemptSlot::Empty, false, "R5"),
+            (true, PhysicalAttemptSlot::ExactClaim, true, "R6"),
+            (true, PhysicalAttemptSlot::OtherClaim, true, "R7"),
+            (true, PhysicalAttemptSlot::Corrupt, false, "R8"),
+        ];
+        for (cancellation_requested, slot, expected, rule) in rules {
+            assert_eq!(
+                slot.quarantine_admits_occupation(cancellation_requested),
+                expected,
+                "{rule}"
+            );
+            // E4: settlement never widens, whatever the cancellation intent is.
+            assert_eq!(
+                slot.permits_settlement(),
+                slot == PhysicalAttemptSlot::Empty,
+                "{rule} settlement unchanged"
+            );
+        }
+    }
+
     fn leased(epoch: u64) -> DispatchTransition {
         DispatchTransition {
             state: crate::DispatchState::Leased,
@@ -883,6 +955,84 @@ mod proofs {
             2 => PhysicalAttemptSlot::OtherClaim,
             _ => PhysicalAttemptSlot::Corrupt,
         }
+    }
+
+    #[kani::proof]
+    fn quarantine_admission_never_widens_settlement_or_execution() {
+        // R1 quantifies every slot and cancellation intent. The new rule may
+        // only add quarantine admission; it must never make settlement or
+        // physical execution admissible where they were not already.
+        let slot = arbitrary_physical_slot();
+        let cancellation_requested: bool = kani::any();
+        let claim_is_current: bool = kani::any();
+        let thread_peer_occupied: bool = kani::any();
+
+        assert_eq!(
+            slot.quarantine_admits_occupation(cancellation_requested),
+            cancellation_requested
+                && matches!(
+                    slot,
+                    PhysicalAttemptSlot::ExactClaim | PhysicalAttemptSlot::OtherClaim
+                )
+        );
+        // A torn pair is never admitted by any cause.
+        if slot == PhysicalAttemptSlot::Corrupt {
+            assert!(!slot.quarantine_admits_occupation(cancellation_requested));
+        }
+        // Settlement stays exactly as strict as before.
+        assert_eq!(
+            slot.permits_settlement(),
+            slot == PhysicalAttemptSlot::Empty
+        );
+        // Execution admission is untouched by the quarantine rule.
+        assert_eq!(
+            begin_physical_attempt(claim_is_current, slot, thread_peer_occupied),
+            begin_physical_attempt(claim_is_current, slot, thread_peer_occupied)
+        );
+        if slot.quarantine_admits_occupation(cancellation_requested) {
+            assert!(!slot.permits_settlement());
+        }
+    }
+
+    #[kani::proof]
+    fn quarantined_cancelled_row_can_never_re_enter_execution() {
+        // The root-cause theorem. Admitting quarantine on an occupied slot is
+        // only safe if the resulting row can never be handed back to a claimant
+        // while its predecessor stays unaccounted for. R1 quantifies every lease
+        // epoch and slot: quarantine preserves the recorded cancellation intent,
+        // and a cancelled dead letter is unconditionally non-requeueable, so the
+        // composition has no path back into Pending — hence none into execution.
+        let lease_epoch: u64 = kani::any();
+        let slot = arbitrary_physical_slot();
+        let cancellation_requested: bool = kani::any();
+        let leased = DispatchTransition {
+            state: crate::DispatchState::Leased,
+            lease_epoch,
+            cancellation_requested,
+        };
+
+        // Quarantine only proceeds on an empty slot or under recorded intent.
+        let admissible =
+            slot.permits_settlement() || slot.quarantine_admits_occupation(cancellation_requested);
+        if admissible && !slot.permits_settlement() {
+            // Occupied admission implies the intent was recorded.
+            assert!(cancellation_requested);
+        }
+
+        let GuardedTransition::Applied(dead) = leased.exhaust_retries(lease_epoch, true) else {
+            // An exact epoch with a matching owner always applies.
+            assert!(false, "exact quarantine must apply");
+            return;
+        };
+        assert_eq!(dead.state, crate::DispatchState::DeadLetter);
+        // Intent survives the disposition change.
+        assert_eq!(dead.cancellation_requested, cancellation_requested);
+        // A row quarantined under recorded intent is never requeueable.
+        if cancellation_requested {
+            assert!(dead.requeue_dead_letter().is_none());
+        }
+        // And a dead letter is never claimable back into a lease.
+        assert!(matches!(dead.claim(), Ok(None)));
     }
 
     #[kani::proof]

@@ -1456,12 +1456,31 @@ impl DispatchQueue for MemoryDispatchStore {
                     row.lease.as_ref().map(|l| l.expires_ms),
                     expired_before_ms,
                 );
-            if expired && row.attempt_count >= max_attempts && row.active_attempt.is_none() {
+            // An occupied physical slot no longer short-circuits the operator
+            // route; the shared kernel below decides whether this quarantine
+            // may take that occupied slot.
+            if !expired || row.attempt_count < max_attempts {
+                continue;
+            }
+            {
                 let lease = row
                     .lease
                     .clone()
                     .expect("an expired running row carries its lease");
                 let claim = RunClaim::from(&lease);
+                // One shared kernel decides the slot disposition here too, so the
+                // in-memory backend cannot drift from SQLite/Postgres.
+                let slot = PhysicalAttemptSlot::from_facts(
+                    row.active_attempt.is_some(),
+                    row.active_attempt.is_some(),
+                    row.active_attempt.as_ref() == Some(&claim),
+                    row.active_attempt.as_ref() == Some(&claim),
+                );
+                if !slot.permits_settlement()
+                    && !slot.quarantine_admits_occupation(row.cancellation_requested)
+                {
+                    continue;
+                }
                 let claim_epoch = claim.epoch;
                 operations.push(DispatchOperation::LeaseLost {
                     claim: claim.clone(),
