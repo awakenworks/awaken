@@ -9,13 +9,65 @@ mod tests;
 
 use std::collections::BTreeSet;
 
-pub(super) struct ActivityState<'a> {
+#[cfg(any(test, kani))]
+mod model;
+
+/// Every operation the reducer and its proofs perform on the active member
+/// set, and nothing more. Production persists a `BTreeSet<u64>`; the bounded
+/// two-admission proofs substitute [`model::TwoSlotMembers`], because
+/// symbolically executing the real B-tree twice does not fit in memory
+/// (see the owning obligation's `bounds` in `formal/coverage.json`). A test in
+/// this module checks the model against the real set on two-admission traces.
+pub(super) trait ActivityMembers {
+    /// Add a member; `true` iff it was absent.
+    fn insert(&mut self, epoch: u64) -> bool;
+    /// Observation only: the reducer never asks, its proofs and tests do.
+    #[cfg(any(test, kani))]
+    fn contains(&self, epoch: &u64) -> bool;
+    /// Remove a member; `true` iff it was present.
+    fn remove(&mut self, epoch: &u64) -> bool;
+    #[cfg(any(test, kani))]
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
+    /// Drop every member, as a terminal transition requires.
+    fn clear(&mut self);
+}
+
+impl ActivityMembers for BTreeSet<u64> {
+    fn insert(&mut self, epoch: u64) -> bool {
+        BTreeSet::insert(self, epoch)
+    }
+
+    #[cfg(any(test, kani))]
+    fn contains(&self, epoch: &u64) -> bool {
+        BTreeSet::contains(self, epoch)
+    }
+
+    fn remove(&mut self, epoch: &u64) -> bool {
+        BTreeSet::remove(self, epoch)
+    }
+
+    #[cfg(any(test, kani))]
+    fn len(&self) -> usize {
+        BTreeSet::len(self)
+    }
+
+    fn is_empty(&self) -> bool {
+        BTreeSet::is_empty(self)
+    }
+
+    fn clear(&mut self) {
+        BTreeSet::clear(self);
+    }
+}
+
+pub(super) struct ActivityState<'a, Members: ActivityMembers = BTreeSet<u64>> {
     pub(super) epoch: &'a mut u64,
-    pub(super) active: &'a mut BTreeSet<u64>,
+    pub(super) active: &'a mut Members,
     pub(super) execution: &'a mut SessionExecutionState,
 }
 
-impl ActivityState<'_> {
+impl<Members: ActivityMembers> ActivityState<'_, Members> {
     pub(super) fn transition_execution(
         &mut self,
         next: SessionExecutionState,

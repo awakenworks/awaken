@@ -637,13 +637,17 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_batch_resolution_empty
   run_kani awaken-session-contract --checked-loop-profile activity-admission-height-v1 \
     --harness activity_next_epoch_inserts_exact_checked_successor \
-    --harness activity_exact_epoch_inserts_only_fresh_positive_member \
-    --harness activity_next_next_admissions_preserve_exact_members \
-    --harness activity_next_exact_admissions_preserve_exact_members \
-    --harness activity_exact_next_admissions_preserve_exact_members \
-    --harness activity_exact_exact_admissions_preserve_exact_members
+    --harness activity_exact_epoch_inserts_only_fresh_positive_member
+  # The two-admission partitions run the reducer over the two-slot member
+  # model: no B-tree loops, so no checked loop profile applies to them.
+  run_kani awaken-session-contract \
+    --harness activity_two_slot_next_next_admissions_preserve_exact_members \
+    --harness activity_two_slot_next_exact_admissions_preserve_exact_members \
+    --harness activity_two_slot_exact_next_admissions_preserve_exact_members \
+    --harness activity_two_slot_exact_exact_admissions_preserve_exact_members \
+    --harness activity_two_slot_terminal_transition_clears_members
   run_kani awaken-session-contract --checked-loop-profile activity-terminal-height-v1 \
-    --harness activity_terminal_transition_clears_real_members
+    --harness activity_terminal_transition_clears_one_real_member
   run_kani awaken-session-store \
     --harness session_identity_and_create_shapes_require_one_owned_live_row
   run_kani awaken-webhook-managed \

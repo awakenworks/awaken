@@ -358,8 +358,12 @@ class ProfileTests(unittest.TestCase):
         # are retained and independently audited on all seven Activity GOTOs.
         # Digest fixtures avoid duplicating the production loop-name catalog.
         activity_argv = {
-            "activity-admission-height-v1": "da4faed6fed037cc2d358344253381322fea5d5229d849c4a915d632c6d86416",
-            "activity-terminal-height-v1": "a11204ef851413b229bdab95693deb80a22305f40eb1cf7549841860d712d6c5",
+            # The two-admission partitions left this profile when they moved onto
+            # the two-slot member model; only the two real-B-tree bases remain.
+            "activity-admission-height-v1": "1a1f4f43b59cdd8342b71cd551737e8fa46ba55f111a9132a0ff41789b02a3e2",
+            # The terminal proof on the real set now makes one admission, not two;
+            # the two-admission terminal table moved to the two-slot model.
+            "activity-terminal-height-v1": "44158c038b1811242aaa8646a1e6d2d57a6e98da509ce1991171d3a62279635c",
         }
         # P6 the two encoder profiles pin independently qualified solvers and
         # exact UTF-8/align bounds; the generic P2/P3 mutations below must reject

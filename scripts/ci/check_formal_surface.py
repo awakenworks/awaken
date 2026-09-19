@@ -494,7 +494,10 @@ def main() -> None:
     classifications = load_classifications(
         set(obligations_by_id), load_requirement_ids()
     )
-    reachable = _crate_boundary_workspace.production_module_files(
+    # Evidence must be compiled by some build. A Kani proof module is compiled
+    # by Kani and never shipped, so the production graph alone would call it
+    # detached; the compiled graph follows test and kani branches as well.
+    reachable = _crate_boundary_workspace.compiled_module_files(
         _crate_boundary_workspace.iter_crate_manifests()
     )
     detached = sorted(

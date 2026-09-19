@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import _arch_fitness
@@ -197,7 +197,12 @@ def _top_level_arguments(source: str) -> list[str]:
 
 def _cfg_value_when_not_test(predicate: str) -> bool | None:
     predicate = predicate.strip()
-    if predicate == "test":
+    # `kani` is set only by the Kani compiler, so a production build sees it as
+    # false exactly as it sees `test`. Without this atom a `#[cfg(kani)] mod
+    # proofs;` kept its proof file in the production module graph, and every
+    # gate built on this projection counted and scanned verification code as
+    # shipped code.
+    if predicate in {"test", "kani"}:
         return False
     operation = re.match(r"^(all|any|not)\s*\(", predicate)
     if operation is None:
@@ -227,7 +232,7 @@ def _cfg_value_when_not_test(predicate: str) -> bool | None:
 def _cfg_attribute_is_test_only(attribute: str) -> bool:
     body = attribute[attribute.find("[") + 1 : attribute.rfind("]")]
     cfg = re.match(r"^\s*cfg\s*\((?P<predicate>.*)\)\s*$", body, re.DOTALL)
-    if cfg is None or re.search(r"\btest\b", cfg.group("predicate")) is None:
+    if cfg is None or re.search(r"\b(?:test|kani)\b", cfg.group("predicate")) is None:
         return False
     return _cfg_value_when_not_test(cfg.group("predicate")) is False
 
@@ -422,7 +427,20 @@ def production_rust(source: str) -> str:
     return rust_without_comments("".join(projected))
 
 
-def production_module_files(manifests: Iterable[Path]) -> set[Path]:
+def compiled_module_files(manifests: Iterable[Path]) -> set[Path]:
+    """Every module some build compiles: production, `cfg(test)` or `cfg(kani)`.
+
+    The production graph answers "is this shipped?". A proof or test module is
+    not shipped, yet it is compiled -- by the test harness or by Kani -- so it
+    is not dead code either. Evidence registered for an obligation must be
+    attached to *some* build, which is this wider question.
+    """
+    return production_module_files(manifests, project=rust_without_comments)
+
+
+def production_module_files(
+    manifests: Iterable[Path], *, project: Callable[[str], str] = production_rust
+) -> set[Path]:
     """Structural module reachability from Cargo library/binary roots.
 
     Reuses the production lexer: test-only branches do not connect evidence,
@@ -444,7 +462,7 @@ def production_module_files(manifests: Iterable[Path]) -> set[Path]:
             return
         visited.add(key)
         reachable.add(path)
-        source = production_rust(path.read_text(encoding="utf-8"))
+        source = project(path.read_text(encoding="utf-8"))
         scan(source, path, module_dir, path.parent)
 
     def scan(source: str, path: Path, module_dir: Path, path_dir: Path) -> None:
@@ -527,6 +545,10 @@ def public_first_party_reexports(sources: Iterable[str]) -> frozenset[str]:
 def selftest() -> None:
     """Cause/effect table for first-party facade discovery.
 
+    This module is a library, not an entry point: `check_crate_boundaries.py`
+    runs this table before it judges the tree, so `python3
+    _crate_boundary_workspace.py --self-test` is not a command.
+
     Causes: C1 crate-root source; C2 nested-module source; C3 private import.
     Effects: E1 public first-party owner is reported; E2 private use is ignored.
 
@@ -555,6 +577,21 @@ def selftest() -> None:
         '#[cfg(any(test, feature = "support"))]\nconst PRODUCTION: usize = 1;',
     ):
         assert "PRODUCTION" in production_rust(retained), "R5/E5"
+    # R9 `kani` is false in every production build, exactly like `test`: an item
+    # or module gated on kani alone, or on any mix of test and kani, is
+    # verification-only (E4); negating it or pairing it with a feature can
+    # compile in production (E5).
+    for verification in (
+        "#[cfg(kani)]\nmod proofs { const fixture: usize = 1; }",
+        "#[cfg(any(test, kani))]\nconst fixture: usize = 1;",
+        "#[cfg(all(kani, feature = \"deep\"))]\nconst fixture: usize = 1;",
+    ):
+        assert "fixture" not in production_rust(verification), f"R9/E4 {verification!r}"
+    for retained in (
+        "#[cfg(not(kani))]\nconst PRODUCTION: usize = 1;",
+        '#[cfg(any(kani, feature = "support"))]\nconst PRODUCTION: usize = 1;',
+    ):
+        assert "PRODUCTION" in production_rust(retained), f"R9/E5 {retained!r}"
     projection = production_rust(
         '#[cfg(test)]\nuse fixture::Store;\n'
         'const PRODUCTION: &str = "kept";\n'
@@ -656,3 +693,4 @@ def architecture_fitness_specs() -> list[_arch_fitness.CrateSpec]:
             )
         )
     return specs
+
