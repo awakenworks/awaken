@@ -376,3 +376,421 @@ pub(crate) async fn run_agent_until_boundary(
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_agent_contract::agent::message::Role;
+    use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+    use awaken_runtime_contract::llm::{
+        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
+    };
+    use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+    use awaken_sandbox_local::LocalProvider;
+    use awaken_store_inmem::MemoryCommitCoordinator;
+
+    use super::{AgentRunSandbox, run_configured_agent, run_configured_agent_with_id};
+    use crate::agent_catalog::AgentCatalog;
+    use crate::agent_runner::fixtures::{agent, user};
+
+    fn memory_context() -> RuntimeRunContext {
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit)
+    }
+
+    /// A model that replies with the leading system instruction it was given, so a
+    /// test can prove the sub-run resolved that agent's own config.
+    struct InstructionEchoModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for InstructionEchoModel {
+        async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
+            let system = request
+                .messages
+                .iter()
+                .find(|m| m.role == Role::System)
+                .map(|m| {
+                    m.content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            Ok(ChatResponse {
+                output: AssistantOutput::text(system),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn resolves_agent_config_by_id() {
+        let base = std::env::temp_dir().join(format!(
+            "awaken-subrun-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let provider = LocalProvider::new(&base);
+        let catalog = AgentCatalog::new()
+            .with_agent(agent("memory-extractor", "MEMORY INSTRUCTIONS"))
+            .with_agent(agent("judge", "JUDGE INSTRUCTIONS"));
+        let llm = Arc::new(InstructionEchoModel);
+
+        let (mem, _) = run_configured_agent(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            llm.clone(),
+            "memory-extractor",
+            "t-mem",
+            vec![user("go")],
+            Vec::new(),
+            None,
+            Some(memory_context()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(mem, "MEMORY INSTRUCTIONS");
+
+        let (judge, _) = run_configured_agent(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            llm.clone(),
+            "judge",
+            "t-judge",
+            vec![user("go")],
+            Vec::new(),
+            None,
+            Some(memory_context()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(judge, "JUDGE INSTRUCTIONS");
+    }
+
+    /// A model that reports fixed token usage per inference, so a test can prove the
+    /// sub-run's usage is read back out of its isolated commit store (rather than
+    /// discarded with it).
+    struct UsageModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for UsageModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("ok"),
+                usage: Some(awaken_runtime_contract::llm::TokenUsage {
+                    prompt_tokens: 13,
+                    completion_tokens: 5,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                }),
+                stop_reason: None,
+            })
+        }
+    }
+
+    struct CountingModel(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for CountingModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ChatResponse {
+                output: AssistantOutput::text("stable"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    struct RejectedModel(awaken_runtime_contract::model_operation::ModelExecutionEvidence);
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for RejectedModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            let error = awaken_runtime_contract::llm::Error::Binding(
+                "candidate is outside the frozen set".into(),
+            );
+            // Keep the legacy/unannotated adapter as the negative control.
+            Err(match self.0 {
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown => error,
+                evidence => error.with_execution_evidence(evidence),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn auxiliary_terminal_failure_is_not_projected_as_empty_success() {
+        use awaken_agent_contract::agent::run::{EndCause, Failure};
+        use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+        // Causes: C1 binding error; C2 adapter's physical execution evidence.
+        // C1 never implies C2: a returned error is not a termination receipt.
+        // | Rule | C2                       | committed terminal | boundary |
+        // | R1   | absent => Unknown         | Indeterminate      | error    |
+        // | R2   | NotDispatched             | binding_rejected   | error    |
+        // | R3   | Terminated                | binding_rejected   | error    |
+        // Every row uses real Runtime -> ThreadCommit -> shared Agent boundary;
+        // no row may invent an assistant reply. The adjacent stable auxiliary
+        // test owns successful terminal replay, so no parallel classifier here.
+        for evidence in [
+            ModelExecutionEvidence::Unknown,
+            ModelExecutionEvidence::NotDispatched(
+                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
+                ),
+            ),
+            ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                    "completed",
+                ))
+                .unwrap(),
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let provider = LocalProvider::new(tmp.path());
+            let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
+            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let context = RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone());
+            let run_id = RunId("aux/rejected/run".into());
+
+            let error = run_configured_agent_with_id(
+                &catalog,
+                AgentRunSandbox::Fresh(&provider),
+                Arc::new(RejectedModel(evidence)),
+                "worker",
+                "aux/rejected",
+                run_id.clone(),
+                vec![user("go")],
+                Vec::new(),
+                context,
+            )
+            .await
+            .expect_err("R1-R3: neither fault nor uncertainty is empty success");
+
+            assert!(error.to_string().contains("ended unsuccessfully"));
+            let expected = match evidence {
+                ModelExecutionEvidence::Unknown => EndCause::Indeterminate,
+                _ => EndCause::Error(Failure::Inference {
+                    code: "binding_rejected".into(),
+                    message: "model binding rejected: candidate is outside the frozen set".into(),
+                }),
+            };
+            assert_eq!(
+                commit.run_state(&run_id),
+                Some(RunState::Ended(expected.clone())),
+                "{evidence:?}: authoritative terminal fact"
+            );
+            assert!(error.to_string().contains(&format!("{expected:?}")));
+            assert!(
+                commit
+                    .committed_messages(&ThreadId("aux/rejected".into()))
+                    .iter()
+                    .all(|message| message.role != Role::Assistant),
+                "{evidence:?}: no fabricated assistant reply"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stable_auxiliary_run_reuses_committed_terminal_truth_without_reinference() {
+        // Cause/effect graph: C1 stable Run is absent or nonterminal; C2 it is
+        // already terminal; C3 the Fresh provider is available; C4 the caller's
+        // Thread identity matches committed truth. E1 provision and execute once;
+        // E2 redeliver committed terminal truth without provider/model effects;
+        // E3 preserve the one transcript/result; E4 reject an identity conflict
+        // before provider I/O. Decision table: R1 !C2 && C3 -> E1;
+        // R2 C2 && C4 && !C3 -> E2+E3; R3 C2 && !C4 && !C3 -> E4. The poisoned
+        // provider root makes R2/R3 fail if terminal admission follows create.
+        let tmp = tempfile::tempdir().unwrap();
+        let provider_root = tmp.path().join("provider");
+        let provider = LocalProvider::new(&provider_root);
+        let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
+        let model = Arc::new(CountingModel(AtomicUsize::new(0)));
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let context = || {
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone())
+        };
+        let run_id = RunId("aux/stable/run".into());
+
+        let (reply, _) = run_configured_agent_with_id(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            model.clone(),
+            "worker",
+            "aux/stable",
+            run_id.clone(),
+            vec![user("first")],
+            Vec::new(),
+            context(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, "stable", "R1/E1");
+
+        std::fs::rename(&provider_root, tmp.path().join("completed-provider")).unwrap();
+        std::fs::write(&provider_root, b"provider must not be reopened").unwrap();
+        let (reply, _) = run_configured_agent_with_id(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            model.clone(),
+            "worker",
+            "aux/stable",
+            run_id.clone(),
+            vec![user("ignored retry input")],
+            Vec::new(),
+            context(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, "stable", "R2/E2");
+
+        let error = run_configured_agent_with_id(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            model.clone(),
+            "worker",
+            "aux/foreign-thread",
+            run_id.clone(),
+            vec![user("foreign retry")],
+            Vec::new(),
+            context(),
+        )
+        .await
+        .expect_err("R3/E4: stable identity is bound to its committed Thread");
+        assert!(error.to_string().contains("belongs to another Thread"));
+
+        assert_eq!(model.0.load(Ordering::SeqCst), 1, "R2/E2");
+        assert!(matches!(
+            commit.run_state(&run_id),
+            Some(RunState::Ended(_))
+        ));
+        assert_eq!(
+            commit
+                .committed_messages(&ThreadId("aux/stable".into()))
+                .iter()
+                .filter(|message| message.role == Role::Assistant)
+                .count(),
+            1,
+            "R2/E3"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_run_returns_its_accumulated_usage() {
+        let base = std::env::temp_dir().join(format!(
+            "awaken-subrun-usage-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let provider = LocalProvider::new(&base);
+        let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
+
+        let (_text, usage) = run_configured_agent(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            Arc::new(UsageModel),
+            "worker",
+            "t-usage",
+            vec![user("go")],
+            Vec::new(),
+            None,
+            Some(memory_context()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // The sub-run's model reported 13/5 on its one step; that must survive the
+        // committed Agent Run state as the returned tally.
+        let total = usage.total();
+        assert_eq!(total.prompt_tokens, 13);
+        assert_eq!(total.completion_tokens, 5);
+        assert_eq!(
+            usage
+                .by_model
+                .get("stub")
+                .copied()
+                .unwrap_or_default()
+                .prompt_tokens,
+            13
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_agent_is_an_error() {
+        let base = std::env::temp_dir().join("awaken-subrun-test-unknown");
+        let provider = LocalProvider::new(&base);
+        let catalog = AgentCatalog::new().with_agent(agent("assistant", "hi"));
+        let err = run_configured_agent(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            Arc::new(InstructionEchoModel),
+            "nope",
+            "t",
+            vec![user("go")],
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown agent"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn known_agent_without_commit_history_authority_fails_closed() {
+        // Cause/effect graph:
+        // C1 agent resolves; C2 commit authority supplied; C3 history reader supplied.
+        // E1 execute on caller authority; E2 configuration error; E3 no provider I/O.
+        // Decision table: R1 C1/T,C2/T,C3/T -> E1; R2 C1/T,C2/F,C3/F -> E2+E3.
+        // This case owns R2; ordinary successful Agent tests above own R1.
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path().join("sandboxes"));
+        let catalog = AgentCatalog::new().with_agent(agent("assistant", "hi"));
+        let error = run_configured_agent(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            Arc::new(InstructionEchoModel),
+            "assistant",
+            "t",
+            vec![user("go")],
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("missing commit/history wiring must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("explicitly owned commit/history context"),
+            "got: {error}"
+        );
+        assert!(
+            std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
+            "R2/E3: authority validation precedes Fresh sandbox creation"
+        );
+    }
+}
