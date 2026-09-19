@@ -69,10 +69,10 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7725,
+      "production_lines": 7730,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "runtime-contract gains the two capability supertraits (CancellableRunDelegationService, AttachedChannelToolExporter) that replaced its unsupported-style default methods"
+        "production_lines": "runtime-contract gains the two capability supertraits (CancellableRunDelegationService, AttachedChannelToolExporter) that replaced its unsupported-style default methods. Advisor de-duplication: the binding-equality that decides whether an Advisor duplicates a published route is a named production kernel (advisor_binding_is_duplicate) so a proof can reach it -- the fact previously entered the Kani harness as a free bool"
       }
     },
     "awaken-sandbox-control": {
@@ -84,11 +84,11 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 17030,
+      "production_lines": 17059,
       "catch_all_errors": 11,
       "capability_defaults": 49,
       "growth_reasons": {
-        "production_lines": "sandbox effect fence: FenceToken succession law and SandboxEffectGuard live in the provisioning contract (capability defaults 12->1); SessionRealizationLease implements FenceToken so the generation-authority rule delegates to that one law. Session realization exclusion: the contract-owned SessionRealizationPermit and its admission kernel (session_realization/exclusion.rs) are the one authority both the Worker slot and the co-located registry mint through, so the permit vocabulary stays in the contract while its phase driver moved to awaken-session-application"
+        "production_lines": "sandbox effect fence: FenceToken succession law and SandboxEffectGuard live in the provisioning contract (capability defaults 12->1); SessionRealizationLease implements FenceToken so the generation-authority rule delegates to that one law. Session realization exclusion: the contract-owned SessionRealizationPermit and its admission kernel (session_realization/exclusion.rs) are the one authority both the Worker slot and the co-located registry mint through, so the permit vocabulary stays in the contract while its phase driver moved to awaken-session-application. Settlement and Work-receipt derivations: the named derivation kernels the settlement and Work-receipt Kani harnesses prove against now live in the contract; they were previously inline assumptions inside the harnesses, which made the proofs assume what they were meant to establish"
       }
     },
     "awaken-tenancy": {

@@ -609,7 +609,7 @@ fn model_execution_reentry_requires_positive_evidence() {
     let phase_selector: u8 = kani::any();
     let operation = ModelOperation {
         ordinal: NonZeroU64::MIN,
-        binding: ModelBinding::new("", "", "scripted"),
+        binding: ModelBinding::proof_representative(false),
         phase: match phase_selector % 3 {
             0 => ModelOperationPhase::Entered,
             1 => ModelOperationPhase::Returned,
@@ -644,7 +644,7 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
             // This does not prove the fingerprint or any provider-side effect.
             let operation = ModelOperation {
                 ordinal: next,
-                binding: ModelBinding::new("", "", ""),
+                binding: ModelBinding::proof_representative(false),
                 phase: ModelOperationPhase::Entered,
                 execution: ModelExecutionEvidence::Unknown,
             };
@@ -661,7 +661,11 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
 
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(4)]
+// The bound covers the two-element history fold and the byte comparison of the
+// representative's longest coordinate ("native"): the binding is now a real
+// admissible value, so equality runs the production `memcmp` instead of the
+// zero-length one the removed `#[cfg(kani)]` fork used to produce.
+#[kani::unwind(8)]
 fn model_operation_history_preserves_distinct_subjects() {
     // Production fold, two arbitrary nonzero u64 ordinals, equal/different
     // bindings, and all evidence values. R1 new ordinal => retain both subjects;
@@ -676,13 +680,13 @@ fn model_operation_history_preserves_distinct_subjects() {
     let evidence = any_evidence(kani::any());
     let original = ModelOperation {
         ordinal: NonZeroU64::new(first).unwrap(),
-        binding: ModelBinding::new("", "", ""),
+        binding: ModelBinding::proof_representative(false),
         phase: ModelOperationPhase::Entered,
         execution: ModelExecutionEvidence::Unknown,
     };
     let incoming = ModelOperation {
         ordinal: NonZeroU64::new(second).unwrap(),
-        binding: ModelBinding::new(if same_binding { "" } else { "x" }, "", ""),
+        binding: ModelBinding::proof_representative(!same_binding),
         phase: ModelOperationPhase::Returned,
         execution: evidence,
     };
