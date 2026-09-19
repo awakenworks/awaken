@@ -145,3 +145,39 @@ async fn admin_and_vault_surfaces_are_served_together() {
     assert_eq!(s, StatusCode::OK, "{rotated}");
     assert!(!rotated.to_string().contains("rotated-repository-token"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_product_plane_can_read_worker_fleet_readiness() {
+    // The fleet projection is only useful if it is reachable where a product
+    // plane actually asks. Its unit tests prove the decision; this proves the
+    // composed server answers the route at all, which is the failure this
+    // surface had before: the Coordinator served no `/v1/workers/readiness`,
+    // so Flow's hosted fleet adapter received a permanent 404 and reported the
+    // work store as unavailable.
+    let app = build_all_in_one_router().await;
+
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/v1/workers/readiness?capabilities=coding",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["ready"],
+        json!(false),
+        "this composition registers no Worker"
+    );
+    assert_eq!(body["total_workers"], json!(0));
+    assert_eq!(
+        body["missing_capabilities"],
+        json!(["coding"]),
+        "an empty fleet offers nothing, so the requirement is named"
+    );
+
+    // The weaker question is a different route answer, not an error.
+    let (status, body) = call(&app, "GET", "/v1/workers/readiness", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["missing_capabilities"], json!([]));
+}

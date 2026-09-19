@@ -791,15 +791,23 @@ def worker_listener_partition_violations(
     application_match = re.search(
         r"let application = ai_sdk\.merge\(ag_ui\);", coordinator_source
     )
+    # The public surface may carry more than one merge: naming a single exact
+    # chain would make every added public read an edit to this checker rather
+    # than a decision about the partition. What the partition actually requires
+    # is that the durable operations stay on it and the Worker transport never
+    # joins it, so both are asserted against the chain itself.
+    merge_call = r"\.merge\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)"
     public_match = re.search(
-        r"let router = a2a\.merge\(durable_ops\);(.*?)"
+        rf"let router = a2a\s*((?:\s*{merge_call})*);(.*?)"
         r"Ok\(\(\s*managed,\s*router,\s*application,\s*worker_transport,",
         coordinator_source,
         re.S,
     )
     if managed_match is None or application_match is None or public_match is None:
         errors.append("Coordinator Managed/public route partition is missing")
-    elif ".merge(worker_transport)" in public_match.group(1):
+    elif "durable_ops" not in public_match.group(1):
+        errors.append("Coordinator public router no longer merges the durable operations")
+    elif "worker_transport" in public_match.group(1) or ".merge(worker_transport)" in public_match.group(2):
         errors.append("Coordinator public router merges the Worker transport")
     for required in (
         "application_router: application",
