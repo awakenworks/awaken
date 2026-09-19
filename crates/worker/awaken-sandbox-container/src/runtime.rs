@@ -1802,15 +1802,25 @@ pub trait ContainerRuntime: Send + Sync {
     /// scope its creator was about to create at.
     ///
     /// This is the one removal with no durable handle behind it, because the
-    /// caller was cancelled before any handle could exist. It is therefore
-    /// restricted to warm capacity: a scope no Session receipt names, whose
-    /// name no other process can mint. The fail-closed default keeps a backend
-    /// that cannot address an object by scope alone from silently reporting a
-    /// cleanup it did not perform.
+    /// caller was cancelled or died before any handle could exist. It is
+    /// therefore restricted to warm capacity: a scope no Session receipt names.
+    /// Two callers reach it — the pool that minted the scope, and a reclaimer
+    /// holding the exclusive claim on that scope's expired lease record, which
+    /// proves the container was never checked out (`pool::lease`). The
+    /// fail-closed default keeps a backend that cannot address an object by
+    /// scope alone from silently reporting a cleanup it did not perform.
     async fn remove_unreceipted_scope(&self, _scope: &str) -> Result<(), RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime cannot remove an unreceipted capacity scope".into(),
         ))
+    }
+
+    /// The physical namespace a warm-capacity lease record speaks for: backend
+    /// plus realization namespace, i.e. every input of the daemon-global name
+    /// `remove_unreceipted_scope` derives. `None` means the runtime cannot put
+    /// warm capacity under host leases.
+    fn capacity_lease_domain(&self) -> Option<String> {
+        None
     }
 
     async fn open_channel(&self, container_id: &str)

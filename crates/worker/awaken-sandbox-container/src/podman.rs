@@ -1348,6 +1348,10 @@ impl ContainerRuntime for PodmanRuntime {
             .map(|_| ())
     }
 
+    fn capacity_lease_domain(&self) -> Option<String> {
+        Some(format!("podman/{}", self.realization_namespace.as_str()))
+    }
+
     async fn remove_unreceipted_scope(&self, scope: &str) -> Result<(), RuntimeError> {
         // Same daemon-global name derivation as Docker. `--ignore` is the CLI's
         // "absent is success": the cancelled create may never have reached
