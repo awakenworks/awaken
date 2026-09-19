@@ -373,10 +373,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-authorization-contract"
-version = "1.0.0"
-
-[[package]]
 name = "awaken-authz-enforce"
 version = "1.0.0"
 dependencies = [
@@ -607,7 +603,6 @@ dependencies = [
  "awaken-admin-config-api",
  "awaken-agent-config",
  "awaken-agent-contract",
- "awaken-authorization-contract",
  "awaken-authz-enforce",
  "awaken-config-resolver",
  "awaken-config-service",
@@ -1077,6 +1072,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-pool",
+ "awaken-store-conformance",
  "proptest",
  "rusqlite",
  "serde_json",
@@ -1945,6 +1941,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-pool",
+ "awaken-store-conformance",
  "parking_lot",
  "proptest",
  "rusqlite",
@@ -2503,6 +2500,7 @@ dependencies = [
  "awaken-session-contract",
  "awaken-sql-storage",
  "awaken-sqlite-pool",
+ "awaken-store-conformance",
  "proptest",
  "rusqlite",
  "serde",
@@ -2555,6 +2553,13 @@ name = "awaken-store-conformance"
 version = "1.0.0"
 dependencies = [
  "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-deployment-contract",
+ "awaken-environment-contract",
+ "awaken-provisioning-contract",
+ "awaken-resource-contract",
+ "awaken-session-contract",
+ "awaken-worker-contract",
  "serde_json",
  "tokio",
 ]
@@ -2735,6 +2740,7 @@ dependencies = [
  "awaken-session-contract",
  "awaken-sql-storage",
  "awaken-sqlite-pool",
+ "awaken-store-conformance",
  "loom",
  "proptest",
  "rusqlite",
@@ -2806,6 +2812,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-pool",
+ "awaken-store-conformance",
  "awaken-worker-contract",
  "loom",
  "proptest",
