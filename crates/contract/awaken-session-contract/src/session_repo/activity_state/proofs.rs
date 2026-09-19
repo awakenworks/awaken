@@ -1,3 +1,4 @@
+use super::model::TwoSlotMembers;
 use super::*;
 
 // A0/A1 partition: any historical u64 scalar, one real Next admission into the
@@ -82,16 +83,40 @@ fn activity_exact_epoch_inserts_only_fresh_positive_member() {
     );
 }
 
-// T partition: two real Next admissions from any u64 seed produce 0..2 members.
-// Both actual terminal targets clear all of them without rewinding the scalar;
-// replay is idempotent and a subsequent Running transition is rejected. Existing
-// terminal_execution_never_reopens proves the entire enum transition relation;
-// this proof adds the missing real-set clearing and reducer frame composition.
+// T partition on the real BTreeSet, with ONE real admission: a real member is
+// present, the actual terminal target clears it without rewinding the scalar,
+// replay is idempotent and a subsequent Running transition is rejected. One
+// admission is what fits: two real B-tree insertions plus the clear exceeded a
+// 40 GiB cap on the pinned toolchain (measured on this harness's own code,
+// unchanged, on the same host), the same wall the two-admission proofs hit.
+// The two-member case is covered by the model proof below, and the model is
+// held to the real set by the property test in tests.rs.
 #[kani::proof]
 #[kani::unwind(4)]
-fn activity_terminal_transition_clears_real_members() {
+fn activity_terminal_transition_clears_one_real_member() {
     let mut epoch = kani::any::<u64>();
     let mut active = BTreeSet::new();
+    let mut execution = SessionExecutionState::Running;
+    let mut state = ActivityState {
+        epoch: &mut epoch,
+        active: &mut active,
+        execution: &mut execution,
+    };
+    let admitted = state.begin_activity_epoch();
+    let high = *state.epoch;
+    assert!(
+        state.active.len() == usize::from(admitted.is_some()),
+        "T0 the real set holds exactly the admitted member"
+    );
+    check_terminal_from_admitted(&mut state, high);
+}
+
+// The same terminal table after TWO admissions, over the two-slot model.
+#[kani::proof]
+#[kani::unwind(4)]
+fn activity_two_slot_terminal_transition_clears_members() {
+    let mut epoch = kani::any::<u64>();
+    let mut active = TwoSlotMembers::default();
     let mut execution = SessionExecutionState::Running;
     let mut state = ActivityState {
         epoch: &mut epoch,
@@ -101,6 +126,15 @@ fn activity_terminal_transition_clears_real_members() {
     let _ = state.begin_activity_epoch();
     let _ = state.begin_activity_epoch();
     let high = *state.epoch;
+    check_terminal_from_admitted(&mut state, high);
+}
+
+/// The terminal decision table both proofs share, from a Running state holding
+/// whatever the admissions above produced.
+fn check_terminal_from_admitted<Members: ActivityMembers>(
+    state: &mut ActivityState<'_, Members>,
+    high: u64,
+) {
     let terminal = if kani::any() {
         SessionExecutionState::Terminated
     } else {
@@ -134,7 +168,7 @@ fn activity_terminal_transition_clears_real_members() {
     );
 }
 
-fn check_members(active: &BTreeSet<u64>, members: [Option<u64>; 2]) {
+fn check_members(active: &impl ActivityMembers, members: [Option<u64>; 2]) {
     let count = usize::from(members[0].is_some()) + usize::from(members[1].is_some());
     assert!(active.len() == count, "M1 exact activity cardinality");
     for member in members.into_iter().flatten() {
@@ -150,8 +184,18 @@ fn check_members(active: &BTreeSet<u64>, members: [Option<u64>; 2]) {
 // Each mode calls the same production reducer twice. The u128/order oracle and
 // exact member/cardinality checks apply after both calls, including all rejection
 // and exhaustion combinations. Their union is the original two-call domain.
-fn check_admission<const EXACT: bool>(
-    state: &mut ActivityState<'_>,
+//
+// The member set is `TwoSlotMembers`, not the real `BTreeSet`. The reducer is
+// generic over `ActivityMembers`, so this is the same production code with a
+// different set behind it. Symbolically executing the real B-tree twice does
+// not fit in memory: exact/exact reached 54.9 GiB and ran out on a 60 GiB host,
+// and bounding all three symbols to 0..=5 (58 GiB) or enumerating 64 concrete
+// triples (56 GiB) did not help, because the cost is the B-tree code, not the
+// value range. What stays on the real set: both one-admission bases and the
+// terminal proof above, and the property test in `tests.rs` that checks the
+// model against `BTreeSet<u64>` on two-admission traces.
+fn check_admission<const EXACT: bool, Members: ActivityMembers>(
+    state: &mut ActivityState<'_, Members>,
     members: &mut [Option<u64>; 2],
     index: usize,
 ) {
@@ -184,7 +228,7 @@ fn check_admission<const EXACT: bool>(
 
 fn check_admission_pair<const FIRST_EXACT: bool, const SECOND_EXACT: bool>() {
     let mut epoch: u64 = kani::any();
-    let mut active = BTreeSet::new();
+    let mut active = TwoSlotMembers::default();
     let mut execution = SessionExecutionState::Idle;
     let mut state = ActivityState {
         epoch: &mut epoch,
@@ -192,30 +236,30 @@ fn check_admission_pair<const FIRST_EXACT: bool, const SECOND_EXACT: bool>() {
         execution: &mut execution,
     };
     let mut members = [None; 2];
-    check_admission::<FIRST_EXACT>(&mut state, &mut members, 0);
-    check_admission::<SECOND_EXACT>(&mut state, &mut members, 1);
+    check_admission::<FIRST_EXACT, _>(&mut state, &mut members, 0);
+    check_admission::<SECOND_EXACT, _>(&mut state, &mut members, 1);
 }
 
 #[kani::proof]
 #[kani::unwind(4)]
-fn activity_next_next_admissions_preserve_exact_members() {
+fn activity_two_slot_next_next_admissions_preserve_exact_members() {
     check_admission_pair::<false, false>();
 }
 
 #[kani::proof]
 #[kani::unwind(4)]
-fn activity_next_exact_admissions_preserve_exact_members() {
+fn activity_two_slot_next_exact_admissions_preserve_exact_members() {
     check_admission_pair::<false, true>();
 }
 
 #[kani::proof]
 #[kani::unwind(4)]
-fn activity_exact_next_admissions_preserve_exact_members() {
+fn activity_two_slot_exact_next_admissions_preserve_exact_members() {
     check_admission_pair::<true, false>();
 }
 
 #[kani::proof]
 #[kani::unwind(4)]
-fn activity_exact_exact_admissions_preserve_exact_members() {
+fn activity_two_slot_exact_exact_admissions_preserve_exact_members() {
     check_admission_pair::<true, true>();
 }

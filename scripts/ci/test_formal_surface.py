@@ -150,6 +150,8 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
                     '#[path = "renamed.rs"] mod alias;\n'
                     'include!("included.rs");\n'
                     '#[cfg(test)] mod tests;\n'
+                    '#[cfg(kani)] mod proofs;\n'
+                    '#[cfg(any(test, kani))] mod model;\n'
                     '#[cfg(any(test, feature = "support"))] mod feature;\n'
                     '// mod orphan;\nconst TEXT: &str = "mod orphan;";\n'
                 ),
@@ -161,6 +163,8 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
                 "src/tests.rs": "mod fake;",
                 "src/tests/fake.rs": "",
                 "src/feature.rs": "",
+                "src/proofs.rs": "",
+                "src/model.rs": "",
                 "src/orphan.rs": "fn authorize() {}",
                 "src/main.rs": "",
             }
@@ -169,8 +173,18 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(source)
             linked = MODULE._crate_boundary_workspace.production_module_files([manifest])
-            expected = set(files) - {"src/tests.rs", "src/tests/fake.rs", "src/orphan.rs"}
+            verification = {"src/tests.rs", "src/tests/fake.rs", "src/proofs.rs", "src/model.rs"}
+            expected = set(files) - verification - {"src/orphan.rs"}
             self.assertEqual({p.relative_to(root).as_posix() for p in linked}, expected, "M1-M3")
+            # M4 a module gated on kani, or on test and kani together, is not
+            # shipped, but it is compiled; the compiled graph attaches it, while
+            # a file no build declares stays detached from both graphs.
+            compiled = MODULE._crate_boundary_workspace.compiled_module_files([manifest])
+            self.assertEqual(
+                {p.relative_to(root).as_posix() for p in compiled},
+                expected | verification,
+                "M4 compiled graph = production + test + kani modules, never the orphan",
+            )
             (root / "src/lib.rs").write_text("mod ordinary;")
             linked = MODULE._crate_boundary_workspace.production_module_files([manifest])
             self.assertNotIn(root / "src/renamed.rs", linked, "M2 removed edge")

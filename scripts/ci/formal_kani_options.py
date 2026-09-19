@@ -141,17 +141,13 @@ PROFILES = {
         frozenset({
             "activity_next_epoch_inserts_exact_checked_successor",
             "activity_exact_epoch_inserts_only_fresh_positive_member",
-            "activity_next_next_admissions_preserve_exact_members",
-            "activity_next_exact_admissions_preserve_exact_members",
-            "activity_exact_next_admissions_preserve_exact_members",
-            "activity_exact_exact_admissions_preserve_exact_members",
         }),
         ACTIVITY_HEIGHT_LOOPS,
         None,
     ),
     "activity-terminal-height-v1": (
         "awaken-session-contract",
-        frozenset({"activity_terminal_transition_clears_real_members"}),
+        frozenset({"activity_terminal_transition_clears_one_real_member"}),
         ACTIVITY_HEIGHT_LOOPS[:7],
         None,
     ),
