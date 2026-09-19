@@ -11,6 +11,13 @@ authority = "store-conformance"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
+awaken-deployment-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-session-contract.workspace = true
+awaken-worker-contract.workspace = true
 serde_json.workspace = true
 # `join!` drives the concurrent-append case's two commits on one task, portably
 # across backends (no per-backend spawn/Clone/Send bounds).
