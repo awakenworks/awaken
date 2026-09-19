@@ -14,7 +14,9 @@ mod restore_wire;
 mod runtime;
 
 pub use checkpoint_upload::SandboxCheckpointUpload;
-pub use fence::{FenceSuccession, FenceToken, SandboxEffectFence, fence_succession};
+pub use fence::{
+    FenceSuccession, FenceToken, SandboxEffectFence, fence_is_live_at, fence_succession,
+};
 pub use foundation::*;
 pub use handle::*;
 pub use repository_publication::{

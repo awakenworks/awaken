@@ -191,7 +191,7 @@ impl FrozenSessionProjection {
 /// live strictly before its expiry and stale at the exact expiry millisecond.
 #[must_use]
 pub const fn realization_lease_is_live_at(expires_at_unix_ms: u64, now_unix_ms: u64) -> bool {
-    expires_at_unix_ms > now_unix_ms
+    awaken_provisioning_contract::fence_is_live_at(expires_at_unix_ms, now_unix_ms)
 }
 
 #[must_use]
@@ -203,18 +203,24 @@ const fn realization_lease_facts_authorize(
     asserted_expires_at_unix_ms: u64,
     now_unix_ms: u64,
 ) -> bool {
+    // The current lease must be a *renewal* of the asserted one under the one
+    // fence succession law (same lease, expiry never shortened) and still live.
     same_owner
         && same_runtime_incarnation
         && same_epoch
-        && current_expires_at_unix_ms >= asserted_expires_at_unix_ms
+        && matches!(
+            awaken_provisioning_contract::fence_succession(
+                0,
+                asserted_expires_at_unix_ms,
+                0,
+                current_expires_at_unix_ms,
+                true,
+            ),
+            Some(awaken_provisioning_contract::FenceSuccession::Renewal)
+        )
         && realization_lease_is_live_at(current_expires_at_unix_ms, now_unix_ms)
 }
 
-/// Whether an asserted realization remains authorized by the aggregate's
-/// current lease. A same-epoch renewal is a monotonic extension of one owner
-/// incarnation, so work admitted under the shorter lease may finish while the
-/// renewed current lease is live. Owner, incarnation, or epoch replacement
-/// still fences the assertion.
 #[must_use]
 pub fn realization_lease_authorizes(
     current: &SessionRealizationLease,
@@ -1597,6 +1603,43 @@ mod generation_authority_law_tests {
                             former,
                             "owner={owner} incarnation={incarnation} epoch={epoch} expiry={expiry}"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lease_authorization_is_exactly_the_former_field_rule_with_liveness() {
+        // The authorization law now runs through the one fence succession
+        // kernel. Exhaust every axis the former inline rule compared and
+        // assert the outcomes are identical: same owner, same incarnation,
+        // same epoch, expiry never shortened, and still live at `now`.
+        let lease =
+            |owner: &str, incarnation: &str, epoch: u64, expiry: u64| SessionRealizationLease {
+                owner: owner.into(),
+                runtime_incarnation: incarnation.into(),
+                epoch,
+                expires_at_unix_ms: expiry,
+            };
+        let asserted = lease("o", "i", 5, 100);
+        for owner in ["o", "p"] {
+            for incarnation in ["i", "j"] {
+                for epoch in [4, 5, 6] {
+                    for expiry in [99, 100, 101] {
+                        for now in [50, 99, 100, 101, 150] {
+                            let current = lease(owner, incarnation, epoch, expiry);
+                            let former = current.owner == asserted.owner
+                                && current.runtime_incarnation == asserted.runtime_incarnation
+                                && current.epoch == asserted.epoch
+                                && current.expires_at_unix_ms >= asserted.expires_at_unix_ms
+                                && current.expires_at_unix_ms > now;
+                            assert_eq!(
+                                realization_lease_authorizes(&current, &asserted, now),
+                                former,
+                                "owner={owner} incarnation={incarnation} epoch={epoch} expiry={expiry} now={now}"
+                            );
+                        }
                     }
                 }
             }

@@ -92,6 +92,19 @@ pub trait FenceToken {
     {
         self.succession(successor).is_some()
     }
+
+    /// Whether this token still authorizes anything at `now_unix_ms`. Expiry
+    /// is exclusive: a token expiring at `t` is dead at `t`.
+    #[must_use]
+    fn is_live_at(&self, now_unix_ms: u64) -> bool {
+        fence_is_live_at(self.expires_at_unix_ms(), now_unix_ms)
+    }
+}
+
+/// Liveness law shared by every fence token: live strictly before expiry.
+#[must_use]
+pub const fn fence_is_live_at(expires_at_unix_ms: u64, now_unix_ms: u64) -> bool {
+    expires_at_unix_ms > now_unix_ms
 }
 
 /// Provider-neutral authorization fence for one physical Sandbox effect.
@@ -145,6 +158,22 @@ impl SandboxEffectFence {
         };
         fence.validate_identity()?;
         Ok(fence)
+    }
+
+    /// Project any realization-lease token into the fence for one exact
+    /// physical operation. This is the only place the lease→fence field
+    /// mapping is written; domain leases delegate here instead of repeating it.
+    pub fn for_operation(
+        operation_id: impl Into<String>,
+        token: &impl FenceToken,
+    ) -> Result<Self, SandboxError> {
+        Self::new(
+            operation_id,
+            token.owner(),
+            token.runtime_incarnation(),
+            token.epoch(),
+            token.expires_at_unix_ms(),
+        )
     }
 
     /// Validate the complete aggregate effect identity carried across provider
@@ -252,6 +281,64 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn for_operation_projects_every_token_field_and_rejects_blank_identity() {
+        // C1 token identity nonblank/blank; C2 operation nonblank/blank.
+        // R1 nonblank both => one fence carrying exactly the token's four
+        // fields under the given operation; R2 any blank => rejected before
+        // a fence exists, so no caller can hand a provider an unnamed fence.
+        let token = SandboxEffectFence::new("source-op", "owner-1", "runtime-1", 7, 100).unwrap();
+        let fence = SandboxEffectFence::for_operation("target-op", &token).expect("R1");
+        assert_eq!(fence.operation_id, "target-op", "R1 operation");
+        assert_eq!(
+            (
+                fence.owner(),
+                fence.runtime_incarnation(),
+                fence.epoch(),
+                fence.expires_at_unix_ms()
+            ),
+            (
+                token.owner(),
+                token.runtime_incarnation(),
+                token.epoch(),
+                token.expires_at_unix_ms()
+            ),
+            "R1 fields"
+        );
+        assert!(
+            SandboxEffectFence::for_operation(" ", &token).is_err(),
+            "R2 blank operation"
+        );
+        let blank_owner = SandboxEffectFence {
+            operation_id: "x".into(),
+            owner: " ".into(),
+            runtime_incarnation: "runtime-1".into(),
+            epoch: 7,
+            expires_at_unix_ms: 100,
+        };
+        assert!(
+            SandboxEffectFence::for_operation("target-op", &blank_owner).is_err(),
+            "R2 blank owner"
+        );
+    }
+
+    #[test]
+    fn liveness_is_strictly_before_expiry_for_every_token() {
+        // C1 now before/at/after expiry. R1 live only strictly before; the
+        // const kernel and the trait method agree at every boundary.
+        let token = SandboxEffectFence::new("op", "owner", "runtime", 1, 100).unwrap();
+        for (now, live) in [
+            (0, true),
+            (99, true),
+            (100, false),
+            (101, false),
+            (u64::MAX, false),
+        ] {
+            assert_eq!(token.is_live_at(now), live, "trait now={now}");
+            assert_eq!(fence_is_live_at(100, now), live, "kernel now={now}");
+        }
+    }
 }
 
 #[cfg(kani)]
@@ -264,7 +351,13 @@ mod verification {
         let predecessor_expiry: u64 = kani::any();
         let successor_epoch: u64 = kani::any();
         let successor_expiry: u64 = kani::any();
-        let same_lease: bool = kani::any();
+        // `same_realization_lease` is derived exactly as production derives
+        // it (`FenceToken::same_realization_lease`): same owner, same runtime
+        // incarnation, and the same epoch.
+        let same_owner: bool = kani::any();
+        let same_runtime_incarnation: bool = kani::any();
+        let same_lease =
+            same_owner && same_runtime_incarnation && successor_epoch == predecessor_epoch;
         let succession = fence_succession(
             predecessor_epoch,
             predecessor_expiry,
@@ -277,20 +370,16 @@ mod verification {
                 assert!(successor_epoch > predecessor_epoch);
             }
             Some(FenceSuccession::Renewal) => {
-                // A renewal never regresses expiry, never changes the lease,
-                // and can only arise when the epoch did not advance.
                 assert!(same_lease);
+                assert!(successor_epoch == predecessor_epoch);
                 assert!(successor_expiry >= predecessor_expiry);
-                assert!(successor_epoch <= predecessor_epoch);
             }
             None => {
-                // Rejection is total: no epoch advance and no exact renewal.
                 assert!(successor_epoch <= predecessor_epoch);
                 assert!(!same_lease || successor_expiry < predecessor_expiry);
             }
         }
-        // An older epoch can never take over, whatever else is presented.
-        if successor_epoch < predecessor_epoch && !same_lease {
+        if successor_epoch < predecessor_epoch {
             assert!(succession.is_none());
         }
     }

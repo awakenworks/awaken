@@ -62,13 +62,7 @@ impl SessionRealizationLease {
         awaken_provisioning_contract::SandboxEffectFence,
         awaken_provisioning_contract::SandboxError,
     > {
-        awaken_provisioning_contract::SandboxEffectFence::new(
-            operation_id,
-            self.owner.clone(),
-            self.runtime_incarnation.clone(),
-            self.epoch,
-            self.expires_at_unix_ms,
-        )
+        awaken_provisioning_contract::SandboxEffectFence::for_operation(operation_id, self)
     }
 }
 
