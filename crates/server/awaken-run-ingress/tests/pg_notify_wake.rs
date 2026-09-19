@@ -143,15 +143,26 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
     {
         let before = listening_pids(&pool, channel).await;
         let probe = PgNotifyWake::new(pool.clone(), channel);
-        let probe_task = tokio::spawn(async move { probe.wait().await });
+        let mut probe_task = tokio::spawn(async move { probe.wait().await });
         wait_for_listener(&pool, channel, &before).await;
-        publisher.publish().await.expect("first publish");
-        assert!(
-            tokio::time::timeout(Duration::from_secs(5), probe_task)
-                .await
-                .is_ok(),
-            "the listener delivers a wake before the drop"
-        );
+        // Republish on the same bounded-loop rule the reconnect arm below already
+        // uses, and for the same reason. `wait_for_listener` proves the LISTEN
+        // *statement* is visible in pg_stat_activity, which is not the same fact
+        // as the backend being registered to receive: a NOTIFY landing in that
+        // window is dropped, and a single publish then waits out the timeout for
+        // a hint that no longer exists. Retrying costs nothing — a wake hint is
+        // idempotent — and keeps the failure exact: a listener that never
+        // delivers still fails here, saying the wake never arrived.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let woke = loop {
+            publisher.publish().await.expect("first publish");
+            match tokio::time::timeout(Duration::from_millis(100), &mut probe_task).await {
+                Ok(joined) => break joined.is_ok(),
+                Err(_) if tokio::time::Instant::now() < deadline => {}
+                Err(_) => break false,
+            }
+        };
+        assert!(woke, "the listener delivers a wake before the drop");
     }
 
     // C1 this fixture's listener is connected; C2 its backend is terminated.
