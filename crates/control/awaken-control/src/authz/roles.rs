@@ -1,5 +1,8 @@
 //! Pure authorization selectors shared by policy construction and route guards.
 //!
+//! Owned by `awaken-control`, their only consumer: hosted-platform role
+//! vocabulary is a product concern, not a neutral contract (ADR-0081 §1).
+//!
 //! This leaf deliberately contains no HTTP framework or IAM implementation. It
 //! turns finite product-owned policy choices into exact actions, which keeps the
 //! executable selector small enough for exhaustive bounded verification.
