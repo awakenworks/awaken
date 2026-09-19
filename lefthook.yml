@@ -81,6 +81,16 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_formal_surface.py --staged {staged_files}
 
+    # A Kani harness that takes a free symbol where production computes the
+    # fact, restates its callee's body, or hides a #[cfg(kani)] fork inside a
+    # production entrypoint, is green and proves nothing. The registry's
+    # justified/backlog lists ratchet the ones that already exist.
+    proof-input-derivation:
+      # >>> generated glob from check_proof_input_derivation.py INPUT_GLOBS — do not edit
+      glob: "{crates/**/*.rs,formal/coverage.json,formal/proof-input-exceptions.json,scripts/ci/check_proof_input_derivation.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_proof_input_derivation.py --staged {staged_files}
+
     # 2. High-signal credential scanner. Generic secret assignments only fail
     #    in source/config files, so design examples can stay readable.
     secrets:

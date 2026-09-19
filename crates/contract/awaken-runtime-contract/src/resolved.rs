@@ -450,7 +450,13 @@ fn advisor_never_substitutes_for_primary_model_admission() {
         "an Advisor duplicates exactly a published candidate carrying its own binding"
     );
 
-    let admitted = advisor_candidate_is_admitted(has_candidate, has_advisor, advisor_is_duplicate);
+    // The first two facts are production's own projections of the same shapes,
+    // not the free bools that chose them.
+    let admitted = advisor_candidate_is_admitted(
+        !candidates.is_empty(),
+        advisor_ref.is_some(),
+        advisor_is_duplicate,
+    );
     if !has_candidate {
         assert!(!admitted, "R1 an Advisor never creates primary admission");
     }

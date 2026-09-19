@@ -155,6 +155,7 @@ run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_def
 run static "degrading-defaults" python3 scripts/ci/check_degrading_defaults.py
 run static "fabricated-facts self-test" python3 scripts/ci/check_fabricated_facts.py --self-test
 run static "fabricated-facts" python3 scripts/ci/check_fabricated_facts.py
+run static "proof-input-derivation self-test" python3 scripts/ci/check_proof_input_derivation.py --selftest
 run static "contract-shape self-test" python3 scripts/ci/check_contract_shape.py --self-test
 run static "contract-shape" python3 scripts/ci/check_contract_shape.py
 run static "coverage checker tests" python3 scripts/ci/test_changed_e2e_line_coverage.py
@@ -228,6 +229,11 @@ run api "public-api" scripts/ci/check_public_api.sh --require-tools
 # silently unless a gate regenerates and compares them.
 run contracts "generated-contracts" scripts/contract/generate-contracts.sh --check
 run contracts "managed-sdk-oracle" pnpm --filter @awaken/managed-sdk-oracle check
+# A harness can be green and constrain nothing. This walks every #[kani::proof]
+# in the tree and refuses a proof-only fork inside a production entrypoint, a
+# harness that restates its callee's body, and a free symbol standing in for a
+# fact production computes -- against the registry's justified/backlog ratchet.
+run formal "proof-input-derivation" python3 scripts/ci/check_proof_input_derivation.py --require-complete
 run formal "formal" scripts/ci/check_formal.sh --require-tools
 run reliability "reliability" scripts/ci/check-reliability.sh --require-tools
 # Release completeness is strict: unavailable infrastructure is a failed gate,
