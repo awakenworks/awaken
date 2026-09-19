@@ -18192,6 +18192,30 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         })
     }
 
+    fn restore_targets(
+        &self,
+    ) -> Option<&dyn awaken_sandbox_container::RestoreTargetContainerEnvironmentProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_sandbox_container::RestoreTargetContainerEnvironmentProvider
+    for TerminalRecoveryProvider
+{
+    async fn acquire_restore_environment(
+        &self,
+        _spec: &pc::SandboxSpec,
+        _request: &pc::SandboxRestoreRequest,
+    ) -> Result<
+        pc::SandboxRestoreTarget<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        pc::SandboxError,
+    > {
+        Err(pc::SandboxError::unsupported(
+            "terminal recovery fixture never acquires a restore target",
+        ))
+    }
+
     async fn dispose_restored_environment(
         &self,
         _spec: &pc::SandboxSpec,

@@ -76,7 +76,8 @@ pub use provider_contract::{
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
     ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, DecodedContainerHandle, EnvironmentFile, PreparedContainer,
-    PreparedContainerDisposition,
+    PreparedContainerDisposition, RestorableContainerEnvironmentProvider,
+    RestoreTargetContainerEnvironmentProvider, restore_ladder_is_consistent,
 };
 pub use resident_hand::ResidentHandConfig;
 #[cfg(any(test, feature = "docker", feature = "podman"))]

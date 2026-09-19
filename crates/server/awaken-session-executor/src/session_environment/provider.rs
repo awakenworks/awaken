@@ -930,7 +930,14 @@ impl SessionEnvironmentProvider {
                 ..
             } => {
                 let spec = container_spec(spec, extra_mounts)?;
-                let restored = provider.restore_environment(&spec, request, store).await?;
+                let restorable = provider.restorable().ok_or_else(|| {
+                    pc::SandboxError::unsupported(
+                        "container provider does not implement checkpoint restore",
+                    )
+                })?;
+                let restored = restorable
+                    .restore_environment(&spec, request, store)
+                    .await?;
                 let handle = restored.target().handle();
                 request.verify_handle(&spec, &handle)?;
                 Ok(handle)
@@ -1056,6 +1063,12 @@ impl SessionEnvironmentProvider {
             } => {
                 let spec = container_spec(spec, extra_mounts)?;
                 provider
+                    .restore_targets()
+                    .ok_or_else(|| {
+                        pc::SandboxError::unsupported(
+                            "container provider does not implement exact restored-target disposal",
+                        )
+                    })?
                     .dispose_restored_environment(&spec, request, authorization, authority)
                     .await
             }
