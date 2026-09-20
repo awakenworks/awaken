@@ -1362,6 +1362,22 @@ async fn exec_pending_wait_keeps_poll_and_signal_available() {
     );
 }
 
+/// A live child for the signal fixtures.
+///
+/// `exec` so the shell is replaced instead of forking: `start_kill` then
+/// reaches the process that is actually sleeping. Without it the shell dies
+/// and its `sleep` is orphaned onto init, still holding the test binary's
+/// stdout until it exits on its own — which is what nextest reported as a
+/// leak. The fixture's output is nobody's, so it is not inherited either.
+fn signal_fixture_child() -> tokio::process::Child {
+    OsCommand::new("sh")
+        .args(["-c", "exec sleep 10"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("signal fixture child")
+}
+
 #[tokio::test]
 async fn detached_exec_process_fails_closed_and_signal_propagates_status() {
     // Cause/effect graph: C1 process handle attached/detached; C2 signal CLI
@@ -1377,10 +1393,7 @@ async fn detached_exec_process_fails_closed_and_signal_propagates_status() {
     assert!(detached.poll().await.is_err());
     assert!(detached.signal(pc::Signal::Term).await.is_err(), "P1/E1");
 
-    let child = OsCommand::new("sh")
-        .args(["-c", "sleep 10"])
-        .spawn()
-        .expect("spawn success fixture");
+    let child = signal_fixture_child();
     let successful_signal = exec_process(Some(child), "true");
     successful_signal
         .signal(pc::Signal::Term)
@@ -1397,10 +1410,7 @@ async fn detached_exec_process_fails_closed_and_signal_propagates_status() {
         .unwrap();
     successful_signal.wait().await.unwrap();
 
-    let child = OsCommand::new("sh")
-        .args(["-c", "sleep 10"])
-        .spawn()
-        .expect("spawn failure fixture");
+    let child = signal_fixture_child();
     let failing_signal = exec_process(Some(child), "false");
     assert!(
         failing_signal.signal(pc::Signal::Int).await.is_err(),
@@ -1417,10 +1427,7 @@ async fn detached_exec_process_fails_closed_and_signal_propagates_status() {
         .unwrap();
     failing_signal.wait().await.unwrap();
 
-    let child = OsCommand::new("sh")
-        .args(["-c", "sleep 10"])
-        .spawn()
-        .expect("spawn missing-binary fixture");
+    let child = signal_fixture_child();
     let missing_binary = exec_process(Some(child), "/definitely/missing/podman");
     assert!(
         missing_binary.signal(pc::Signal::Kill).await.is_err(),
