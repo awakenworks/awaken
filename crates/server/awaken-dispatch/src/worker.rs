@@ -42,6 +42,7 @@ use crate::dispatch::{
     Claimed, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
     SettleOutcome,
 };
+use crate::execution_capacity::ExecutionCapacity;
 use crate::worker_context::WorkerContext;
 
 mod claim_renewal;
@@ -757,7 +758,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let claim = RunClaim::from(&claimed.lease);
         let lease_renewal = self.renew_claim_while_driving(&claim);
-        self.drive_claimed_with_renewal(claimed, clock, lease_renewal)
+        self.drive_claimed_with_renewal(claimed, clock, lease_renewal, None)
             .await
     }
 
@@ -769,10 +770,11 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         claimed: Claimed,
         clock: Arc<dyn Clock>,
         lease_renewal: ClaimLeaseRenewal,
+        execution_capacity: Option<ExecutionCapacity>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         if claimed.session_activity_admission_required {
             return self
-                .drive_claimed_inner(claimed, clock, lease_renewal)
+                .drive_claimed_inner(claimed, clock, lease_renewal, execution_capacity)
                 .await;
         }
 
@@ -781,7 +783,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         // inside the same `wake.dispatch` span; fragmenting the span around only
         // the executor future disconnects post-commit background effects.
         let dispatch = Self::claimed_dispatch_span(&claimed);
-        self.drive_claimed_inner(claimed, clock, lease_renewal)
+        self.drive_claimed_inner(claimed, clock, lease_renewal, execution_capacity)
             .instrument(dispatch)
             .await
     }
@@ -791,6 +793,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         claimed: Claimed,
         clock: Arc<dyn Clock>,
         lease_renewal: ClaimLeaseRenewal,
+        execution_capacity: Option<ExecutionCapacity>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let (attempt_cancellation, _cancellation_relay) = combine_attempt_cancellation(
             lease_renewal.attempt_cancellation(),
@@ -1011,6 +1014,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                         live_input: awaken_runtime_contract::execution::LiveInput::None,
                         recovery_mode,
                         clock: clock.clone(),
+                        execution_capacity: execution_capacity.as_ref(),
                     },
                     move |attempt_context| async move {
                         cancel_executor
@@ -1057,6 +1061,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                         )
                         .await;
                 }
+                PhysicalAttemptOutcome::Deferred => return Ok(None),
             };
             if matches!(&state, RunState::Ended(_)) {
                 self.redeliver_terminal_observers(&run_id, &thread_id)
@@ -1177,6 +1182,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                             live_input: awaken_runtime_contract::execution::LiveInput::None,
                             recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
                             clock: clock.clone(),
+                            execution_capacity: execution_capacity.as_ref(),
                         },
                         |attempt_context| self.perform_scheduled(&claim, now_ms, attempt_context),
                     )
@@ -1191,6 +1197,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                             )
                             .await;
                     }
+                    PhysicalAttemptOutcome::Deferred => return Ok(None),
                     PhysicalAttemptOutcome::Returned(Err(err)) => {
                         return self
                             .settle_if_terminal_or_raise(&claimed, &all_pending, err)
@@ -1229,6 +1236,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                                     recovery_mode:
                                         AttemptRecoveryMode::RequirePredecessorQuiescence,
                                     clock: clock.clone(),
+                                    execution_capacity: execution_capacity.as_ref(),
                                 },
                                 move |attempt_context| async move {
                                     resume_executor
@@ -1247,6 +1255,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                                     )
                                     .await;
                             }
+                            PhysicalAttemptOutcome::Deferred => return Ok(None),
                             PhysicalAttemptOutcome::Returned(Err(err)) => {
                                 return self
                                     .settle_if_terminal_or_raise(&claimed, &all_pending, err)
@@ -1345,6 +1354,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                                 live_input: attempt_executor.capabilities().live_input,
                                 recovery_mode,
                                 clock: clock.clone(),
+                                execution_capacity: execution_capacity.as_ref(),
                             },
                             move |attempt_context| async move {
                                 execute_executor.execute(activation, attempt_context).await
@@ -1361,6 +1371,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                                 )
                                 .await;
                         }
+                        PhysicalAttemptOutcome::Deferred => return Ok(None),
                         PhysicalAttemptOutcome::Returned(Err(err)) => {
                             return self
                                 .settle_if_terminal_or_raise(&claimed, &all_pending, err)
