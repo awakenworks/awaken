@@ -507,7 +507,7 @@ async function main() {
     console.log('ok: archived/version-changed credential rejected the already-published pin fail-closed');
 
     // Cause graph (production composition Workspace ownership):
-    //   C1 path Workspace differs from body -> E1 trusted path stamps ownership
+    //   C1 path Workspace differs from body -> E1 the claim is refused 404
     //   C2 B reads A-owned aggregate       -> E2 hide it with 404
     //   C3 same logical id authored in B   -> E3 independent scoped aggregate
     //   C4 B draft references A credential -> E4 publication fails closed
@@ -516,32 +516,56 @@ async function main() {
     //
     // Defense in depth without IAM: workspace-path addressing supplies the
     // trusted platform scope directly, and each resource aggregate enforces its
-    // own persisted owner. Agent and Profile ids are Workspace-scoped identities,
+    // own persisted owner. A body `workspace_id` is a claim, never authority:
+    // one that names a different Workspace is refused with the same 404 as an
+    // absent resource rather than silently overridden, so a caller is never
+    // told it authored in a Workspace it did not. Agent and Profile ids are Workspace-scoped identities,
     // while credential references are revalidated at publication. This proves the
     // resource service does not depend on a PEP-side process-local owner index.
     const WS_A = 'workspace-resource-a';
     const WS_B = 'workspace-resource-b';
     const scoped = (workspace, tail) => `/v1/workspaces/${workspace}/config/${tail}`;
-    const ownedCredential = await req(base, 'POST', scoped(WS_A, 'credentials'), {
+    const forged = await req(base, 'POST', scoped(WS_A, 'credentials'), {
       workspace_id: 'forged-body-owner', kind: 'vault', provider_id: 'anthropic',
       env_key: null, secret: 'sk-resource-owner-e2e', // awaken-allow: secret
     });
+    assert.equal(forged.status, 404, `T1 forged body owner is refused: ${JSON.stringify(forged.json)}`);
+    assert.equal(forged.json.code, 'not_found', 'T1 refusal hides cross-tenant addressing');
+    const ownedCredential = await req(base, 'POST', scoped(WS_A, 'credentials'), {
+      // The fixture upstream authenticates this key; the connection below uses
+      // this credential, so discovery must be able to reach it.
+      workspace_id: WS_A, kind: 'vault', provider_id: 'anthropic',
+      env_key: null, secret: FAKE_KEY,
+    });
     assert.equal(ownedCredential.status, 201, JSON.stringify(ownedCredential.json));
-    assert.equal(ownedCredential.json.workspace_id, WS_A, 'path scope overrides body workspace');
+    assert.equal(ownedCredential.json.workspace_id, WS_A, 'T1 an equal claim is redundant, not a conflict');
     const ownedId = ownedCredential.json.id;
     const ownedMcpCredential = await req(base, 'POST', scoped(WS_A, 'credentials'), {
-      workspace_id: 'forged-body-owner', kind: 'vault',
+      workspace_id: WS_A, kind: 'vault',
       env_key: null, secret: 'mcp-resource-owner-e2e', // awaken-allow: secret
     });
     assert.equal(ownedMcpCredential.status, 201, JSON.stringify(ownedMcpCredential.json));
     const ownedMcpId = ownedMcpCredential.json.id;
+    // The owning Workspace needs its own offering for MODEL, or the profile
+    // routes below answer `model_unresolved` and prove nothing about ownership.
+    const providerConnectionA = await req(base, 'POST', scoped(WS_A, 'provider-connections'), {
+      idempotency_key: 'awaken-cli-e2e-workspace-a-provider',
+      workspace_id: WS_A,
+      provider_id: 'anthropic',
+      display_name: 'Anthropic A',
+      dialect: 'anthropic_messages',
+      base_url: `${upstream.url}/v1/`,
+      timeout_secs: 300,
+      credential_source_id: ownedId,
+    });
+    assert.equal(providerConnectionA.status, 201, JSON.stringify(providerConnectionA.json));
     const pool = {
-      id: 'owned-pool', workspace_id: 'forged-body-owner',
+      id: 'owned-pool', workspace_id: WS_A,
       members: [{ credential_source_id: ownedId, ordinal: 0, enabled: true, selection_weight: 0 }],
     };
     assert.equal((await req(base, 'PUT', scoped(WS_A, 'credential-pools/owned-pool'), pool)).status, 200);
     const profile = {
-      workspace_id: 'forged-body-owner',
+      workspace_id: WS_A,
       primary: {
         target: { model_id: MODEL },
         credential_binding: { type: 'exact', credential_source_id: ownedId },
@@ -588,17 +612,17 @@ async function main() {
       kind: 'clear', retry_after_secs: null,
     })).status, 200);
     assert.equal((await req(base, 'POST', scoped(WS_A, 'inference-profiles/owned-profile/resolve'), {
-      workspace_id: 'forged-body-owner',
+      workspace_id: WS_A,
     })).status, 200);
     assert.equal((await req(base, 'POST', scoped(WS_A, 'inference-profiles/owned-profile/resolve-candidates'), {
-      workspace_id: 'forged-body-owner',
+      workspace_id: WS_A,
     })).status, 200);
     assert.equal((await req(base, 'GET', scoped(WS_A, `credentials/${ownedId}`))).status, 200);
-    const credentials = await req(base, 'GET', scoped(WS_A, 'credentials?workspace_id=forged-body-owner'));
+    const credentials = await req(base, 'GET', scoped(WS_A, `credentials?workspace_id=${WS_A}`));
     assert.equal(credentials.status, 200);
     assert.ok(credentials.json.some((entry) => entry.id === ownedId));
     assert.equal((await req(base, 'POST', scoped(WS_A, `credentials/${ownedId}/validate`), {
-      workspace_id: 'forged-body-owner', model_id: MODEL,
+      workspace_id: WS_A, model_id: MODEL,
     })).status, 200);
     const owningAgent = await req(base, 'GET', scoped(WS_A, 'agents/owned-agent'));
     assert.equal(owningAgent.status, 200);
@@ -616,13 +640,13 @@ async function main() {
     ]) assert.equal((await req(base, 'GET', uri)).status, 404, `${uri} hides foreign ownership`);
     assert.equal((await req(base, 'PUT', scoped(WS_B, 'credential-pools/owned-pool'), pool)).status, 404);
     const ownedCredentialB = await req(base, 'POST', scoped(WS_B, 'credentials'), {
-      workspace_id: 'forged-body-owner', kind: 'vault', provider_id: 'anthropic',
+      workspace_id: WS_B, kind: 'vault', provider_id: 'anthropic',
       env_key: null, secret: FAKE_KEY,
     });
     assert.equal(ownedCredentialB.status, 201, JSON.stringify(ownedCredentialB.json));
     const providerConnectionB = await req(base, 'POST', scoped(WS_B, 'provider-connections'), {
       idempotency_key: 'awaken-cli-e2e-workspace-b-provider',
-      workspace_id: 'forged-body-owner',
+      workspace_id: WS_B,
       provider_id: 'anthropic',
       display_name: 'Anthropic B',
       dialect: 'anthropic_messages',
@@ -678,9 +702,15 @@ async function main() {
       unchangedAgentA.json.mcp_servers[0].credential,
       { id: ownedMcpId, revision: ownedMcpCredential.json.version },
     );
+    // T1 again, from the other side: the path selects B, so a body claiming A
+    // is the contradiction the fence refuses. B's own profile still resolves
+    // when the claim agrees with the path.
     assert.equal((await req(base, 'POST', scoped(WS_B, 'inference-profiles/owned-profile/resolve-candidates'), {
       workspace_id: WS_A,
-    })).status, 200, 'trusted B path resolves B profile despite forged body Workspace');
+    })).status, 404, 'a body Workspace that contradicts the trusted path is refused');
+    assert.equal((await req(base, 'POST', scoped(WS_B, 'inference-profiles/owned-profile/resolve-candidates'), {
+      workspace_id: WS_B,
+    })).status, 200, 'the trusted B path resolves B profile');
     const listedAgents = await req(base, 'GET', scoped(WS_B, 'agents'));
     assert.equal(listedAgents.status, 200);
     assert.ok(listedAgents.json.data.some((entry) => entry.id === 'owned-agent'));
