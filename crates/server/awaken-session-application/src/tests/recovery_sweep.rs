@@ -32,6 +32,7 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
             session_id: "hint-skip".into(),
             interests: SessionRecoveryInterests {
                 resources: false,
+                resource_activation: false,
                 event_batches: false,
                 environment_continuation: false,
                 local_realization: false,
@@ -61,9 +62,11 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
 #[test]
 fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
     // Causes: C1 a stable active File reference exists; C2 recovery is an
-    // external wake or scheduled audit; C3 a new Resource generation is pending.
+    // external wake or scheduled audit; C3 a new Resource generation is pending;
+    // C4 a terminal Session retains active Resources for cleanup.
     // Effects: R1 C1+external => no duplicate reference read; R2 C1+scheduled =>
-    // audit the existing retention edge; R3 C3+either => reconcile immediately.
+    // audit the existing retention edge; R3 C3+either => reconcile immediately;
+    // R4 C4=>background cleanup, never startup priority.
     // The hint carries no Resource payload or receipt. Every admitted phase still
     // reloads the root and uses the existing reference/effect authority.
     let mut stable = persisted("resource-interest", true, "idle");
@@ -73,6 +76,10 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
     assert!(stable.resources.has_references(), "R1 precondition");
     assert!(
         !SessionRecoveryInterests::from_session(&stable, false).resources,
+        "R1"
+    );
+    assert!(
+        !SessionRecoveryInterests::from_session(&stable, false).resource_activation,
         "R1"
     );
     assert!(
@@ -91,6 +98,193 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
         SessionRecoveryInterests::from_session(&stable, false).resources,
         "R3"
     );
+    assert!(
+        SessionRecoveryInterests::from_session(&stable, false).resource_activation,
+        "R3"
+    );
+    let mut terminal = persisted("resource-terminal", true, "activation_failed");
+    terminal.resources =
+        awaken_session_contract::SessionResourceState::from_active(file_resources("terminal"));
+    let terminal_interests = SessionRecoveryInterests::from_session(&terminal, true);
+    assert!(terminal_interests.resources, "R4 cleanup remains scheduled");
+    assert!(
+        !terminal_interests.resource_activation,
+        "R4 background only"
+    );
+    let mut preparing = persisted("resource-preparing-skill", true, "preparing");
+    preparing
+        .resources
+        .prepare(
+            &awaken_session_contract::SessionId::from("resource-preparing-skill"),
+            skill_resources("pending-skill"),
+        )
+        .unwrap();
+    let preparing_interests = SessionRecoveryInterests::from_session(&preparing, false);
+    assert!(
+        preparing.needs_initial_realization_recovery(),
+        "R5 precondition"
+    );
+    assert!(
+        preparing_interests.resources,
+        "R5 pending Skill remains scheduled"
+    );
+    assert!(
+        preparing_interests.resource_activation,
+        "R5 startup priority"
+    );
+    assert!(
+        preparing_interests.dispatch_projection,
+        "R5 Worker projection recovery"
+    );
+}
+
+#[test]
+fn resource_sweep_prioritizes_startup_without_starving_background_cleanup() {
+    // Cause/effect decision table RP1-RP3. C1 nonterminal Resource activations
+    // exist; C2 background audit/terminal-cleanup roots exist; C3 only background
+    // work exists. Effects: E1 preserve every activation in input order; E2 admit
+    // exactly the first background root after them; E3 without C1 preserve every
+    // background root. Rules: RP1=C1=>E1, RP2=C1+C2=>E1+E2,
+    // RP3=!C1+C3=>E3. The durable work index retains every unselected root for a
+    // later cycle; this policy adds no queue, cursor, or effect authority.
+    let candidate = |id: &str, resource_activation| SessionRecoveryCandidate {
+        workspace_id: "test".into(),
+        session_id: id.into(),
+        interests: SessionRecoveryInterests {
+            resources: true,
+            resource_activation,
+            ..Default::default()
+        },
+    };
+    let candidates = SessionRecoveryCandidates {
+        sessions: vec![
+            candidate("background-a", false),
+            candidate("activation-a", true),
+            candidate("background-b", false),
+            candidate("activation-b", true),
+        ],
+        quarantined: Vec::new(),
+    };
+    assert_eq!(
+        crate::recovery_sweep::select_resource_candidates(&candidates)
+            .into_iter()
+            .map(|candidate| candidate.session_id.into_string())
+            .collect::<Vec<_>>(),
+        ["activation-a", "activation-b", "background-a"],
+        "RP1+RP2/E1+E2"
+    );
+    let background_only = SessionRecoveryCandidates {
+        sessions: vec![
+            candidate("background-a", false),
+            candidate("background-b", false),
+        ],
+        quarantined: Vec::new(),
+    };
+    assert_eq!(
+        crate::recovery_sweep::select_resource_candidates(&background_only)
+            .into_iter()
+            .map(|candidate| candidate.session_id.into_string())
+            .collect::<Vec<_>>(),
+        ["background-a", "background-b"],
+        "RP3/E3"
+    );
+}
+
+#[tokio::test]
+async fn slow_background_resource_cleanup_cannot_block_startup_activations() {
+    // Composition rule RP4. C1 five startup activations (more than the four-slot
+    // Resource bound) and three background
+    // roots share one durable scan; C2 the admitted background root never
+    // returns; C3 Resource concurrency is bounded. Effects: E1 both startup
+    // roots complete their real repository read; E2 only one background root is
+    // attempted; E3 cancellation owns and drops the held future. RP4 proves the
+    // selector and existing bounded sweep compose without a detached scheduler.
+    let durable =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    for id in [
+        "background-a",
+        "activation-a",
+        "activation-c",
+        "activation-d",
+        "activation-e",
+        "background-b",
+        "activation-b",
+        "background-c",
+    ] {
+        create(durable.as_ref(), persisted(id, true, "idle")).await;
+    }
+    let observed = Arc::new(FaultingSessionRepository::new(durable));
+    let background_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    observed
+        .paused_gets
+        .lock()
+        .unwrap()
+        .insert("background-a".into(), background_gate.clone());
+    let app = Arc::new(application(
+        observed.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let candidate = |id: &str, resource_activation| SessionRecoveryCandidate {
+        workspace_id: "test".into(),
+        session_id: id.into(),
+        interests: SessionRecoveryInterests {
+            resources: true,
+            resource_activation,
+            ..Default::default()
+        },
+    };
+    let candidates = SessionRecoveryCandidates {
+        sessions: vec![
+            candidate("background-a", false),
+            candidate("activation-a", true),
+            candidate("activation-c", true),
+            candidate("activation-d", true),
+            candidate("activation-e", true),
+            candidate("background-b", false),
+            candidate("activation-b", true),
+            candidate("background-c", false),
+        ],
+        quarantined: Vec::new(),
+    };
+    let task =
+        tokio::spawn(async move { app.reconcile_resource_activations_from(&candidates).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let completed = observed.completed_gets.lock().unwrap().clone();
+            if [
+                "activation-a",
+                "activation-b",
+                "activation-c",
+                "activation-d",
+                "activation-e",
+            ]
+            .iter()
+            .all(|id| completed.iter().any(|completed| completed == id))
+            {
+                break;
+            }
+            observed.get_entered.notified().await;
+        }
+    })
+    .await
+    .expect("RP4/E1 startup activations complete beside slow cleanup");
+    let entered = observed.observed_gets.lock().unwrap().clone();
+    assert!(
+        entered.contains(&"background-a".to_string()),
+        "RP4/E2 fair share"
+    );
+    assert!(
+        !entered.contains(&"background-b".to_string()),
+        "RP4/E2 bounded background"
+    );
+    assert!(
+        !entered.contains(&"background-c".to_string()),
+        "RP4/E2 bounded background"
+    );
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled(), "RP4/E3");
+    background_gate.add_permits(1);
+    tokio::task::yield_now().await;
 }
 
 impl Phase {

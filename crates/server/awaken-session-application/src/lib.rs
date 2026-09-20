@@ -89,6 +89,7 @@ struct SessionRecoveryCandidate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SessionRecoveryInterests {
     resources: bool,
+    resource_activation: bool,
     event_batches: bool,
     environment_continuation: bool,
     local_realization: bool,
@@ -99,6 +100,7 @@ impl Default for SessionRecoveryInterests {
     fn default() -> Self {
         Self {
             resources: true,
+            resource_activation: true,
             event_batches: true,
             environment_continuation: true,
             local_realization: true,
@@ -138,6 +140,7 @@ impl SessionRecoveryInterests {
         Self {
             resources: session.needs_resource_reconciliation()
                 || (audit_resource_references && session.resources.has_references()),
+            resource_activation: !session.is_terminal() && session.resources.needs_reconciliation(),
             event_batches: session.needs_event_reconciliation(),
             environment_continuation,
             local_realization,

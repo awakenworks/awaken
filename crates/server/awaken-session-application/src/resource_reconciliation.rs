@@ -1126,12 +1126,7 @@ impl SessionApplication {
         // Reuse the same bounded, owned sweep as Event recovery while retaining
         // every reference/Resource authority check and each root's effect order.
         let resource_candidates = SessionRecoveryCandidates {
-            sessions: candidates
-                .sessions
-                .iter()
-                .filter(|candidate| candidate.interests.resources)
-                .cloned()
-                .collect(),
+            sessions: super::recovery_sweep::select_resource_candidates(candidates),
             quarantined: candidates.quarantined.clone(),
         };
         let completed = super::recovery_sweep::map_candidates(
