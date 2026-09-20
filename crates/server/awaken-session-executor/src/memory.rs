@@ -1181,21 +1181,23 @@ mod tests {
             panic!("Recall must not emulate an atomic snapshot with per-path reads")
         }
 
-        async fn create(
+        async fn create_as(
             &self,
             _store: &str,
             _path: &str,
             _content: &str,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
             unreachable!("Recall snapshot test performs no writes")
         }
 
-        async fn update_head(
+        async fn update_head_as(
             &self,
             _store: &str,
             _base: &awaken_resource_contract::MemoryGeneration,
             _content: &str,
             _target_path: Option<&str>,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
             unreachable!("Recall snapshot test performs no writes")
         }
@@ -1209,19 +1211,21 @@ mod tests {
             unreachable!("Recall snapshot test performs no writes")
         }
 
-        async fn delete_by_path(
+        async fn delete_by_path_as(
             &self,
             _store: &str,
             _path: &str,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<(), awaken_memory_store::MemErr> {
             unreachable!("Recall snapshot test performs no writes")
         }
 
-        async fn delete_if_match(
+        async fn delete_if_match_as(
             &self,
             _store: &str,
             _path: &str,
             _base: &awaken_resource_contract::MemoryGeneration,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<bool, awaken_memory_store::MemErr> {
             unreachable!("Recall snapshot test performs no writes")
         }
@@ -1233,10 +1237,11 @@ mod tests {
             unreachable!("Recall snapshot test performs no history reads")
         }
 
-        async fn redact_version(
+        async fn redact_version_as(
             &self,
             _store: &str,
             _version_id: &str,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<Option<awaken_memory_store::MemoryVersion>, awaken_memory_store::MemErr>
         {
             unreachable!("Recall snapshot test performs no history writes")

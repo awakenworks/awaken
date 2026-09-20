@@ -506,6 +506,47 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         "M3"
     );
 
+    // MA attribution: C1 the caller states an author on a write that crosses
+    // this transport; C2 the caller states none. Effects: E1 the author reaches
+    // the backing repository's version history unchanged; E2 an unattributed
+    // write records no author, so the field says what happened rather than
+    // being filled in. Before the writeback operation carried an author there
+    // was no field at all, and every attributed write over this transport
+    // arrived anonymous.
+    let actor = awaken_resource_contract::MemoryActor::UserActor {
+        user_id: "user-11".into(),
+    };
+    let attributed = client
+        .create_as(&rw, "/attributed.md", "v1", Some(&actor))
+        .await
+        .expect("MA/C1 create");
+    client
+        .update_head_as(&rw, &attributed.generation(), "v2", None, Some(&actor))
+        .await
+        .expect("MA/C1 update");
+    client
+        .create(&rw, "/anonymous.md", "v1")
+        .await
+        .expect("MA/C2 create");
+    let versions = repository.list_versions("memory-rw").await.unwrap();
+    let authors = |path: &str| -> Vec<Option<awaken_resource_contract::MemoryActor>> {
+        versions
+            .iter()
+            .filter(|version| version.path == path)
+            .map(|version| version.created_by.clone())
+            .collect()
+    };
+    assert_eq!(
+        authors("/attributed.md"),
+        vec![Some(actor.clone()), Some(actor.clone())],
+        "MA/E1 both attributed writes reached history with their author"
+    );
+    assert_eq!(
+        authors("/anonymous.md"),
+        vec![None],
+        "MA/E2 an unattributed write records no author"
+    );
+
     // MP-RUN: unlike terminal requests, a Run reference has no captured heads.
     // The Copy client must transmit its expected path; a rename between client
     // snapshot and server transaction must not turn this into ID-following IO.

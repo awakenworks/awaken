@@ -39,27 +39,31 @@ impl DreamSessionSource for crate::ManagedState {
             .collect()
     }
 
-    async fn session_usage(&self, workspace_id: &str, session_id: &str) -> Option<DreamUsage> {
-        if self
+    async fn session_usage(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Option<DreamUsage>, String> {
+        // An owner this store could not read is not the same fact as a Session
+        // owned by someone else: the first is reported, the second answers
+        // "nothing for you".
+        let owner = self
             .resolve_owner(session_id)
             .await
-            .ok()
-            .flatten()
-            .as_deref()
-            != Some(workspace_id)
-        {
-            return None;
+            .map_err(|error| format!("Session owner is unreadable: {error}"))?;
+        if owner.as_deref() != Some(workspace_id) {
+            return Ok(None);
         }
         let usage = self
             .session_application()
             .session_usage(session_id, None)
             .await
-            .ok()?;
-        Some(DreamUsage {
+            .map_err(|error| format!("Session usage is unreadable: {error}"))?;
+        Ok(Some(DreamUsage {
             cache_creation_input_tokens: usage.cache_creation_tokens,
             cache_read_input_tokens: usage.cache_read_tokens,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
-        })
+        }))
     }
 }

@@ -77,6 +77,55 @@ ROOT = Path(__file__).resolve().parents[2]
 # behaviour for an implementation that does not override it. An entry is a
 # decision someone made and can be argued with.
 DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
+    "AcpToolExporter::export": (
+        "not a degrade: `export` has nothing to drop. It is the singular "
+        "spelling of `export_set`, delegating with a one-element set, which is "
+        "exactly what exporting one tool means"
+    ),
+    "CommittedThreadView::run_state": (
+        "not a degrade: `run_state` asks a narrower question of the same input "
+        "than `run`, and the default answers it by reading the state off the "
+        "record `run` returns. Nothing the signature names is discarded"
+    ),
+    "FileApplicationService::create_uploaded_file": (
+        "not a degrade: the default supplies an explicit `None` expiry, which "
+        "is what an upload with no expiry means. The caller gets exactly what "
+        "the signature promises"
+    ),
+    "FileApplicationService::create_uploaded_file_with_expiry": (
+        "not a degrade: the default supplies an explicit `None` idempotency "
+        "key, which is what a non-idempotent upload means"
+    ),
+    # The five attribution pairs: the attributed method is the required one and
+    # these are its unattributed spellings, each delegating with an explicit
+    # `None` author. An implementation cannot satisfy the trait without
+    # answering the attributed question, which is the property the rule is
+    # protecting; see `MemoryRepository::create_as`.
+    "MemoryRepository::create": (
+        "not a degrade: the unattributed spelling of the required `create_as`, "
+        "delegating with an explicit `None` author"
+    ),
+    "MemoryRepository::update_head": (
+        "not a degrade: the unattributed spelling of the required "
+        "`update_head_as`, delegating with an explicit `None` author"
+    ),
+    "MemoryRepository::delete_by_path": (
+        "not a degrade: the unattributed spelling of the required "
+        "`delete_by_path_as`, delegating with an explicit `None` author"
+    ),
+    "MemoryRepository::delete_if_match": (
+        "not a degrade: the unattributed spelling of the required "
+        "`delete_if_match_as`, delegating with an explicit `None` author"
+    ),
+    "MemoryRepository::redact_version": (
+        "not a degrade: the unattributed spelling of the required "
+        "`redact_version_as`, delegating with an explicit `None` author"
+    ),
+    "MemoryRepository::update": (
+        "not a degrade: the content-only convenience over `update_head`, "
+        "delegating with an explicit `None` target path, which is what an "
+        "update that does not move the memory means"
+    ),
     "EnvRegistry::create": (
         "not a degrade: `create` has no `scope` parameter to drop. It is the "
         "unqualified spelling delegating to the qualified `create_scoped` with an "
@@ -91,7 +140,7 @@ DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
 # *new* instances today rather than only after the migration finishes — the
 # failure mode of a file allow-list, which freezes the debt and guards nothing.
 # Lower this number as instances are converted or registered; never raise it.
-UNTRIAGED_BASELINE = 28
+UNTRIAGED_BASELINE = 18
 DEGRADING_DEFAULT_RATCHET = {
     "owner": "chaizhenhua",
     "expires": "2026-12-31",
@@ -116,6 +165,13 @@ FAIL_OPEN_READ = re.compile(r"\.await\s*(?://[^\n]*)?\s*\.unwrap_or_default\(\)"
 # reported, and the read is a documented best-effort enrichment whose absence
 # the caller already handles identically.
 FAIL_OPEN_READ_EXEMPTIONS: dict[str, str] = {
+    "crates/control/awaken-control/src/admin_assistant.rs": (
+        "the assistant's platform-capability projection is best-effort by "
+        "design at its only call site, which already answers an unreachable "
+        "config plane with the same empty inventory (`Err(_) => Vec::new()` "
+        "beside it). Both halves therefore degrade identically, and no caller "
+        "can distinguish the two"
+    ),
     "crates/server/awaken-coordinator-client/src/dispatch_client.rs": (
         "the defaulted read is the body of a response already known to be an "
         "error; an unreadable body makes the detail string empty, and the error "
@@ -129,11 +185,7 @@ FAIL_OPEN_READ_EXEMPTIONS: dict[str, str] = {
 }
 
 # The remainder, ratcheted per file exactly like the defaults above.
-FAIL_OPEN_READ_BASELINE: dict[str, int] = {
-    "crates/bin/awaken-cli/src/control_component.rs": 2,
-    "crates/control/awaken-control/src/admin_assistant.rs": 3,
-    "crates/server/awaken-dream-application/src/lib.rs": 1,
-}
+FAIL_OPEN_READ_BASELINE: dict[str, int] = {}
 FAIL_OPEN_READ_RATCHET = {
     "owner": "chaizhenhua",
     "expires": "2026-12-31",
