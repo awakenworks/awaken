@@ -1,5 +1,6 @@
 // Unit tests for the one DispatchWorker implementation. The containing module
 // stays in `worker.rs`, preserving every existing test path and design comment.
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use super::{
@@ -698,7 +699,7 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
         .expect("R1 parent admission")
         .expect("R1 parent claim");
     let parent_claim = RunClaim::from(&parent.lease);
-    let dispatch: Arc<dyn DispatchQueue> = store.clone();
+    let dispatch: Arc<dyn ControlDispatchQueue> = store.clone();
     let parent_checkpoint: Arc<dyn StreamCheckpointStore> = Arc::new(
         FencedStreamCheckpointStore::new(None, dispatch, parent_claim),
     );

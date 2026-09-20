@@ -11,6 +11,7 @@
 pub mod attempt_binding;
 pub mod attempt_retirement;
 
+use awaken_dispatch_contract::DispatchQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
@@ -1176,6 +1177,106 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         self.inner.list_dispatches().await
     }
 
+    fn control(&self) -> Option<&dyn awaken_dispatch::ControlDispatchQueue> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_dispatch::ControlDispatchQueue for FlakyDispatchStore {
+    async fn reserve_session_run(
+        &self,
+        request: awaken_dispatch::RunDispatch,
+        reservation_ttl_ms: u64,
+    ) -> Result<awaken_dispatch::SessionRunReservationOutcome, awaken_dispatch::DispatchError>
+    {
+        self.inner
+            .reserve_session_run(request, reservation_ttl_ms)
+            .await
+    }
+
+    async fn activate_session_run_reservation(
+        &self,
+        run_id: &RunId,
+        session_thread_id: &ThreadId,
+        session_activity_epoch: u64,
+    ) -> Result<
+        awaken_dispatch::SessionRunReservationActivation,
+        awaken_dispatch::DispatchError,
+    > {
+        self.inner
+            .activate_session_run_reservation(run_id, session_thread_id, session_activity_epoch)
+            .await
+    }
+
+    async fn reject_session_run_reservation(
+        &self,
+        run_id: &RunId,
+    ) -> Result<bool, awaken_dispatch::DispatchError> {
+        self.inner.reject_session_run_reservation(run_id).await
+    }
+
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+    ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, awaken_dispatch::DispatchError>
+    {
+        self.inner.lock_session_run_reservation_epoch(claim).await
+    }
+
+    async fn enqueue_session_child(
+        &self,
+        request: awaken_dispatch::RunDispatch,
+        admission: awaken_dispatch::SessionChildAdmission,
+    ) -> Result<(), awaken_dispatch::DispatchError> {
+        self.inner.enqueue_session_child(request, admission).await
+    }
+
+    async fn claim_placed(
+        &self,
+        requester: &awaken_dispatch::WorkerSnapshot,
+        workers: Vec<awaken_dispatch::WorkerSnapshot>,
+        policy: Arc<dyn awaken_dispatch::PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
+        self.inner
+            .claim_placed(requester, workers, policy, lease_ms)
+            .await
+    }
+
+    async fn claim_for_terminal_recovery(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
+        self.inner
+            .claim_for_terminal_recovery(run_id, owner, lease_ms)
+            .await
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<awaken_dispatch::PhysicalAttempt>, awaken_dispatch::DispatchError>
+    {
+        self.inner.load_physical_attempt(run_id).await
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<awaken_dispatch::DispatchCompletion>, awaken_dispatch::DispatchError>
+    {
+        self.inner
+            .completion_events_after(after_sequence, limit)
+            .await
+    }
+
+    async fn runnable_depth(&self) -> Result<Option<u64>, awaken_dispatch::DispatchError> {
+        self.inner.runnable_depth().await
+    }
     async fn scan_dispatch_ids(
         &self,
         after: Option<&RunId>,
@@ -1390,7 +1491,7 @@ pub async fn assert_pending_revision_cas<S: awaken_dispatch::Inbox>(store: &S) {
 /// Shared spec for the cross-thread outbox + relay (M3b): every backend must
 /// match. A staged delivery is not visible as pending until relayed; relay is
 /// idempotent and moves it to the *target* thread's pending input.
-pub async fn assert_cross_thread_outbox<S: awaken_dispatch::Dispatch>(store: &S) {
+pub async fn assert_cross_thread_outbox<S: awaken_dispatch::ControlDispatch>(store: &S) {
     use awaken_dispatch::PendingInput;
     let target = ThreadId("thread-2".to_string());
     let input = PendingInput {
@@ -1426,7 +1527,7 @@ pub async fn assert_cross_thread_outbox<S: awaken_dispatch::Dispatch>(store: &S)
 /// | SM4  | deliver+claim | yes  | same    | idempotent pending append |
 /// | SM7  | deliver+claim | yes  | changed | explicit conflict |
 /// | TM5  | inbox     | yes     | u64::MAX schedule | normalize, then retry false |
-pub async fn assert_message_idempotency_conflicts<S: awaken_dispatch::Dispatch>(
+pub async fn assert_message_idempotency_conflicts<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -1508,7 +1609,7 @@ pub async fn assert_message_idempotency_conflicts<S: awaken_dispatch::Dispatch>(
 
 /// Shared spec for scheduled delivery (M4): a future-dated pending input is not
 /// claimable until its time has come; every backend must gate the wake the same.
-pub async fn assert_scheduled_due<S: awaken_dispatch::Dispatch>(
+pub async fn assert_scheduled_due<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -1572,7 +1673,7 @@ pub async fn assert_scheduled_due<S: awaken_dispatch::Dispatch>(
 /// Cause/effect rules CE-TM4..TM8/TM11/TM12. The public clock is `u64`, while
 /// SQL stores signed BIGINT; all backends must saturate at `i64::MAX`, never
 /// panic/wrap, never run a far-future delivery early, and keep a huge lease live.
-pub async fn assert_millis_boundaries<S: awaken_dispatch::Dispatch>(
+pub async fn assert_millis_boundaries<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -1708,7 +1809,7 @@ pub async fn assert_millis_boundaries<S: awaken_dispatch::Dispatch>(
 /// past its budget is dead-lettered and no longer claimed, `requeue` brings an
 /// ordinary row back, and a terminal cancellation fence makes it non-runnable.
 /// Every backend must match.
-pub async fn assert_dead_letter<S: awaken_dispatch::Dispatch>(
+pub async fn assert_dead_letter<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -1845,7 +1946,7 @@ pub async fn assert_dead_letter<S: awaken_dispatch::Dispatch>(
 /// Shared spec for durable cancel: intent is retained and claimable until a
 /// fenced Done settlement, including across a running lease's expiry. Every
 /// backend must match.
-pub async fn assert_cancel<S: awaken_dispatch::Dispatch>(
+pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2096,7 +2197,7 @@ pub async fn assert_cancel<S: awaken_dispatch::Dispatch>(
 }
 
 /// Shared spec for priority, dedupe, and dead-letter GC. Every backend matches.
-pub async fn assert_priority_dedupe_gc<S: awaken_dispatch::Dispatch>(
+pub async fn assert_priority_dedupe_gc<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2216,7 +2317,7 @@ pub async fn assert_priority_dedupe_gc<S: awaken_dispatch::Dispatch>(
 
 /// Shared spec for the dispatch query surface (ADR-0025): list_dispatches reports
 /// each row's status and attempts. Every backend matches.
-pub async fn assert_list_dispatches<S: awaken_dispatch::Dispatch>(
+pub async fn assert_list_dispatches<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2263,7 +2364,7 @@ pub async fn assert_list_dispatches<S: awaken_dispatch::Dispatch>(
 /// |---|---|---|
 /// | current owner/epoch | temporarily unavailable | return to pending without crash budget |
 /// | stale owner/epoch | replacement already claimed | fence without changing replacement |
-pub async fn assert_relinquish_claim<S: awaken_dispatch::Dispatch>(
+pub async fn assert_relinquish_claim<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2389,7 +2490,7 @@ pub async fn assert_defer_claim_is_request_local<
     assert!(cancelled.cancellation_requested);
 }
 
-pub async fn assert_defer_claim_deadline_edge<S: awaken_dispatch::Dispatch>(
+pub async fn assert_defer_claim_deadline_edge<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &awaken_dispatch::ManualClock,
 ) {
@@ -2455,7 +2556,7 @@ pub async fn assert_defer_claim_deadline_edge<S: awaken_dispatch::Dispatch>(
 /// short cross-backend lease; replacement claims that must remain current use
 /// the production Worker lease. This separates the expiry cause from scheduler
 /// latency instead of weakening any owner, epoch, or physical-slot assertion.
-pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
+pub async fn assert_physical_attempt_admission<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2796,7 +2897,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
 
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
 /// dead-letters older than the cutoff; younger ones stay. Every backend matches.
-pub async fn assert_dead_letter_ttl_gc<S: awaken_dispatch::Dispatch>(
+pub async fn assert_dead_letter_ttl_gc<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2841,7 +2942,7 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_dispatch::Dispatch>(
 /// Shared spec for epoch supersession (ADR-0022): a superseding submit abandons
 /// the thread's prior awaiting work; only the newest run stays claimable. Every
 /// backend matches.
-pub async fn assert_supersession<S: awaken_dispatch::Dispatch>(
+pub async fn assert_supersession<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2934,7 +3035,7 @@ pub async fn assert_supersession<S: awaken_dispatch::Dispatch>(
 
 /// Shared spec for the idle-thread inbox (ADR-0021): unbound input is listed for
 /// its thread, and a Done settle that consumed it removes it. Every backend matches.
-pub async fn assert_idle_thread_inbox<S: awaken_dispatch::Dispatch>(
+pub async fn assert_idle_thread_inbox<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2998,7 +3099,7 @@ pub async fn assert_idle_thread_inbox<S: awaken_dispatch::Dispatch>(
 /// Constraint: `lease_epoch` is the same fencing authority used by commit and
 /// settlement; renewal cannot infer exact ownership from a reusable owner name.
 /// Every backend executes the same rules from one locked Dispatch-row snapshot.
-pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
+pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -3246,7 +3347,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
 /// same key (`status <> 'dead_letter'` in the SQL backends, `status !=
 /// Status::DeadLetter` in memory). Without this a poison run's key would wedge the
 /// work forever: the retry could never be enqueued. Every backend must match.
-pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_dispatch::Dispatch>(
+pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -3312,7 +3413,7 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_dispatch::Dispatch>(
 /// | W2 | yes | cancelled Pending | none | E2 |
 /// | W3 | yes | Running(cancel) | due | E3 |
 /// | W4 | yes | Done | due | E4 |
-pub async fn assert_wake_suppressed_while_thread_running<S: awaken_dispatch::Dispatch>(
+pub async fn assert_wake_suppressed_while_thread_running<S: awaken_dispatch::ControlDispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {

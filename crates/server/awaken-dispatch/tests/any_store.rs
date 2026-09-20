@@ -9,6 +9,7 @@ mod harness;
 #[path = "any_store/resolution_failure.rs"]
 mod resolution_failure;
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
@@ -139,7 +140,7 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
 }
 
 async fn exact_backend_capability_claim_conformance(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // Cause/effect graph:
@@ -277,7 +278,7 @@ fn worker_with_load(id: &str, load: u32) -> WorkerSnapshot {
 }
 
 async fn policy_claim_conformance(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     let mut requirements = PlacementRequirements::remote_required();

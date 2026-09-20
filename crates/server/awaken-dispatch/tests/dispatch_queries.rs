@@ -7,13 +7,14 @@ use awaken_dispatch::{
     AnyDispatchStore, DispatchOutcome, DispatchQueue, MemoryDispatchStore, PostgresDispatchStore,
     RunDispatch, SqliteDispatchStore,
 };
+use awaken_dispatch_contract::ControlDispatchQueue;
 
 fn id(value: &str) -> RunId {
     RunId(value.into())
 }
 
 async fn assert_bounded_query_conformance(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // Cause/effect decision table. C1 page budget is zero/one/multiple; C2 the
@@ -181,7 +182,7 @@ async fn postgres_bounded_dispatch_queries_conform() {
     .await;
 }
 
-async fn assert_bad_row_isolation(store: &dyn DispatchQueue) {
+async fn assert_bad_row_isolation(store: &dyn ControlDispatchQueue) {
     // Q7 malformed request -> identity is still discoverable, exact summary
     // errors (not None), and a healthy peer remains readable. This ensures the
     // caller can advance its cursor and isolate corruption without hiding it.

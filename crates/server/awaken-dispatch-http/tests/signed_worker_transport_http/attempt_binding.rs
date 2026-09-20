@@ -2,6 +2,7 @@ use super::*;
 use awaken_dispatch::{
     ApplicationError, AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource,
 };
+use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_dispatch_testkit::worker_http as support;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, Semaphore};

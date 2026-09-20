@@ -4,6 +4,7 @@
 //! duration are derived from trusted server-side SPIs before the neutral
 //! `DispatchQueue` is called.
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use axum::extract::{Extension, State};
@@ -24,7 +25,7 @@ use awaken_dispatch::{
     CheckpointRequest as CheckpointReq, ClaimNewRunRequest as ClaimNewRunReq,
     ClaimRunRequest as ClaimRunReq, ClaimWorkerRequest as ClaimWorkerReq, CompletionSink,
     CredentialRealizationRequest as CredentialRealizationReq,
-    DeliverAndClaimRequest as DeliverAndClaimReq, DispatchQueue, DispatchSettlementObserver,
+    DeliverAndClaimRequest as DeliverAndClaimReq, DispatchSettlementObserver,
     EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy,
     RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
     RenewRequest as RenewReq, RunClaim,
@@ -152,7 +153,7 @@ pub fn worker_environment_warmup_router_with_clock(
 
 /// Explicit application service mounted by the worker HTTP adapter.
 pub struct WorkerDispatchService {
-    dispatch: Arc<dyn DispatchQueue>,
+    dispatch: Arc<dyn ControlDispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     clock: Arc<dyn WorkerClock>,
     lease_policy: Arc<dyn WorkerLeasePolicy>,
@@ -178,7 +179,7 @@ pub struct WorkerDispatchService {
 impl WorkerDispatchService {
     #[must_use]
     pub fn new(
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn ControlDispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         clock: Arc<dyn WorkerClock>,
         lease_policy: Arc<dyn WorkerLeasePolicy>,
@@ -345,7 +346,7 @@ impl WorkerDispatchService {
     /// Local/test composition. Managed deployments should use [`Self::new`] with
     /// their WorkerLease/mTLS authenticator.
     #[must_use]
-    pub fn local(dispatch: Arc<dyn DispatchQueue>) -> Self {
+    pub fn local(dispatch: Arc<dyn ControlDispatchQueue>) -> Self {
         Self::new(
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
@@ -442,7 +443,7 @@ async fn observe_expired_predecessor(
 pub struct RegisteredDispatchDependencies {
     pub execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
-    pub dispatch: Arc<dyn DispatchQueue>,
+    pub dispatch: Arc<dyn ControlDispatchQueue>,
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,

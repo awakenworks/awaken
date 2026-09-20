@@ -2,6 +2,7 @@
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
 mod postgres_support;
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
@@ -10,9 +11,9 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use awaken_dispatch::{
     ApplicationError, AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus,
-    ClosedAttemptExecution, ClosedWorkerExecution, DispatchQueue, MemoryDispatchStore,
-    PhysicalAttempt, PostgresDispatchStore, RunClaim, RunDispatch, SqliteDispatchStore,
-    WorkerDirectory, WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
+    ClosedAttemptExecution, ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt,
+    PostgresDispatchStore, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
+    WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
     WorkerProcessStopStatus, WorkerRegistration, WorkerState, stop_expired_predecessor,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
@@ -234,7 +235,7 @@ async fn register(
 }
 
 struct Fixture {
-    store: Arc<dyn DispatchQueue>,
+    store: Arc<dyn ControlDispatchQueue>,
     directory: Arc<dyn WorkerDirectory>,
     stop: Arc<StopSource>,
     old: RunClaim,
@@ -273,7 +274,7 @@ impl Fixture {
     }
 
     async fn with_store(
-        store: Arc<dyn DispatchQueue>,
+        store: Arc<dyn ControlDispatchQueue>,
         directory: Arc<dyn WorkerDirectory>,
         bound: bool,
         old_ttl: u64,
@@ -769,8 +770,8 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
     second.assert_occupied().await;
 }
 
-async fn dispatch_stores() -> Vec<Arc<dyn DispatchQueue>> {
-    let mut stores: Vec<Arc<dyn DispatchQueue>> = vec![
+async fn dispatch_stores() -> Vec<Arc<dyn ControlDispatchQueue>> {
+    let mut stores: Vec<Arc<dyn ControlDispatchQueue>> = vec![
         Arc::new(MemoryDispatchStore::new(Arc::new(
             awaken_dispatch::SystemClock,
         ))),

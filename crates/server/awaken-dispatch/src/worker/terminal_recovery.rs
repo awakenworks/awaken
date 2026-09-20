@@ -4,11 +4,10 @@
 
 use super::{DispatchWorker, PendingInputAdmission, pending_input_admission};
 use crate::Error;
-use crate::dispatch::{
-    Claimed, Dispatch, DispatchOutcome, DispatchSummary, RunClaim, SettleOutcome,
-};
+use crate::dispatch::{Claimed, DispatchOutcome, DispatchSummary, RunClaim, SettleOutcome};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_dispatch_contract::ControlDispatch;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalProjection, CommittedTerminalRun, committed_terminal_projection,
     deliver_committed_terminal,
@@ -29,7 +28,7 @@ impl CommittedTerminalSettlement {
     }
 }
 
-impl<S: Dispatch + 'static> DispatchWorker<S> {
+impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     /// Read the one Runtime-contract terminal projection for this exact claim.
     /// Identity conflicts are corrupt authority, not an ordinary nonterminal.
     pub(super) fn committed_terminal_for_claim(

@@ -239,200 +239,6 @@ impl DispatchQueue for PostgresDispatchStore {
         current_worker_claim(&self.pool, NS, identity, run_id, now_ms).await
     }
 
-    async fn reserve_session_run(
-        &self,
-        request: RunDispatch,
-        reservation_ttl_ms: u64,
-    ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        let (request, reservation_ttl_ms) =
-            validate_session_run_reservation_request(request, reservation_ttl_ms)?;
-        let p = NS;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let store_now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
-        let deadline = crate::clock::deadline_millis(store_now_ms, reservation_ttl_ms);
-        lock_run_identity(&mut tx, &request.run_id().0).await?;
-        let live = sqlx::query(&format!(
-            "SELECT status, request FROM {p}_dispatch WHERE run_id = $1"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        if let Some(row) = live {
-            let status: String = row.try_get("status").map_err(store_error)?;
-            let Json(stored): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
-            let state = DispatchState::from_db(&status).ok_or_else(|| {
-                DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
-            })?;
-            let outcome = classify_live_session_run_reservation(&stored, state, &request);
-            tx.commit().await.map_err(store_error)?;
-            return Ok(outcome);
-        }
-        let completed: Option<Option<String>> = sqlx::query_scalar(&format!(
-            "SELECT request_fingerprint FROM {p}_dispatch_completion WHERE run_id = $1"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        if let Some(request_fingerprint) = completed {
-            let outcome = classify_completed_session_run_reservation(
-                request_fingerprint.as_deref(),
-                &request,
-            );
-            tx.commit().await.map_err(store_error)?;
-            return Ok(outcome);
-        }
-        let options = SubmitOptions {
-            supersede: request.session_run_replacement.supersedes_prior(),
-            ..Default::default()
-        };
-        insert_dispatch_with_state(
-            &mut tx,
-            p,
-            &request,
-            &options,
-            "reserved",
-            Some(crate::clock::db_millis(deadline)),
-        )
-        .await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(SessionRunReservationOutcome::Reserved)
-    }
-
-    async fn activate_session_run_reservation(
-        &self,
-        run_id: &RunId,
-        session_thread_id: &ThreadId,
-        session_activity_epoch: u64,
-    ) -> Result<SessionRunReservationActivation, DispatchError> {
-        let p = NS;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        lock_run_identity(&mut tx, &run_id.0).await?;
-        let current = sqlx::query(&format!(
-            "SELECT status, request, lease_epoch, cancel_requested \
-             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
-        ))
-        .bind(&run_id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let Some(row) = current else {
-            let completed: bool = sqlx::query_scalar(&format!(
-                "SELECT EXISTS(SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1)"
-            ))
-            .bind(&run_id.0)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(store_error)?;
-            let outcome = classify_session_run_reservation_activation(
-                None,
-                completed,
-                session_thread_id,
-                session_activity_epoch,
-            )?
-            .expect("missing reservation always has a closed outcome");
-            tx.commit().await.map_err(store_error)?;
-            return Ok(outcome);
-        };
-        let status: String = row.try_get("status").map_err(store_error)?;
-        let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
-        let state = DispatchState::from_db(&status).ok_or_else(|| {
-            DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
-        })?;
-        let classified = classify_session_run_reservation_activation(
-            Some((&request, state)),
-            false,
-            session_thread_id,
-            session_activity_epoch,
-        )?;
-        let outcome = if let Some(outcome) = classified {
-            outcome
-        } else {
-            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
-            let cancellation_requested: i64 =
-                row.try_get("cancel_requested").map_err(store_error)?;
-            let next = crate::persisted_dispatch_transition(
-                &status,
-                lease_epoch,
-                cancellation_requested != 0,
-            )?
-            .activate_reservation()
-            .expect("the reservation classifier admitted only Reserved");
-            request.session_activity_epoch = Some(session_activity_epoch);
-            let changed = sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET request = $1, status = $3, \
-                 lease_owner = NULL, lease_until = NULL WHERE run_id = $2 AND status = 'reserved'"
-            ))
-            .bind(Json(&request))
-            .bind(&run_id.0)
-            .bind(crate::dispatch_state_db(next.state))
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?
-            .rows_affected();
-            if changed == 1 {
-                SessionRunReservationActivation::Activated
-            } else {
-                SessionRunReservationActivation::RecoveryClaimed
-            }
-        };
-        tx.commit().await.map_err(store_error)?;
-        Ok(outcome)
-    }
-
-    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
-        let p = NS;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        lock_run_identity(&mut tx, &run_id.0).await?;
-        let current = sqlx::query(&format!(
-            "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
-             WHERE run_id = $1 FOR UPDATE"
-        ))
-        .bind(&run_id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let removable = if let Some(current) = current {
-            let status: String = current.try_get("status").map_err(store_error)?;
-            let lease_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
-            let cancellation_requested: i64 =
-                current.try_get("cancel_requested").map_err(store_error)?;
-            matches!(
-                crate::persisted_dispatch_transition(
-                    &status,
-                    lease_epoch,
-                    cancellation_requested != 0,
-                )?
-                .reject_reservation(),
-                awaken_dispatch_contract::GuardedTransition::Removed
-            )
-        } else {
-            false
-        };
-        if !removable {
-            tx.commit().await.map_err(store_error)?;
-            return Ok(false);
-        }
-        let changed = sqlx::query(&format!(
-            "DELETE FROM {p}_dispatch WHERE run_id = $1 AND status = 'reserved'"
-        ))
-        .bind(&run_id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .rows_affected();
-        if changed == 1 {
-            sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = $1"))
-                .bind(&run_id.0)
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?;
-        }
-        tx.commit().await.map_err(store_error)?;
-        Ok(changed == 1)
-    }
-
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -579,24 +385,6 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(())
     }
 
-    async fn enqueue_session_child(
-        &self,
-        request: RunDispatch,
-        admission: SessionChildAdmission,
-    ) -> Result<(), DispatchError> {
-        let p = NS;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        lock_run_identity(&mut tx, &request.run_id().0).await?;
-        if exact_run_replay(&mut tx, p, &request).await? {
-            tx.commit().await.map_err(store_error)?;
-            return Ok(());
-        }
-        admit_session_child(&mut tx, p, &request, &admission).await?;
-        insert_new_dispatch(&mut tx, p, &request, &SubmitOptions::default()).await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(())
-    }
-
     async fn claim_new_run(
         &self,
         request: RunDispatch,
@@ -734,14 +522,6 @@ impl DispatchQueue for PostgresDispatchStore {
         .fetch_one(&self.pool)
         .await
         .map_err(store_error)
-    }
-
-    async fn lock_session_run_reservation_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        self.lock_claim_epoch_in_status(claim, "reservation_running")
-            .await
     }
 
     async fn claim(
@@ -905,91 +685,6 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(None)
     }
 
-    async fn claim_placed(
-        &self,
-        requester: &WorkerSnapshot,
-        workers: Vec<WorkerSnapshot>,
-        policy: std::sync::Arc<dyn PlacementPolicy>,
-        lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        let p = NS;
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
-        let thread_available = thread_available_for_claim(p);
-        let rows = sqlx::query(&format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
-             ((d.status IN ('reserved', 'reservation_running') AND \
-               d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
-             (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
-             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
-               WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
-               ) AND {thread_available}) OR \
-             (d.status = 'pending' AND {thread_available})) \
-             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= $1) \
-             ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
-                      CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
-                      d.priority DESC, d.created_at",
-            no_running_peer(p)
-        ))
-        .bind(crate::clock::db_millis(now_ms))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?;
-        let capabilities = installed_worker_credential_capabilities(requester)?;
-        let mut selected = Vec::new();
-        for row in rows {
-            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
-            let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
-            let previous: Option<Json<WorkerAssignment>> =
-                row.try_get("worker_assignment").map_err(store_error)?;
-            let status: String = row.try_get("status").map_err(store_error)?;
-            let cancellation_requested: i64 =
-                row.try_get("cancel_requested").map_err(store_error)?;
-            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
-            let next_epoch = next_claim_epoch(lease_epoch)?;
-            let credentials_admitted = can_admit_claim_credentials(
-                &request,
-                &capabilities,
-                next_epoch,
-                now_ms,
-                claim_credential_operation(false, cancellation_requested != 0),
-            );
-            if matches!(status.as_str(), "reserved" | "reservation_running")
-                || (cancellation_requested != 0 && credentials_admitted)
-                || (policy_selects_requester(
-                    &request,
-                    policy.as_ref(),
-                    DispatchPlacement {
-                        recovered: status == "running",
-                        previous: previous.as_ref().map(|value| &value.0),
-                        sandbox_bound: sandbox.is_some(),
-                        requester: &requester.identity,
-                        workers: &workers,
-                        now_ms,
-                    },
-                )? && credentials_admitted)
-            {
-                selected.push(RunId(row.try_get("run_id").map_err(store_error)?));
-            }
-        }
-        for run_id in selected {
-            let mut tx = self.pool.begin().await.map_err(store_error)?;
-            let claimed = claim_exact_transaction(
-                &mut tx,
-                &run_id,
-                &requester.identity.lease_owner(),
-                lease_ms,
-                Some(requester),
-                &capabilities,
-            )
-            .await?;
-            tx.commit().await.map_err(store_error)?;
-            if claimed.is_some() {
-                return Ok(claimed);
-            }
-        }
-        Ok(None)
-    }
-
     async fn claim_run(
         &self,
         requested_run: &RunId,
@@ -1001,27 +696,6 @@ impl DispatchQueue for PostgresDispatchStore {
         let claimed =
             claim_exact_transaction(&mut tx, requested_run, owner, lease_ms, None, capabilities)
                 .await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(claimed)
-    }
-
-    async fn claim_for_terminal_recovery(
-        &self,
-        requested_run: &RunId,
-        owner: &str,
-        lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let claimed = claim_exact_transaction_with_mode(
-            &mut tx,
-            requested_run,
-            owner,
-            lease_ms,
-            None,
-            &Default::default(),
-            ExactClaimMode::TerminalRecovery,
-        )
-        .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
@@ -1238,31 +912,6 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(SettleOutcome::Applied)
     }
 
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
-        let p = NS;
-        let thread_available = thread_available_for_claim(p);
-        let depth: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
-             (d.status IN ('reserved', 'reservation_running') \
-               AND d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
-             (d.status = 'pending' AND {thread_available}) OR \
-             (d.status = 'running' AND d.lease_until < $1) OR \
-             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
-               SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
-               AND (i.available_at IS NULL OR i.available_at <= $1)\
-             )) AND {thread_available})) \
-             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL \
-                  OR d.retry_not_before <= $1)",
-            no_running_peer(p)
-        ))
-        .bind(crate::clock::db_millis(now_ms))
-        .fetch_one(&self.pool)
-        .await
-        .map_err(store_error)?;
-        Ok(Some(durable_u64("runnable dispatch depth", depth)?))
-    }
-
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
@@ -1325,36 +974,6 @@ impl DispatchQueue for PostgresDispatchStore {
         }
         tx.commit().await.map_err(store_error)?;
         Ok(outcome)
-    }
-
-    async fn load_physical_attempt(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
-        let p = NS;
-        let row = sqlx::query(&format!(
-            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request FROM {p}_dispatch WHERE run_id = $1"
-        )).bind(&run_id.0).fetch_optional(&self.pool).await.map_err(store_error)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let epoch: Option<i64> = row.try_get("active_attempt_epoch").map_err(store_error)?;
-        let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
-        crate::dispatch::decode_physical_attempt(
-            run_id,
-            row.try_get("active_attempt_owner").map_err(store_error)?,
-            epoch
-                .map(|v| durable_u64("dispatch attempt epoch", v))
-                .transpose()?,
-            row.try_get("active_attempt_binding").map_err(store_error)?,
-        )
-        .map(|attempt| {
-            attempt.map(|mut attempt| {
-                attempt.thread_id = Some(request.thread_id().clone());
-                attempt.session_thread_id = request.session_thread_id.clone();
-                attempt
-            })
-        })
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1520,14 +1139,6 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(SettleOutcome::Applied)
     }
 
-    async fn completion_events_after(
-        &self,
-        after_sequence: u64,
-        limit: usize,
-    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        load_completion_events(&self.pool, NS, after_sequence, limit).await
-    }
-
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1628,48 +1239,6 @@ impl DispatchQueue for PostgresDispatchStore {
 
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         self.read_dispatch_summaries(None).await
-    }
-
-    async fn scan_dispatch_ids(
-        &self,
-        after: Option<&RunId>,
-        limit: usize,
-    ) -> Result<Vec<RunId>, DispatchError> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let limit = i64::try_from(limit).map_err(|_| {
-            DispatchError::Rejected("dispatch scan limit exceeds database range".into())
-        })?;
-        let clause = if after.is_some() {
-            "WHERE run_id > $2"
-        } else {
-            ""
-        };
-        let sql = format!("SELECT run_id FROM {NS}_dispatch {clause} ORDER BY run_id LIMIT $1");
-        let query = sqlx::query_scalar::<_, String>(&sql).bind(limit);
-        let query = if let Some(after) = after {
-            query.bind(&after.0)
-        } else {
-            query
-        };
-        Ok(query
-            .fetch_all(&self.pool)
-            .await
-            .map_err(store_error)?
-            .into_iter()
-            .map(RunId)
-            .collect())
-    }
-
-    async fn dispatch_summary(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<DispatchSummary>, DispatchError> {
-        Ok(self
-            .read_dispatch_summaries(Some(run_id.0.clone()))
-            .await?
-            .pop())
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
@@ -1840,5 +1409,443 @@ impl DispatchQueue for PostgresDispatchStore {
             .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
         Ok(result.rows_affected() as usize)
+    }
+
+    fn control(&self) -> Option<&dyn ControlDispatchQueue> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl ControlDispatchQueue for PostgresDispatchStore {
+    async fn reserve_session_run(
+        &self,
+        request: RunDispatch,
+        reservation_ttl_ms: u64,
+    ) -> Result<SessionRunReservationOutcome, DispatchError> {
+        let (request, reservation_ttl_ms) =
+            validate_session_run_reservation_request(request, reservation_ttl_ms)?;
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let store_now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
+        let deadline = crate::clock::deadline_millis(store_now_ms, reservation_ttl_ms);
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
+        let live = sqlx::query(&format!(
+            "SELECT status, request FROM {p}_dispatch WHERE run_id = $1"
+        ))
+        .bind(&request.run_id().0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if let Some(row) = live {
+            let status: String = row.try_get("status").map_err(store_error)?;
+            let Json(stored): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+            let state = DispatchState::from_db(&status).ok_or_else(|| {
+                DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
+            })?;
+            let outcome = classify_live_session_run_reservation(&stored, state, &request);
+            tx.commit().await.map_err(store_error)?;
+            return Ok(outcome);
+        }
+        let completed: Option<Option<String>> = sqlx::query_scalar(&format!(
+            "SELECT request_fingerprint FROM {p}_dispatch_completion WHERE run_id = $1"
+        ))
+        .bind(&request.run_id().0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if let Some(request_fingerprint) = completed {
+            let outcome = classify_completed_session_run_reservation(
+                request_fingerprint.as_deref(),
+                &request,
+            );
+            tx.commit().await.map_err(store_error)?;
+            return Ok(outcome);
+        }
+        let options = SubmitOptions {
+            supersede: request.session_run_replacement.supersedes_prior(),
+            ..Default::default()
+        };
+        insert_dispatch_with_state(
+            &mut tx,
+            p,
+            &request,
+            &options,
+            "reserved",
+            Some(crate::clock::db_millis(deadline)),
+        )
+        .await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(SessionRunReservationOutcome::Reserved)
+    }
+
+    async fn activate_session_run_reservation(
+        &self,
+        run_id: &RunId,
+        session_thread_id: &ThreadId,
+        session_activity_epoch: u64,
+    ) -> Result<SessionRunReservationActivation, DispatchError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        lock_run_identity(&mut tx, &run_id.0).await?;
+        let current = sqlx::query(&format!(
+            "SELECT status, request, lease_epoch, cancel_requested \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(row) = current else {
+            let completed: bool = sqlx::query_scalar(&format!(
+                "SELECT EXISTS(SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1)"
+            ))
+            .bind(&run_id.0)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            let outcome = classify_session_run_reservation_activation(
+                None,
+                completed,
+                session_thread_id,
+                session_activity_epoch,
+            )?
+            .expect("missing reservation always has a closed outcome");
+            tx.commit().await.map_err(store_error)?;
+            return Ok(outcome);
+        };
+        let status: String = row.try_get("status").map_err(store_error)?;
+        let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+        let state = DispatchState::from_db(&status).ok_or_else(|| {
+            DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
+        })?;
+        let classified = classify_session_run_reservation_activation(
+            Some((&request, state)),
+            false,
+            session_thread_id,
+            session_activity_epoch,
+        )?;
+        let outcome = if let Some(outcome) = classified {
+            outcome
+        } else {
+            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
+            let cancellation_requested: i64 =
+                row.try_get("cancel_requested").map_err(store_error)?;
+            let next = crate::persisted_dispatch_transition(
+                &status,
+                lease_epoch,
+                cancellation_requested != 0,
+            )?
+            .activate_reservation()
+            .expect("the reservation classifier admitted only Reserved");
+            request.session_activity_epoch = Some(session_activity_epoch);
+            let changed = sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET request = $1, status = $3, \
+                 lease_owner = NULL, lease_until = NULL WHERE run_id = $2 AND status = 'reserved'"
+            ))
+            .bind(Json(&request))
+            .bind(&run_id.0)
+            .bind(crate::dispatch_state_db(next.state))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?
+            .rows_affected();
+            if changed == 1 {
+                SessionRunReservationActivation::Activated
+            } else {
+                SessionRunReservationActivation::RecoveryClaimed
+            }
+        };
+        tx.commit().await.map_err(store_error)?;
+        Ok(outcome)
+    }
+
+    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        lock_run_identity(&mut tx, &run_id.0).await?;
+        let current = sqlx::query(&format!(
+            "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
+             WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let removable = if let Some(current) = current {
+            let status: String = current.try_get("status").map_err(store_error)?;
+            let lease_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
+            let cancellation_requested: i64 =
+                current.try_get("cancel_requested").map_err(store_error)?;
+            matches!(
+                crate::persisted_dispatch_transition(
+                    &status,
+                    lease_epoch,
+                    cancellation_requested != 0,
+                )?
+                .reject_reservation(),
+                awaken_dispatch_contract::GuardedTransition::Removed
+            )
+        } else {
+            false
+        };
+        if !removable {
+            tx.commit().await.map_err(store_error)?;
+            return Ok(false);
+        }
+        let changed = sqlx::query(&format!(
+            "DELETE FROM {p}_dispatch WHERE run_id = $1 AND status = 'reserved'"
+        ))
+        .bind(&run_id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if changed == 1 {
+            sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = $1"))
+                .bind(&run_id.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(changed == 1)
+    }
+
+    async fn enqueue_session_child(
+        &self,
+        request: RunDispatch,
+        admission: SessionChildAdmission,
+    ) -> Result<(), DispatchError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
+        if exact_run_replay(&mut tx, p, &request).await? {
+            tx.commit().await.map_err(store_error)?;
+            return Ok(());
+        }
+        admit_session_child(&mut tx, p, &request, &admission).await?;
+        insert_new_dispatch(&mut tx, p, &request, &SubmitOptions::default()).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        self.lock_claim_epoch_in_status(claim, "reservation_running")
+            .await
+    }
+
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: std::sync::Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let p = NS;
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+        let thread_available = thread_available_for_claim(p);
+        let rows = sqlx::query(&format!(
+            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
+             ((d.status IN ('reserved', 'reservation_running') AND \
+               d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
+             (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
+             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
+               WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
+               ) AND {thread_available}) OR \
+             (d.status = 'pending' AND {thread_available})) \
+             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= $1) \
+             ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
+                      CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
+                      d.priority DESC, d.created_at",
+            no_running_peer(p)
+        ))
+        .bind(crate::clock::db_millis(now_ms))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let capabilities = installed_worker_credential_capabilities(requester)?;
+        let mut selected = Vec::new();
+        for row in rows {
+            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+            let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
+            let previous: Option<Json<WorkerAssignment>> =
+                row.try_get("worker_assignment").map_err(store_error)?;
+            let status: String = row.try_get("status").map_err(store_error)?;
+            let cancellation_requested: i64 =
+                row.try_get("cancel_requested").map_err(store_error)?;
+            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
+            let next_epoch = next_claim_epoch(lease_epoch)?;
+            let credentials_admitted = can_admit_claim_credentials(
+                &request,
+                &capabilities,
+                next_epoch,
+                now_ms,
+                claim_credential_operation(false, cancellation_requested != 0),
+            );
+            if matches!(status.as_str(), "reserved" | "reservation_running")
+                || (cancellation_requested != 0 && credentials_admitted)
+                || (policy_selects_requester(
+                    &request,
+                    policy.as_ref(),
+                    DispatchPlacement {
+                        recovered: status == "running",
+                        previous: previous.as_ref().map(|value| &value.0),
+                        sandbox_bound: sandbox.is_some(),
+                        requester: &requester.identity,
+                        workers: &workers,
+                        now_ms,
+                    },
+                )? && credentials_admitted)
+            {
+                selected.push(RunId(row.try_get("run_id").map_err(store_error)?));
+            }
+        }
+        for run_id in selected {
+            let mut tx = self.pool.begin().await.map_err(store_error)?;
+            let claimed = claim_exact_transaction(
+                &mut tx,
+                &run_id,
+                &requester.identity.lease_owner(),
+                lease_ms,
+                Some(requester),
+                &capabilities,
+            )
+            .await?;
+            tx.commit().await.map_err(store_error)?;
+            if claimed.is_some() {
+                return Ok(claimed);
+            }
+        }
+        Ok(None)
+    }
+
+    async fn claim_for_terminal_recovery(
+        &self,
+        requested_run: &RunId,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let claimed = claim_exact_transaction_with_mode(
+            &mut tx,
+            requested_run,
+            owner,
+            lease_ms,
+            None,
+            &Default::default(),
+            ExactClaimMode::TerminalRecovery,
+        )
+        .await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(claimed)
+    }
+
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+        let p = NS;
+        let thread_available = thread_available_for_claim(p);
+        let depth: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
+             (d.status IN ('reserved', 'reservation_running') \
+               AND d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
+             (d.status = 'pending' AND {thread_available}) OR \
+             (d.status = 'running' AND d.lease_until < $1) OR \
+             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
+               SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
+               AND (i.available_at IS NULL OR i.available_at <= $1)\
+             )) AND {thread_available})) \
+             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL \
+                  OR d.retry_not_before <= $1)",
+            no_running_peer(p)
+        ))
+        .bind(crate::clock::db_millis(now_ms))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(Some(durable_u64("runnable dispatch depth", depth)?))
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        let p = NS;
+        let row = sqlx::query(&format!(
+            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request FROM {p}_dispatch WHERE run_id = $1"
+        )).bind(&run_id.0).fetch_optional(&self.pool).await.map_err(store_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let epoch: Option<i64> = row.try_get("active_attempt_epoch").map_err(store_error)?;
+        let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+        crate::dispatch::decode_physical_attempt(
+            run_id,
+            row.try_get("active_attempt_owner").map_err(store_error)?,
+            epoch
+                .map(|v| durable_u64("dispatch attempt epoch", v))
+                .transpose()?,
+            row.try_get("active_attempt_binding").map_err(store_error)?,
+        )
+        .map(|attempt| {
+            attempt.map(|mut attempt| {
+                attempt.thread_id = Some(request.thread_id().clone());
+                attempt.session_thread_id = request.session_thread_id.clone();
+                attempt
+            })
+        })
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        load_completion_events(&self.pool, NS, after_sequence, limit).await
+    }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DispatchError::Rejected("dispatch scan limit exceeds database range".into())
+        })?;
+        let clause = if after.is_some() {
+            "WHERE run_id > $2"
+        } else {
+            ""
+        };
+        let sql = format!("SELECT run_id FROM {NS}_dispatch {clause} ORDER BY run_id LIMIT $1");
+        let query = sqlx::query_scalar::<_, String>(&sql).bind(limit);
+        let query = if let Some(after) = after {
+            query.bind(&after.0)
+        } else {
+            query
+        };
+        Ok(query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_error)?
+            .into_iter()
+            .map(RunId)
+            .collect())
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Ok(self
+            .read_dispatch_summaries(Some(run_id.0.clone()))
+            .await?
+            .pop())
     }
 }

@@ -6,6 +6,7 @@
 //! registry, receipt map, mailbox, or background executor.
 
 use super::*;
+use awaken_dispatch_contract::ControlDispatchQueue;
 
 mod agent_message_source;
 mod reads;

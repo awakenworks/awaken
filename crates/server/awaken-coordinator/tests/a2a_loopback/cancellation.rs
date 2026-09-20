@@ -4,6 +4,7 @@ use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_dispatch::ControlDispatchQueue;
 use awaken_dispatch::{
     DEFAULT_LEASE_MS, DispatchQueue, DispatchWorker, ManualClock, MemoryDispatchStore, RunDispatch,
 };

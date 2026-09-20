@@ -7,12 +7,13 @@
 //! carry either backend behind one concrete, non-generic type — the host holds a
 //! non-generic field and picks the variant from configuration.
 //!
-//! The trait-object indirection is deliberate: delegating through `dyn Dispatch`
+//! The trait-object indirection is deliberate: delegating through `dyn ControlDispatch`
 //! erases the Postgres backend's sqlx `Executor` future to a `dyn Future + Send`
 //! at the trait boundary, so composing it into the daemon's spawned task stays
 //! `Send` (a direct enum match over the concrete sqlx store trips the sqlx
 //! higher-ranked "implementation of Send is not general enough" limitation).
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use crate::{PlacementPolicy, WorkerSnapshot};
@@ -287,30 +288,6 @@ impl DispatchQueue for AnyDispatchStore {
         self.inner.owns_local_maintenance()
     }
 
-    async fn reserve_session_run(
-        &self,
-        request: RunDispatch,
-        reservation_ttl_ms: u64,
-    ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        delegate!(self, reserve_session_run(request, reservation_ttl_ms))
-    }
-
-    async fn activate_session_run_reservation(
-        &self,
-        run_id: &RunId,
-        session_thread_id: &ThreadId,
-        session_activity_epoch: u64,
-    ) -> Result<SessionRunReservationActivation, DispatchError> {
-        delegate!(
-            self,
-            activate_session_run_reservation(run_id, session_thread_id, session_activity_epoch)
-        )
-    }
-
-    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
-        delegate!(self, reject_session_run_reservation(run_id))
-    }
-
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -332,13 +309,6 @@ impl DispatchQueue for AnyDispatchStore {
 
     async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
         delegate!(self, claim_is_current(claim))
-    }
-
-    async fn lock_session_run_reservation_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        delegate!(self, lock_session_run_reservation_epoch(claim))
     }
 
     async fn record_credential_realization(
@@ -395,14 +365,6 @@ impl DispatchQueue for AnyDispatchStore {
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         delegate!(self, enqueue_with(request, options))
-    }
-
-    async fn enqueue_session_child(
-        &self,
-        request: RunDispatch,
-        admission: SessionChildAdmission,
-    ) -> Result<(), DispatchError> {
-        delegate!(self, enqueue_session_child(request, admission))
     }
 
     async fn claim_new_run(
@@ -463,16 +425,6 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, claim_compatible(worker, lease_ms))
     }
 
-    async fn claim_placed(
-        &self,
-        requester: &WorkerSnapshot,
-        workers: Vec<WorkerSnapshot>,
-        policy: Arc<dyn PlacementPolicy>,
-        lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, claim_placed(requester, workers, policy, lease_ms))
-    }
-
     async fn claim_run(
         &self,
         run_id: &RunId,
@@ -481,15 +433,6 @@ impl DispatchQueue for AnyDispatchStore {
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, claim_run(run_id, owner, lease_ms, capabilities))
-    }
-
-    async fn claim_for_terminal_recovery(
-        &self,
-        run_id: &RunId,
-        owner: &str,
-        lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        delegate!(self, claim_for_terminal_recovery(run_id, owner, lease_ms))
     }
 
     async fn claim_retry_exhausted(
@@ -538,13 +481,6 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, finish_attempt(claim))
     }
 
-    async fn load_physical_attempt(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<crate::dispatch::PhysicalAttempt>, DispatchError> {
-        delegate!(self, load_physical_attempt(run_id))
-    }
-
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         delegate!(self, relinquish_claim(claim))
     }
@@ -567,14 +503,6 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, settle(run_id, epoch, outcome, consumed))
     }
 
-    async fn completion_events_after(
-        &self,
-        after_sequence: u64,
-        limit: usize,
-    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        delegate!(self, completion_events_after(after_sequence, limit))
-    }
-
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -592,10 +520,6 @@ impl DispatchQueue for AnyDispatchStore {
         sandbox_ref: &str,
     ) -> Result<SettleOutcome, DispatchError> {
         delegate!(self, bind_sandbox(claim, sandbox_ref))
-    }
-
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
-        delegate!(self, runnable_depth())
     }
 
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
@@ -626,19 +550,120 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, list_dispatches())
     }
 
+    fn control(&self) -> Option<&dyn ControlDispatchQueue> {
+        // The adapter owns the Control rung exactly when its inner handle does:
+        // a Coordinator wraps a durable store, a Worker wraps its transport
+        // projection, and the difference stays visible to the composition root.
+        self.inner
+            .control()
+            .map(|_| self as &dyn ControlDispatchQueue)
+    }
+}
+
+macro_rules! delegate_control {
+    ($self:ident, $method:ident ( $($arg:expr),* )) => {
+        match $self.inner.control() {
+            Some(control) => control.$method($($arg),*).await,
+            None => Err(DispatchError::Rejected(
+                "this dispatch handle is a Worker-side projection without the Control rung"
+                    .to_string(),
+            )),
+        }
+    };
+}
+
+#[async_trait]
+impl ControlDispatchQueue for AnyDispatchStore {
+    async fn reserve_session_run(
+        &self,
+        request: RunDispatch,
+        reservation_ttl_ms: u64,
+    ) -> Result<SessionRunReservationOutcome, DispatchError> {
+        delegate_control!(self, reserve_session_run(request, reservation_ttl_ms))
+    }
+
+    async fn activate_session_run_reservation(
+        &self,
+        run_id: &RunId,
+        session_thread_id: &ThreadId,
+        session_activity_epoch: u64,
+    ) -> Result<SessionRunReservationActivation, DispatchError> {
+        delegate_control!(
+            self,
+            activate_session_run_reservation(run_id, session_thread_id, session_activity_epoch)
+        )
+    }
+
+    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        delegate_control!(self, reject_session_run_reservation(run_id))
+    }
+
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        delegate_control!(self, lock_session_run_reservation_epoch(claim))
+    }
+
+    async fn enqueue_session_child(
+        &self,
+        request: RunDispatch,
+        admission: SessionChildAdmission,
+    ) -> Result<(), DispatchError> {
+        delegate_control!(self, enqueue_session_child(request, admission))
+    }
+
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate_control!(self, claim_placed(requester, workers, policy, lease_ms))
+    }
+
+    async fn claim_for_terminal_recovery(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate_control!(self, claim_for_terminal_recovery(run_id, owner, lease_ms))
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<crate::dispatch::PhysicalAttempt>, DispatchError> {
+        delegate_control!(self, load_physical_attempt(run_id))
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        delegate_control!(self, completion_events_after(after_sequence, limit))
+    }
+
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        delegate_control!(self, runnable_depth())
+    }
+
     async fn scan_dispatch_ids(
         &self,
         after: Option<&RunId>,
         limit: usize,
     ) -> Result<Vec<RunId>, DispatchError> {
-        delegate!(self, scan_dispatch_ids(after, limit))
+        delegate_control!(self, scan_dispatch_ids(after, limit))
     }
 
     async fn dispatch_summary(
         &self,
         run_id: &RunId,
     ) -> Result<Option<DispatchSummary>, DispatchError> {
-        delegate!(self, dispatch_summary(run_id))
+        delegate_control!(self, dispatch_summary(run_id))
     }
 }
 

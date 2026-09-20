@@ -25,6 +25,8 @@
 
 mod harness;
 
+use awaken_dispatch_contract::ControlDispatch;
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -39,8 +41,8 @@ use awaken_agent_contract::thread::read::lifecycle::{
     CheckpointRunLifecycleFeed, RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed,
 };
 use awaken_dispatch::{
-    Dispatch, DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, ManualClock,
-    MemoryDispatchStore, RunDispatch, SettleOutcome, SqliteDispatchStore,
+    DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, ManualClock, MemoryDispatchStore,
+    RunDispatch, SettleOutcome, SqliteDispatchStore,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -809,7 +811,7 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
 }
 
 /// Whether the unbound `u1` input is still listed for the thread.
-async fn list_has_u1<S: Dispatch>(store: &S, thread: &ThreadId) -> bool {
+async fn list_has_u1<S: ControlDispatch>(store: &S, thread: &ThreadId) -> bool {
     store
         .list(thread)
         .await

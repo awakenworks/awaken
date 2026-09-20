@@ -39,6 +39,7 @@ pub use web::build_management_web_router;
 pub use worker::run_echo_worker;
 
 mod scenario_shell;
+use awaken_dispatch::ControlDispatchQueue;
 use deployment::{
     resource_host, resource_host_with_deployment, runtime_resource_host_with_deployment,
 };
@@ -1484,8 +1485,6 @@ fn session_reservation_scenario_router(
         State(dispatch): State<Arc<awaken_dispatch::AnyDispatchStore>>,
         Json(command): Json<SessionReservationScenarioRequest>,
     ) -> (StatusCode, Json<serde_json::Value>) {
-        use awaken_dispatch::DispatchQueue as _;
-
         match dispatch
             .reserve_session_run(command.request, command.reservation_ttl_ms)
             .await

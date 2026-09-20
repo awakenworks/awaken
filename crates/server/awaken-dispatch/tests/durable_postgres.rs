@@ -8,6 +8,7 @@
 
 mod harness;
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

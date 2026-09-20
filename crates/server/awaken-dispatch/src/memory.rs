@@ -5,6 +5,7 @@
 //! plays for the commit boundary). It is the executable specification of the
 //! claim/lease/wake/recovery rules; the Postgres store must match it.
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::{Arc, Mutex};
@@ -957,113 +958,6 @@ impl DispatchQueue for MemoryDispatchStore {
             .await
     }
 
-    async fn lock_session_run_reservation_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        self.lock_claim_epoch_in_state(claim, DispatchState::ReservationLeased)
-            .await
-    }
-
-    async fn reserve_session_run(
-        &self,
-        request: RunDispatch,
-        reservation_ttl_ms: u64,
-    ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        let (request, reservation_ttl_ms) =
-            validate_session_run_reservation_request(request, reservation_ttl_ms)?;
-        let reservation_deadline_ms =
-            crate::clock::deadline_millis(self.clock.now_ms(), reservation_ttl_ms);
-        let run_id = request.run_id().clone();
-        if let Some(row) = state.rows.get(&run_id) {
-            return Ok(classify_live_session_run_reservation(
-                &row.request,
-                row.state,
-                &request,
-            ));
-        }
-        if let Some(completion) = state
-            .completions
-            .iter()
-            .find(|completion| completion.run_id == run_id)
-        {
-            return Ok(classify_completed_session_run_reservation(
-                completion.request_fingerprint.as_deref(),
-                &request,
-            ));
-        }
-        let options = SubmitOptions {
-            supersede: request.session_run_replacement.supersedes_prior(),
-            ..Default::default()
-        };
-        enqueue_new_local(&mut state, request, options)?;
-        let row = state
-            .rows
-            .get_mut(&run_id)
-            .expect("newly reserved dispatch exists");
-        row.state = DispatchState::Reserved;
-        row.reservation_deadline_ms = Some(reservation_deadline_ms);
-        Ok(SessionRunReservationOutcome::Reserved)
-    }
-
-    async fn activate_session_run_reservation(
-        &self,
-        run_id: &RunId,
-        session_thread_id: &ThreadId,
-        session_activity_epoch: u64,
-    ) -> Result<SessionRunReservationActivation, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        let completed = state
-            .completions
-            .iter()
-            .any(|completion| &completion.run_id == run_id);
-        let live = state.rows.get(run_id).map(|row| (&row.request, row.state));
-        if let Some(outcome) = classify_session_run_reservation_activation(
-            live,
-            completed,
-            session_thread_id,
-            session_activity_epoch,
-        )? {
-            return Ok(outcome);
-        }
-        let row = state
-            .rows
-            .get_mut(run_id)
-            .expect("classified live reservation");
-        let next = row
-            .transition()
-            .activate_reservation()
-            .expect("classifier admitted only Reserved");
-        row.request.session_activity_epoch = Some(session_activity_epoch);
-        row.apply_transition(next);
-        row.reservation_deadline_ms = None;
-        Ok(SessionRunReservationActivation::Activated)
-    }
-
-    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        let removable = state.rows.get(run_id).is_some_and(|row| {
-            row.lease.is_none()
-                && matches!(
-                    row.transition().reject_reservation(),
-                    GuardedTransition::Removed
-                )
-        });
-        if !removable {
-            return Ok(false);
-        }
-        state.rows.remove(run_id);
-        state.order.retain(|candidate| candidate != run_id);
-        state
-            .pending
-            .retain(|pending| &pending.input.run_id != run_id);
-        Ok(true)
-    }
-
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -1150,27 +1044,6 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<(), DispatchError> {
         let mut state = lock(&self.state)?;
         enqueue_with_local(&mut state, request, options)
-    }
-
-    async fn enqueue_session_child(
-        &self,
-        request: RunDispatch,
-        admission: SessionChildAdmission,
-    ) -> Result<(), DispatchError> {
-        let mut state = lock(&self.state)?;
-        // Identity has precedence over mutable capacity: exact at-least-once
-        // retries succeed at the cap, while same-id payload collisions fail
-        // before any sibling is inspected or changed.
-        if known_run_identity(&state, &request)? {
-            return Ok(());
-        }
-        let parent = session_child_parent(&request)?.clone();
-        ensure_session_child_capacity(
-            &request,
-            &admission,
-            known_session_child_threads(&state, &parent),
-        )?;
-        enqueue_with_local(&mut state, request, SubmitOptions::default())
     }
 
     async fn claim_new_run(
@@ -1313,77 +1186,6 @@ impl DispatchQueue for MemoryDispatchStore {
         )
     }
 
-    async fn claim_placed(
-        &self,
-        requester: &WorkerSnapshot,
-        workers: Vec<WorkerSnapshot>,
-        policy: Arc<dyn PlacementPolicy>,
-        lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        let mut policy_error = None;
-        let capabilities = installed_worker_credential_capabilities(requester)?;
-        let run_id = select_where(&state, now_ms, |row| {
-            if row.cancellation_requested {
-                return row.lease_epoch.checked_add(1).is_some_and(|epoch| {
-                    can_admit_claim_credentials(
-                        &row.request,
-                        &capabilities,
-                        epoch,
-                        now_ms,
-                        ClaimCredentialOperation::Cancel,
-                    )
-                });
-            }
-            match policy_selects_requester(
-                &row.request,
-                policy.as_ref(),
-                DispatchPlacement {
-                    recovered: row.state == DispatchState::Leased,
-                    previous: row.assignment.as_ref(),
-                    sandbox_bound: row.sandbox.is_some(),
-                    requester: &requester.identity,
-                    workers: &workers,
-                    now_ms,
-                },
-            ) {
-                Ok(selected) => {
-                    selected
-                        && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
-                            can_admit_claim_credentials(
-                                &row.request,
-                                &capabilities,
-                                epoch,
-                                now_ms,
-                                ClaimCredentialOperation::Execute,
-                            )
-                        })
-                }
-                Err(error) => {
-                    policy_error = Some(error);
-                    false
-                }
-            }
-        });
-        if let Some(error) = policy_error {
-            return Err(error);
-        }
-        let Some(run_id) = run_id else {
-            return Ok(None);
-        };
-        claim_exact(
-            &mut state,
-            &run_id,
-            &requester.identity.lease_owner(),
-            lease_ms,
-            now_ms,
-            Some(requester),
-            &capabilities,
-        )
-    }
-
     async fn claim_run(
         &self,
         requested_run: &RunId,
@@ -1402,27 +1204,6 @@ impl DispatchQueue for MemoryDispatchStore {
             now_ms,
             None,
             capabilities,
-        )
-    }
-
-    async fn claim_for_terminal_recovery(
-        &self,
-        requested_run: &RunId,
-        owner: &str,
-        lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        claim_exact_with_mode(
-            &mut state,
-            requested_run,
-            owner,
-            lease_ms,
-            now_ms,
-            None,
-            &Default::default(),
-            ExactClaimMode::TerminalRecovery,
         )
     }
 
@@ -1555,17 +1336,6 @@ impl DispatchQueue for MemoryDispatchStore {
             .is_some_and(|guard| guard.is_live_at(now_ms)))
     }
 
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        let state = lock(&self.state)?;
-        let depth = state
-            .rows
-            .keys()
-            .filter(|run_id| runnable(&state, run_id, now_ms).is_some())
-            .count() as u64;
-        Ok(Some(depth))
-    }
-
     async fn renew_lease(
         &self,
         claim: &RunClaim,
@@ -1637,21 +1407,6 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(outcome)
     }
 
-    async fn load_physical_attempt(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state.rows.get(run_id).and_then(|row| {
-            row.active_attempt.as_ref().map(|claim| PhysicalAttempt {
-                claim: claim.clone(),
-                binding: row.active_attempt_binding.clone(),
-                thread_id: Some(row.request.thread_id().clone()),
-                session_thread_id: row.request.session_thread_id.clone(),
-            })
-        }))
-    }
-
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
@@ -1683,21 +1438,6 @@ impl DispatchQueue for MemoryDispatchStore {
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
         self.settle_dispatch(run_id, epoch, outcome, consumed).await
-    }
-
-    async fn completion_events_after(
-        &self,
-        after_sequence: u64,
-        limit: usize,
-    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state
-            .completions
-            .iter()
-            .filter(|completion| completion.sequence > after_sequence)
-            .take(limit)
-            .cloned()
-            .collect())
     }
 
     async fn quarantine_retry_exhausted(
@@ -1785,30 +1525,6 @@ impl DispatchQueue for MemoryDispatchStore {
             .collect())
     }
 
-    async fn scan_dispatch_ids(
-        &self,
-        after: Option<&RunId>,
-        limit: usize,
-    ) -> Result<Vec<RunId>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state
-            .rows
-            .range((after.map_or(Unbounded, Excluded), Unbounded))
-            .take(limit)
-            .map(|(run_id, _)| run_id.clone())
-            .collect())
-    }
-
-    async fn dispatch_summary(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<DispatchSummary>, DispatchError> {
-        Ok(lock(&self.state)?
-            .rows
-            .get(run_id)
-            .map(|row| row.summary(run_id)))
-    }
-
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
@@ -1876,6 +1592,298 @@ impl DispatchQueue for MemoryDispatchStore {
 
     async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
         self.purge_dead(|row| row.dead_lettered_at.is_some_and(|at| at <= cutoff_ms))
+    }
+
+    fn control(&self) -> Option<&dyn ControlDispatchQueue> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl ControlDispatchQueue for MemoryDispatchStore {
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        self.lock_claim_epoch_in_state(claim, DispatchState::ReservationLeased)
+            .await
+    }
+
+    async fn reserve_session_run(
+        &self,
+        request: RunDispatch,
+        reservation_ttl_ms: u64,
+    ) -> Result<SessionRunReservationOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let (request, reservation_ttl_ms) =
+            validate_session_run_reservation_request(request, reservation_ttl_ms)?;
+        let reservation_deadline_ms =
+            crate::clock::deadline_millis(self.clock.now_ms(), reservation_ttl_ms);
+        let run_id = request.run_id().clone();
+        if let Some(row) = state.rows.get(&run_id) {
+            return Ok(classify_live_session_run_reservation(
+                &row.request,
+                row.state,
+                &request,
+            ));
+        }
+        if let Some(completion) = state
+            .completions
+            .iter()
+            .find(|completion| completion.run_id == run_id)
+        {
+            return Ok(classify_completed_session_run_reservation(
+                completion.request_fingerprint.as_deref(),
+                &request,
+            ));
+        }
+        let options = SubmitOptions {
+            supersede: request.session_run_replacement.supersedes_prior(),
+            ..Default::default()
+        };
+        enqueue_new_local(&mut state, request, options)?;
+        let row = state
+            .rows
+            .get_mut(&run_id)
+            .expect("newly reserved dispatch exists");
+        row.state = DispatchState::Reserved;
+        row.reservation_deadline_ms = Some(reservation_deadline_ms);
+        Ok(SessionRunReservationOutcome::Reserved)
+    }
+
+    async fn activate_session_run_reservation(
+        &self,
+        run_id: &RunId,
+        session_thread_id: &ThreadId,
+        session_activity_epoch: u64,
+    ) -> Result<SessionRunReservationActivation, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let completed = state
+            .completions
+            .iter()
+            .any(|completion| &completion.run_id == run_id);
+        let live = state.rows.get(run_id).map(|row| (&row.request, row.state));
+        if let Some(outcome) = classify_session_run_reservation_activation(
+            live,
+            completed,
+            session_thread_id,
+            session_activity_epoch,
+        )? {
+            return Ok(outcome);
+        }
+        let row = state
+            .rows
+            .get_mut(run_id)
+            .expect("classified live reservation");
+        let next = row
+            .transition()
+            .activate_reservation()
+            .expect("classifier admitted only Reserved");
+        row.request.session_activity_epoch = Some(session_activity_epoch);
+        row.apply_transition(next);
+        row.reservation_deadline_ms = None;
+        Ok(SessionRunReservationActivation::Activated)
+    }
+
+    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let removable = state.rows.get(run_id).is_some_and(|row| {
+            row.lease.is_none()
+                && matches!(
+                    row.transition().reject_reservation(),
+                    GuardedTransition::Removed
+                )
+        });
+        if !removable {
+            return Ok(false);
+        }
+        state.rows.remove(run_id);
+        state.order.retain(|candidate| candidate != run_id);
+        state
+            .pending
+            .retain(|pending| &pending.input.run_id != run_id);
+        Ok(true)
+    }
+
+    async fn enqueue_session_child(
+        &self,
+        request: RunDispatch,
+        admission: SessionChildAdmission,
+    ) -> Result<(), DispatchError> {
+        let mut state = lock(&self.state)?;
+        // Identity has precedence over mutable capacity: exact at-least-once
+        // retries succeed at the cap, while same-id payload collisions fail
+        // before any sibling is inspected or changed.
+        if known_run_identity(&state, &request)? {
+            return Ok(());
+        }
+        let parent = session_child_parent(&request)?.clone();
+        ensure_session_child_capacity(
+            &request,
+            &admission,
+            known_session_child_threads(&state, &parent),
+        )?;
+        enqueue_with_local(&mut state, request, SubmitOptions::default())
+    }
+
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let mut policy_error = None;
+        let capabilities = installed_worker_credential_capabilities(requester)?;
+        let run_id = select_where(&state, now_ms, |row| {
+            if row.cancellation_requested {
+                return row.lease_epoch.checked_add(1).is_some_and(|epoch| {
+                    can_admit_claim_credentials(
+                        &row.request,
+                        &capabilities,
+                        epoch,
+                        now_ms,
+                        ClaimCredentialOperation::Cancel,
+                    )
+                });
+            }
+            match policy_selects_requester(
+                &row.request,
+                policy.as_ref(),
+                DispatchPlacement {
+                    recovered: row.state == DispatchState::Leased,
+                    previous: row.assignment.as_ref(),
+                    sandbox_bound: row.sandbox.is_some(),
+                    requester: &requester.identity,
+                    workers: &workers,
+                    now_ms,
+                },
+            ) {
+                Ok(selected) => {
+                    selected
+                        && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
+                            can_admit_claim_credentials(
+                                &row.request,
+                                &capabilities,
+                                epoch,
+                                now_ms,
+                                ClaimCredentialOperation::Execute,
+                            )
+                        })
+                }
+                Err(error) => {
+                    policy_error = Some(error);
+                    false
+                }
+            }
+        });
+        if let Some(error) = policy_error {
+            return Err(error);
+        }
+        let Some(run_id) = run_id else {
+            return Ok(None);
+        };
+        claim_exact(
+            &mut state,
+            &run_id,
+            &requester.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(requester),
+            &capabilities,
+        )
+    }
+
+    async fn claim_for_terminal_recovery(
+        &self,
+        requested_run: &RunId,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        claim_exact_with_mode(
+            &mut state,
+            requested_run,
+            owner,
+            lease_ms,
+            now_ms,
+            None,
+            &Default::default(),
+            ExactClaimMode::TerminalRecovery,
+        )
+    }
+
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        let state = lock(&self.state)?;
+        let depth = state
+            .rows
+            .keys()
+            .filter(|run_id| runnable(&state, run_id, now_ms).is_some())
+            .count() as u64;
+        Ok(Some(depth))
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state.rows.get(run_id).and_then(|row| {
+            row.active_attempt.as_ref().map(|claim| PhysicalAttempt {
+                claim: claim.clone(),
+                binding: row.active_attempt_binding.clone(),
+                thread_id: Some(row.request.thread_id().clone()),
+                session_thread_id: row.request.session_thread_id.clone(),
+            })
+        }))
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .completions
+            .iter()
+            .filter(|completion| completion.sequence > after_sequence)
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .rows
+            .range((after.map_or(Unbounded, Excluded), Unbounded))
+            .take(limit)
+            .map(|(run_id, _)| run_id.clone())
+            .collect())
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Ok(lock(&self.state)?
+            .rows
+            .get(run_id)
+            .map(|row| row.summary(run_id)))
     }
 }
 

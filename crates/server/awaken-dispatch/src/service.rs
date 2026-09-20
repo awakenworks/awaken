@@ -8,6 +8,7 @@
 //! It waits on a [`WakeSignal`] — a `LocalWakeSignal`
 //! for one process, or a cross-node signal for a fleet (ADR-0011, ADR-0019).
 
+use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,7 @@ use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{Dispatch, PendingInput};
+use crate::dispatch::PendingInput;
 use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::DispatchWorker;
 use awaken_dispatch_contract::RunDispatch;
@@ -127,7 +128,7 @@ pub struct DispatchService<S> {
     handle: JoinHandle<()>,
 }
 
-impl<S: Dispatch + 'static> DispatchService<S> {
+impl<S: ControlDispatch + 'static> DispatchService<S> {
     /// Start the daemon with the single-process wake signal.
     pub fn spawn(
         worker: Arc<DispatchWorker<S>>,
@@ -200,7 +201,7 @@ impl<S: Dispatch + 'static> DispatchService<S> {
     }
 }
 
-async fn run_loop<S: Dispatch + 'static>(
+async fn run_loop<S: ControlDispatch + 'static>(
     worker: Arc<DispatchWorker<S>>,
     clock: Arc<dyn Clock>,
     wake: Arc<dyn WakeSignal>,

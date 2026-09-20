@@ -9,6 +9,7 @@
 //! the test-support `MemoryDispatchStore` reference backend exactly. The synchronous
 //! `rusqlite` driver runs each operation on a blocking thread.
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use async_trait::async_trait;

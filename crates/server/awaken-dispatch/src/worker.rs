@@ -7,6 +7,7 @@
 //! and the run record — not from a duplicated status in the queue. That keeps the
 //! DispatchQueue aggregate free of run-outcome truth.
 
+use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -38,7 +39,7 @@ use crate::Error;
 use crate::clock::Clock;
 use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 use crate::dispatch::{
-    Claimed, Dispatch, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
+    Claimed, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
     SettleOutcome,
 };
 use crate::worker_context::WorkerContext;
@@ -187,7 +188,7 @@ impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
     }
 }
 
-impl<S: Dispatch + 'static> DispatchWorker<S> {
+impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     /// Rebuild the sole durable causal scope from the exact claimed instruction.
     /// Every claim entry uses this helper so recovery, pre-execution failure, and
     /// ordinary execution cannot drift into separate trace carrier rules.

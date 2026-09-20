@@ -5,6 +5,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_dispatch::{
     DispatchQueue, Error, MemoryDispatchStore, RunDispatch, TerminalReconciliationScan,
 };
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]
@@ -164,7 +165,7 @@ async fn full_page_end_and_new_process_cursor_never_strand_rows() {
     assert_eq!(store.dispatch_count(), 1);
 }
 
-async fn assert_corrupt_summary_scan_isolation(store: &dyn DispatchQueue) {
+async fn assert_corrupt_summary_scan_isolation(store: &dyn ControlDispatchQueue) {
     // SQL scan decision table. C1 first persisted payload cannot decode; C2
     // following payload is healthy; C3 page budget is one versus two. E1 C1
     // consumes a slot without calling the observer or pretending completion.

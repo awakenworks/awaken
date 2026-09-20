@@ -4,13 +4,14 @@
 //! process-local guard that keeps a current claim live and projects loss of
 //! provable ownership into Runtime's existing cooperative cancellation token.
 
+use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::dispatch::{Dispatch, LeaseRenewalOutcome, RunClaim};
+use crate::dispatch::{LeaseRenewalOutcome, RunClaim};
 
 /// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
 /// owns the claim, rather than to each caller (pool, daemon, or foreground child),
@@ -75,7 +76,7 @@ pub(crate) fn combine_attempt_cancellation(
 
 /// Keep an exact claim live across any owned work, including the potentially
 /// slow Worker/Session resolution that precedes the Runtime drive.
-pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
+pub(crate) fn renew_claim_while_active<S: ControlDispatch + 'static>(
     store: Arc<S>,
     claim: &RunClaim,
     lease_ms: u64,

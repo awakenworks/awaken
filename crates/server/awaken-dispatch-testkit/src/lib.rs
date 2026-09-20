@@ -10,16 +10,17 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::dispatch::{
-    AttemptAdmission, CasOutcome, ContinuationAdmission, CredentialRealizationReceipt, Dispatch,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, PendingInput, RunClaim,
-    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    AttemptAdmission, CasOutcome, ContinuationAdmission, ControlDispatch,
+    CredentialRealizationReceipt, DispatchError, DispatchOutcome, DispatchState, PendingInput,
+    RunClaim, SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
     SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
 };
 use awaken_dispatch_contract::{
-    DispatchAdmissionShape, RunDispatch, SessionRunReplacement, SessionRuntimeEnvelope,
+    ControlDispatchQueue, DispatchAdmissionShape, RunDispatch, SessionRunReplacement,
+    SessionRuntimeEnvelope,
 };
 use awaken_dispatch_contract::{
     LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
@@ -345,7 +346,7 @@ impl ConformanceCapabilities {
 /// `namespace` is incorporated into every id so a PostgreSQL schema can safely run
 /// this alongside other suites. The caller must still provide a store with no live
 /// rows using that namespace.
-pub async fn assert_dispatch_conformance<S: Dispatch>(
+pub async fn assert_dispatch_conformance<S: ControlDispatch>(
     store: &S,
     namespace: &str,
     capabilities: ConformanceCapabilities,
@@ -354,7 +355,7 @@ pub async fn assert_dispatch_conformance<S: Dispatch>(
         .await;
 }
 
-pub async fn assert_dispatch_conformance_with_clock<S: Dispatch>(
+pub async fn assert_dispatch_conformance_with_clock<S: ControlDispatch>(
     store: &S,
     namespace: &str,
     capabilities: ConformanceCapabilities,
