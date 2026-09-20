@@ -77,8 +77,10 @@ pub(crate) async fn read_files<R: ContainerRuntime + 'static>(
     if !safe_root(root) {
         return Err(pc::SandboxError::invalid("unsafe container file root"));
     }
+    // The environment's own read channel: a harvest calls this after disposal
+    // has sealed the Session edges, and it is part of that same sweep.
     let process = sandbox
-        .spawn_agent(pc::Command {
+        .spawn_machinery_agent(pc::Command {
             argv: vec![
                 "awaken-sandbox".into(),
                 "read-tree-nofollow".into(),

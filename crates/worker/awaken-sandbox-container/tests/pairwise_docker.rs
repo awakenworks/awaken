@@ -100,6 +100,29 @@ async fn run_to_exit(
     scope: &str,
     spec: &pc::SandboxSpec,
 ) -> Option<i32> {
+    run_to_exit_disposing(provider, scope, spec, Disposal::MustSucceed).await
+}
+
+/// Whether the row may end without a clean disposal.
+///
+/// A container whose cgroup is out of memory cannot start a process at all, so
+/// it can neither reap the execs it started nor be harvested, and disposal
+/// fails closed on exactly that. The memory-cap row is the one place that
+/// state is deliberate, so it is the one place the failure is admitted — by
+/// name, not by softening every other row. The scope guard still removes the
+/// container either way.
+#[derive(Clone, Copy, PartialEq)]
+enum Disposal {
+    MustSucceed,
+    MayFailUnderMemoryPressure,
+}
+
+async fn run_to_exit_disposing(
+    provider: &ContainerProvider<DockerRuntime>,
+    scope: &str,
+    spec: &pc::SandboxSpec,
+    disposal: Disposal,
+) -> Option<i32> {
     // Own this scope's container for the whole row: swept before creation so a
     // leftover from an aborted run cannot fail this one closed, and swept again
     // on the way out even if an assertion below unwinds past `dispose`.
@@ -126,7 +149,10 @@ async fn run_to_exit(
             None => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
-    sandbox.dispose_unattached().await.expect("dispose");
+    let disposed = sandbox.dispose_unattached().await;
+    if disposal == Disposal::MustSucceed {
+        disposed.expect("dispose");
+    }
     code
 }
 
@@ -588,7 +614,7 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
     };
 
     // Capped at 16 MiB: the 32 MiB allocation blows the cgroup -> OOM-kill (137).
-    let capped = run_to_exit(
+    let capped = run_to_exit_disposing(
         &provider,
         "mem-capped",
         &hog(
@@ -598,6 +624,7 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
                 ..Default::default()
             },
         ),
+        Disposal::MayFailUnderMemoryPressure,
     )
     .await;
     assert_eq!(

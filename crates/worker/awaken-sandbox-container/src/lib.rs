@@ -47,6 +47,7 @@ mod resident_hand;
 mod restore_target;
 mod runtime;
 mod runtime_error;
+mod sandbox_exec;
 mod secret;
 mod staged_mounts;
 mod writable;
@@ -1242,80 +1243,10 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
 }
 
 impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
-    /// Start an opaque stdio agent as an exec process in this Session environment.
-    /// Repeated calls create independent attempt processes while preserving the same
-    /// workspace, mounts, network policy, and durable sandbox handle.
-    pub async fn spawn_agent(
-        &self,
-        command: pc::Command,
-    ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
-        let command = self.materialize_command(command).await?;
-        self.claimed_spawn_agent(command).await
-    }
-
-    /// Start one agent exec whose responsibility record exists before the exec
-    /// can begin.
-    ///
-    /// [`pc::ClaimedEffect::new`] takes the claim by value, so the attempt is
-    /// counted and the retention is minted strictly before the future is built
-    /// and therefore before any poll reaches the runtime. A task cancelled
-    /// between the exec starting and the [`RuntimeAgentProcess`] reaching its
-    /// caller drops this value unsettled, which is the one transition that runs
-    /// the retention and leaves the attempt on record for
-    /// [`ContainerSandbox::prepare_disposal`] to reap.
-    ///
-    /// The record is in-process on purpose and is the weakest of the three
-    /// claim kinds: nothing outside this process can read it. What survives the
-    /// process is the enumerable pid file the exec wrapper wrote, which the
-    /// same disposal reaps by listing rather than by remembering.
-    fn claimed_spawn_agent(
-        &self,
-        command: pc::MaterializedCommand,
-    ) -> pc::ClaimedEffect<'_, RuntimeAgentProcess> {
-        let attempt = self.execs.begin();
-        let execs = self.execs.clone();
-        let in_flight = move || execs.retain_orphan(attempt);
-        pc::ClaimedEffect::new(pc::EffectClaim::in_process(in_flight), async move {
-            self.runtime
-                .spawn_agent(&self.container_id, command)
-                .await
-                .map_err(pc::SandboxError::from)
-        })
-    }
-
-    /// Exec attempts started here whose caller never received the process.
-    /// Read by disposal and by the cancellation tests; an empty list is not
-    /// proof that no exec is running, only that none was dropped unsettled.
-    #[cfg(test)]
-    pub(crate) fn orphaned_exec_attempts(&self) -> Vec<String> {
-        self.execs.orphaned()
-    }
-
     #[cfg(any(feature = "connection", test))]
     fn bind_scope(mut self, scope: impl Into<String>) -> Self {
         self.id = scope.into();
         self
-    }
-
-    /// Make the container stop every exec attempt this environment started.
-    ///
-    /// Gated on "an attempt was started" rather than on "an orphan is on
-    /// record": the record only sees spawns dropped inside this process, while
-    /// the container's pid files see every attempt, including ones whose
-    /// `ProcessHandle` was simply dropped without a wait. The gate is also what
-    /// keeps the demand honest — a Session environment that never exec'd cannot
-    /// be holding an orphan, so a runtime with no exec support is never asked
-    /// to reap and its fail-closed inherited implementation stays unreachable.
-    async fn reap_exec_orphans(&self) -> Result<(), pc::SandboxError> {
-        if !self.execs.any_started() {
-            return Ok(());
-        }
-        self.runtime
-            .reap_exec_orphans(&self.container_id)
-            .await
-            .map_err(pc::SandboxError::from)?;
-        self.execs.clear_orphans();
-        Ok(())
     }
 
     async fn prepare_disposal(
@@ -1769,10 +1700,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
         let command = self.materialize_command(command).await?;
-        self.runtime
-            .spawn(&self.container_id, command)
-            .await
-            .map_err(pc::SandboxError::from)
+        self.claimed_spawn(command)?.await
     }
 
     async fn attach(

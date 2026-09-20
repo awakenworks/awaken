@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::pool::{WarmCapacityLeasePolicy, WarmCapacityLeases, WarmLeaseClock};
@@ -59,6 +59,15 @@ fn spec(scope: &str) -> pc::SandboxSpec {
 /// other suite's container from the same base image would be counted too.
 const RUN_LABEL: &str = "awaken.warm-lease-it";
 
+/// The repository every run's private image is committed under. One constant
+/// because the sweep below recovers a dead run's nonce by reading it back off
+/// the tag, and a second spelling would make it unrecoverable.
+const IMAGE_REPOSITORY: &str = "localhost/awaken-warmlease-it";
+
+/// A nonce older than this cannot belong to a run still in progress, so what
+/// carries it is safe to remove without racing a concurrent suite.
+const ABANDONED_AFTER: Duration = Duration::from_secs(3600);
+
 /// Removes every container carrying this run's label, and its private image,
 /// however the test ends.
 struct DaemonCleanup {
@@ -101,6 +110,59 @@ fn private_image(cli: &str, base_image: &str, tag: &str, nonce: &str) {
         "{cli} commit: {}",
         String::from_utf8_lossy(&committed.stderr)
     );
+}
+
+/// Remove what runs that never reached `DaemonCleanup::drop` left behind.
+///
+/// The per-run nonce that stops two concurrent runs from seeing each other's
+/// objects is also why nothing ever reclaims a killed run's: the next run
+/// looks for a different value, so a SIGKILLed run's containers and its
+/// private image stay on the daemon forever. The nonce carries the run's start
+/// time, and age is the one discriminator that separates "abandoned" from "in
+/// progress" without inventing a second source of truth.
+fn sweep_abandoned_runs(cli: &str) {
+    for (tag, nonce) in abandoned_images(cli) {
+        for id in containers(cli, &nonce) {
+            let _ = Command::new(cli).args(["rm", "-f", &id]).output();
+        }
+        let _ = Command::new(cli).args(["rmi", "-f", &tag]).output();
+    }
+}
+
+/// This suite's private images whose run is old enough to be over, each with
+/// the nonce recovered from its tag.
+fn abandoned_images(cli: &str) -> Vec<(String, String)> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("host clock is after the epoch")
+        .as_nanos();
+    let Ok(output) = Command::new(cli)
+        .args([
+            "images",
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+            "--filter",
+            &format!("reference={IMAGE_REPOSITORY}-*"),
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|tag| {
+            let nonce = tag
+                .strip_prefix(&format!("{IMAGE_REPOSITORY}-"))?
+                .strip_suffix(":latest")?;
+            // `{pid}-{nanos}`: only the start time decides, because a pid is
+            // reused and means nothing on another host or in a container.
+            let started = nonce.rsplit_once('-')?.1.parse::<u128>().ok()?;
+            (now.saturating_sub(started) > ABANDONED_AFTER.as_nanos())
+                .then(|| (tag.to_owned(), nonce.to_owned()))
+        })
+        .collect()
 }
 
 /// Every container (running or not) of this run, by full id.
@@ -162,7 +224,8 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
             .unwrap()
             .as_nanos()
     );
-    let tag = format!("localhost/awaken-warmlease-it-{nonce}:latest");
+    sweep_abandoned_runs(cli);
+    let tag = format!("{IMAGE_REPOSITORY}-{nonce}:latest");
     let _cleanup = DaemonCleanup {
         cli,
         tag: tag.clone(),
