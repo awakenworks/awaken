@@ -242,6 +242,10 @@ enum MemoryOperation {
     Create {
         path: String,
         content: String,
+        /// The authenticated author, when the caller stated one. Optional and
+        /// omitted when absent, so an older client's request still decodes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<awaken_resource_contract::MemoryActor>,
     },
     UpdateHead {
         base: awaken_resource_contract::MemoryGeneration,
@@ -249,10 +253,14 @@ enum MemoryOperation {
         target_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<awaken_resource_contract::MemoryActor>,
     },
     DeleteIfMatch {
         path: String,
         base: awaken_resource_contract::MemoryGeneration,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<awaken_resource_contract::MemoryActor>,
     },
 }
 
@@ -510,7 +518,7 @@ fn terminal_operation_allowed(
                     .count()
                     == 1
         }
-        MemoryOperation::DeleteIfMatch { path, base } => {
+        MemoryOperation::DeleteIfMatch { path, base, .. } => {
             heads
                 .iter()
                 .filter(|head| {
@@ -709,9 +717,13 @@ async fn memory_operation(
             .map(|heads| MemoryOperationResponse::Snapshot {
                 heads: heads.into_iter().map(Into::into).collect(),
             }),
-        MemoryOperation::Create { path, content } => service
+        MemoryOperation::Create {
+            path,
+            content,
+            actor,
+        } => service
             .repository
-            .create(&memory_store_id, &path, &content)
+            .create_as(&memory_store_id, &path, &content, actor.as_ref())
             .await
             .map(|memory| MemoryOperationResponse::Memory {
                 memory: memory.into(),
@@ -721,6 +733,7 @@ async fn memory_operation(
             content,
             target_path,
             expected_path,
+            actor,
         } => {
             // Terminal v2 already froze the original path. Derive it even for
             // older clients that omit expected_path; ID-only CAS cannot waive
@@ -736,6 +749,13 @@ async fn memory_operation(
             });
             let path = frozen_path.or(expected_path.as_deref());
             let updated = match (path, target_path.as_deref()) {
+                // The materialized CAS is a distinct repository operation that
+                // takes no author. Our own client only sets an author on the
+                // ordinary head update, so refuse rather than apply this write
+                // with the attribution dropped.
+                (Some(_), None) if actor.is_some() => Err(MemErr::Storage(
+                    "materialized Memory update cannot record an author".into(),
+                )),
                 (Some(path), None) => {
                     service
                         .repository
@@ -748,7 +768,7 @@ async fn memory_operation(
                 (None, target) => {
                     service
                         .repository
-                        .update_head(&memory_store_id, &base, &content, target)
+                        .update_head_as(&memory_store_id, &base, &content, target, actor.as_ref())
                         .await
                 }
             };
@@ -756,9 +776,9 @@ async fn memory_operation(
                 memory: memory.into(),
             })
         }
-        MemoryOperation::DeleteIfMatch { path, base } => service
+        MemoryOperation::DeleteIfMatch { path, base, actor } => service
             .repository
-            .delete_if_match(&memory_store_id, &path, &base)
+            .delete_if_match_as(&memory_store_id, &path, &base, actor.as_ref())
             .await
             .map(|deleted| MemoryOperationResponse::Deleted { deleted }),
     }
@@ -940,24 +960,32 @@ impl MemoryRepository for HttpMemoryRepository {
             .find(|memory| memory.path == path))
     }
 
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Memory, MemErr> {
         self.writeback
             .send_memory(
                 store,
                 MemoryOperation::Create {
                     path: path.into(),
                     content: content.into(),
+                    actor: actor.cloned(),
                 },
             )
             .await
     }
 
-    async fn update_head(
+    async fn update_head_as(
         &self,
         store: &str,
         base: &awaken_resource_contract::MemoryGeneration,
         content: &str,
         target_path: Option<&str>,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
     ) -> Result<Memory, MemErr> {
         self.writeback
             .send_memory(
@@ -967,6 +995,7 @@ impl MemoryRepository for HttpMemoryRepository {
                     content: content.into(),
                     target_path: target_path.map(str::to_owned),
                     expected_path: None,
+                    actor: actor.cloned(),
                 },
             )
             .await
@@ -987,6 +1016,9 @@ impl MemoryRepository for HttpMemoryRepository {
                     content: content.into(),
                     target_path: None,
                     expected_path: Some(path.into()),
+                    // The materialized CAS records no author; the server
+                    // refuses this operation if one is ever attached.
+                    actor: None,
                 },
             )
             .await
@@ -998,12 +1030,17 @@ impl MemoryRepository for HttpMemoryRepository {
         ))
     }
 
-    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<(), MemErr> {
         let Some(current) = self.get_by_path(store, path).await? else {
             return Ok(());
         };
         if self
-            .delete_if_match(store, path, &current.generation())
+            .delete_if_match_as(store, path, &current.generation(), actor)
             .await?
         {
             Ok(())
@@ -1014,11 +1051,12 @@ impl MemoryRepository for HttpMemoryRepository {
         }
     }
 
-    async fn delete_if_match(
+    async fn delete_if_match_as(
         &self,
         store: &str,
         path: &str,
         base: &awaken_resource_contract::MemoryGeneration,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
     ) -> Result<bool, MemErr> {
         match self
             .writeback
@@ -1027,6 +1065,7 @@ impl MemoryRepository for HttpMemoryRepository {
                 MemoryOperation::DeleteIfMatch {
                     path: path.into(),
                     base: base.clone(),
+                    actor: actor.cloned(),
                 },
             )
             .await?
@@ -1047,10 +1086,11 @@ impl MemoryRepository for HttpMemoryRepository {
         ))
     }
 
-    async fn redact_version(
+    async fn redact_version_as(
         &self,
         _store: &str,
         _version_id: &str,
+        _actor: Option<&awaken_resource_contract::MemoryActor>,
     ) -> Result<Option<awaken_resource_contract::MemoryVersion>, MemErr> {
         Err(MemErr::Storage(
             "Worker Memory boundary does not expose redaction".into(),
@@ -1327,6 +1367,7 @@ mod tests {
                 &MemoryOperation::Create {
                     path: "/new.md".into(),
                     content: "new".into(),
+                    actor: None,
                 },
             ),
             "O2 absent"
@@ -1337,6 +1378,7 @@ mod tests {
                 &MemoryOperation::Create {
                     path: "/note.md".into(),
                     content: "replacement".into(),
+                    actor: None,
                 },
             ),
             "O2 existing"
@@ -1353,6 +1395,7 @@ mod tests {
                     content: "B".into(),
                     target_path: None,
                     expected_path: None,
+                    actor: None,
                 },
             ),
             "O3 exact"
@@ -1367,6 +1410,7 @@ mod tests {
                 content: "B".into(),
                 target_path: None,
                 expected_path: None,
+                actor: None,
             },
             MemoryOperation::UpdateHead {
                 base: awaken_resource_contract::MemoryGeneration {
@@ -1377,6 +1421,7 @@ mod tests {
                 content: "B".into(),
                 target_path: Some("/renamed.md".into()),
                 expected_path: None,
+                actor: None,
             },
             MemoryOperation::UpdateHead {
                 base: awaken_resource_contract::MemoryGeneration {
@@ -1387,6 +1432,7 @@ mod tests {
                 content: "B".into(),
                 target_path: None,
                 expected_path: Some("/foreign.md".into()),
+                actor: None,
             },
         ] {
             assert!(!terminal_operation_allowed(&target, &operation), "O3 deny");
@@ -1401,6 +1447,7 @@ mod tests {
                         version: 1,
                         content_sha256: "sha-a".into(),
                     },
+                    actor: None,
                 },
             ),
             "O4 exact"
@@ -1415,6 +1462,7 @@ mod tests {
                         version: 1,
                         content_sha256: "sha-c".into(),
                     },
+                    actor: None,
                 },
             ),
             "O4 mismatch"

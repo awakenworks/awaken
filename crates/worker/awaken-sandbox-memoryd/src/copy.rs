@@ -567,21 +567,23 @@ mod tests {
             panic!("the copy snapshot must not emulate an atomic snapshot with per-path reads")
         }
 
-        async fn create(
+        async fn create_as(
             &self,
             _store: &str,
             _path: &str,
             _content: &str,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<Memory, MemErr> {
             unreachable!("snapshot test performs no writes")
         }
 
-        async fn update_head(
+        async fn update_head_as(
             &self,
             _store: &str,
             _base: &awaken_resource_contract::MemoryGeneration,
             _content: &str,
             _target_path: Option<&str>,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<Memory, MemErr> {
             unreachable!("snapshot test performs no writes")
         }
@@ -590,15 +592,21 @@ mod tests {
             unreachable!("snapshot test performs no writes")
         }
 
-        async fn delete_by_path(&self, _store: &str, _path: &str) -> Result<(), MemErr> {
+        async fn delete_by_path_as(
+            &self,
+            _store: &str,
+            _path: &str,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
+        ) -> Result<(), MemErr> {
             unreachable!("snapshot test performs no writes")
         }
 
-        async fn delete_if_match(
+        async fn delete_if_match_as(
             &self,
             _store: &str,
             _path: &str,
             _base: &awaken_resource_contract::MemoryGeneration,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<bool, MemErr> {
             unreachable!("snapshot test performs no writes")
         }
@@ -607,10 +615,11 @@ mod tests {
             unreachable!("snapshot test performs no history reads")
         }
 
-        async fn redact_version(
+        async fn redact_version_as(
             &self,
             _store: &str,
             _version_id: &str,
+            _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<Option<MemoryVersion>, MemErr> {
             unreachable!("snapshot test performs no history writes")
         }

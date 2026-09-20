@@ -102,22 +102,31 @@ impl MemoryRepository for InvalidatingMemoryRepository {
         self.inner.get_by_path(store, path).await
     }
 
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
-        let memory = self.inner.create(store, path, content).await?;
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        // Forward the author: this decorator owns cache invalidation, not
+        // attribution, and the inner repository is the one that records it.
+        let memory = self.inner.create_as(store, path, content, actor).await?;
         self.invalidator.publish(store, path);
         Ok(memory)
     }
 
-    async fn update_head(
+    async fn update_head_as(
         &self,
         store: &str,
         base: &awaken_resource_contract::MemoryGeneration,
         content: &str,
         target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr> {
         let memory = self
             .inner
-            .update_head(store, base, content, target_path)
+            .update_head_as(store, base, content, target_path, actor)
             .await?;
         // A path-changing aggregate update can displace another head. Broadcast a
         // store-wide invalidation so peers cannot retain either old path; the
@@ -152,19 +161,15 @@ impl MemoryRepository for InvalidatingMemoryRepository {
         Ok(memory)
     }
 
-    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
-        self.inner.delete_by_path(store, path).await?;
-        self.invalidator.publish(store, path);
-        Ok(())
-    }
-
-    async fn delete_if_match(
+    async fn delete_by_path_as(
         &self,
         store: &str,
         path: &str,
-        base: &awaken_resource_contract::MemoryGeneration,
-    ) -> Result<bool, MemErr> {
-        self.delete_if_match_as(store, path, base, None).await
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), MemErr> {
+        self.inner.delete_by_path_as(store, path, actor).await?;
+        self.invalidator.publish(store, path);
+        Ok(())
     }
 
     async fn delete_if_match_as(
@@ -188,12 +193,13 @@ impl MemoryRepository for InvalidatingMemoryRepository {
         self.inner.list_versions(store).await
     }
 
-    async fn redact_version(
+    async fn redact_version_as(
         &self,
         store: &str,
         version_id: &str,
+        actor: Option<&MemoryActor>,
     ) -> Result<Option<MemoryVersion>, MemErr> {
-        self.inner.redact_version(store, version_id).await
+        self.inner.redact_version_as(store, version_id, actor).await
     }
 
     async fn purge_store(
@@ -235,6 +241,54 @@ mod tests {
             rx.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    /// Attribution cause/effect graph: C1 a caller states an author on each
+    /// mutation that records one; C2 the mutation reaches the inner repository
+    /// through this cache decorator. Effect: E1 the author reaches the version
+    /// history unchanged. Decision rule: A1=C1+C2 => E1 for create, update and
+    /// delete alike.
+    ///
+    /// This decorator forwarded only the conditional delete, so every other
+    /// mutation lowered to the unattributed spelling and the author was lost
+    /// before the store ever saw it. The five attributed methods are required
+    /// now, which is what makes a missing forward a compile error; this test
+    /// pins the behaviour that the requirement exists to protect.
+    #[tokio::test]
+    async fn every_forwarded_mutation_keeps_the_author_the_caller_stated() {
+        let inner = Arc::new(VolatileMemoryRepository::new());
+        let bus = Arc::new(LocalInvalidator::new(16));
+        let fs = InvalidatingMemoryRepository::new(inner.clone(), bus);
+        let actor = MemoryActor::UserActor {
+            user_id: "user-7".into(),
+        };
+
+        let created = fs
+            .create_as("s", "/a.md", "one", Some(&actor))
+            .await
+            .unwrap();
+        let updated = fs
+            .update_head_as("s", &created.generation(), "two", None, Some(&actor))
+            .await
+            .unwrap();
+        fs.delete_by_path_as("s", &updated.path, Some(&actor))
+            .await
+            .unwrap();
+
+        let versions = inner.list_versions("s").await.unwrap();
+        assert_eq!(
+            versions.len(),
+            3,
+            "A1 create, update and delete each recorded"
+        );
+        for version in &versions {
+            assert_eq!(
+                version.created_by.as_ref(),
+                Some(&actor),
+                "A1/E1 {:?} lost the author",
+                version.operation
+            );
+        }
     }
 
     #[tokio::test]
