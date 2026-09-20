@@ -24,6 +24,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 pub(super) enum PhysicalAttemptOutcome {
     Returned(Result<RunState, Error>),
     PredecessorUnconfirmed,
+    Deferred,
 }
 
 pub(super) struct PhysicalAttemptRequest<'a> {
@@ -96,49 +97,50 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             .acquire_thread_execution(thread_id, None)
             .await?;
         let timing = AuthorityLeaseTiming::from_ttl_ms(self.lease_ms);
-        let admission = loop {
-            let admission = match recovery_mode {
-                AttemptRecoveryMode::RequirePredecessorQuiescence => {
-                    self.store
-                        .begin_attempt(&claim, self.execution_binding.as_ref())
-                        .await?
+        let admission = match recovery_mode {
+            AttemptRecoveryMode::RequirePredecessorQuiescence => {
+                self.store
+                    .begin_attempt(&claim, self.execution_binding.as_ref())
+                    .await?
+            }
+            AttemptRecoveryMode::ContinueDurableRemoteOperation => {
+                self.store
+                    .handoff_attempt(&claim, self.execution_binding.as_ref())
+                    .await?
+            }
+        };
+        let admission = match admission {
+            AttemptAdmission::Applied
+            | AttemptAdmission::AlreadyApplied
+            | AttemptAdmission::Replaced => admission,
+            AttemptAdmission::Blocked => {
+                if claimed.cancellation_requested {
+                    // R4: cancellation revokes mutation authority but cannot
+                    // stop an opaque predecessor. Let the application commit
+                    // Indeterminate while retaining this occupied slot.
+                    return Ok(PhysicalAttemptOutcome::PredecessorUnconfirmed);
                 }
-                AttemptRecoveryMode::ContinueDurableRemoteOperation => {
-                    self.store
-                        .handoff_attempt(&claim, self.execution_binding.as_ref())
-                        .await?
-                }
-            };
-            match admission {
-                AttemptAdmission::Applied
-                | AttemptAdmission::AlreadyApplied
-                | AttemptAdmission::Replaced => break admission,
-                AttemptAdmission::Blocked => {
-                    if claimed.cancellation_requested {
-                        // R4: cancellation revokes mutation authority but cannot
-                        // stop an opaque predecessor. Let the application commit
-                        // Indeterminate while retaining this occupied slot.
-                        return Ok(PhysicalAttemptOutcome::PredecessorUnconfirmed);
+                // The persisted physical slot, not this Tokio task, is the
+                // predecessor-exclusion authority. Retain that slot while
+                // releasing the mutation claim behind its durable retry
+                // deadline so an unprovable predecessor cannot consume one
+                // of the Pool's execution permits indefinitely. Cancellation
+                // bypasses retry_not_before in the queue and is observed by
+                // a fresh exact claim.
+                let retry_after_ms =
+                    timing.retry_delay().as_millis().min(u128::from(u64::MAX)) as u64;
+                match self.store.defer_claim(&claim, retry_after_ms).await? {
+                    SettleOutcome::Applied | SettleOutcome::Fenced => {
+                        return Ok(PhysicalAttemptOutcome::Deferred);
                     }
-                    tokio::select! {
-                        _ = cancellation.cancelled() => {
-                            return Err(Error::Execution(
-                                awaken_runtime_contract::execution::Error::Execution(
-                                    "dispatch authority was lost while waiting for predecessor quiescence".to_string(),
-                                ),
-                            ));
-                        }
-                        _ = tokio::time::sleep(timing.retry_delay()) => {}
-                    }
                 }
-                AttemptAdmission::Fenced => {
-                    return Err(Error::Execution(
-                        awaken_runtime_contract::execution::Error::Execution(
-                            "dispatch claim was fenced before physical attempt admission"
-                                .to_string(),
-                        ),
-                    ));
-                }
+            }
+            AttemptAdmission::Fenced => {
+                return Err(Error::Execution(
+                    awaken_runtime_contract::execution::Error::Execution(
+                        "dispatch claim was fenced before physical attempt admission".to_string(),
+                    ),
+                ));
             }
         };
 

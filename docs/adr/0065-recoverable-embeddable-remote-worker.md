@@ -311,6 +311,15 @@ Normal Worker admission retries drive this path, with bounded IO and no new
 queue, timer, table or broad expiry scan. Concurrent/repeated requests target
 only the same closed domain. A late local observation never clears a successor.
 
+A `Blocked` physical admission never retains a Pool execution task while it
+waits for that evidence. The Worker preserves the original physical slot,
+durably defers only the replacement mutation claim behind the existing
+`retry_not_before` field, and returns without entering Runtime. Cancellation
+bypasses that deadline through the existing queue predicate. A later retry must
+freshly claim and cross the same exact admission check; this prevents an
+unprovable historical Run from consuming global model/tool/Sandbox concurrency
+without weakening its no-replay fence or inventing a stop receipt.
+
 The resulting `WorkerProcessStopStatus` is deliberately local-only and has no
 Dispatch mutation capability. An Exited observation preserves the original
 binding and provider evidence reference; blank references and cross-domain cached

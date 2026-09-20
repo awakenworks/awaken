@@ -1057,6 +1057,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                         )
                         .await;
                 }
+                PhysicalAttemptOutcome::Deferred => return Ok(None),
             };
             if matches!(&state, RunState::Ended(_)) {
                 self.redeliver_terminal_observers(&run_id, &thread_id)
@@ -1191,6 +1192,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                             )
                             .await;
                     }
+                    PhysicalAttemptOutcome::Deferred => return Ok(None),
                     PhysicalAttemptOutcome::Returned(Err(err)) => {
                         return self
                             .settle_if_terminal_or_raise(&claimed, &all_pending, err)
@@ -1247,6 +1249,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                                     )
                                     .await;
                             }
+                            PhysicalAttemptOutcome::Deferred => return Ok(None),
                             PhysicalAttemptOutcome::Returned(Err(err)) => {
                                 return self
                                     .settle_if_terminal_or_raise(&claimed, &all_pending, err)
@@ -1361,6 +1364,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                                 )
                                 .await;
                         }
+                        PhysicalAttemptOutcome::Deferred => return Ok(None),
                         PhysicalAttemptOutcome::Returned(Err(err)) => {
                             return self
                                 .settle_if_terminal_or_raise(&claimed, &all_pending, err)
