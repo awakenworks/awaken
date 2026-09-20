@@ -1,7 +1,6 @@
 //! Pure projection from frozen Managed resource inputs to Agent-visible paths and
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.
-
 use std::sync::Arc;
 
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};

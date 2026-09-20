@@ -614,7 +614,8 @@ mod tests {
                 {"type":"mcp_toolset","mcp_server_name":"docs"},
                 {"type":"custom","name":"lookup","description":"Lookup", "input_schema":{
                     "type":"object","properties":{"id":{"type":"string"}},"additionalProperties":false
-                }}
+                }
+            }
             ],
             "multiagent": {"type":"coordinator","agents":[
                 "worker", {"type":"self"}, {"type":"advisor","model":"claude-opus-4-6"}

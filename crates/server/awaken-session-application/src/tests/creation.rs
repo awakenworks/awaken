@@ -10,10 +10,118 @@ pub(super) struct RecordingCreateRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingCreateRuntime {
+    async fn run(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("create replay test never runs")
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: awaken_session_contract::ToolPermissionDecision,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("create replay test never resumes")
+    }
+
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _is_error: bool,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("create replay test never custom-resumes")
+    }
+
+    fn model(&self) -> String {
+        "create-replay-model".into()
+    }
+
+    fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
+        Some(self)
+    }
+
+    fn outcomes(&self) -> Option<&dyn awaken_session_contract::OutcomeRuntime> {
+        Some(self)
+    }
+
+    fn coordination(&self) -> Option<&dyn awaken_session_contract::CoordinationRuntime> {
+        Some(self)
+    }
+
+    fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
+        Some(self)
+    }
+
+    fn streaming_runs(&self) -> Option<&dyn awaken_session_contract::StreamingRunRuntime> {
+        Some(self)
+    }
+
+    fn environment(&self) -> Option<&dyn awaken_session_contract::EnvironmentRuntime> {
+        Some(self)
+    }
+
+    fn thread_reads(&self) -> Option<&dyn awaken_session_contract::ThreadReadRuntime> {
+        Some(self)
+    }
+
+    fn terminal_cleanup(&self) -> Option<&dyn awaken_session_contract::TerminalCleanupRuntime> {
+        Some(self)
+    }
+
+    fn live_inbox(&self) -> Option<&dyn awaken_session_contract::LiveInboxRuntime> {
+        Some(self)
+    }
+
+    fn capability(&self) -> Option<&dyn awaken_session_contract::CapabilityRuntime> {
+        Some(self)
+    }
+}
+
+awaken_session_contract::neutral_role!(CoordinationRuntime for RecordingCreateRuntime);
+
+awaken_session_contract::neutral_role!(BudgetRuntime for RecordingCreateRuntime);
+
+awaken_session_contract::neutral_role!(StreamingRunRuntime for RecordingCreateRuntime);
+
+awaken_session_contract::neutral_role!(EnvironmentRuntime for RecordingCreateRuntime);
+
+awaken_session_contract::neutral_role!(ThreadReadRuntime for RecordingCreateRuntime);
+
+awaken_session_contract::neutral_role!(TerminalCleanupRuntime for RecordingCreateRuntime);
+
+awaken_session_contract::neutral_role!(LiveInboxRuntime for RecordingCreateRuntime);
+
+awaken_session_contract::neutral_role!(CapabilityRuntime for RecordingCreateRuntime);
+
+#[async_trait::async_trait]
+impl awaken_session_contract::RealizationRuntime for RecordingCreateRuntime {
     fn observe_realization_request(
         &self,
     ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
         crate::tests::test_realization_request_started()
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Reconcile the existing Runtime projections through the given Control
+    /// owner. Local and Worker deployment use one slot-based selection and
+    /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
+    async fn renew_session_realization_projections(
+        &self,
+        control: &dyn awaken_session_contract::SessionRealizationControl,
+        owner: &str,
+        runtime_incarnation: &str,
+        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+    ) -> Result<usize, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
+            .await
     }
 
     fn validate_session_sandbox_layout(
@@ -57,32 +165,66 @@ impl SessionRuntime for RecordingCreateRuntime {
         Ok(())
     }
 
-    async fn run(
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
+    /// an already-installed realization fence. This is the only lease-only
+    /// Runtime mutation; it deliberately carries no projection or phase action.
+    async fn renew_session_realization_lease(
         &self,
-        _agent: &str,
-        _thread: &str,
-        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        unreachable!("create replay test never runs")
+        thread: &str,
+        lease: awaken_session_contract::ObservedSessionRealizationLease,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .renew_session_realization_lease(thread, lease)
+            .await
     }
 
-    async fn resume(
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Forget one failed realization fence from disposable Runtime state. The
+    /// aggregate remains the sole lease authority: this hook only prevents a
+    /// later retry from authorizing effects with a lease that Control has
+    /// already failed or may have failed before losing its response.
+    async fn invalidate_session_realization_lease(
         &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _decision: awaken_session_contract::ToolPermissionDecision,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        unreachable!("create replay test never resumes")
+        thread: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .invalidate_session_realization_lease(thread, lease)
+            .await
     }
 
-    async fn resume_custom(
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Install the durable callback used at the exact sandbox creation boundary.
+    fn install_environment_binding_sink(
         &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-        _is_error: bool,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        unreachable!("create replay test never custom-resumes")
+        sink: std::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+    ) {
+        awaken_session_contract::NeutralRuntime.install_environment_binding_sink(sink)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::OutcomeRuntime for RecordingCreateRuntime {
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Persist one Outcome aggregate without executing a Worker or Grader Run.
+    /// The opaque id is supplied by the application command so crash replay and
+    /// activity admission share one stable operation identity.
+    async fn prepare_outcome(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<u64, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
+            .await
     }
 
     async fn define_outcome(
@@ -95,8 +237,19 @@ impl SessionRuntime for RecordingCreateRuntime {
         unreachable!("create replay test never defines an outcome")
     }
 
-    fn model(&self) -> String {
-        "create-replay-model".into()
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Continue the active Outcome after the ordinary Run resume has committed.
+    /// `None` proves there is no active aggregate; implementations must rebuild
+    /// continuation exclusively from the Thread-owned Outcome state.
+    async fn continue_outcome(
+        &self,
+        thread: &str,
+    ) -> Result<Option<awaken_session_contract::OutcomeDrive>, awaken_session_contract::RunError>
+    {
+        awaken_session_contract::NeutralRuntime
+            .continue_outcome(thread)
+            .await
     }
 }
 

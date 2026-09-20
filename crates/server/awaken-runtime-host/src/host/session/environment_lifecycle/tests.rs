@@ -2126,6 +2126,13 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
         .expect("C1 exact durable projection");
         if install_non_owner {
             crate::ManagedHost::new(host.clone())
+                .realization()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "RealizationRuntime is unsupported by this runtime",
+                    )
+                })
+                .expect("runtime role")
                 .install_environment_binding_sink(Arc::new(NonOwningEnvironmentBindingSink));
         }
         let candidate = host
@@ -2385,7 +2392,15 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         );
         let sink = Arc::new(BlockingBindingSink::blocked());
         sink.unblock();
-        crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
+        crate::ManagedHost::new(host.clone())
+            .realization()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
+            .install_environment_binding_sink(sink.clone());
         let source_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
             thread,
             awaken_session_contract::SessionEnvironmentEffectKind::Create,
@@ -3962,10 +3977,18 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     let first_managed = managed_test_host(first.clone());
     let first_sink = Arc::new(BlockingBindingSink::blocked());
     first_sink.unblock();
-    first_managed.install_environment_binding_sink(first_sink);
+    first_managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(first_sink);
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &first_managed,
             thread,
             projection.clone(),
@@ -4011,10 +4034,18 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
     let managed = managed_test_host(host.clone());
     let sink = Arc::new(BlockingBindingSink::blocked());
-    managed.install_environment_binding_sink(sink.clone());
+    managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
             projection,

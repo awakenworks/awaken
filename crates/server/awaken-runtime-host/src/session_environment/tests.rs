@@ -4270,6 +4270,13 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         );
         projection.agent_publication = Some(activation.snapshot.clone());
         managed
+            .realization()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
             .install_session_projection(
                 thread,
                 projection.clone(),
@@ -4341,6 +4348,13 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             // transition through the production projection port. Publication
             // must execute its ordinary reconciliation, never a test-only ACK.
             managed
+                .realization()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "RealizationRuntime is unsupported by this runtime",
+                    )
+                })
+                .expect("runtime role")
                 .install_session_projection(
                     thread,
                     projection.clone(),

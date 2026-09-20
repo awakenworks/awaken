@@ -84,11 +84,11 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 16442,
+      "production_lines": 17008,
       "catch_all_errors": 11,
-      "capability_defaults": 49,
+      "capability_defaults": 17,
       "growth_reasons": {
-        "production_lines": "type Session identity: 58 port and vocabulary signatures take &SessionId instead of &str; the growth is the SessionId import in 14 modules and one owned binding where a borrowed identity outlives a mutable self borrow"
+        "production_lines": "session.rs split into session/{roles,neutral}.rs for the 2000-line file limit; +6 lines are the mod/use declarations of the split"
       }
     },
     "awaken-tenancy": {

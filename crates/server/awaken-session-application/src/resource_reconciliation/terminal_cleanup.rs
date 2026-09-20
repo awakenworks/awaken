@@ -196,12 +196,12 @@ where
                     asserted_lease: asserted_lease.clone(),
                     requested_expires_at_unix_ms: requested_expiry_unix_ms,
                 };
-                let request_started = runtime.observe_realization_request()?;
+                let request_started = runtime.realization().ok_or_else(|| awaken_session_contract::RunError::unavailable("RealizationRuntime is unsupported by this runtime"))?.observe_realization_request()?;
                 let receipt = renew(command)
                     .await
                     .map_err(SessionRealizationDriveError::Control)?;
                 let observed = receipt.clone().observed(request_started);
-                if observed.remaining_at(runtime.observe_realization_request()?).is_none() {
+                if observed.remaining_at(runtime.realization().ok_or_else(|| awaken_session_contract::RunError::unavailable("RealizationRuntime is unsupported by this runtime"))?.observe_realization_request()?).is_none() {
                     return Err(SessionRealizationDriveError::Control(SessionRealizationControlFailure::StaleOwnership));
                 }
                 let renewed_lease = observed.lease.clone();
@@ -228,7 +228,7 @@ where
                     authority: receipt,
                 };
                 runtime
-                    .install_terminal_cleanup_assignment(&renewed_assignment, observed)
+                    .terminal_cleanup().ok_or_else(|| awaken_session_contract::RunError::unavailable("TerminalCleanupRuntime is unsupported by this runtime"))?.install_terminal_cleanup_assignment(&renewed_assignment, observed)
                     .await
                     .map_err(SessionRealizationDriveError::Effect)?;
                 asserted_lease = renewed_lease;
@@ -360,6 +360,14 @@ impl SessionApplication {
                 if session.terminal_cleanup.is_fenced() {
                     let snapshot = self
                         .runtime()
+                        .coordination()
+                        .ok_or_else(|| {
+                            SessionPreparationError::Rejected(
+                                awaken_session_contract::RunError::unavailable(
+                                    "CoordinationRuntime is unsupported by this runtime",
+                                ),
+                            )
+                        })?
                         .quiesce_terminal_delegations(session_id)
                         .await
                         .map_err(SessionPreparationError::Rejected)?;
@@ -473,6 +481,14 @@ impl SessionApplication {
                 // projection without reconstructing the deleted one-stage
                 // per-thread effect registry.
                 self.runtime()
+                    .terminal_cleanup()
+                    .ok_or_else(|| {
+                        SessionPreparationError::Rejected(
+                            awaken_session_contract::RunError::unavailable(
+                                "TerminalCleanupRuntime is unsupported by this runtime",
+                            ),
+                        )
+                    })?
                     .acknowledge_completed_terminal_cleanup(
                         &awaken_session_contract::SessionId::from(session_id),
                         lease,
@@ -566,38 +582,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl awaken_session_contract::SessionRuntime for RecordingTerminalProjectionRuntime {
-        fn observe_realization_request(
-            &self,
-        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
-        {
-            match *self.observation.lock().unwrap() {
-                Some(observation) => Ok(observation),
-                None => crate::tests::test_realization_request_started(),
-            }
-        }
-
-        async fn install_terminal_cleanup_assignment(
-            &self,
-            assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
-            proof: awaken_session_contract::ObservedSessionRealizationLease,
-        ) -> Result<(), RunError> {
-            if self.fail_install.swap(false, Ordering::SeqCst) {
-                return Err(RunError::unavailable(
-                    "injected terminal projection installation failure",
-                ));
-            }
-            assert_eq!(proof.lease, assignment.authority.lease);
-            let remaining = proof
-                .remaining_at(self.observe_realization_request()?)
-                .ok_or_else(|| RunError::unavailable("expired test projection proof"))?;
-            self.installed_remaining_us.store(
-                u64::try_from(remaining.as_micros()).unwrap(),
-                Ordering::SeqCst,
-            );
-            self.installed.lock().unwrap().push(assignment.clone());
-            Ok(())
-        }
-
         async fn run(
             &self,
             _agent: &str,
@@ -628,6 +612,298 @@ mod tests {
 
         fn model(&self) -> String {
             "terminal-renewal-fixture".into()
+        }
+
+        fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
+            Some(self)
+        }
+
+        fn terminal_cleanup(&self) -> Option<&dyn awaken_session_contract::TerminalCleanupRuntime> {
+            Some(self)
+        }
+
+        fn coordination(&self) -> Option<&dyn awaken_session_contract::CoordinationRuntime> {
+            Some(self)
+        }
+
+        fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
+            Some(self)
+        }
+
+        fn streaming_runs(&self) -> Option<&dyn awaken_session_contract::StreamingRunRuntime> {
+            Some(self)
+        }
+
+        fn environment(&self) -> Option<&dyn awaken_session_contract::EnvironmentRuntime> {
+            Some(self)
+        }
+
+        fn thread_reads(&self) -> Option<&dyn awaken_session_contract::ThreadReadRuntime> {
+            Some(self)
+        }
+
+        fn outcomes(&self) -> Option<&dyn awaken_session_contract::OutcomeRuntime> {
+            Some(self)
+        }
+
+        fn live_inbox(&self) -> Option<&dyn awaken_session_contract::LiveInboxRuntime> {
+            Some(self)
+        }
+
+        fn capability(&self) -> Option<&dyn awaken_session_contract::CapabilityRuntime> {
+            Some(self)
+        }
+    }
+
+    awaken_session_contract::neutral_role!(CoordinationRuntime for RecordingTerminalProjectionRuntime);
+
+    awaken_session_contract::neutral_role!(BudgetRuntime for RecordingTerminalProjectionRuntime);
+
+    awaken_session_contract::neutral_role!(StreamingRunRuntime for RecordingTerminalProjectionRuntime);
+
+    awaken_session_contract::neutral_role!(EnvironmentRuntime for RecordingTerminalProjectionRuntime);
+
+    awaken_session_contract::neutral_role!(ThreadReadRuntime for RecordingTerminalProjectionRuntime);
+
+    awaken_session_contract::neutral_role!(OutcomeRuntime for RecordingTerminalProjectionRuntime);
+
+    awaken_session_contract::neutral_role!(LiveInboxRuntime for RecordingTerminalProjectionRuntime);
+
+    awaken_session_contract::neutral_role!(CapabilityRuntime for RecordingTerminalProjectionRuntime);
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::RealizationRuntime for RecordingTerminalProjectionRuntime {
+        fn observe_realization_request(
+            &self,
+        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
+        {
+            match *self.observation.lock().unwrap() {
+                Some(observation) => Ok(observation),
+                None => crate::tests::test_realization_request_started(),
+            }
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Reconcile the existing Runtime projections through the given Control
+        /// owner. Local and Worker deployment use one slot-based selection and
+        /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
+        async fn renew_session_realization_projections(
+            &self,
+            control: &dyn awaken_session_contract::SessionRealizationControl,
+            owner: &str,
+            runtime_incarnation: &str,
+            timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        ) -> Result<usize, awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime
+                .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Validate the exact provider-effective Sandbox layout without publishing
+        /// process-local state or performing provider, cache, Skill, File, Vault,
+        /// Repository, or Git I/O. Session creation and Resource mutation call this
+        /// before their durable/effect boundaries; Runtime repeats it at the final
+        /// realization edge as defense in depth.
+        fn validate_session_sandbox_layout(
+            &self,
+            thread: &str,
+            layout: &awaken_session_contract::SessionSandboxLayout,
+        ) -> Result<(), awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime.validate_session_sandbox_layout(thread, layout)
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Install one complete Control-frozen Session projection. Dispatch and
+        /// realization are explicit modes of this single port; callers must never
+        /// lower publication, baseline, request context, Environment, or lease
+        /// fields independently.
+        async fn install_session_projection(
+            &self,
+            thread: &str,
+            projection: awaken_session_contract::FrozenSessionProjection,
+            mode: awaken_session_contract::SessionProjectionInstallMode,
+        ) -> Result<(), awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime
+                .install_session_projection(thread, projection, mode)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
+        /// an already-installed realization fence. This is the only lease-only
+        /// Runtime mutation; it deliberately carries no projection or phase action.
+        async fn renew_session_realization_lease(
+            &self,
+            thread: &str,
+            lease: awaken_session_contract::ObservedSessionRealizationLease,
+        ) -> Result<(), awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime
+                .renew_session_realization_lease(thread, lease)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Forget one failed realization fence from disposable Runtime state. The
+        /// aggregate remains the sole lease authority: this hook only prevents a
+        /// later retry from authorizing effects with a lease that Control has
+        /// already failed or may have failed before losing its response.
+        async fn invalidate_session_realization_lease(
+            &self,
+            thread: &str,
+            lease: &awaken_session_contract::SessionRealizationLease,
+        ) -> Result<(), awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime
+                .invalidate_session_realization_lease(thread, lease)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Install the durable callback used at the exact sandbox creation boundary.
+        fn install_environment_binding_sink(
+            &self,
+            sink: std::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+        ) {
+            awaken_session_contract::NeutralRuntime.install_environment_binding_sink(sink)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::TerminalCleanupRuntime for RecordingTerminalProjectionRuntime {
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Execute terminal Repository publication under the same realization
+        /// generation that owns the cleanup command set and return either its
+        /// secret-free receipt or one permanent compare-and-swap rejection. The
+        /// caller verifies and durably records that outcome before ordinary root
+        /// cleanup may dispose the shared environment. Runtimes must override this
+        /// edge and carry the lease to the Repository transport boundary; falling
+        /// back would erase the terminal ownership proof.
+        async fn execute_terminal_repository_publication_for_lease(
+            &self,
+            command: awaken_session_contract::SessionRepositoryPublicationCommand,
+            lease: &awaken_session_contract::SessionRealizationLease,
+        ) -> Result<
+            awaken_session_contract::SessionRepositoryPublicationEffect,
+            awaken_session_contract::RunError,
+        > {
+            awaken_session_contract::NeutralRuntime
+                .execute_terminal_repository_publication_for_lease(command, lease)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Make every source-dependent effect durable under the exact aggregate
+        /// preparation fence without deleting the physical realization.
+        async fn prepare_terminal_cleanup_for_effect(
+            &self,
+            effect: awaken_session_contract::SessionTerminalCleanupEffect,
+            authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        ) -> Result<
+            awaken_session_contract::SessionCleanupPreparation,
+            awaken_session_contract::RunError,
+        > {
+            awaken_session_contract::NeutralRuntime
+                .prepare_terminal_cleanup_for_effect(effect, authorization)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Retire only a prepared child projection after Control durably accepts
+        /// its exact preparation. The shared root Environment must remain until the
+        /// aggregate-wide physical disposal is complete.
+        async fn acknowledge_terminal_cleanup_preparation(
+            &self,
+            effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        ) {
+            awaken_session_contract::NeutralRuntime
+                .acknowledge_terminal_cleanup_preparation(effect)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Execute the one aggregate-wide physical disposal after every
+        /// preparation is durable. The typed effect carries the exact prepared
+        /// predecessor plus the current live successor lease.
+        async fn dispose_terminal_cleanup_for_effect(
+            &self,
+            effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+        ) -> Result<
+            awaken_session_contract::SessionCleanupDisposalReceipt,
+            awaken_session_contract::RunError,
+        > {
+            awaken_session_contract::NeutralRuntime
+                .dispose_terminal_cleanup_for_effect(effect)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Retire only the process-local teardown projection after Control has
+        /// durably accepted the exact disposal receipt. No provider or Resource
+        /// effect is permitted at this edge.
+        async fn acknowledge_terminal_cleanup_disposal(
+            &self,
+            effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+        ) {
+            awaken_session_contract::NeutralRuntime
+                .acknowledge_terminal_cleanup_disposal(effect)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Retire a process-local terminal projection after Control reports that
+        /// the aggregate has no remaining cleanup work. This closes final receipt
+        /// response loss without replaying provider I/O or inventing another
+        /// completion registry.
+        async fn acknowledge_completed_terminal_cleanup(
+            &self,
+            session_id: &awaken_session_contract::SessionId,
+            lease: &awaken_session_contract::SessionRealizationLease,
+        ) {
+            awaken_session_contract::NeutralRuntime
+                .acknowledge_completed_terminal_cleanup(session_id, lease)
+                .await
+        }
+
+        async fn install_terminal_cleanup_assignment(
+            &self,
+            assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+            proof: awaken_session_contract::ObservedSessionRealizationLease,
+        ) -> Result<(), RunError> {
+            if self.fail_install.swap(false, Ordering::SeqCst) {
+                return Err(RunError::unavailable(
+                    "injected terminal projection installation failure",
+                ));
+            }
+            assert_eq!(proof.lease, assignment.authority.lease);
+            let remaining = proof
+                .remaining_at(
+                    self.realization()
+                        .ok_or_else(|| {
+                            awaken_session_contract::RunError::unavailable(
+                                "RealizationRuntime is unsupported by this runtime",
+                            )
+                        })?
+                        .observe_realization_request()?,
+                )
+                .ok_or_else(|| RunError::unavailable("expired test projection proof"))?;
+            self.installed_remaining_us.store(
+                u64::try_from(remaining.as_micros()).unwrap(),
+                Ordering::SeqCst,
+            );
+            self.installed.lock().unwrap().push(assignment.clone());
+            Ok(())
         }
     }
 

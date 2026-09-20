@@ -202,8 +202,9 @@ impl SessionApplication {
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn awaken_agent_contract::clock::Clock>) -> Self {
         self.clock = clock;
-        self.runtime
-            .install_environment_binding_sink(self.environment_binding_sink());
+        if let Some(role) = self.runtime.realization() {
+            role.install_environment_binding_sink(self.environment_binding_sink());
+        }
         self
     }
 
@@ -242,9 +243,11 @@ impl SessionApplication {
         let lifecycle_outbox: Arc<dyn awaken_session_contract::LifecycleOutbox> =
             sessions_repo.clone();
         let sessions_repo: Arc<dyn SessionRepository> = sessions_repo;
-        runtime.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
-            sessions_repo.clone(),
-        )));
+        if let Some(role) = runtime.realization() {
+            role.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
+                sessions_repo.clone(),
+            )));
+        }
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
@@ -339,6 +342,12 @@ impl SessionApplication {
             &layout.environment.idle_retention,
         )?;
         self.runtime
+            .realization()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                )
+            })?
             .validate_session_sandbox_layout(session_id, layout)
     }
 
@@ -563,8 +572,9 @@ impl SessionApplication {
     pub fn replace_repository(&mut self, repo: Arc<dyn awaken_session_contract::SessionStore>) {
         self.lifecycle_outbox = repo.clone();
         self.sessions_repo = repo;
-        self.runtime
-            .install_environment_binding_sink(self.environment_binding_sink());
+        if let Some(role) = self.runtime.realization() {
+            role.install_environment_binding_sink(self.environment_binding_sink());
+        }
     }
 
     pub fn replace_environment_source(&mut self, source: Arc<dyn SessionEnvironmentSource>) {

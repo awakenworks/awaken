@@ -9,6 +9,7 @@ import _crate_boundary_workspace
 
 
 SESSION_RUNTIME = "crates/contract/awaken-session-contract/src/session.rs"
+SESSION_RUNTIME_ROLES = "crates/contract/awaken-session-contract/src/session/roles.rs"
 SESSION_CLEANUP = "crates/contract/awaken-session-contract/src/terminal_cleanup.rs"
 SESSION_REPOSITORY_PUBLICATION = (
     "crates/contract/awaken-session-contract/src/"
@@ -110,6 +111,9 @@ REQUIRED = {
         "SessionEnvironmentReceipt",
         "publish_mcp_generation_receipt",
         "drain_mcp_generation_receipt",
+        "DelegatedRunSnapshot",
+    ),
+    SESSION_RUNTIME_ROLES: (
         "prepare_terminal_cleanup_for_effect",
         "acknowledge_terminal_cleanup_preparation",
         "dispose_terminal_cleanup_for_effect",
@@ -117,7 +121,6 @@ REQUIRED = {
         "acknowledge_completed_terminal_cleanup",
         "install_terminal_cleanup_assignment",
         "quiesce_terminal_delegations",
-        "DelegatedRunSnapshot",
         "execute_terminal_repository_publication_for_lease",
         "SessionRepositoryPublicationEffect",
     ),

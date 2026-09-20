@@ -1535,6 +1535,13 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .expect("R4 frozen aggregate Repository inputs");
     let authorization = root_terminal_preparation_authorization(&session, &effect, &workspace_id);
     let preparation = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
         .await
         .unwrap();
@@ -1575,6 +1582,13 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         effect.lease,
     );
     managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .dispose_terminal_cleanup_for_effect(disposal)
         .await
         .unwrap();
@@ -2171,6 +2185,13 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .expect("harvest failure retains the frozen Workspace");
     let authorization = root_terminal_preparation_authorization(&cleanup, &effect, &workspace_id);
     let error = crate::ManagedHost::new(host.clone())
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect, authorization)
         .await
         .unwrap_err();

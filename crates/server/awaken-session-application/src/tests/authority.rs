@@ -3940,7 +3940,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
             format!("recovered report {rule}"),
         );
         assert!(
-            awaken_session_contract::SessionRuntime::coordinated_threads(
+            awaken_session_contract::CoordinationRuntime::coordinated_threads(
                 runtime.as_ref(),
                 &SessionId::from(&session_id),
                 None,
@@ -5148,7 +5148,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     );
     runtime.set_generic_recovery_available(false);
     assert!(
-        awaken_session_contract::SessionRuntime::session_thread_recovery_snapshot(
+        awaken_session_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
             runtime.as_ref(),
             &SessionId::from(session_id),
             &thread_id.0,
@@ -5452,6 +5452,11 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     );
     assert_eq!(
         runtime
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .coordinated_threads(&SessionId::from("advisor-usage"), None)
             .await
             .unwrap()
@@ -5483,6 +5488,13 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     // A7 a foreign Session link fails before any child query; the primary may
     // already have been read. A8 a root entry cannot charge the primary twice.
     let observed = runtime
+        .coordination()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .coordinated_threads(&SessionId::from("advisor-usage"), None)
         .await
         .unwrap();

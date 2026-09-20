@@ -359,7 +359,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 );
                 let managed = crate::ManagedHost::new(host.clone());
                 assert!(
-                    awaken_session_contract::SessionRuntime::renew_session_realization_lease(
+                    awaken_session_contract::RealizationRuntime::renew_session_realization_lease(
                         &managed,
                         SESSION,
                         crate::session_slot::test_observed_lease(extended.clone()),
@@ -749,6 +749,11 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
         runtime
+            .realization()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .renew_session_realization_projections(control.as_ref(), "local", "boot", timing)
             .await
             .unwrap(),
@@ -1052,6 +1057,11 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     renewed.expires_at_unix_ms += 10_000;
     assert!(
         managed
+            .realization()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .renew_session_realization_lease(
                 SESSION,
                 crate::session_slot::test_observed_lease(renewed)

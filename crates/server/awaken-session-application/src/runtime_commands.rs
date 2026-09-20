@@ -287,6 +287,12 @@ impl SessionApplication {
         })?;
         let snapshot = self
             .runtime
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await
             .map_err(crate::SessionProjectionRecoveryError::Rejected)?;
@@ -817,11 +823,27 @@ impl SessionApplication {
     }
 
     pub async fn runtime_owns_thread(&self, thread: &str) -> Result<bool, RunError> {
-        self.runtime.owns_thread(thread).await
+        self.runtime
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
+            .owns_thread(thread)
+            .await
     }
 
     pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
-        self.runtime.committed_messages(thread).await
+        self.runtime
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
+            .committed_messages(thread)
+            .await
     }
 
     /// Derived Managed child links; the Runtime reconstructs these from the
@@ -834,6 +856,12 @@ impl SessionApplication {
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
         self.runtime
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .coordinated_threads(session_id, observed_root)
             .await
     }
@@ -847,6 +875,12 @@ impl SessionApplication {
         thread_id: &str,
     ) -> Result<SessionUsage, RunError> {
         self.runtime
+            .budget()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "BudgetRuntime is unsupported by this runtime",
+                )
+            })?
             .session_thread_usage(session_id, thread_id)
             .await
     }
@@ -861,6 +895,12 @@ impl SessionApplication {
     ) -> Result<Option<Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>, RunError>
     {
         self.runtime
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .subscribe_session_thread_live(session_id, thread_id)
             .await
     }
@@ -875,6 +915,12 @@ impl SessionApplication {
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
         self.runtime
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .session_thread_recovery_snapshot(session_id, thread_id)
             .await
     }
@@ -885,6 +931,12 @@ impl SessionApplication {
         thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
         self.runtime
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .session_thread_disposition(session_id, thread_id)
             .await
     }
@@ -895,7 +947,16 @@ impl SessionApplication {
         thread_id: &str,
     ) -> Result<(), RunError> {
         let child = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
-        let links = self.runtime.coordinated_threads(session_id, None).await?;
+        let links = self
+            .runtime
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
+            .coordinated_threads(session_id, None)
+            .await?;
         if !links
             .iter()
             .any(|link| link.session_id == session_id && link.thread_id == child)
@@ -905,6 +966,12 @@ impl SessionApplication {
             ));
         }
         self.runtime
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .archive_session_thread(session_id, thread_id)
             .await
     }
@@ -916,16 +983,38 @@ impl SessionApplication {
         limit: usize,
     ) -> Result<RunLifecyclePage, RunError> {
         self.runtime
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .committed_run_lifecycle(thread, cursor, limit)
             .await
     }
 
     pub async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        self.runtime.pending_tool(thread).await
+        self.runtime
+            .streaming_runs()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "StreamingRunRuntime is unsupported by this runtime",
+                )
+            })?
+            .pending_tool(thread)
+            .await
     }
 
     pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.runtime.delegated_runs(thread).await
+        self.runtime
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
+            .delegated_runs(thread)
+            .await
     }
 
     pub async fn resolve_session_skills(
@@ -934,12 +1023,26 @@ impl SessionApplication {
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<ResolvedSkillBinding>, RunError> {
         self.runtime
+            .environment()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "EnvironmentRuntime is unsupported by this runtime",
+                )
+            })?
             .resolve_session_skills(workspace_id, skills)
             .await
     }
 
     pub async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
-        self.runtime.rebind_model(thread, model).await
+        self.runtime
+            .streaming_runs()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "StreamingRunRuntime is unsupported by this runtime",
+                )
+            })?
+            .rebind_model(thread, model)
+            .await
     }
 
     pub async fn run_streaming_attributed(
@@ -951,6 +1054,12 @@ impl SessionApplication {
         sink: Arc<dyn Sink>,
     ) -> Result<StepOutcome, RunError> {
         self.runtime
+            .streaming_runs()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "StreamingRunRuntime is unsupported by this runtime",
+                )
+            })?
             .run_streaming_attributed(agent, thread, content, data_subject_id, sink)
             .await
     }
@@ -977,7 +1086,15 @@ impl SessionApplication {
     }
 
     pub async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
-        self.runtime.interrupt(thread).await
+        self.runtime
+            .streaming_runs()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "StreamingRunRuntime is unsupported by this runtime",
+                )
+            })?
+            .interrupt(thread)
+            .await
     }
 
     pub async fn define_outcome(
@@ -988,6 +1105,12 @@ impl SessionApplication {
         max_iterations: u32,
     ) -> Result<OutcomeDrive, RunError> {
         self.runtime
+            .outcomes()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "OutcomeRuntime is unsupported by this runtime",
+                )
+            })?
             .define_outcome(thread, description, rubric, max_iterations)
             .await
     }
@@ -1001,12 +1124,26 @@ impl SessionApplication {
         max_iterations: u32,
     ) -> Result<u64, RunError> {
         self.runtime
+            .outcomes()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "OutcomeRuntime is unsupported by this runtime",
+                )
+            })?
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await
     }
 
     pub async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
-        self.runtime.continue_outcome(thread).await
+        self.runtime
+            .outcomes()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "OutcomeRuntime is unsupported by this runtime",
+                )
+            })?
+            .continue_outcome(thread)
+            .await
     }
 
     /// Project an exact terminal Outcome through the sole Runtime query port.
@@ -1017,12 +1154,21 @@ impl SessionApplication {
         outcome_id: &str,
     ) -> Result<Option<CommittedOutcomeProjection>, RunError> {
         self.runtime
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .committed_outcome_projection(thread, outcome_id)
             .await
     }
 
     pub async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
-        self.runtime.supports_mid_conversation_system(thread).await
+        match self.runtime.streaming_runs() {
+            Some(role) => role.supports_mid_conversation_system(thread).await,
+            None => false,
+        }
     }
 
     /// Aggregate current counters through an already observed relationship set
@@ -1056,11 +1202,26 @@ impl SessionApplication {
         additional_thread: Option<&str>,
         observed_links: Option<&[awaken_session_contract::CoordinatedThreadLink]>,
     ) -> Result<SessionUsage, RunError> {
-        let mut usage = self.runtime.session_usage(thread).await?;
+        let mut usage = self
+            .runtime
+            .budget()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "BudgetRuntime is unsupported by this runtime",
+                )
+            })?
+            .session_usage(thread)
+            .await?;
         let links = match observed_links {
             Some(links) => std::borrow::Cow::Borrowed(links),
             None => std::borrow::Cow::Owned(
                 self.runtime
+                    .coordination()
+                    .ok_or_else(|| {
+                        awaken_session_contract::RunError::unavailable(
+                            "CoordinationRuntime is unsupported by this runtime",
+                        )
+                    })?
                     .coordinated_threads(&awaken_session_contract::SessionId::from(thread), None)
                     .await?,
             ),
@@ -1077,6 +1238,12 @@ impl SessionApplication {
             }
             let child = self
                 .runtime
+                .budget()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "BudgetRuntime is unsupported by this runtime",
+                    )
+                })?
                 .session_thread_usage(
                     &awaken_session_contract::SessionId::from(thread),
                     &link.thread_id.0,
@@ -1089,6 +1256,12 @@ impl SessionApplication {
         {
             let current = self
                 .runtime
+                .budget()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "BudgetRuntime is unsupported by this runtime",
+                    )
+                })?
                 .session_thread_usage(
                     &awaken_session_contract::SessionId::from(thread),
                     additional_thread,
@@ -1113,6 +1286,9 @@ impl SessionApplication {
 
     #[must_use]
     pub fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
-        self.runtime.capabilities_for(thread)
+        self.runtime
+            .capability()
+            .map(|role| role.capabilities_for(thread))
+            .unwrap_or_default()
     }
 }
