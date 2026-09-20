@@ -389,8 +389,8 @@ pub(super) async fn prepare_runtime_routers(
         Some(profile) => environment_execution.with_cloud_native_credential_realization(profile),
         None => environment_execution,
     };
-    let environment_execution = match executable_environment_image_builds {
-        Some(builds) => environment_execution.with_image_readiness(builds),
+    let environment_execution = match executable_environment_image_builds.as_ref() {
+        Some(builds) => environment_execution.with_image_readiness(builds.clone()),
         None => environment_execution,
     };
     let environment_execution = Arc::new(environment_execution);
@@ -726,6 +726,18 @@ pub(super) async fn prepare_runtime_routers(
         session_application.set_managed_list_price_provider(provider);
     }
     let session_application = Arc::new(session_application);
+    if let Some(builds) = executable_environment_image_builds.as_ref() {
+        let application = session_application.clone();
+        builds
+            .install_transition_hint(Arc::new(move || {
+                application.request_lifecycle_reconciliation();
+            }))
+            .map_err(|error| error.to_string())?;
+        // Cover a fast build transition that completed between starting the
+        // image worker and installing this process-local hint. Notify retains
+        // one permit until the lifecycle supervisor begins waiting.
+        session_application.request_lifecycle_reconciliation();
+    }
     if let Some(publisher) = claim_fenced_artifact_publisher {
         publisher
             .install_session_control(session_application.clone())
