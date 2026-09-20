@@ -13,6 +13,7 @@ use super::{ClaimedSnapshotAuthority, DispatchWorker};
 use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{AttemptAdmission, Claimed, DispatchError, RunClaim, SettleOutcome};
+use crate::execution_capacity::ExecutionCapacity;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
@@ -34,6 +35,7 @@ pub(super) struct PhysicalAttemptRequest<'a> {
     pub live_input: LiveInput,
     pub recovery_mode: AttemptRecoveryMode,
     pub clock: Arc<dyn Clock>,
+    pub execution_capacity: Option<&'a ExecutionCapacity>,
 }
 
 impl<S: ControlDispatch + 'static> DispatchWorker<S> {
@@ -66,6 +68,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             live_input,
             recovery_mode,
             clock,
+            execution_capacity,
         } = request;
         // One claimed instruction owns both Run identity and Thread serialization.
         let claim = RunClaim::from(&claimed.lease);
@@ -165,6 +168,11 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             ));
         }
 
+        // Worker placement capacity starts at the same boundary as physical
+        // execution authority. Claim resolution, predecessor observation and a
+        // blocked admission retain their control task/lease but cannot consume a
+        // model/tool/Sandbox slot in the Worker heartbeat.
+        let _execution_capacity = execution_capacity.map(ExecutionCapacity::enter);
         let mut attempt_context = context.clone();
         attempt_context.physical_quiescence = Default::default();
         let quiescence = attempt_context.physical_quiescence.clone();

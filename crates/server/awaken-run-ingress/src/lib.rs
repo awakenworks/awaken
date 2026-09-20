@@ -20,6 +20,7 @@ mod clock;
 mod commit_fence;
 mod dispatch;
 mod dispatch_schema;
+mod execution_capacity;
 // Synchronous composition convenience for conformance and embedded fixtures.
 // Production Hosts compose DispatchWorker/DispatchPool directly and therefore
 // cannot depend on the former parallel ingress façade.

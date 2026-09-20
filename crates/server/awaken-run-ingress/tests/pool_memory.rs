@@ -608,6 +608,82 @@ impl WorkerResolver<MemoryDispatchStore> for MapResolver {
     }
 }
 
+struct GatedResolver {
+    worker: Arc<MemWorker>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for GatedResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        self.entered.notify_one();
+        self.release
+            .acquire()
+            .await
+            .expect("capacity test resolver gate")
+            .forget();
+        Ok(self.worker.clone())
+    }
+}
+
+#[tokio::test]
+async fn worker_capacity_starts_at_physical_admission_not_claim_resolution() {
+    // Cause/effect decision table WC1-WC3. C1 a mutation claim is resolving but
+    // has not crossed physical Attempt admission; C2 physical admission succeeds
+    // and Runtime remains active; C3 Runtime returns. Effects: E1 heartbeat
+    // capacity stays zero for C1; E2 it is exactly one for C2; E3 it returns to
+    // zero for C3. Rules: WC1=C1=>E1, WC2=C2=>E2, WC3=C3=>E3. This prevents
+    // blocked predecessor observation or slow resolution from consuming the
+    // Worker placement slots reserved for model/tool/Sandbox execution.
+    let resolver_release = Arc::new(tokio::sync::Semaphore::new(0));
+    let resolver_entered = Arc::new(tokio::sync::Notify::new());
+    let runtime_release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(runtime_release.clone());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(runtime, store.clone(), commit.clone());
+    let pool = DispatchPool::spawn(
+        store,
+        Arc::new(SystemClock),
+        "physical-capacity",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        Arc::new(GatedResolver {
+            worker,
+            entered: resolver_entered.clone(),
+            release: resolver_release.clone(),
+        }),
+        1,
+    );
+    pool.submit(activation_on("capacity-run", "capacity-thread"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), resolver_entered.notified())
+        .await
+        .expect("WC1 claim entered resolution");
+    assert_eq!(pool.in_flight(), 0, "WC1/E1");
+
+    resolver_release.add_permits(1);
+    assert!(
+        wait_for(|| ran.load(std::sync::atomic::Ordering::SeqCst) == 1).await,
+        "WC2 Runtime did not enter"
+    );
+    assert_eq!(pool.in_flight(), 1, "WC2/E2");
+
+    runtime_release.add_permits(1);
+    assert!(
+        wait_for(|| commit.run_state(&RunId("capacity-run".into())).is_some()).await,
+        "WC3 Runtime did not settle"
+    );
+    assert!(wait_for(|| pool.in_flight() == 0).await, "WC3/E3");
+    pool.shutdown().await;
+}
+
 #[tokio::test]
 async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
     // Cause/effect decision table BP1. C1 an old physical Attempt remains
@@ -679,6 +755,7 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
         .await,
         "BP1/C2 replacement claim did not reach physical admission"
     );
+    assert_eq!(pool.in_flight(), 0, "BP1/E3 heartbeat capacity is free");
     store
         .enqueue(RunDispatch::new(activation_on(
             "unrelated",
