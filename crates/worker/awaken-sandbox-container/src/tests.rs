@@ -2907,6 +2907,9 @@ struct FakeState {
     artifacts: Vec<pc::Artifact>,
     blobs: HashMap<String, Vec<u8>>,
     fail_create: bool,
+    /// Makes every exec refuse, so a test can drive the reaper's failure edge
+    /// against a container the fake still reports as running.
+    fail_spawn: bool,
     may_have_committed_create: bool,
     expire_effect_fence_once: bool,
     creation_response_gate: Option<(&'static str, Arc<tokio::sync::Semaphore>)>,
@@ -3809,6 +3812,9 @@ impl ContainerRuntime for FakeRuntime {
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
         if !self.st.lock().unwrap().alive.contains_key(container_id) {
             return Err(RuntimeError::NotFound(container_id.into()));
+        }
+        if self.st.lock().unwrap().fail_spawn {
+            return Err(RuntimeError::Backend("fake runtime refuses to exec".into()));
         }
         let mut state = self.st.lock().unwrap();
         let id = format!("exec-{}", state.spawned.len());
@@ -7375,4 +7381,149 @@ async fn inline_bytes_hash_mismatch_fails_before_container_start() {
     .expect_err("corrupt binary content must fail closed");
 
     assert!(error.to_string().contains("hash mismatch"), "{error}");
+}
+
+/// Whether the environment asked its container to forget the execs it started.
+fn reaped(runtime: &FakeRuntime) -> bool {
+    runtime.st.lock().unwrap().spawned.iter().any(|(_, argv)| {
+        argv.iter()
+            .any(|arg| arg.contains(crate::exec_attempts::EXEC_PID_DIR))
+    })
+}
+
+#[tokio::test]
+async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
+    /* Exec responsibility table. Causes: C1 the environment started a process
+     * through `Sandbox::spawn`; C2 through `spawn_agent`; C3 it never exec'd
+     * at all; C4 disposal has begun; C5 the container is already stopped or
+     * absent; C6 the container is still running and refuses to reap. Effects:
+     * E1 disposal makes the container forget every attempt (the reaper runs);
+     * E2 an environment that never exec'd is never asked to reap, so a runtime
+     * that cannot exec keeps its fail-closed inherit unreachable; E3 once
+     * disposal has begun every Session spawn edge refuses, because the reaper
+     * enumerates once and a process started after that sweep would still be
+     * writing when Secret write-back and the Memory harvest read the
+     * workspace; E4 disposal completes anyway, because what reaping is for is
+     * already true; E5 disposal fails closed. Rules: R1 C1 => E1; R2 C2 => E1;
+     * R3 C3 => E2; R4 (C1|C2)+C4 => E3; R5 C1+C5(stopped) => E4;
+     * R6 C1+C6 => E5; R7 C1+C5(absent) => E4.
+     *
+     * R1 is the edge that had no record at all: `Sandbox::spawn` never
+     * counted its attempt, so `reap_exec_orphans` read "nothing was started"
+     * and skipped the sweep outright — which also meant R5/R6/R7 could not
+     * arise, because the reaper never ran for that edge. */
+    let mountless = || {
+        let mut spec = spec("exec-record");
+        spec.mounts.clear();
+        spec.env.clear();
+        spec
+    };
+
+    for (rule, agent_edge) in [("R1", false), ("R2", true)] {
+        let runtime = Arc::new(FakeRuntime::default());
+        let provider = ContainerProvider::new(runtime.clone(), "fixture");
+        let sandbox = provider.create_container(&mountless()).await.unwrap();
+        if agent_edge {
+            sandbox
+                .spawn_agent(pc::Command::new(["sh", "-c", "true"]))
+                .await
+                .expect("agent exec starts");
+        } else {
+            pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "true"]))
+                .await
+                .expect("process exec starts");
+        }
+        assert!(
+            !reaped(runtime.as_ref()),
+            "{rule} nothing reaped before disposal"
+        );
+
+        // R4: the gate closes at disposal, so prove it on this same live
+        // environment before disposing it. This is the very call disposal
+        // makes; that disposal makes it is asserted separately below.
+        sandbox.seal_exec_attempts();
+        assert!(
+            matches!(
+                pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "true"])).await,
+                Err(pc::SandboxError::Gone(_))
+            ),
+            "{rule}/R4 a sealed environment refuses the process edge",
+        );
+        assert!(
+            matches!(
+                sandbox
+                    .spawn_agent(pc::Command::new(["sh", "-c", "true"]))
+                    .await,
+                Err(pc::SandboxError::Gone(_))
+            ),
+            "{rule}/R4 a sealed environment refuses the agent edge",
+        );
+
+        sandbox.dispose().await.expect("dispose");
+        assert!(
+            reaped(runtime.as_ref()),
+            "{rule}/E1 disposal reaped the attempt"
+        );
+    }
+
+    // R5: the container is already gone, so the obligation reaping carries is
+    // already met and disposal must not be stranded over it. Fail-closed: only
+    // an observation that the container is not running admits the tolerance.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = ContainerProvider::new(runtime.clone(), "fixture");
+    let sandbox = provider.create_container(&mountless()).await.unwrap();
+    pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "true"]))
+        .await
+        .expect("R5 process exec starts");
+    {
+        let mut state = runtime.st.lock().unwrap();
+        state.alive.insert("cid-exec-record".into(), false);
+        state.fail_spawn = true;
+    }
+    sandbox
+        .dispose()
+        .await
+        .expect("R5 a stopped container does not strand disposal");
+
+    // R7: the container is not merely stopped but absent. Reaping cannot be
+    // asked of what is gone, and its obligation is met a fortiori.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = ContainerProvider::new(runtime.clone(), "fixture");
+    let sandbox = provider.create_container(&mountless()).await.unwrap();
+    pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "true"]))
+        .await
+        .expect("R7 process exec starts");
+    runtime.st.lock().unwrap().alive.remove("cid-exec-record");
+    sandbox
+        .dispose()
+        .await
+        .expect("R7 an absent container does not strand disposal");
+
+    // R6: the container is still running and still refuses to reap. That is
+    // the fail-closed half — something may be writing while the harvest reads
+    // — so disposal must surface it rather than proceed.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = ContainerProvider::new(runtime.clone(), "fixture");
+    let sandbox = provider.create_container(&mountless()).await.unwrap();
+    pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "true"]))
+        .await
+        .expect("R6 process exec starts");
+    runtime.st.lock().unwrap().fail_spawn = true;
+    assert!(
+        sandbox.dispose().await.is_err(),
+        "R6 a live container that will not reap fails disposal closed",
+    );
+
+    // R3: never exec'd, so the reaper is never demanded.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = ContainerProvider::new(runtime.clone(), "fixture");
+    let sandbox = provider.create_container(&mountless()).await.unwrap();
+    sandbox.dispose().await.expect("dispose");
+    assert!(!reaped(runtime.as_ref()), "R3/E2 no reap was demanded");
+    // Disposal seals whether or not it had anything to reap: an environment
+    // that never exec'd must not acquire its first process during cleanup.
+    assert!(
+        sandbox.exec_attempts_sealed(),
+        "R3/E3 disposal closed the environment to new attempts",
+    );
 }
