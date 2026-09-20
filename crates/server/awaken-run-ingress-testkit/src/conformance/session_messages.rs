@@ -37,7 +37,7 @@
 /// | AR8 | Done | exact | Y | consumed | initial | exact | E6 |
 /// | AR9 | Awaiting/Done | exact | Y | - | - | changed | E7 |
 pub async fn assert_session_reply_activity_rotation_conformance(
-    store: &dyn ControlDispatch,
+    store: &dyn DurableControlDispatch,
     ns: &str,
 ) {
     assert_session_reply_activity_rotation_conformance_with_clock(
@@ -49,7 +49,7 @@ pub async fn assert_session_reply_activity_rotation_conformance(
 }
 
 pub async fn assert_session_reply_activity_rotation_conformance_with_clock(
-    store: &dyn ControlDispatch,
+    store: &dyn DurableControlDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -621,13 +621,16 @@ pub async fn assert_session_reply_activity_rotation_conformance_with_clock(
 /// | RC12 | direct | Y | absent | N | root | foreign affinity | E3, no cap bypass |
 /// | RC13 | two direct | Y | absent | N | root | same Thread | E1+E6 |
 /// | RC14 | direct | wrong Run | absent | N | root | - | E3, no cross-Run binding |
-pub async fn assert_atomic_report_continuation_conformance(store: &dyn ControlDispatch, ns: &str) {
+pub async fn assert_atomic_report_continuation_conformance(
+    store: &dyn DurableControlDispatch,
+    ns: &str,
+) {
     assert_atomic_report_continuation_conformance_with_clock(store, ns, &AuthoritativeWallClock)
         .await;
 }
 
 pub async fn assert_atomic_report_continuation_conformance_with_clock(
-    store: &dyn ControlDispatch,
+    store: &dyn DurableControlDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {

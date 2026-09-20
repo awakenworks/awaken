@@ -1,0 +1,51 @@
+pub mod awaken_session_types
+pub struct awaken_session_types::SessionContractErrorDetail(_)
+impl awaken_session_types::SessionContractErrorDetail
+pub fn awaken_session_types::SessionContractErrorDetail::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<&str> for awaken_session_types::SessionContractErrorDetail
+pub fn awaken_session_types::SessionContractErrorDetail::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_session_types::SessionContractErrorDetail
+pub fn awaken_session_types::SessionContractErrorDetail::from(alloc::string::String) -> Self
+impl core::convert::From<awaken_session_types::SessionContractErrorDetail> for alloc::string::String
+pub fn alloc::string::String::from(awaken_session_types::SessionContractErrorDetail) -> Self
+impl core::fmt::Display for awaken_session_types::SessionContractErrorDetail
+pub fn awaken_session_types::SessionContractErrorDetail::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_session_types::SessionId(_)
+impl awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::as_str(&self) -> &str
+pub fn awaken_session_types::SessionId::into_string(self) -> alloc::string::String
+pub fn awaken_session_types::SessionId::is_empty(&self) -> bool
+pub fn awaken_session_types::SessionId::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::borrow::Borrow<str> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::borrow(&self) -> &str
+impl core::cmp::PartialEq<&awaken_session_types::SessionId> for alloc::string::String
+pub fn alloc::string::String::eq(&self, &&awaken_session_types::SessionId) -> bool
+impl core::cmp::PartialEq<&awaken_session_types::SessionId> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::eq(&self, &&awaken_session_types::SessionId) -> bool
+impl core::cmp::PartialEq<&str> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::eq(&self, &&str) -> bool
+impl core::cmp::PartialEq<alloc::string::String> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::eq(&self, &alloc::string::String) -> bool
+impl core::cmp::PartialEq<awaken_session_types::SessionId> for &awaken_session_types::SessionId
+pub fn &awaken_session_types::SessionId::eq(&self, &awaken_session_types::SessionId) -> bool
+impl core::cmp::PartialEq<awaken_session_types::SessionId> for &str
+pub fn &str::eq(&self, &awaken_session_types::SessionId) -> bool
+impl core::cmp::PartialEq<awaken_session_types::SessionId> for alloc::string::String
+pub fn alloc::string::String::eq(&self, &awaken_session_types::SessionId) -> bool
+impl core::cmp::PartialEq<awaken_session_types::SessionId> for str
+pub fn str::eq(&self, &awaken_session_types::SessionId) -> bool
+impl core::cmp::PartialEq<str> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::eq(&self, &str) -> bool
+impl core::convert::AsRef<str> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::as_ref(&self) -> &str
+impl core::convert::From<&alloc::string::String> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::from(&alloc::string::String) -> Self
+impl core::convert::From<&str> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::from(alloc::string::String) -> Self
+impl core::convert::From<awaken_session_types::SessionId> for alloc::string::String
+pub fn alloc::string::String::from(awaken_session_types::SessionId) -> Self
+impl core::fmt::Display for awaken_session_types::SessionId
+pub fn awaken_session_types::SessionId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_session_types::SessionRevision(pub u64)

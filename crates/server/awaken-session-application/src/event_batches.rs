@@ -387,7 +387,9 @@ impl SessionApplication {
                 true,
             )
             .await?;
-        batch.require_accepted()?;
+        batch
+            .require_accepted()
+            .map_err(|_| awaken_session_contract::event_admission_closed())?;
         Ok(batch)
     }
 
@@ -415,7 +417,9 @@ impl SessionApplication {
                 false,
             )
             .await?;
-        batch.require_accepted()?;
+        batch
+            .require_accepted()
+            .map_err(|_| awaken_session_contract::event_admission_closed())?;
         let drive_error = self
             .drive_session_event_batches(session_id, Some(&batch.batch_id))
             .await

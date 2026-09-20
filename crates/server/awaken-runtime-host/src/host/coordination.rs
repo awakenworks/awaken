@@ -6,7 +6,7 @@
 //! registry, receipt map, mailbox, or background executor.
 
 use super::*;
-use awaken_run_ingress_contract::ControlDispatchQueue;
+use awaken_run_ingress_contract::{ControlDispatchQueue, SessionContinuationOutbox as _};
 
 mod agent_message_source;
 mod reads;

@@ -18,11 +18,11 @@ use crate::{
 };
 
 fn e(x: impl ToString) -> FileStoreError {
-    FileStoreError(x.to_string())
+    FileStoreError(x.to_string().into())
 }
 
 fn ce(x: impl ToString) -> FileCatalogError {
-    FileCatalogError::Storage(x.to_string())
+    FileCatalogError::Storage(x.to_string().into())
 }
 
 fn row_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
@@ -337,7 +337,7 @@ impl FileCatalog for SqliteFileStore {
                     )
                     .map_err(e)?
             } else {
-                return Ok(Err(format!("file id `{}` already exists", record.id)));
+                return Ok(Err(format!("file id `{}` already exists", record.id).into()));
             };
             if inserted == 0 && !same_harvest_identity(&lookup, &record) {
                 return Ok(Err(

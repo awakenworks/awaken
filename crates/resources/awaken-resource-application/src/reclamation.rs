@@ -133,5 +133,5 @@ impl ResourcePhysicalReclaimer for ResourcePhysicalCleanup {
 }
 
 fn storage(error: impl std::fmt::Display) -> ResourcePurgeError {
-    ResourcePurgeError::Storage(error.to_string())
+    ResourcePurgeError::Storage(error.to_string().into())
 }

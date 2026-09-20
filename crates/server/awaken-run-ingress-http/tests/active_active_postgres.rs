@@ -28,6 +28,7 @@ use awaken_run_ingress::{
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
     WorkerRegistration, WorkerSnapshot, WorkerState,
 };
+use awaken_run_ingress_contract::ClaimedCheckpointTransport as _;
 use awaken_run_ingress_http::{
     WorkerDispatchService, dispatch_transport_router_with_service,
     registered_worker_transport_router_with_services,

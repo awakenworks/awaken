@@ -136,7 +136,7 @@ mod kani_proofs {
 }
 
 fn e(x: impl ToString) -> FileStoreError {
-    FileStoreError(x.to_string())
+    FileStoreError(x.to_string().into())
 }
 
 /// An object-store-backed [`FileStore`]. `prefix` namespaces the keys (e.g. `blobs`).

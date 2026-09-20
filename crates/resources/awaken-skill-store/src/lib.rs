@@ -82,10 +82,7 @@ pub(crate) fn validate_create(
 }
 
 fn corrupt(detail: impl Into<String>) -> SkillStoreError {
-    SkillStoreError::Storage(format!(
-        "invalid persisted Skill aggregate: {}",
-        detail.into()
-    ))
+    SkillStoreError::Storage(format!("invalid persisted Skill aggregate: {}", detail.into()).into())
 }
 
 /// Decode one persisted aggregate and re-establish every invariant that a valid
@@ -567,9 +564,9 @@ impl FsSkillStore {
             .read(true)
             .write(true)
             .open(self.root.join(".awaken-skill.lock"))
-            .map_err(|error| SkillStoreError::Io(error.to_string()))?;
+            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
         file.lock_shared()
-            .map_err(|error| SkillStoreError::Io(error.to_string()))?;
+            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
         Ok(file)
     }
 
@@ -578,9 +575,9 @@ impl FsSkillStore {
             .read(true)
             .write(true)
             .open(self.root.join(".awaken-skill.lock"))
-            .map_err(|error| SkillStoreError::Io(error.to_string()))?;
+            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
         file.lock()
-            .map_err(|error| SkillStoreError::Io(error.to_string()))?;
+            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
         Ok(file)
     }
 
@@ -592,13 +589,14 @@ impl FsSkillStore {
         match std::fs::read(self.aggregate_path(workspace, id)) {
             Ok(bytes) => decode_aggregate(&bytes, workspace, id).map(Some),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(SkillStoreError::Io(error.to_string())),
+            Err(error) => Err(SkillStoreError::Io(error.to_string().into())),
         }
     }
 
     fn write_aggregate(&self, aggregate: &SkillAggregate) -> Result<(), SkillStoreError> {
         let dir = self.ws_dir(aggregate.definition.workspace_id.as_str());
-        std::fs::create_dir_all(&dir).map_err(|error| SkillStoreError::Io(error.to_string()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
         sync_skill_directory(&self.root)?;
         let path = self.aggregate_path(
             aggregate.definition.workspace_id.as_str(),
@@ -610,7 +608,7 @@ impl FsSkillStore {
             FS_SKILL_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         let bytes = serde_json::to_vec(aggregate)
-            .map_err(|error| SkillStoreError::Storage(error.to_string()))?;
+            .map_err(|error| SkillStoreError::Storage(error.to_string().into()))?;
         let publish = (|| -> std::io::Result<()> {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -623,7 +621,7 @@ impl FsSkillStore {
         })();
         if let Err(error) = publish {
             let _ = std::fs::remove_file(&temp);
-            return Err(SkillStoreError::Io(error.to_string()));
+            return Err(SkillStoreError::Io(error.to_string().into()));
         }
         Ok(())
     }
@@ -636,19 +634,19 @@ impl FsSkillStore {
         let read_dir = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(SkillStoreError::Io(error.to_string())),
+            Err(error) => return Err(SkillStoreError::Io(error.to_string().into())),
         };
         let mut out = Vec::new();
         for entry in read_dir {
             let path = entry
-                .map_err(|error| SkillStoreError::Io(error.to_string()))?
+                .map_err(|error| SkillStoreError::Io(error.to_string().into()))?
                 .path();
             if path
                 .extension()
                 .is_some_and(|extension| extension == "json")
             {
-                let bytes =
-                    std::fs::read(&path).map_err(|error| SkillStoreError::Io(error.to_string()))?;
+                let bytes = std::fs::read(&path)
+                    .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
                 let aggregate: SkillAggregate = serde_json::from_slice(&bytes)
                     .map_err(|error| corrupt(format!("malformed JSON: {error}")))?;
                 let aggregate =
@@ -672,13 +670,13 @@ impl SkillStore for FsSkillStore {
     async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
         let _guard = self.shared_lock()?;
         let mut workspaces = Vec::new();
-        for entry in
-            std::fs::read_dir(&self.root).map_err(|error| SkillStoreError::Io(error.to_string()))?
+        for entry in std::fs::read_dir(&self.root)
+            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?
         {
-            let entry = entry.map_err(|error| SkillStoreError::Io(error.to_string()))?;
+            let entry = entry.map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
             if entry
                 .file_type()
-                .map_err(|error| SkillStoreError::Io(error.to_string()))?
+                .map_err(|error| SkillStoreError::Io(error.to_string().into()))?
                 .is_dir()
             {
                 let encoded = entry
@@ -863,7 +861,7 @@ impl SkillStore for FsSkillStore {
                 Ok(aggregate.versions.len() as u64)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(error) => Err(SkillStoreError::Io(error.to_string())),
+            Err(error) => Err(SkillStoreError::Io(error.to_string().into())),
         }
     }
 }
@@ -871,7 +869,7 @@ impl SkillStore for FsSkillStore {
 fn sync_skill_directory(path: &Path) -> Result<(), SkillStoreError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| SkillStoreError::Io(error.to_string()))
+        .map_err(|error| SkillStoreError::Io(error.to_string().into()))
 }
 
 #[cfg(test)]

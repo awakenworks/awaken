@@ -1,0 +1,91 @@
+pub mod awaken_session_budget_contract
+pub enum awaken_session_budget_contract::ManagedListPriceError
+pub awaken_session_budget_contract::ManagedListPriceError::InvalidSnapshot(alloc::string::String)
+pub awaken_session_budget_contract::ManagedListPriceError::MissingModel(alloc::string::String)
+pub awaken_session_budget_contract::ManagedListPriceError::Unavailable(awaken_session_types::SessionContractErrorDetail)
+pub enum awaken_session_budget_contract::SessionBudgetState
+pub awaken_session_budget_contract::SessionBudgetState::Absent
+pub awaken_session_budget_contract::SessionBudgetState::Active
+pub awaken_session_budget_contract::SessionBudgetState::Active::consumed_numerator: u128
+pub awaken_session_budget_contract::SessionBudgetState::Active::max_list_cost_minor: u64
+pub awaken_session_budget_contract::SessionBudgetState::Active::reach_transitions: alloc::vec::Vec<awaken_session_budget_contract::BudgetReachTransition>
+pub awaken_session_budget_contract::SessionBudgetState::Active::snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot
+pub awaken_session_budget_contract::SessionBudgetState::Active::usage_cursor: awaken_session_budget_contract::ManagedBudgetUsageCursor
+pub awaken_session_budget_contract::SessionBudgetState::Removed
+pub awaken_session_budget_contract::SessionBudgetState::Removed::consumed_numerator: u128
+pub awaken_session_budget_contract::SessionBudgetState::Removed::reach_transitions: alloc::vec::Vec<awaken_session_budget_contract::BudgetReachTransition>
+pub awaken_session_budget_contract::SessionBudgetState::Removed::snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot
+pub awaken_session_budget_contract::SessionBudgetState::Removed::usage_cursor: awaken_session_budget_contract::ManagedBudgetUsageCursor
+impl awaken_session_budget_contract::SessionBudgetState
+pub const awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR: u128
+pub const awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD: u128
+pub fn awaken_session_budget_contract::SessionBudgetState::active(u64, awaken_session_budget_contract::ManagedListPriceSnapshot) -> Self
+pub fn awaken_session_budget_contract::SessionBudgetState::can_admit_model_request(&self) -> bool
+pub fn awaken_session_budget_contract::SessionBudgetState::max_list_cost_minor(&self) -> core::option::Option<u64>
+pub fn awaken_session_budget_contract::SessionBudgetState::price_snapshot(&self) -> core::option::Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>
+pub fn awaken_session_budget_contract::SessionBudgetState::reach_transitions(&self) -> &[awaken_session_budget_contract::BudgetReachTransition]
+pub fn awaken_session_budget_contract::SessionBudgetState::reconcile_cumulative_usage(&mut self, awaken_session_budget_contract::ManagedBudgetUsageCursor) -> core::result::Result<bool, awaken_session_budget_contract::ManagedListPriceError>
+pub fn awaken_session_budget_contract::SessionBudgetState::record_reach_transition(&mut self) -> core::result::Result<core::option::Option<awaken_session_budget_contract::BudgetReachTransition>, awaken_session_budget_contract::ManagedListPriceError>
+pub fn awaken_session_budget_contract::SessionBudgetState::usage_cursor(&self) -> core::option::Option<&awaken_session_budget_contract::ManagedBudgetUsageCursor>
+pub struct awaken_session_budget_contract::BudgetReachTransition
+pub awaken_session_budget_contract::BudgetReachTransition::consumed_numerator: u128
+pub awaken_session_budget_contract::BudgetReachTransition::generation: u64
+pub awaken_session_budget_contract::BudgetReachTransition::max_list_cost_minor: u64
+pub awaken_session_budget_contract::BudgetReachTransition::price_snapshot_id: alloc::string::String
+pub awaken_session_budget_contract::BudgetReachTransition::usage_cursor: awaken_session_budget_contract::ManagedBudgetUsageCursor
+impl awaken_session_budget_contract::BudgetReachTransition
+pub fn awaken_session_budget_contract::BudgetReachTransition::public_list_cost_minor(&self) -> core::option::Option<u64>
+pub struct awaken_session_budget_contract::ManagedBudgetUsageCursor
+pub awaken_session_budget_contract::ManagedBudgetUsageCursor::active_seconds: u64
+pub awaken_session_budget_contract::ManagedBudgetUsageCursor::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_session_budget_contract::ManagedModelUsageCursor>
+pub awaken_session_budget_contract::ManagedBudgetUsageCursor::web_fetch_requests: u64
+pub awaken_session_budget_contract::ManagedBudgetUsageCursor::web_search_requests: u64
+impl awaken_session_budget_contract::ManagedBudgetUsageCursor
+pub fn awaken_session_budget_contract::ManagedBudgetUsageCursor::from_session_usage(&awaken_session_budget_contract::SessionUsage, core::option::Option<&str>) -> core::result::Result<Self, awaken_session_budget_contract::ManagedListPriceError>
+pub fn awaken_session_budget_contract::ManagedBudgetUsageCursor::is_at_least(&self, &Self) -> bool
+pub fn awaken_session_budget_contract::ManagedBudgetUsageCursor::to_session_usage(&self) -> core::result::Result<awaken_session_budget_contract::SessionUsage, awaken_session_budget_contract::ManagedListPriceError>
+pub struct awaken_session_budget_contract::ManagedListPriceRequest
+pub awaken_session_budget_contract::ManagedListPriceRequest::model_refs: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_budget_contract::ManagedListPriceRequest::occurred_at_unix_ms: u64
+pub struct awaken_session_budget_contract::ManagedListPriceSnapshot
+pub awaken_session_budget_contract::ManagedListPriceSnapshot::arithmetic_version: u32
+pub awaken_session_budget_contract::ManagedListPriceSnapshot::effective_at_unix_ms: u64
+pub awaken_session_budget_contract::ManagedListPriceSnapshot::fingerprint: alloc::string::String
+pub awaken_session_budget_contract::ManagedListPriceSnapshot::model_rates: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_session_budget_contract::ManagedTokenListRates>
+pub awaken_session_budget_contract::ManagedListPriceSnapshot::runtime_rates: awaken_session_budget_contract::ManagedRuntimeListRates
+pub awaken_session_budget_contract::ManagedListPriceSnapshot::snapshot_id: alloc::string::String
+pub awaken_session_budget_contract::ManagedListPriceSnapshot::version: u32
+impl awaken_session_budget_contract::ManagedListPriceSnapshot
+pub fn awaken_session_budget_contract::ManagedListPriceSnapshot::public_usage_list_cost_minor(&self, awaken_session_budget_contract::ManagedBudgetUsageCursor) -> core::result::Result<u64, awaken_session_budget_contract::ManagedListPriceError>
+pub fn awaken_session_budget_contract::ManagedListPriceSnapshot::usage_cost_numerator(&self, awaken_session_budget_contract::ManagedBudgetUsageCursor) -> core::result::Result<u128, awaken_session_budget_contract::ManagedListPriceError>
+pub fn awaken_session_budget_contract::ManagedListPriceSnapshot::validate(&self, &[alloc::string::String]) -> core::result::Result<(), awaken_session_budget_contract::ManagedListPriceError>
+pub struct awaken_session_budget_contract::ManagedModelUsageCursor
+pub awaken_session_budget_contract::ManagedModelUsageCursor::cache_creation_tokens: u64
+pub awaken_session_budget_contract::ManagedModelUsageCursor::cache_read_tokens: u64
+pub awaken_session_budget_contract::ManagedModelUsageCursor::input_tokens: u64
+pub awaken_session_budget_contract::ManagedModelUsageCursor::output_tokens: u64
+pub struct awaken_session_budget_contract::ManagedRuntimeListRates
+pub awaken_session_budget_contract::ManagedRuntimeListRates::active_micros_per_million_seconds: u64
+pub awaken_session_budget_contract::ManagedRuntimeListRates::web_fetch_micros_per_request: u64
+pub awaken_session_budget_contract::ManagedRuntimeListRates::web_search_micros_per_request: u64
+pub struct awaken_session_budget_contract::ManagedTokenListRates
+pub awaken_session_budget_contract::ManagedTokenListRates::cache_creation_micros_per_million: u64
+pub awaken_session_budget_contract::ManagedTokenListRates::cache_read_micros_per_million: u64
+pub awaken_session_budget_contract::ManagedTokenListRates::input_micros_per_million: u64
+pub awaken_session_budget_contract::ManagedTokenListRates::output_micros_per_million: u64
+pub struct awaken_session_budget_contract::SessionModelUsage
+pub awaken_session_budget_contract::SessionModelUsage::cache_creation_tokens: u64
+pub awaken_session_budget_contract::SessionModelUsage::cache_read_tokens: u64
+pub awaken_session_budget_contract::SessionModelUsage::input_tokens: u64
+pub awaken_session_budget_contract::SessionModelUsage::output_tokens: u64
+pub struct awaken_session_budget_contract::SessionUsage
+pub awaken_session_budget_contract::SessionUsage::active_seconds: u64
+pub awaken_session_budget_contract::SessionUsage::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_session_budget_contract::SessionModelUsage>
+pub awaken_session_budget_contract::SessionUsage::cache_creation_tokens: u64
+pub awaken_session_budget_contract::SessionUsage::cache_read_tokens: u64
+pub awaken_session_budget_contract::SessionUsage::input_tokens: u64
+pub awaken_session_budget_contract::SessionUsage::output_tokens: u64
+pub awaken_session_budget_contract::SessionUsage::web_fetch_requests: u64
+pub awaken_session_budget_contract::SessionUsage::web_search_requests: u64
+pub trait awaken_session_budget_contract::ManagedListPriceProvider: core::marker::Send + core::marker::Sync
+pub fn awaken_session_budget_contract::ManagedListPriceProvider::resolve_snapshot<'life0, 'async_trait>(&'life0 self, awaken_session_budget_contract::ManagedListPriceRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_budget_contract::ManagedListPriceSnapshot, awaken_session_budget_contract::ManagedListPriceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

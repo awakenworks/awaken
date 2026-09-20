@@ -649,9 +649,9 @@ mod tests {
         ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
             let call = self.call.fetch_add(1, Ordering::SeqCst) + 1;
             if call == self.fail_on {
-                Err(ResourcePurgeError::Storage(format!(
-                    "injected guard failure on call {call}"
-                )))
+                Err(ResourcePurgeError::Storage(
+                    format!("injected guard failure on call {call}").into(),
+                ))
             } else {
                 Ok(Vec::new())
             }

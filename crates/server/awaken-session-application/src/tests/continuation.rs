@@ -1472,7 +1472,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
         panic!("C1 fixture is not suspending")
     };
     assert_eq!(
-        awaken_session_contract::SessionRealizationControl::authorize_checkpoint_release_artifact_effect(
+        awaken_session_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
             &app,
             &SessionId::from("checkpoint-artifact-auth"),
             operation,
@@ -1484,7 +1484,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
     let mut stale = operation.clone();
     stale.effect_id.push_str("-stale");
     assert_eq!(
-        awaken_session_contract::SessionRealizationControl::authorize_checkpoint_release_artifact_effect(
+        awaken_session_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
             &app,
             &SessionId::from("checkpoint-artifact-auth"),
             &stale,
@@ -1505,7 +1505,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert_eq!(
-        awaken_session_contract::SessionRealizationControl::authorize_checkpoint_release_artifact_effect(
+        awaken_session_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
             &resident_app,
             &SessionId::from("checkpoint-artifact-not-ready"),
             operation,

@@ -6,9 +6,9 @@
 //! retry record, receipt, or topology-specific state.
 
 use awaken_session_contract::{
-    RunError, SessionRealizationControl, SessionRealizationControlFailure,
-    SessionRealizationDriveError, SessionRepositoryPublicationEffect, SessionRuntime,
-    SessionTerminalCleanupAction, SessionTerminalCleanupDisposalEffect,
+    RunError, SessionRealizationControlFailure, SessionRealizationDriveError,
+    SessionRepositoryPublicationEffect, SessionRuntime, SessionTerminalCleanupAction,
+    SessionTerminalCleanupControl, SessionTerminalCleanupDisposalEffect,
     SessionTerminalCleanupEffect, SessionTerminalCleanupWork,
     realization_lease_generation_authorizes,
 };
@@ -38,7 +38,7 @@ fn workspace_matches(expected: &str, authorized: &str) -> Result<(), SessionReal
 }
 
 async fn next_work(
-    control: &dyn SessionRealizationControl,
+    control: &dyn SessionTerminalCleanupControl,
     runtime: &dyn SessionRuntime,
     session_id: &awaken_session_contract::SessionId,
     lease: &awaken_session_contract::SessionRealizationLease,
@@ -74,7 +74,7 @@ async fn next_work(
 pub async fn drive_session_terminal_cleanup(
     session_id: &awaken_session_contract::SessionId,
     asserted_lease: &awaken_session_contract::SessionRealizationLease,
-    control: &dyn SessionRealizationControl,
+    control: &dyn SessionTerminalCleanupControl,
     runtime: &dyn SessionRuntime,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
     let mut lease = asserted_lease.clone();
@@ -384,11 +384,9 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_session_contract::{
-        AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-        FailSessionRealization, FrozenSessionProjection, SessionCleanupCommand,
-        SessionCleanupDisposalReceipt, SessionCleanupOperation, SessionRealizationDirective,
-        SessionTerminalCleanupAssignment, SessionTerminalCleanupWork, StepOutcome,
-        ToolPermissionDecision,
+        FrozenSessionProjection, SessionCleanupCommand, SessionCleanupDisposalReceipt,
+        SessionCleanupOperation, SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
+        StepOutcome, ToolPermissionDecision,
     };
     use std::{
         collections::VecDeque,
@@ -531,33 +529,15 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl SessionRealizationControl for RecordingControl {
-        async fn begin_session_realization(
+    impl awaken_session_contract::SessionTerminalCleanupQueue for RecordingControl {
+        async fn claim_next_terminal_cleanup(
             &self,
-            _command: BeginSessionRealization,
-        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-            unreachable!("terminal-only fixture")
-        }
-
-        async fn activate_session_realization(
-            &self,
-            _command: ActivateSessionRealization,
-        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-            unreachable!("terminal-only fixture")
-        }
-
-        async fn acknowledge_session_realization(
-            &self,
-            _command: AcknowledgeSessionRealization,
-        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-            unreachable!("terminal-only fixture")
-        }
-
-        async fn fail_session_realization(
-            &self,
-            _command: FailSessionRealization,
-        ) -> Result<(), SessionRealizationControlFailure> {
-            unreachable!("terminal-only fixture")
+            _target: awaken_session_contract::SessionRealizationTarget,
+        ) -> Result<
+            Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
+            SessionRealizationControlFailure,
+        > {
+            Ok(None)
         }
 
         async fn terminal_cleanup_work(
@@ -568,7 +548,69 @@ mod tests {
             self.events.lock().unwrap().push("poll".into());
             Ok(self.work.lock().unwrap().pop_front())
         }
+    }
 
+    #[async_trait::async_trait]
+    impl awaken_session_contract::SessionTerminalPreparationControl for RecordingControl {
+        async fn authorize_terminal_cleanup_effect(
+            &self,
+            effect: &SessionTerminalCleanupEffect,
+        ) -> Result<
+            awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+            SessionRealizationControlFailure,
+        > {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("authorize:{}", effect.command.thread_id));
+            if self.stale_authorization_once.swap(false, Ordering::SeqCst) {
+                return Err(SessionRealizationControlFailure::NotReady);
+            }
+            awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+                effect.clone(),
+                "workspace".into(),
+                None,
+            )
+        }
+
+        async fn record_terminal_cleanup_preparation(
+            &self,
+            _lease: &awaken_session_contract::SessionRealizationLease,
+            preparation: awaken_session_contract::SessionCleanupPreparation,
+        ) -> Result<(), SessionRealizationControlFailure> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("record:{}", preparation.effect.command.thread_id));
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::SessionTerminalDisposalControl for RecordingControl {
+        async fn authorize_terminal_cleanup_disposal(
+            &self,
+            _effect: &SessionTerminalCleanupDisposalEffect,
+        ) -> Result<String, SessionRealizationControlFailure> {
+            self.events
+                .lock()
+                .unwrap()
+                .push("authorize-disposal".into());
+            Ok("workspace".into())
+        }
+
+        async fn record_terminal_cleanup_disposal(
+            &self,
+            _lease: &awaken_session_contract::SessionRealizationLease,
+            _receipt: SessionCleanupDisposalReceipt,
+        ) -> Result<(), SessionRealizationControlFailure> {
+            self.events.lock().unwrap().push("record-disposal".into());
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::SessionTerminalRepositoryPublicationControl for RecordingControl {
         async fn terminal_repository_publication_command(
             &self,
             _session_id: &awaken_session_contract::SessionId,
@@ -607,59 +649,6 @@ mod tests {
                 "record-publication-rejection:{}:{}",
                 lease.epoch, lease.expires_at_unix_ms
             ));
-            Ok(())
-        }
-
-        async fn authorize_terminal_cleanup_effect(
-            &self,
-            effect: &SessionTerminalCleanupEffect,
-        ) -> Result<
-            awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
-            SessionRealizationControlFailure,
-        > {
-            self.events
-                .lock()
-                .unwrap()
-                .push(format!("authorize:{}", effect.command.thread_id));
-            if self.stale_authorization_once.swap(false, Ordering::SeqCst) {
-                return Err(SessionRealizationControlFailure::NotReady);
-            }
-            awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
-                effect.clone(),
-                "workspace".into(),
-                None,
-            )
-        }
-
-        async fn record_terminal_cleanup_preparation(
-            &self,
-            _lease: &awaken_session_contract::SessionRealizationLease,
-            preparation: awaken_session_contract::SessionCleanupPreparation,
-        ) -> Result<(), SessionRealizationControlFailure> {
-            self.events
-                .lock()
-                .unwrap()
-                .push(format!("record:{}", preparation.effect.command.thread_id));
-            Ok(())
-        }
-
-        async fn authorize_terminal_cleanup_disposal(
-            &self,
-            _effect: &SessionTerminalCleanupDisposalEffect,
-        ) -> Result<String, SessionRealizationControlFailure> {
-            self.events
-                .lock()
-                .unwrap()
-                .push("authorize-disposal".into());
-            Ok("workspace".into())
-        }
-
-        async fn record_terminal_cleanup_disposal(
-            &self,
-            _lease: &awaken_session_contract::SessionRealizationLease,
-            _receipt: SessionCleanupDisposalReceipt,
-        ) -> Result<(), SessionRealizationControlFailure> {
-            self.events.lock().unwrap().push("record-disposal".into());
             Ok(())
         }
     }

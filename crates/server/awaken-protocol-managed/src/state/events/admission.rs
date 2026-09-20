@@ -490,7 +490,9 @@ impl ManagedState {
             {
                 awaken_session_application::SessionEventBatchIdempotency::Absent => Ok(None),
                 awaken_session_application::SessionEventBatchIdempotency::Exact(batch) => {
-                    batch.require_accepted().map_err(StateError::Run)?;
+                    batch.require_accepted().map_err(|_| {
+                        StateError::Run(awaken_session_contract::event_admission_closed())
+                    })?;
                     Ok(Some(batch))
                 }
                 awaken_session_application::SessionEventBatchIdempotency::Conflict => {

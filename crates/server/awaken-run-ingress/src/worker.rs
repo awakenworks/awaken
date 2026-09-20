@@ -70,6 +70,7 @@ pub struct DispatchWorker<S> {
     recovery_source: Option<Arc<dyn RunRecoverySource>>,
     terminal_scan: crate::TerminalReconciliationScan,
     settlement_observer: Option<Arc<dyn crate::DispatchSettlementObserver>>,
+    session_admission_observer: Option<Arc<dyn crate::SessionRunAdmissionObserver>>,
     owner: String,
     execution_binding: Option<crate::dispatch::AttemptExecutionBinding>,
     lease_ms: u64,
@@ -216,6 +217,12 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                     })?,
                 None => {
                     self.store
+                        .claimed_checkpoint_transport()
+                        .ok_or_else(|| {
+                            crate::Error::Dispatch(crate::DispatchError::Rejected(
+                                "recovery projection has neither a local source nor a claimed remote transport".into(),
+                            ))
+                        })?
                         .load_recovery_snapshot(&claim, claimed.session_work_authority.as_ref())
                         .await?
                 }
@@ -349,6 +356,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             recovery_source: None,
             terminal_scan: Default::default(),
             settlement_observer: None,
+            session_admission_observer: None,
             owner: owner.into(),
             execution_binding: None,
             lease_ms: DEFAULT_LEASE_MS,
@@ -433,6 +441,15 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         observer: Arc<dyn crate::DispatchSettlementObserver>,
     ) -> Self {
         self.settlement_observer = Some(observer);
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_run_admission_observer(
+        mut self,
+        observer: Arc<dyn crate::SessionRunAdmissionObserver>,
+    ) -> Self {
+        self.session_admission_observer = Some(observer);
         self
     }
 
@@ -800,9 +817,11 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         // | R5 | T | any | unavailable | E3 Reserved | never entered |
         // | R6 | F | any | any | E4 Fenced | never entered |
         if claimed.session_activity_admission_required {
-            let observer = self.settlement_observer.as_ref();
-            let observer_owns_fence =
-                observer.is_some_and(|observer| observer.owns_dispatch_fence());
+            let observer = self.session_admission_observer.as_ref();
+            let observer_owns_fence = self
+                .settlement_observer
+                .as_ref()
+                .is_some_and(|observer| observer.owns_dispatch_fence());
             let local_guard = if observer.is_some() && !observer_owns_fence {
                 self.store
                     .lock_session_run_reservation_epoch(&claim)

@@ -1625,7 +1625,10 @@ impl SessionRealizationControl for SessionApplication {
     ) -> Result<(), SessionRealizationControlFailure> {
         self.fail_session_realization_after_refresh(command).await
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionResourceMaterializationControl for SessionApplication {
     async fn authorize_resource_materialization_intent(
         &self,
         intent: &awaken_session_contract::SessionResourceMaterializationIntent,
@@ -1633,7 +1636,36 @@ impl SessionRealizationControl for SessionApplication {
         self.authorize_resource_materialization_intent_from_root(intent)
             .await
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionCheckpointArtifactControl for SessionApplication {
+    async fn authorize_checkpoint_release_artifact_effect(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+    ) -> Result<String, SessionRealizationControlFailure> {
+        self.authorize_checkpoint_release_artifact_effect_from_root(session_id, operation)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalMemoryControl for SessionApplication {
+    async fn authorize_terminal_memory_intent(
+        &self,
+        intent: &awaken_session_contract::SessionTerminalMemoryIntent,
+    ) -> Result<
+        awaken_session_contract::SessionTerminalMemoryTarget,
+        SessionRealizationControlFailure,
+    > {
+        self.authorize_terminal_memory_intent_from_root(intent)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalCleanupQueue for SessionApplication {
     async fn claim_next_terminal_cleanup(
         &self,
         target: awaken_session_contract::SessionRealizationTarget,
@@ -1664,7 +1696,10 @@ impl SessionRealizationControl for SessionApplication {
         self.terminal_cleanup_work_after_refresh(session_id, lease)
             .await
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalPreparationControl for SessionApplication {
     async fn authorize_terminal_cleanup_effect(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
@@ -1676,40 +1711,23 @@ impl SessionRealizationControl for SessionApplication {
             .await
     }
 
-    async fn authorize_terminal_cleanup_disposal(
-        &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<String, SessionRealizationControlFailure> {
-        self.authorize_terminal_cleanup_disposal_from_root(effect)
-            .await
-    }
-
-    async fn authorize_checkpoint_release_artifact_effect(
-        &self,
-        session_id: &awaken_session_contract::SessionId,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-    ) -> Result<String, SessionRealizationControlFailure> {
-        self.authorize_checkpoint_release_artifact_effect_from_root(session_id, operation)
-            .await
-    }
-
-    async fn authorize_terminal_memory_intent(
-        &self,
-        intent: &awaken_session_contract::SessionTerminalMemoryIntent,
-    ) -> Result<
-        awaken_session_contract::SessionTerminalMemoryTarget,
-        SessionRealizationControlFailure,
-    > {
-        self.authorize_terminal_memory_intent_from_root(intent)
-            .await
-    }
-
     async fn record_terminal_cleanup_preparation(
         &self,
         lease: &SessionRealizationLease,
         preparation: awaken_session_contract::SessionCleanupPreparation,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_cleanup_preparation_after_refresh(lease, preparation)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalDisposalControl for SessionApplication {
+    async fn authorize_terminal_cleanup_disposal(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<String, SessionRealizationControlFailure> {
+        self.authorize_terminal_cleanup_disposal_from_root(effect)
             .await
     }
 
@@ -1721,7 +1739,10 @@ impl SessionRealizationControl for SessionApplication {
         self.record_terminal_cleanup_disposal_after_refresh(lease, receipt)
             .await
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalRepositoryPublicationControl for SessionApplication {
     async fn terminal_repository_publication_command(
         &self,
         session_id: &awaken_session_contract::SessionId,

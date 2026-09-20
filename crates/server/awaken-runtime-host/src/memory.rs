@@ -43,54 +43,8 @@ pub(crate) use selector::AgentSelector;
 
 static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Default)]
-struct CapturedMemoryWrites {
-    writes: Mutex<BTreeMap<String, String>>,
-}
-
-impl CapturedMemoryWrites {
-    fn take(&self) -> BTreeMap<String, String> {
-        std::mem::take(&mut *self.writes.lock().expect("captured Memory writes"))
-    }
-}
-
-fn writes_from_committed_agent(messages: &[Message]) -> BTreeMap<String, String> {
-    let mut writes = BTreeMap::new();
-    for block in messages.iter().flat_map(|message| &message.content) {
-        let ContentBlock::ToolUse { name, input, .. } = block else {
-            continue;
-        };
-        if name != "write_memory" {
-            continue;
-        }
-        let Some(name) = input.get("name").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        let Some(content) = input.get("content").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        if accepts_memory_content(content) {
-            writes.insert(format!("/{}.md", sanitize_stem(name)), content.to_string());
-        }
-    }
-    writes
-}
-
-#[async_trait]
-impl MemoryStoreHandle for CapturedMemoryWrites {
-    async fn write(&self, name: &str, content: &str) -> Result<String, String> {
-        let path = format!("/{}.md", sanitize_stem(name));
-        self.writes
-            .lock()
-            .map_err(|error| error.to_string())?
-            .insert(path.clone(), content.to_string());
-        Ok(path)
-    }
-
-    async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
-        Ok(Vec::new())
-    }
-}
+mod captured_writes;
+use captured_writes::{CapturedMemoryWrites, writes_from_committed_agent};
 
 /// Host-level extraction/selection capability. It owns the auxiliary-agent
 /// machinery but deliberately owns no MemoryStore identity or content handle.
@@ -1158,6 +1112,22 @@ mod tests {
 
     #[async_trait]
     impl awaken_memory_store::MemoryRepository for RecallSnapshotRepository {
+        async fn preserve_copy_conflict(
+            &self,
+            _store: &str,
+            _candidate: &awaken_resource_contract::MemoryCopyConflict,
+        ) -> Result<(), awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no conflict writes")
+        }
+
+        async fn list_copy_conflicts(
+            &self,
+            _store: &str,
+        ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, awaken_memory_store::MemErr>
+        {
+            unreachable!("Recall snapshot test performs no conflict reads")
+        }
+
         async fn snapshot_heads(
             &self,
             _store: &str,
@@ -1198,6 +1168,16 @@ mod tests {
             _content: &str,
             _target_path: Option<&str>,
             _actor: Option<&awaken_resource_contract::MemoryActor>,
+        ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no writes")
+        }
+
+        async fn update_materialized(
+            &self,
+            _store: &str,
+            _path: &str,
+            _base: &awaken_resource_contract::MemoryGeneration,
+            _content: &str,
         ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
             unreachable!("Recall snapshot test performs no writes")
         }

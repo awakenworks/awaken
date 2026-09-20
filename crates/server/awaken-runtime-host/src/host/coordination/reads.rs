@@ -152,7 +152,9 @@ impl SharedHost {
             .committed_state_view(thread_id)
             .await
             .map_err(HostError::internal)?;
-        Ok(awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state).into())
+        Ok(awaken_session_contract::session_usage_from_thread_usage(
+            awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state),
+        ))
     }
 
     pub(crate) async fn session_thread_disposition(

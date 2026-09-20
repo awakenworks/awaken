@@ -22,11 +22,11 @@ pub(super) async fn resource_targets(
                 files
                     .get_file(workspace, file_id.as_str(), true)
                     .await
-                    .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?
+                    .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?
                     .ok_or_else(|| {
-                        ResourcePurgeError::Invalid(format!(
-                            "Session references missing File `{file_id}`"
-                        ))
+                        ResourcePurgeError::Invalid(
+                            format!("Session references missing File `{file_id}`").into(),
+                        )
                     })?
                     .blob_id,
             ),
@@ -79,10 +79,10 @@ impl ResourcePurgeGuard for SessionResourcePurgeGuard {
         let mut blockers = std::collections::BTreeSet::new();
         let sessions = crate::scan_all_reconcilable_sessions(self.sessions.as_ref())
             .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
         if !sessions.quarantined.is_empty() {
             return Err(ResourcePurgeError::Storage(
-                "Session recovery quarantine blocks physical Resource purge".to_string(),
+                "Session recovery quarantine blocks physical Resource purge".into(),
             ));
         }
         for scoped in sessions.sessions {

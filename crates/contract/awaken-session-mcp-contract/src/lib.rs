@@ -8,6 +8,7 @@ use awaken_credential_contract::{
 use serde::{Deserialize, Serialize};
 
 pub use awaken_agent_contract::{McpTarget, McpTargetError, McpTargetIdentity};
+pub use awaken_session_types::SessionId;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -134,7 +135,7 @@ impl StageMcpAttachment {
     /// different target, credential pin, holder, lease, or generation.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        crate::stable_fingerprint(self)
+        awaken_agent_contract::stable_fingerprint(self)
     }
 
     /// Stable desired/effect identity across lease renewal. Only the lease
@@ -145,7 +146,7 @@ impl StageMcpAttachment {
     #[must_use]
     pub fn renewal_binding_fingerprint(&self) -> String {
         if !self.prompts_as_skills {
-            return crate::stable_fingerprint(&(
+            return awaken_agent_contract::stable_fingerprint(&(
                 &self.workspace_id,
                 &self.generation.session_id,
                 &self.generation.generation,
@@ -158,7 +159,7 @@ impl StageMcpAttachment {
                 &self.selected_plaintext_holder,
             ));
         }
-        crate::stable_fingerprint(&(
+        awaken_agent_contract::stable_fingerprint(&(
             &self.workspace_id,
             &self.generation.session_id,
             &self.generation.generation,
@@ -263,8 +264,11 @@ pub struct McpProjectionReceipt {
 impl McpProjectionReceipt {
     #[must_use]
     pub fn new(generation: McpGenerationRef, effect: McpProjectionEffectKind) -> Self {
-        let effect_id =
-            crate::stable_fingerprint(&("mcp-projection-effect-v1", &generation, effect));
+        let effect_id = awaken_agent_contract::stable_fingerprint(&(
+            "mcp-projection-effect-v1",
+            &generation,
+            effect,
+        ));
         Self {
             generation,
             effect,
@@ -321,7 +325,7 @@ pub enum McpAttachmentError {
 
 /// Resolve all create-time MCP sources through the one documented precedence
 /// rule. The returned order is canonical by logical name.
-pub(crate) fn resolve_mcp_draft_precedence(
+pub fn resolve_mcp_draft_precedence(
     drafts: Vec<McpAttachmentDraft>,
 ) -> Result<Vec<McpAttachmentDraft>, McpAttachmentError> {
     fn rank(origin: McpAttachmentOrigin) -> u8 {
@@ -851,7 +855,7 @@ fn desired_fingerprint(drafts: &[McpAttachmentDraft]) -> McpDesiredSetFingerprin
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        return McpDesiredSetFingerprint(crate::stable_fingerprint(&legacy));
+        return McpDesiredSetFingerprint(awaken_agent_contract::stable_fingerprint(&legacy));
     }
     let ordered = drafts
         .iter()
@@ -867,11 +871,14 @@ fn desired_fingerprint(drafts: &[McpAttachmentDraft]) -> McpDesiredSetFingerprin
             )
         })
         .collect::<BTreeMap<_, _>>();
-    McpDesiredSetFingerprint(crate::stable_fingerprint(&ordered))
+    McpDesiredSetFingerprint(awaken_agent_contract::stable_fingerprint(&ordered))
 }
 
 fn attachment_id(name: &str) -> McpAttachmentId {
-    McpAttachmentId(format!("mcp_{}", crate::stable_fingerprint(&name)))
+    McpAttachmentId(format!(
+        "mcp_{}",
+        awaken_agent_contract::stable_fingerprint(&name)
+    ))
 }
 
 /// The aggregate's one compare-and-set precondition.

@@ -30,60 +30,9 @@ struct ExactTerminalPublicationControl {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for ExactTerminalPublicationControl {
-    async fn begin_session_realization(
-        &self,
-        _command: awaken_session_contract::BeginSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                "unused test phase".into(),
-            ),
-        )
-    }
-
-    async fn activate_session_realization(
-        &self,
-        _command: awaken_session_contract::ActivateSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                "unused test phase".into(),
-            ),
-        )
-    }
-
-    async fn acknowledge_session_realization(
-        &self,
-        _command: awaken_session_contract::AcknowledgeSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                "unused test phase".into(),
-            ),
-        )
-    }
-
-    async fn fail_session_realization(
-        &self,
-        _command: awaken_session_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                "unused test phase".into(),
-            ),
-        )
-    }
-
+impl awaken_session_contract::SessionResourceMaterializationControl
+    for ExactTerminalPublicationControl
+{
     async fn authorize_resource_materialization_intent(
         &self,
         intent: &awaken_session_contract::SessionResourceMaterializationIntent,
@@ -102,7 +51,12 @@ impl awaken_session_contract::SessionRealizationControl for ExactTerminalPublica
         }
         Ok(self.workspace_id.clone())
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalRepositoryPublicationControl
+    for ExactTerminalPublicationControl
+{
     async fn terminal_repository_publication_command(
         &self,
         session_id: &awaken_session_contract::SessionId,
@@ -128,6 +82,32 @@ impl awaken_session_contract::SessionRealizationControl for ExactTerminalPublica
                 current_lease,
             },
         ))
+    }
+
+    async fn record_terminal_repository_publication_receipt(
+        &self,
+        _session_id: &awaken_session_contract::SessionId,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        _receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "Repository projection fixture does not admit publication outcomes".into(),
+            ),
+        )
+    }
+
+    async fn record_terminal_repository_publication_rejection(
+        &self,
+        _session_id: &awaken_session_contract::SessionId,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        _rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "Repository projection fixture does not admit publication outcomes".into(),
+            ),
+        )
     }
 }
 

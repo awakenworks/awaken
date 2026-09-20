@@ -6,125 +6,25 @@
 //! Outcome aggregate. These values retain only the stable command intent needed
 //! to reconcile those owners after a crash.
 
-use crate::SessionId;
-use crate::{SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand};
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_session_types::{SessionId, SessionRevision};
 use serde::{Deserialize, Serialize};
 
-const SESSION_EVENT_BATCH_OPERATION_PREFIX: &str = "session-event-batch-v1:";
+mod identity;
+pub use identity::*;
 
+mod thread_reply;
+pub use thread_reply::{
+    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyActivity,
+    SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, SessionThreadToolReplyFence,
+};
+
+#[cfg(kani)]
+mod observation_proofs;
 #[cfg(any(test, kani))]
 mod terminal_resolution_proofs;
-
-const SESSION_ROOT_REVISION_BATCH_PREFIX: &str = "session-root-revision-v1:";
-pub const MAX_SESSION_INITIAL_EVENTS: usize = 50;
-/// Stable retry classification when another Outcome owns the Thread aggregate.
-pub const OUTCOME_BUSY_CODE: &str = "outcome_busy";
-
-/// Derive the only ordinary Event-batch identity from its prospective committed
-/// Session root revision. Fixed-width decimal encoding preserves FIFO ordering
-/// without a clock, random id, or process-local counter.
-pub fn session_event_batch_id(
-    session_id: &SessionId,
-    committed_revision: crate::SessionRevision,
-) -> Result<String, SessionEventBatchError> {
-    if session_id.as_str().trim().is_empty() {
-        return Err(SessionEventBatchError::EmptySessionId);
-    }
-    if committed_revision.0 == 0 {
-        return Err(SessionEventBatchError::InvalidBatchRevision);
-    }
-    Ok(format!(
-        "{SESSION_ROOT_REVISION_BATCH_PREFIX}{:020}",
-        committed_revision.0
-    ))
-}
-
-/// Borrowed coordinate decoded from one canonical Session Event operation id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SessionEventBatchOperation<'a> {
-    pub batch_id: &'a str,
-    pub ordinal: usize,
-}
-
-/// Encode one Event's stable operation coordinate. Byte-length framing keeps an
-/// opaque batch id containing `:` exactly reversible without another registry.
-pub fn session_event_batch_operation(
-    batch_id: &str,
-    ordinal: usize,
-) -> Result<String, SessionEventBatchError> {
-    if batch_id.is_empty() {
-        return Err(SessionEventBatchError::EmptyBatchId);
-    }
-    Ok(format!(
-        "{SESSION_EVENT_BATCH_OPERATION_PREFIX}{}:{batch_id}:{ordinal}",
-        batch_id.len()
-    ))
-}
-
-/// Decode only the canonical representation produced by
-/// [`session_event_batch_operation`].
-#[must_use]
-pub fn decode_session_event_batch_operation(
-    operation_id: &str,
-) -> Option<SessionEventBatchOperation<'_>> {
-    let encoded = operation_id.strip_prefix(SESSION_EVENT_BATCH_OPERATION_PREFIX)?;
-    let (batch_len, payload) = encoded.split_once(':')?;
-    let batch_len = batch_len.parse::<usize>().ok()?;
-    let batch_id = payload.get(..batch_len)?;
-    let ordinal = payload.get(batch_len..)?.strip_prefix(':')?;
-    let ordinal = ordinal.parse::<usize>().ok()?;
-    if batch_id.is_empty() {
-        return None;
-    }
-    let coordinate = SessionEventBatchOperation { batch_id, ordinal };
-    (session_event_batch_operation(batch_id, ordinal)
-        .ok()
-        .as_deref()
-        == Some(operation_id))
-    .then_some(coordinate)
-}
-
-/// Stable User Run identity shared by create-time and ordinary Session Event
-/// batches. The operation id is already the unique batch/ordinal coordinate.
-#[must_use]
-pub fn session_event_user_run_id(session_id: &SessionId, operation_id: &str) -> RunId {
-    RunId(format!(
-        "session-event-run-{}",
-        crate::stable_fingerprint(&("session-event-user-run-v1", session_id, operation_id,))
-    ))
-}
-
-/// Stable Outcome identity shared by create-time and ordinary Session Event
-/// batches; ThreadOutcomeState remains the result owner.
-#[must_use]
-pub fn session_event_outcome_id(session_id: &SessionId, operation_id: &str) -> String {
-    format!(
-        "outc_{}",
-        crate::stable_fingerprint(&("session-event-outcome-v1", session_id, operation_id,))
-    )
-}
-
-/// Stable identity for the legacy convenience composition that has no explicit
-/// Session Event operation coordinate. This keeps all callers deterministic;
-/// durable Event admission uses [`session_event_outcome_id`] instead.
-#[must_use]
-pub fn session_outcome_convenience_id(
-    thread: &str,
-    description: &str,
-    rubric: &str,
-    max_iterations: u32,
-) -> String {
-    crate::stable_fingerprint(&(
-        "session-outcome-convenience-v1",
-        thread,
-        description,
-        rubric,
-        max_iterations,
-    ))
-}
 
 /// Protocol-neutral Outcome rubric provenance retained by the Session root.
 /// The Outcome aggregate consumes the enclosed reference, while public history
@@ -372,9 +272,7 @@ pub use dispatch_settlement::{
     SessionEventDispatchSettlementPlan, SessionEventDispatchSettlementReceipt,
     session_event_dispatch_settlement_plan,
 };
-pub(crate) use dispatch_settlement::{
-    session_event_execution_may_close, session_inputs_allow_idle,
-};
+pub use dispatch_settlement::{session_event_execution_may_close, session_inputs_allow_idle};
 mod admission;
 pub use admission::{
     SessionEventBatchAdmissionAction, SessionEventBatchAdmissionClass,
@@ -431,7 +329,7 @@ pub struct SessionEventBatch {
     /// sequential input to one closed Running interval without guessing from
     /// vector position or a process-local clock.
     #[serde(default)]
-    pub admitted_revision: crate::SessionRevision,
+    pub admitted_revision: SessionRevision,
     /// Immutable Runtime ordering fence observed before this batch's root CAS.
     /// Every effect caused by the newly admitted command commits after this
     /// fence, so public receipts can be ordered once at admission instead of
@@ -514,11 +412,11 @@ impl SessionEventBatch {
 
     /// A final non-admission receipt can be observed but cannot be replayed as
     /// accepted input. Both application and wire preflight use this same gate.
-    pub fn require_accepted(&self) -> Result<(), crate::RunError> {
+    pub fn require_accepted(&self) -> Result<(), SessionEventBatchError> {
         if classify_session_event_batch_admission(true, true, self.admission_closed)
             == SessionEventBatchAdmissionClass::Closed
         {
-            return Err(crate::event_admission_closed());
+            return Err(SessionEventBatchError::AdmissionClosed);
         }
         Ok(())
     }
@@ -572,7 +470,7 @@ impl SessionEventBatch {
 
     pub fn closed_admission(
         batch_id: String,
-        revision: crate::SessionRevision,
+        revision: SessionRevision,
         key: String,
         fingerprint: String,
     ) -> Result<Self, SessionEventBatchError> {
@@ -923,7 +821,7 @@ impl SessionEventBatch {
         Ok(Self {
             batch_id,
             events,
-            admitted_revision: crate::SessionRevision::default(),
+            admitted_revision: SessionRevision::default(),
             admission_projection_anchor: None,
             idempotency_key: None,
             request_fingerprint: None,
@@ -965,6 +863,8 @@ impl SessionInitialEventPlan {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionEventBatchError {
+    #[error("Session Event admission is already closed")]
+    AdmissionClosed,
     #[error("Session id is empty")]
     EmptySessionId,
     #[error("Session Event batch id is empty")]
@@ -1021,15 +921,15 @@ mod tests {
         // V3 C4=>E3. This codec invariant is shared by both durable backends.
         let closed = SessionEventBatch::closed_admission(
             "batch".into(),
-            crate::SessionRevision(2),
+            SessionRevision(2),
             "key".into(),
             "fp".into(),
         )
         .unwrap();
         assert!(closed.is_complete());
         assert_eq!(
-            closed.require_accepted().unwrap_err().code,
-            "event_admission_closed"
+            closed.require_accepted(),
+            Err(SessionEventBatchError::AdmissionClosed)
         );
         assert_eq!(closed.verify_admission(), Ok(()));
         let encoded = serde_json::to_value(&closed).unwrap();
@@ -1972,59 +1872,5 @@ mod tests {
         let second = session_event_outcome_id(&crate::SessionId::from("session-1"), "operation-2");
         assert_ne!(first, second, "O2/E2");
         assert!(second.starts_with("outc_"), "O2/E3");
-    }
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn processed_event_time_is_first_observation_or_atomic_rejection() {
-    // E1 pending+unset/equal anchor -> stamp; E2 processed+exact anchor -> inert,
-    // including legacy unknown time; E3 changed established anchor, including
-    // pending committed input -> unchanged rejection. All u64 clocks,
-    // cursors and optional markers are symbolic. Batch lookup/operation identity
-    // is tested separately; this calls the production shared metadata reducer.
-    let before_processed: bool = kani::any();
-    let before_time = kani::any::<bool>().then(kani::any::<u64>);
-    let before_anchor = kani::any::<bool>().then(|| SessionEventProjectionAnchor {
-        source_commit_cursor: kani::any(),
-    });
-    let anchor = kani::any::<bool>().then(|| SessionEventProjectionAnchor {
-        source_commit_cursor: kani::any(),
-    });
-    let now: u64 = kani::any();
-    // The same symbolic before-state also covers the non-completing input
-    // observation: no process-local clock participates and a legacy processed
-    // receipt can never gain a late anchor. Any existing anchor is immutable.
-    let incoming = SessionEventProjectionAnchor {
-        source_commit_cursor: kani::any(),
-    };
-    let mut input_anchor = before_anchor;
-    let anchored = anchor_committed_observation(before_processed, &mut input_anchor, incoming);
-    if before_anchor == Some(incoming) {
-        assert_eq!(anchored, Ok(false));
-        assert_eq!(input_anchor, before_anchor);
-    } else if before_anchor.is_some() || before_processed {
-        assert!(anchored.is_err());
-        assert_eq!(input_anchor, before_anchor);
-    } else {
-        assert_eq!(anchored, Ok(true));
-        assert_eq!(input_anchor, Some(incoming));
-    }
-    let (mut processed, mut time, mut recorded) = (before_processed, before_time, before_anchor);
-    let result = mark_processed_observation(&mut processed, &mut recorded, &mut time, anchor, now);
-    if before_processed || (before_anchor.is_some() && before_anchor != anchor) {
-        assert_eq!(processed, before_processed);
-        assert_eq!(time, before_time);
-        assert_eq!(recorded, before_anchor);
-        if before_processed && before_anchor == anchor {
-            assert_eq!(result, Ok(false));
-        } else {
-            assert!(result.is_err());
-        }
-    } else {
-        assert_eq!(result, Ok(true));
-        assert!(processed);
-        assert_eq!(time, Some(now));
-        assert_eq!(recorded, anchor);
     }
 }

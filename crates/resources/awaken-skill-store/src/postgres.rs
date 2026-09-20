@@ -88,7 +88,7 @@ async fn selected_bundles(
 }
 
 fn storage(err: impl std::fmt::Display) -> SkillStoreError {
-    SkillStoreError::Storage(err.to_string())
+    SkillStoreError::Storage(err.to_string().into())
 }
 
 /// A Postgres-backed [`SkillStore`].

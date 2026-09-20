@@ -15,19 +15,15 @@ pub mod realization_observation;
 
 mod agent_config;
 mod baseline;
-mod budget;
 mod coordination;
-mod dream;
 mod environment;
 mod event_admission;
-mod event_batches;
 mod executable_projection;
 pub use event_admission::{
     DeletedSessionEventAdmissions, RetainedEventAdmission, SessionEventAdmission,
     event_admission_closed, event_admission_conflict,
 };
 mod lifecycle;
-mod mcp_attachment;
 mod mcp_probe;
 mod model_resolution;
 mod network_policy;
@@ -36,13 +32,36 @@ mod resource_activation;
 mod run_admission;
 mod run_application;
 mod session;
-mod session_id;
 mod session_realization;
 mod session_repo;
 mod skill_execution;
 mod terminal_cleanup;
 mod tool_configuration;
-pub mod work_queue;
+pub mod work_queue {
+    pub use awaken_session_work_contract::*;
+}
+
+#[cfg(test)]
+mod mcp_attachment {
+    pub(crate) fn test_generation(
+        attachment: &str,
+        version: u64,
+        url: &str,
+    ) -> crate::McpGeneration {
+        crate::McpGeneration::of_bare_target(
+            crate::McpAttachmentId(attachment.into()),
+            version,
+            &crate::McpTarget::parse_http(url).unwrap(),
+        )
+    }
+
+    pub(crate) fn test_generation_at_version(
+        generation: &crate::McpGeneration,
+        version: u64,
+    ) -> crate::McpGeneration {
+        generation.at_version(version)
+    }
+}
 
 /// Resource-plane vocabulary used by Session APIs. Runtime implementors can
 /// consume these signatures through this contract instead of adding another
@@ -64,6 +83,12 @@ pub use awaken_agent_contract::{
     CanonicalJsonHashError, canonical_json_sha256, stable_fingerprint,
 };
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
+pub use awaken_session_budget_contract::{
+    BudgetReachTransition, ManagedBudgetUsageCursor, ManagedListPriceError,
+    ManagedListPriceProvider, ManagedListPriceRequest, ManagedListPriceSnapshot,
+    ManagedModelUsageCursor, ManagedRuntimeListRates, ManagedTokenListRates, SessionBudgetState,
+    SessionModelUsage, SessionUsage,
+};
 pub use baseline::{
     CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentCheckpointExpiryBehavior,
     EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,
@@ -71,11 +96,6 @@ pub use baseline::{
     SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
     SessionCreationIntent, SessionMcpAuthoringContext, SessionMutationPolicy,
     SessionRuntimePlacement, SessionSystemPromptSelection, resolved_environment_snapshot_is_exact,
-};
-pub use budget::{
-    BudgetReachTransition, ManagedBudgetUsageCursor, ManagedListPriceError,
-    ManagedListPriceProvider, ManagedListPriceRequest, ManagedListPriceSnapshot,
-    ManagedModelUsageCursor, ManagedRuntimeListRates, ManagedTokenListRates, SessionBudgetState,
 };
 pub use coordination::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
@@ -104,7 +124,7 @@ pub trait EnvironmentWarmupSource: Send + Sync {
     async fn current_environment_warmups(&self) -> Result<Vec<EnvironmentSnapshot>, String>;
 }
 
-pub use dream::{
+pub use awaken_session_dream_contract::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
     DreamCleanupAdmission, DreamCreateParams, DreamError, DreamInput, DreamListParams,
     DreamModelConfig, DreamModelInput, DreamModelSpeed, DreamOutput, DreamOutputBehavior,
@@ -112,6 +132,29 @@ pub use dream::{
     DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore,
     DreamProcessStoreError, DreamStatus, DreamStatusEvent, DreamUsage,
 };
+pub use awaken_session_event_contract::{
+    MAX_SESSION_INITIAL_EVENTS, OUTCOME_BUSY_CODE, SessionEventBatch,
+    SessionEventBatchAdmissionAction, SessionEventBatchAdmissionClass,
+    SessionEventBatchAdmissionPlan, SessionEventBatchError, SessionEventBatchOperation,
+    SessionEventCommand, SessionEventDispatchSettlementPlan, SessionEventDispatchSettlementReceipt,
+    SessionEventEntry, SessionEventInput, SessionEventInterrupt, SessionEventProjectionAnchor,
+    SessionEventToolReply, SessionEventToolReplyKind, SessionInitialEventPlan,
+    SessionOutcomeRubric, SessionUserRunCommand, SessionUserRunSystemInput,
+    classify_session_event_batch_admission, decode_session_event_batch_operation,
+    resolve_session_event_batch_admission, session_event_batch_id, session_event_batch_operation,
+    session_event_dispatch_settlement_plan, session_event_execution_may_close,
+    session_event_outcome_id, session_event_user_run_id, session_inputs_allow_idle,
+    session_outcome_convenience_id,
+};
+pub use awaken_session_mcp_contract::{
+    McpAttachmentContentDigest, McpAttachmentDraft, McpAttachmentError, McpAttachmentId,
+    McpAttachmentOrigin, McpAttachmentState, McpDesiredSetFingerprint, McpGeneration,
+    McpGenerationRef, McpProjectionEffectKind, McpProjectionReceipt, McpRealizationClaim,
+    McpRealizationReceipt, McpRealizationReceiptError, McpReplacementPlan, McpSetRevision,
+    McpTarget, McpTargetError, McpTargetIdentity, SessionMcpAttachment, SessionMcpAttachmentSet,
+    StageMcpAttachment,
+};
+pub use awaken_session_types::{SessionId, SessionRevision};
 pub use environment::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,
     SandboxCheckpointRequest, SandboxGeneration, SandboxRestoreRequest,
@@ -123,31 +166,10 @@ pub use environment::{
     SourceReleasePreparationEffect, SourceReleasePreparedReceipt, SuspendPhase,
     checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
 };
-pub use event_batches::{
-    MAX_SESSION_INITIAL_EVENTS, OUTCOME_BUSY_CODE, SessionEventBatch,
-    SessionEventBatchAdmissionAction, SessionEventBatchAdmissionClass,
-    SessionEventBatchAdmissionPlan, SessionEventBatchError, SessionEventBatchOperation,
-    SessionEventCommand, SessionEventDispatchSettlementPlan, SessionEventDispatchSettlementReceipt,
-    SessionEventEntry, SessionEventInput, SessionEventInterrupt, SessionEventProjectionAnchor,
-    SessionEventToolReply, SessionEventToolReplyKind, SessionInitialEventPlan,
-    SessionOutcomeRubric, SessionUserRunCommand, SessionUserRunSystemInput,
-    classify_session_event_batch_admission, decode_session_event_batch_operation,
-    resolve_session_event_batch_admission, session_event_batch_id, session_event_batch_operation,
-    session_event_dispatch_settlement_plan, session_event_outcome_id, session_event_user_run_id,
-    session_outcome_convenience_id,
-};
 pub use lifecycle::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
     ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
     SessionRuntimeIntervalStart,
-};
-pub use mcp_attachment::{
-    McpAttachmentContentDigest, McpAttachmentDraft, McpAttachmentError, McpAttachmentId,
-    McpAttachmentOrigin, McpAttachmentState, McpDesiredSetFingerprint, McpGeneration,
-    McpGenerationRef, McpProjectionEffectKind, McpProjectionReceipt, McpRealizationClaim,
-    McpRealizationReceipt, McpRealizationReceiptError, McpReplacementPlan, McpSetRevision,
-    McpTarget, McpTargetError, McpTargetIdentity, SessionMcpAttachment, SessionMcpAttachmentSet,
-    StageMcpAttachment,
 };
 pub use mcp_probe::{
     CredentialRefreshExchange, McpInspection, McpProbe, McpProbeFailure, McpProbeStatus,
@@ -182,28 +204,33 @@ pub use run_application::{
 };
 pub use session::{
     AgentCapabilities, BudgetRuntime, BuiltinTool, CapabilityRuntime, CommittedOutcomeProjection,
-    CoordinationRuntime, CustomTool, DelegatedRun, DelegatedRunSnapshot, EnvironmentRuntime,
-    LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
-    LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer, NeutralRuntime, OutcomeDrive,
-    OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime, Pending, RealizationRuntime,
-    RunError, RunErrorKind, SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
-    SessionBudgetResumeTicket, SessionEnvironmentBindingSink, SessionInit, SessionModelUsage,
-    SessionRuntime, SessionSandboxLayout, SessionThreadLiveSubscription, SessionUsage, StepOutcome,
+    CompleteSessionRuntime, CoordinationRuntime, CustomTool, DelegatedRun, DelegatedRunSnapshot,
+    EnvironmentRuntime, LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry,
+    LiveInboxError, LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer, NeutralRuntime,
+    OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime, Pending,
+    RealizationRuntime, RunError, RunErrorKind, SessionBudgetResumeDelivery,
+    SessionBudgetResumeDisposition, SessionBudgetResumeTicket, SessionEnvironmentBindingSink,
+    SessionInit, SessionRuntime, SessionSandboxLayout, SessionThreadLiveSubscription, StepOutcome,
     StreamingRunRuntime, TerminalCleanupRuntime, ThreadReadRuntime, ToolPermissionDecision,
+    drain_mcp_generation_receipt, publish_mcp_generation_receipt, session_usage_from_thread_usage,
 };
-pub use session_id::SessionId;
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-    FailSessionRealization, FrozenAgentPublicationDecision, FrozenResourceTransitionUse,
-    FrozenSessionProjection, ObservedSessionRealizationLease, RenewSessionRealization,
-    SessionProjectionInstallMode, SessionProjectionSynchronizer, SessionRealizationAction,
-    SessionRealizationAssignment, SessionRealizationControl, SessionRealizationControlDisposition,
+    CompleteSessionRealizationControl, FailSessionRealization, FrozenAgentPublicationDecision,
+    FrozenResourceTransitionUse, FrozenSessionProjection, ObservedSessionRealizationLease,
+    RenewSessionRealization, SessionCheckpointArtifactControl, SessionProjectionInstallMode,
+    SessionProjectionSynchronizer, SessionRealizationAction, SessionRealizationAssignment,
+    SessionRealizationControl, SessionRealizationControlDisposition,
     SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationDriveError,
     SessionRealizationExclusionDecision, SessionRealizationLeaseReceipt, SessionRealizationPermit,
     SessionRealizationProgress, SessionRealizationTarget, SessionRepositoryPublicationProjection,
+    SessionResourceEffectControl, SessionResourceMaterializationControl,
     SessionResourceMaterializationIntent, SessionResourceMaterializationTarget,
-    SessionTerminalCleanupAssignment, SessionTerminalCleanupPreparationAuthorization,
-    SessionTerminalCleanupWork, frozen_agent_publication_decision,
+    SessionTerminalCleanupAssignment, SessionTerminalCleanupControl,
+    SessionTerminalCleanupPreparationAuthorization, SessionTerminalCleanupQueue,
+    SessionTerminalCleanupWork, SessionTerminalDisposalControl, SessionTerminalMemoryControl,
+    SessionTerminalPreparationControl, SessionTerminalRepositoryPublicationControl,
+    WorkerSessionRealizationControl, frozen_agent_publication_decision,
     frozen_sandbox_layout_publication_decision, legacy_agent_publication_decision,
     project_effective_agent_publication, realization_generation_authorizes,
     realization_lease_authorizes, realization_lease_generation_authorizes,
@@ -218,8 +245,8 @@ pub use session_repo::{
     SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
     SessionRealizationLease, SessionRecoveryQuarantine, SessionRepository,
     SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
-    SessionRevision, SessionScan, SessionScanCursor, SessionScanQuery, SessionStore,
-    SessionTombstone, VisibleMcpServer,
+    SessionScan, SessionScanCursor, SessionScanQuery, SessionStore, SessionTombstone,
+    VisibleMcpServer,
 };
 pub use skill_execution::{
     SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin,

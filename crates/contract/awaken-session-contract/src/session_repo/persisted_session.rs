@@ -1,7 +1,7 @@
 //! The durable Managed Session aggregate and its root-owned projections.
 
 use super::*;
-use crate::event_batches::{
+use crate::{
     SessionEventBatchError, SessionEventDispatchSettlementPlan,
     SessionEventDispatchSettlementReceipt, SessionEventProjectionAnchor,
     session_event_execution_may_close, session_inputs_allow_idle,

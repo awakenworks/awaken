@@ -252,6 +252,12 @@ impl FileCatalog for ReadOnlyCaptureCatalog {
             Ok(self.value.clone())
         }
     }
+    async fn replace_artifact_capture(
+        &self,
+        _: awaken_resource_contract::ReplaceArtifactCapture,
+    ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, FileCatalogError> {
+        unreachable!("read route cannot replace captures")
+    }
     async fn create_file(
         &self,
         _: FileRecord,
@@ -272,6 +278,13 @@ impl FileCatalog for ReadOnlyCaptureCatalog {
         _: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
         unreachable!("capture is not a history scan")
+    }
+    async fn list_files_including_deleted(
+        &self,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        unreachable!("capture is not a deleted history scan")
     }
     async fn mark_file_deleted(
         &self,

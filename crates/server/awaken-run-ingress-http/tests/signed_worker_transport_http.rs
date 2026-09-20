@@ -401,7 +401,10 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         *self.failures.lock().unwrap() += 1;
         Ok(())
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalCleanupQueue for RecordingSessionControl {
     async fn claim_next_terminal_cleanup(
         &self,
         target: awaken_session_contract::SessionRealizationTarget,
@@ -458,7 +461,10 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             action,
         }))
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalPreparationControl for RecordingSessionControl {
     async fn authorize_terminal_cleanup_effect(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
@@ -487,7 +493,10 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         self.cleanup_preparations.lock().unwrap().push(preparation);
         Ok(())
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalDisposalControl for RecordingSessionControl {
     async fn authorize_terminal_cleanup_disposal(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
@@ -509,7 +518,12 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         self.cleanup_disposals.lock().unwrap().push(receipt);
         Ok(())
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalRepositoryPublicationControl
+    for RecordingSessionControl
+{
     async fn terminal_repository_publication_command(
         &self,
         _session_id: &SessionId,
@@ -557,6 +571,32 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionAgentCoordination for RecordingSessionControl {
+    async fn admit_session_run_activity(
+        &self,
+        _session_id: &SessionId,
+        _agent_id: &str,
+        _run_id: &RunId,
+        _mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<
+        awaken_session_contract::SessionRunActivityAdmission,
+        awaken_session_contract::RunError,
+    > {
+        Err(awaken_session_contract::RunError::bad_request(
+            "signed coordination fixture does not admit Session activity",
+        ))
+    }
+
+    async fn admit_session_model_request(
+        &self,
+        _session_id: &SessionId,
+        _thread_id: &ThreadId,
+        _run_id: &RunId,
+    ) -> Result<bool, awaken_session_contract::RunError> {
+        Err(awaken_session_contract::RunError::bad_request(
+            "signed coordination fixture does not admit model requests",
+        ))
+    }
+
     async fn list_session_agents(
         &self,
         _session_id: &SessionId,
@@ -591,6 +631,15 @@ impl awaken_session_contract::SessionAgentCoordination for RecordingSessionContr
     ) -> Result<(), awaken_session_contract::RunError> {
         self.agent_boundaries.lock().unwrap().push(command);
         Ok(())
+    }
+
+    async fn finalize_session_agent_boundary(
+        &self,
+        _command: awaken_session_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        Err(awaken_session_contract::RunError::bad_request(
+            "signed coordination fixture does not finalize post-Dispatch roots",
+        ))
     }
 
     async fn interrupt_session_thread(
@@ -831,6 +880,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     .with_worker_directory(directory.clone(), 30_000)
     .with_session_control(session_control.clone())
     .with_session_coordination(session_control.clone())
+    .with_terminal_cleanup_control(session_control.clone())
     .with_session_environment_bindings(environment_bindings.clone())
     .with_session_work_authority(session_work.clone())
     .with_stream_sink(live_stream.clone());

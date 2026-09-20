@@ -15,8 +15,6 @@ use awaken_session_store::SqliteManagedSessionRepository;
 
 use super::ManagedState;
 #[cfg(any(test, feature = "test-support"))]
-use super::SessionRuntime;
-#[cfg(any(test, feature = "test-support"))]
 use super::mcp_attachment::UnsupportedMcpAttachmentRealizer;
 #[cfg(any(test, feature = "test-support"))]
 use crate::routes::vaults::VaultState;
@@ -26,7 +24,7 @@ impl ManagedState {
     /// Session repository and the canonical Environment execution projection via
     /// [`ManagedState::from_application`].
     #[cfg(any(test, feature = "test-support"))]
-    pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
+    pub fn new(runtime: impl awaken_session_contract::CompleteSessionRuntime + 'static) -> Self {
         Self::from_runtime_fixture(
             Arc::new(runtime),
             Arc::new(UnsupportedMcpAttachmentRealizer),
@@ -41,7 +39,9 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_mcp<R>(runtime: R) -> Self
     where
-        R: SessionRuntime + awaken_session_contract::McpAttachmentRealizer + 'static,
+        R: awaken_session_contract::CompleteSessionRuntime
+            + awaken_session_contract::McpAttachmentRealizer
+            + 'static,
     {
         let runtime = Arc::new(runtime);
         Self::from_runtime_fixture(
@@ -120,7 +120,7 @@ impl ManagedState {
 
     #[cfg(any(test, feature = "test-support"))]
     fn from_runtime_fixture(
-        runtime: Arc<dyn SessionRuntime>,
+        runtime: Arc<dyn awaken_session_contract::CompleteSessionRuntime>,
         mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
         sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
         environments: Arc<

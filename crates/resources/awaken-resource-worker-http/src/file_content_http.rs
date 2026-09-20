@@ -56,7 +56,8 @@ pub struct WorkerFileContentService {
     directory: Option<Arc<dyn WorkerDirectory>>,
     session_repository: Option<Arc<dyn awaken_session_contract::SessionRepository>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
-    session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
+    materialization_control:
+        Option<Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>>,
 }
 
 impl WorkerFileContentService {
@@ -73,7 +74,7 @@ impl WorkerFileContentService {
             directory: None,
             session_repository: None,
             recovery: None,
-            session_control: None,
+            materialization_control: None,
         }
     }
 
@@ -104,9 +105,9 @@ impl WorkerFileContentService {
     #[must_use]
     pub fn with_session_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+        control: Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>,
     ) -> Self {
-        self.session_control = Some(control);
+        self.materialization_control = Some(control);
         self
     }
 }
@@ -299,7 +300,7 @@ async fn read_file_content(
             let (Some(identity), Some(directory), Some(control)) = (
                 request.identity.as_ref(),
                 service.directory.as_deref(),
-                service.session_control.as_deref(),
+                service.materialization_control.as_deref(),
             ) else {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             };

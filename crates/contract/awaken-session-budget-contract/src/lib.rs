@@ -3,6 +3,28 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
+use awaken_session_types::SessionContractErrorDetail;
+
+/// Cumulative Session usage with exact per-model attribution.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub by_model: std::collections::BTreeMap<String, SessionModelUsage>,
+    pub active_seconds: u64,
+    pub web_fetch_requests: u64,
+    pub web_search_requests: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionModelUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+}
 
 /// USD list-price rate in micro-dollars per one million tokens.
 ///
@@ -178,7 +200,7 @@ pub enum ManagedListPriceError {
     #[error("Managed list-price snapshot is invalid: {0}")]
     InvalidSnapshot(String),
     #[error("Managed list-price authority is unavailable: {0}")]
-    Unavailable(String),
+    Unavailable(SessionContractErrorDetail),
 }
 
 #[async_trait]
@@ -220,7 +242,7 @@ impl ManagedBudgetUsageCursor {
     /// use the already-frozen model supplied by its Session baseline; callers
     /// must never resolve a mutable current model here.
     pub fn from_session_usage(
-        usage: &crate::SessionUsage,
+        usage: &SessionUsage,
         frozen_fallback_model: Option<&str>,
     ) -> Result<Self, ManagedListPriceError> {
         let mut by_model = usage
@@ -272,15 +294,15 @@ impl ManagedBudgetUsageCursor {
     /// Reconstruct the neutral cumulative usage represented by this exact
     /// pricing cursor. This inverse projection is used for durable cap events;
     /// it does not consult current Runtime counters.
-    pub fn to_session_usage(&self) -> Result<crate::SessionUsage, ManagedListPriceError> {
-        let mut usage = crate::SessionUsage {
+    pub fn to_session_usage(&self) -> Result<SessionUsage, ManagedListPriceError> {
+        let mut usage = SessionUsage {
             by_model: self
                 .by_model
                 .iter()
                 .map(|(model, counters)| {
                     (
                         model.clone(),
-                        crate::SessionModelUsage {
+                        SessionModelUsage {
                             input_tokens: counters.input_tokens,
                             output_tokens: counters.output_tokens,
                             cache_read_tokens: counters.cache_read_tokens,
@@ -871,14 +893,14 @@ mod tests {
         // U2=!C1+C2=>E2, U3=!C1+!C2+C3=>E3.
         // Constraints/invariants: existing per-model attribution is never
         // rewritten, and unattributed legacy tokens require one frozen fallback.
-        let attributed = crate::SessionUsage {
+        let attributed = SessionUsage {
             input_tokens: 11,
             output_tokens: 7,
             cache_read_tokens: 5,
             cache_creation_tokens: 3,
             by_model: BTreeMap::from([(
                 "served".into(),
-                crate::SessionModelUsage {
+                SessionModelUsage {
                     input_tokens: 11,
                     output_tokens: 7,
                     cache_read_tokens: 5,

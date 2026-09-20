@@ -551,6 +551,21 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MemoryRepository for SnapshotOnlyRepository {
+        async fn preserve_copy_conflict(
+            &self,
+            _store: &str,
+            _candidate: &awaken_resource_contract::MemoryCopyConflict,
+        ) -> Result<(), MemErr> {
+            unreachable!("snapshot test performs no conflict writes")
+        }
+
+        async fn list_copy_conflicts(
+            &self,
+            _store: &str,
+        ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+            unreachable!("snapshot test performs no conflict reads")
+        }
+
         async fn snapshot_heads(&self, _store: &str) -> Result<Vec<Memory>, MemErr> {
             Ok(self.heads.clone())
         }
@@ -586,6 +601,18 @@ mod tests {
             _actor: Option<&awaken_resource_contract::MemoryActor>,
         ) -> Result<Memory, MemErr> {
             unreachable!("snapshot test performs no writes")
+        }
+
+        async fn update_materialized(
+            &self,
+            _store: &str,
+            _path: &str,
+            _base: &awaken_resource_contract::MemoryGeneration,
+            _content: &str,
+        ) -> Result<Memory, MemErr> {
+            Err(MemErr::Storage(
+                "atomic materialized Memory update is unsupported".into(),
+            ))
         }
 
         async fn rename(&self, _store: &str, _from: &str, _to: &str) -> Result<Memory, MemErr> {

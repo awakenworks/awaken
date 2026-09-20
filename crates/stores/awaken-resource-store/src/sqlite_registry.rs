@@ -15,7 +15,7 @@ const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
 
 fn unavailable(error: impl ToString) -> RegistryRepositoryError {
-    RegistryRepositoryError::Unavailable(error.to_string())
+    RegistryRepositoryError::Unavailable(error.to_string().into())
 }
 
 fn corrupt(error: impl ToString) -> RegistryRepositoryError {

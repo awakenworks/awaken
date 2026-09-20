@@ -152,9 +152,9 @@ python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch
 # qualify as kills. cargo-mutants owns isolation and the outcome artifact.
 cargo mutants --package awaken-session-contract \
   --output "$mutation_evidence/session-observations" \
-  --file crates/contract/awaken-session-contract/src/event_batches.rs \
+  --file crates/contract/awaken-session-event-contract/src/lib.rs \
   --file crates/contract/awaken-session-contract/src/session_realization.rs \
-  --file crates/contract/awaken-session-contract/src/work_queue.rs \
+  --file crates/contract/awaken-session-work-contract/src/lib.rs \
   --re 'mark_processed_observation|realization_generation_authorizes|bounded_rfc3339_nanos' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-observations/mutants.out"

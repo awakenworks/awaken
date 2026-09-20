@@ -1,7 +1,7 @@
 # ADR-0082: Open Specification, Closed Substrate
 
 - Status: Proposed
-- Deferred: 2026-09-20 — the product owner chose to keep ADR-0041's placement for now;
+- Decision: Deferred on 2026-09-20 — the product owner chose to keep ADR-0041's placement for now;
   revisit when the closed backends need a second substrate or when a self-hosted
   multi-node floor is decided for the open product.
 - Date: 2026-09-20

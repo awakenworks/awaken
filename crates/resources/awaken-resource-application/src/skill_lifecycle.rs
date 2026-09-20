@@ -56,7 +56,7 @@ impl ReferenceIndexedSkillStore {
 }
 
 fn skill_storage(error: ResourcePurgeError) -> SkillStoreError {
-    SkillStoreError::Storage(error.to_string())
+    SkillStoreError::Storage(error.to_string().into())
 }
 
 #[async_trait]

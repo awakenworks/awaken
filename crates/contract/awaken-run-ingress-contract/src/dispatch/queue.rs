@@ -17,11 +17,7 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _claim: &RunClaim,
         _resolution: SessionRunReservationResolution,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support claimed Session Run reservation resolution".to_string(),
-        ))
-    }
+    ) -> Result<SettleOutcome, DispatchError>;
 
     /// Idempotently record an accepted run at default options. Re-enqueueing the
     /// same run id and exact canonical dispatch is a no-op; reusing that id for a
@@ -64,11 +60,7 @@ pub trait DispatchQueue: Send + Sync {
         _request: RunDispatch,
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support registered-worker exact claims".to_string(),
-        ))
-    }
+    ) -> Result<Option<Claimed>, DispatchError>;
 
     /// Atomically append one idempotent input and claim its exact Run.
     ///
@@ -90,11 +82,7 @@ pub trait DispatchQueue: Send + Sync {
         _input: PendingInput,
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support registered-worker delivery claims".to_string(),
-        ))
-    }
+    ) -> Result<Option<Claimed>, DispatchError>;
 
     /// Claim one runnable dispatch for `owner`, single owner per run: a fresh
     /// `pending` run, an awaiting run with pending input (a wake), or a running
@@ -121,11 +109,7 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support registered-worker claims".to_string(),
-        ))
-    }
+    ) -> Result<Option<Claimed>, DispatchError>;
 
     /// Claim one specific runnable Run without consuming unrelated queue work.
     ///
@@ -151,22 +135,14 @@ pub trait DispatchQueue: Send + Sync {
         _owner: &str,
         _lease_ms: u64,
         _max_attempts: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support retry-exhaustion terminal claims".to_string(),
-        ))
-    }
+    ) -> Result<Option<Claimed>, DispatchError>;
 
     async fn claim_run_compatible(
         &self,
         _run_id: &RunId,
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support registered-worker run claims".to_string(),
-        ))
-    }
+    ) -> Result<Option<Claimed>, DispatchError>;
 
     /// Extend the lease on one exact fenced claim, so a long run is not
     /// reclaimed by another node's recovery while it is still making progress.
@@ -199,11 +175,7 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _claim: &RunClaim,
         _binding: Option<&crate::dispatch::AttemptExecutionBinding>,
-    ) -> Result<AttemptAdmission, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not support physical attempt admission".to_string(),
-        ))
-    }
+    ) -> Result<AttemptAdmission, DispatchError>;
 
     /// Atomically hand a predecessor's physical slot to this exact current
     /// claim after the selected executor proved it can continue the already
@@ -217,11 +189,7 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _claim: &RunClaim,
         _binding: Option<&crate::dispatch::AttemptExecutionBinding>,
-    ) -> Result<AttemptAdmission, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not support durable attempt handoff".to_string(),
-        ))
-    }
+    ) -> Result<AttemptAdmission, DispatchError>;
 
     /// Acknowledge complete physical quiescence owned by `claim`: either actual
     /// executor return without nested uncertainty, or the Coordinator's trusted
@@ -229,11 +197,7 @@ pub trait DispatchQueue: Send + Sync {
     /// is insufficient. This intentionally accepts the exact predecessor epoch
     /// after a durable reclaim: it can only clear its own execution slot and grants no
     /// commit, checkpoint, or settlement authority. A mismatched claim is fenced.
-    async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not support physical attempt quiescence".to_string(),
-        ))
-    }
+    async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError>;
 
     /// Return an exact, still-current claim to `pending` without consuming its
     /// crash retry budget.
@@ -248,11 +212,7 @@ pub trait DispatchQueue: Send + Sync {
     /// claimant recovers it rather than treating it as fresh Pending work. The
     /// stale slot, pending input and attempt count are preserved; same-Thread
     /// successors remain excluded until the old execution responsibility ends.
-    async fn relinquish_claim(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not support claim relinquish".to_string(),
-        ))
-    }
+    async fn relinquish_claim(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError>;
 
     /// Return one exact current claim to `pending` and make it ineligible for
     /// ordinary claim until the store's clock reaches `retry_after_ms` from now.
@@ -266,11 +226,7 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _claim: &RunClaim,
         _retry_after_ms: u64,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not support deferred claim relinquish".to_string(),
-        ))
-    }
+    ) -> Result<SettleOutcome, DispatchError>;
 
     /// Whether one exact fenced claim still owns a live dispatch lease.
     ///
@@ -290,11 +246,7 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _claim: &RunClaim,
         _receipt: CredentialRealizationReceipt,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not persist credential realization receipts".to_string(),
-        ))
-    }
+    ) -> Result<SettleOutcome, DispatchError>;
 
     /// Return the current live claim only when this exact registered Worker
     /// incarnation owns `run_id` and no cancellation has been requested.
@@ -306,11 +258,7 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _identity: &WorkerIdentity,
         _run_id: &RunId,
-    ) -> Result<Option<RunClaim>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not expose registered-worker run authority".to_string(),
-        ))
-    }
+    ) -> Result<Option<RunClaim>, DispatchError>;
 
     /// Settle a claimed dispatch, fenced by the lease `epoch` the caller holds (from
     /// [`Claimed`]`.lease.epoch`). The settle applies only when `epoch` is still the
@@ -342,53 +290,6 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError>;
-
-    /// Remote-capable checkpoint operations. Native stores normally use
-    /// `lock_commit_epoch` around their colocated checkpoint store; transports
-    /// override these to execute the guarded operation on the authority server.
-    async fn load_stream_checkpoint(
-        &self,
-        _claim: &RunClaim,
-    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "claimed checkpoint transport is unavailable".to_string(),
-        ))
-    }
-
-    async fn put_stream_checkpoint(
-        &self,
-        _claim: &RunClaim,
-        _checkpoint: StreamCheckpoint,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "claimed checkpoint transport is unavailable".to_string(),
-        ))
-    }
-
-    async fn delete_stream_checkpoint(
-        &self,
-        _claim: &RunClaim,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "claimed checkpoint transport is unavailable".to_string(),
-        ))
-    }
-
-    /// Load one claim-authorized, internally consistent committed recovery
-    /// prefix. Remote transports override this; local workers already share the
-    /// commit reader and fail closed if they accidentally call it.
-    async fn load_recovery_snapshot(
-        &self,
-        _claim: &RunClaim,
-        _session_work_authority: Option<
-            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
-        >,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
-    {
-        Err(DispatchError::Rejected(
-            "claimed recovery transport is unavailable".to_string(),
-        ))
-    }
 
     /// Manually quarantine expired crashed dispatches at/above `max_attempts`.
     /// Moves rows to `DeadLetter`; automatic services use
@@ -458,6 +359,13 @@ pub trait DispatchQueue: Send + Sync {
     /// surface for monitoring and maintenance (ADR-0025).
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError>;
 
+    /// Claim-fenced checkpoint/recovery transport owned by a database-less
+    /// Worker projection. Local durable stores return None and use their
+    /// colocated checkpoint/recovery ports; callers select the path before I/O.
+    fn claimed_checkpoint_transport(&self) -> Option<&dyn ClaimedCheckpointTransport> {
+        None
+    }
+
     /// The Control-side surface of this queue: Session Run reservations,
     /// child admission, placement claims, terminal recovery, physical attempt
     /// readback, the completion feed, and operational scans. `None` means this
@@ -467,6 +375,36 @@ pub trait DispatchQueue: Send + Sync {
     fn control(&self) -> Option<&dyn ControlDispatchQueue> {
         None
     }
+}
+
+/// Remote claim-fenced checkpoint and committed-recovery operations. This is
+/// not a second checkpoint store: the Coordinator endpoint applies the same
+/// Dispatch claim guard to its canonical stores.
+#[async_trait]
+pub trait ClaimedCheckpointTransport: Send + Sync {
+    async fn load_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<StreamCheckpoint>, DispatchError>;
+
+    async fn put_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+        checkpoint: StreamCheckpoint,
+    ) -> Result<SettleOutcome, DispatchError>;
+
+    async fn delete_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError>;
+
+    async fn load_recovery_snapshot(
+        &self,
+        claim: &RunClaim,
+        session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>;
 }
 
 /// Control-side dispatch operations that only the Coordinator's own store

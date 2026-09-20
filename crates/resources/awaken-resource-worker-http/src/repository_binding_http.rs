@@ -41,7 +41,10 @@ pub struct WorkerRepositoryBindingService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
-    session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
+    materialization_control:
+        Option<Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>>,
+    publication_control:
+        Option<Arc<dyn awaken_session_contract::SessionTerminalRepositoryPublicationControl>>,
     transport_authorizer: Option<Arc<dyn RepositoryTransportAuthorizer>>,
 }
 
@@ -288,7 +291,8 @@ impl WorkerRepositoryBindingService {
             dispatch,
             authenticator,
             directory: None,
-            session_control: None,
+            materialization_control: None,
+            publication_control: None,
             transport_authorizer: None,
         }
     }
@@ -303,11 +307,34 @@ impl WorkerRepositoryBindingService {
     /// already used by terminal cleanup polling. This is read-only command
     /// projection plus exact lease validation, never another publication queue.
     #[must_use]
-    pub fn with_session_control(
+    pub fn with_materialization_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+        control: Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>,
     ) -> Self {
-        self.session_control = Some(control);
+        self.materialization_control = Some(control);
+        self
+    }
+
+    #[must_use]
+    pub fn with_publication_control(
+        mut self,
+        control: Arc<dyn awaken_session_contract::SessionTerminalRepositoryPublicationControl>,
+    ) -> Self {
+        self.publication_control = Some(control);
+        self
+    }
+
+    /// Install the Resource-materialization and terminal-publication roles
+    /// supplied by the same canonical Session application.
+    #[must_use]
+    pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
+    where
+        T: awaken_session_contract::SessionResourceMaterializationControl
+            + awaken_session_contract::SessionTerminalRepositoryPublicationControl
+            + 'static,
+    {
+        self.materialization_control = Some(control.clone());
+        self.publication_control = Some(control);
         self
     }
 
@@ -484,7 +511,7 @@ async fn verify_session_repository_binding(
     let Some(directory) = service.directory.as_deref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Some(control) = service.session_control.as_deref() else {
+    let Some(control) = service.materialization_control.as_deref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let now_ms = unix_now_ms();
@@ -607,7 +634,7 @@ async fn verify_terminal_repository_binding(
     let Some(directory) = service.directory.as_deref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Some(control) = service.session_control.as_deref() else {
+    let Some(control) = service.publication_control.as_deref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let now_ms = unix_now_ms();

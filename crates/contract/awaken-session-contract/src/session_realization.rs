@@ -796,12 +796,8 @@ pub trait SessionRealizationControl: Send + Sync {
     /// prove continued ownership.
     async fn renew_session_realization(
         &self,
-        _command: RenewSessionRealization,
-    ) -> Result<SessionRealizationLeaseReceipt, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "Session realization lease renewal is unsupported".into(),
-        ))
-    }
+        command: RenewSessionRealization,
+    ) -> Result<SessionRealizationLeaseReceipt, SessionRealizationControlFailure>;
 
     async fn activate_session_realization(
         &self,
@@ -817,19 +813,56 @@ pub trait SessionRealizationControl: Send + Sync {
         &self,
         command: FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure>;
+}
 
-    /// Re-derive the Workspace for one exact pending Resource target under the
-    /// current realization lease. This authorizes only Resource staging; it is
-    /// neither a Run claim nor a second realization queue.
+/// Re-derive the Workspace for one exact pending Resource target under the
+/// current realization lease. This authorizes only Resource staging; it is
+/// neither a Run claim nor a second realization queue.
+#[async_trait]
+pub trait SessionResourceMaterializationControl: Send + Sync {
     async fn authorize_resource_materialization_intent(
         &self,
-        _intent: &SessionResourceMaterializationIntent,
-    ) -> Result<String, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "Session Resource materialization authorization is unsupported".into(),
-        ))
-    }
+        intent: &SessionResourceMaterializationIntent,
+    ) -> Result<String, SessionRealizationControlFailure>;
+}
 
+/// Authorization for checkpoint source-release Artifact publication.
+#[async_trait]
+pub trait SessionCheckpointArtifactControl: Send + Sync {
+    async fn authorize_checkpoint_release_artifact_effect(
+        &self,
+        session_id: &crate::SessionId,
+        operation: &crate::SessionEnvironmentOperation,
+    ) -> Result<String, SessionRealizationControlFailure>;
+}
+
+/// Authorization for one aggregate-derived terminal Memory reconciliation.
+#[async_trait]
+pub trait SessionTerminalMemoryControl: Send + Sync {
+    async fn authorize_terminal_memory_intent(
+        &self,
+        intent: &crate::SessionTerminalMemoryIntent,
+    ) -> Result<crate::SessionTerminalMemoryTarget, SessionRealizationControlFailure>;
+}
+
+pub trait SessionResourceEffectControl:
+    SessionResourceMaterializationControl
+    + SessionCheckpointArtifactControl
+    + SessionTerminalMemoryControl
+{
+}
+
+impl<T> SessionResourceEffectControl for T where
+    T: SessionResourceMaterializationControl
+        + SessionCheckpointArtifactControl
+        + SessionTerminalMemoryControl
+        + ?Sized
+{
+}
+
+/// Discovery and immutable work projection for aggregate-owned terminal cleanup.
+#[async_trait]
+pub trait SessionTerminalCleanupQueue: Send + Sync {
     /// Claim the next terminal Session whose physical realization was lost
     /// with a prior Worker process. The returned assignment contains only the
     /// facts needed to rebuild that process-local projection; callers must use
@@ -838,10 +871,8 @@ pub trait SessionRealizationControl: Send + Sync {
     /// Implementations that do not own external Worker placement return `None`.
     async fn claim_next_terminal_cleanup(
         &self,
-        _target: SessionRealizationTarget,
-    ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
-        Ok(None)
-    }
+        target: SessionRealizationTarget,
+    ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure>;
 
     /// Project the exact terminal assignment and closed next action owned by this
     /// realization generation from one Session-root snapshot. `None` means the
@@ -851,78 +882,49 @@ pub trait SessionRealizationControl: Send + Sync {
     /// [`crate::SessionCleanupOperation`] remains the only queue.
     async fn terminal_cleanup_work(
         &self,
-        _session_id: &crate::SessionId,
-        _lease: &SessionRealizationLease,
-    ) -> Result<Option<SessionTerminalCleanupWork>, SessionRealizationControlFailure> {
-        Ok(None)
-    }
+        session_id: &crate::SessionId,
+        lease: &SessionRealizationLease,
+    ) -> Result<Option<SessionTerminalCleanupWork>, SessionRealizationControlFailure>;
+}
 
-    /// Re-derive one exact terminal effect and its canonical Workspace from the
-    /// aggregate immediately before an external adapter performs I/O. This is a
-    /// read of [`crate::SessionCleanupOperation`], not another claim or queue.
+/// Preparation-effect authorization and exact receipt admission.
+#[async_trait]
+pub trait SessionTerminalPreparationControl: Send + Sync {
     async fn authorize_terminal_cleanup_effect(
         &self,
-        _effect: &crate::SessionTerminalCleanupEffect,
-    ) -> Result<SessionTerminalCleanupPreparationAuthorization, SessionRealizationControlFailure>
-    {
-        Err(SessionRealizationControlFailure::Invalid(
-            "terminal cleanup effect authorization is unsupported".into(),
-        ))
-    }
+        effect: &crate::SessionTerminalCleanupEffect,
+    ) -> Result<SessionTerminalCleanupPreparationAuthorization, SessionRealizationControlFailure>;
 
-    /// Re-derive the single aggregate-wide physical disposal from the
-    /// durable preparation set and the current realization lease. This is a
-    /// read-only authorization edge; provider deletion remains with the
-    /// Runtime receiving the exact effect.
+    async fn record_terminal_cleanup_preparation(
+        &self,
+        lease: &SessionRealizationLease,
+        preparation: crate::SessionCleanupPreparation,
+    ) -> Result<(), SessionRealizationControlFailure>;
+}
+
+/// Aggregate-wide physical-disposal authorization and receipt admission.
+#[async_trait]
+pub trait SessionTerminalDisposalControl: Send + Sync {
     async fn authorize_terminal_cleanup_disposal(
         &self,
-        _effect: &crate::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<String, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "terminal cleanup disposal authorization is unsupported".into(),
-        ))
-    }
+        effect: &crate::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<String, SessionRealizationControlFailure>;
 
-    /// Re-derive an exact checkpoint source-release Artifact effect from the
-    /// current Session root. This authorizes only live output publication while
-    /// `Suspending/ReadyToDispose` still owns the durable checkpoint; it neither
-    /// advances the Environment state nor creates a cleanup receipt.
-    async fn authorize_checkpoint_release_artifact_effect(
+    async fn record_terminal_cleanup_disposal(
         &self,
-        _session_id: &crate::SessionId,
-        _operation: &crate::SessionEnvironmentOperation,
-    ) -> Result<String, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "checkpoint source-release Artifact authorization is unsupported".into(),
-        ))
-    }
+        lease: &SessionRealizationLease,
+        receipt: crate::SessionCleanupDisposalReceipt,
+    ) -> Result<(), SessionRealizationControlFailure>;
+}
 
-    /// Re-derive one exact terminal Memory target from the Session root. The
-    /// returned value adds the canonical Workspace only after the aggregate has
-    /// matched the intent against its active input and current Sandbox handle.
-    async fn authorize_terminal_memory_intent(
-        &self,
-        _intent: &crate::SessionTerminalMemoryIntent,
-    ) -> Result<crate::SessionTerminalMemoryTarget, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "terminal Memory reconciliation authorization is unsupported".into(),
-        ))
-    }
-
-    /// Project the one root Repository publication command already frozen in
-    /// the terminal cleanup operation together with the Session row's canonical
-    /// Workspace. `None` means there is no publication intent, a child cleanup
-    /// is still pending, or the exact receipt/rejection is already durable.
-    /// Implementations must validate the same realization lease used by ordinary
-    /// terminal cleanup commands.
+/// Exact root Repository publication projection and outcome admission.
+#[async_trait]
+pub trait SessionTerminalRepositoryPublicationControl: Send + Sync {
     async fn terminal_repository_publication_command(
         &self,
-        _session_id: &crate::SessionId,
-        _lease: &SessionRealizationLease,
-    ) -> Result<Option<SessionRepositoryPublicationProjection>, SessionRealizationControlFailure>
-    {
-        Ok(None)
-    }
+        session_id: &crate::SessionId,
+        lease: &SessionRealizationLease,
+    ) -> Result<Option<SessionRepositoryPublicationProjection>, SessionRealizationControlFailure>;
 
     /// Admit one exact root Repository publication receipt into the existing
     /// terminal cleanup operation. The explicit Session id is routing input,
@@ -930,54 +932,68 @@ pub trait SessionRealizationControl: Send + Sync {
     /// from that Session root before the root-CAS mutation.
     async fn record_terminal_repository_publication_receipt(
         &self,
-        _session_id: &crate::SessionId,
-        _lease: &SessionRealizationLease,
-        _receipt: crate::SessionRepositoryPublicationReceipt,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "remote Session Repository publication is unsupported".into(),
-        ))
-    }
+        session_id: &crate::SessionId,
+        lease: &SessionRealizationLease,
+        receipt: crate::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), SessionRealizationControlFailure>;
 
     /// Admit one exact permanent Repository publication rejection into the same
     /// cleanup sidecar and lease-fenced root CAS as a successful receipt. This is
     /// a terminal effect observation, not a Worker-local retry queue.
     async fn record_terminal_repository_publication_rejection(
         &self,
-        _session_id: &crate::SessionId,
-        _lease: &SessionRealizationLease,
-        _rejection: crate::SessionRepositoryPublicationRejection,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "remote Session Repository publication is unsupported".into(),
-        ))
-    }
+        session_id: &crate::SessionId,
+        lease: &SessionRealizationLease,
+        rejection: crate::SessionRepositoryPublicationRejection,
+    ) -> Result<(), SessionRealizationControlFailure>;
+}
 
-    /// Admit one exact source-dependent preparation into the existing Session
-    /// cleanup operation. The aggregate verifies both the asserted current
-    /// lease and the preparation's persisted predecessor lease before its CAS.
-    async fn record_terminal_cleanup_preparation(
-        &self,
-        _lease: &SessionRealizationLease,
-        _preparation: crate::SessionCleanupPreparation,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "remote Session terminal cleanup preparation is unsupported".into(),
-        ))
-    }
+/// Complete Worker terminal-cleanup role. The aggregate carries no additional
+/// methods or state; it only states which exact roles the Worker composition
+/// requires before it can start the recovery lane.
+pub trait SessionTerminalCleanupControl:
+    SessionTerminalCleanupQueue
+    + SessionTerminalPreparationControl
+    + SessionTerminalDisposalControl
+    + SessionTerminalRepositoryPublicationControl
+{
+}
 
-    /// Admit the one exact physical-disposal receipt and atomically retire
-    /// the aggregate's Environment/Resource projection. Implementations must
-    /// re-derive the command and current lease before committing.
-    async fn record_terminal_cleanup_disposal(
-        &self,
-        _lease: &SessionRealizationLease,
-        _receipt: crate::SessionCleanupDisposalReceipt,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "remote Session terminal cleanup disposal is unsupported".into(),
-        ))
-    }
+impl<T> SessionTerminalCleanupControl for T where
+    T: SessionTerminalCleanupQueue
+        + SessionTerminalPreparationControl
+        + SessionTerminalDisposalControl
+        + SessionTerminalRepositoryPublicationControl
+        + ?Sized
+{
+}
+
+/// Complete Control application surface. The canonical Session application
+/// implements all three roles; narrower transports depend on only the role they
+/// actually expose.
+pub trait CompleteSessionRealizationControl:
+    SessionRealizationControl + SessionResourceEffectControl + SessionTerminalCleanupControl
+{
+}
+
+impl<T> CompleteSessionRealizationControl for T where
+    T: SessionRealizationControl
+        + SessionResourceEffectControl
+        + SessionTerminalCleanupControl
+        + ?Sized
+{
+}
+
+/// Remote Worker realization surface: core lease/phase transitions plus the
+/// terminal cleanup work that the Worker executes.
+pub trait WorkerSessionRealizationControl:
+    SessionRealizationControl + SessionTerminalCleanupControl
+{
+}
+
+impl<T> WorkerSessionRealizationControl for T where
+    T: SessionRealizationControl + SessionTerminalCleanupControl + ?Sized
+{
 }
 
 /// Topology-specific projection installation used by the one realization
@@ -1024,7 +1040,8 @@ mod tests {
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionProjectionInstallMode,
         SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-        SessionTerminalCleanupPreparationAuthorization, realization_lease_authorizes,
+        SessionTerminalCleanupPreparationAuthorization,
+        SessionTerminalRepositoryPublicationControl, realization_lease_authorizes,
         realization_lease_is_live_at,
     };
     use crate::SessionRealizationLease;
@@ -1032,12 +1049,12 @@ mod tests {
     struct MinimalControl;
 
     #[tokio::test]
-    async fn canonical_realization_renewal_port_is_exact_and_unsupported_by_default() {
+    async fn canonical_realization_renewal_port_is_exact_and_explicitly_refused_by_fixture() {
         // Cause/effect graph: C1 renewal names a Session and the complete
         // owner/incarnation/epoch lease; C2 it requests only a new expiry; C3 a
         // topology does or does not implement the aggregate renewal CAS.
         // Effects: E1 the canonical wire round-trips every exact fact; E2 the
-        // default port fails closed and cannot manufacture a terminal-specific
+        // explicit fixture refuses and cannot manufacture a terminal-specific
         // assignment, queue, or second renewal authority.
         //
         // | Rule | exact lease | expiry | implementation | Effect |
@@ -1433,15 +1450,128 @@ mod tests {
         ) -> Result<(), SessionRealizationControlFailure> {
             unreachable!("not exercised by the terminal port-default tests")
         }
+
+        async fn renew_session_realization(
+            &self,
+            _command: RenewSessionRealization,
+        ) -> Result<super::SessionRealizationLeaseReceipt, SessionRealizationControlFailure>
+        {
+            Err(SessionRealizationControlFailure::Invalid(
+                "fixture has no realization renewal authority".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl super::SessionTerminalCleanupQueue for MinimalControl {
+        async fn claim_next_terminal_cleanup(
+            &self,
+            _target: super::SessionRealizationTarget,
+        ) -> Result<Option<super::SessionTerminalCleanupAssignment>, SessionRealizationControlFailure>
+        {
+            Ok(None)
+        }
+
+        async fn terminal_cleanup_work(
+            &self,
+            _session_id: &crate::SessionId,
+            _lease: &SessionRealizationLease,
+        ) -> Result<Option<super::SessionTerminalCleanupWork>, SessionRealizationControlFailure>
+        {
+            Ok(None)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl super::SessionTerminalPreparationControl for MinimalControl {
+        async fn authorize_terminal_cleanup_effect(
+            &self,
+            _effect: &crate::SessionTerminalCleanupEffect,
+        ) -> Result<SessionTerminalCleanupPreparationAuthorization, SessionRealizationControlFailure>
+        {
+            Err(SessionRealizationControlFailure::Invalid(
+                "fixture has no terminal cleanup effect authority".into(),
+            ))
+        }
+
+        async fn record_terminal_cleanup_preparation(
+            &self,
+            _lease: &SessionRealizationLease,
+            _preparation: crate::SessionCleanupPreparation,
+        ) -> Result<(), SessionRealizationControlFailure> {
+            Err(SessionRealizationControlFailure::Invalid(
+                "fixture has no terminal cleanup receipt authority".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl super::SessionTerminalDisposalControl for MinimalControl {
+        async fn authorize_terminal_cleanup_disposal(
+            &self,
+            _effect: &crate::SessionTerminalCleanupDisposalEffect,
+        ) -> Result<String, SessionRealizationControlFailure> {
+            Err(SessionRealizationControlFailure::Invalid(
+                "fixture has no terminal cleanup disposal authority".into(),
+            ))
+        }
+
+        async fn record_terminal_cleanup_disposal(
+            &self,
+            _lease: &SessionRealizationLease,
+            _receipt: crate::SessionCleanupDisposalReceipt,
+        ) -> Result<(), SessionRealizationControlFailure> {
+            Err(SessionRealizationControlFailure::Invalid(
+                "fixture has no terminal cleanup receipt authority".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl super::SessionTerminalRepositoryPublicationControl for MinimalControl {
+        async fn terminal_repository_publication_command(
+            &self,
+            _session_id: &crate::SessionId,
+            _lease: &SessionRealizationLease,
+        ) -> Result<
+            Option<super::SessionRepositoryPublicationProjection>,
+            SessionRealizationControlFailure,
+        > {
+            Ok(None)
+        }
+
+        async fn record_terminal_repository_publication_receipt(
+            &self,
+            _session_id: &crate::SessionId,
+            _lease: &SessionRealizationLease,
+            _receipt: crate::SessionRepositoryPublicationReceipt,
+        ) -> Result<(), SessionRealizationControlFailure> {
+            Err(SessionRealizationControlFailure::Invalid(
+                "fixture has no Repository publication authority".into(),
+            ))
+        }
+
+        async fn record_terminal_repository_publication_rejection(
+            &self,
+            _session_id: &crate::SessionId,
+            _lease: &SessionRealizationLease,
+            _rejection: crate::SessionRepositoryPublicationRejection,
+        ) -> Result<(), SessionRealizationControlFailure> {
+            Err(SessionRealizationControlFailure::Invalid(
+                "fixture has no Repository publication authority".into(),
+            ))
+        }
     }
 
     #[tokio::test]
-    async fn terminal_repository_publication_control_defaults_do_not_invent_work_or_receipts() {
-        // Control-default cause/effect table: C1 a topology has not implemented
-        // remote Repository publication; C2 it polls for a command or submits a
-        // receipt. Effects: E1 polling returns None (no parallel queue); E2
-        // receipt admission fails Invalid (no synthetic root-CAS evidence).
-        // Rules D1=C1+poll=>E1; D2=C1+record=>E2.
+    async fn explicit_terminal_fixture_does_not_invent_work_or_receipts() {
+        // Terminal-role cause/effect table: C1 an explicit test topology owns
+        // the terminal role but has no Repository publication work; C2 it polls
+        // for a command or submits a receipt. Effects: E1 polling returns None
+        // from that explicit implementation; E2 receipt admission fails Invalid
+        // and creates no synthetic root-CAS evidence. Rules D1=C1+poll=>E1;
+        // D2=C1+record=>E2. Production absence is represented by not implementing
+        // the role at all, never by inheriting these fixture decisions.
         let control = MinimalControl;
         let lease = SessionRealizationLease {
             owner: "worker".into(),

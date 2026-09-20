@@ -70,21 +70,21 @@ pub async fn awaken_store_conformance::session_store::vault_reference_index_retu
 pub fn awaken_store_conformance::session_store::with_mcp_credential_source(awaken_session_contract::session_repo::persisted_session::PersistedSession, &str) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
 pub mod awaken_store_conformance::work_queue
 pub mod awaken_store_conformance::work_queue::session_access
-pub async fn awaken_store_conformance::work_queue::session_access::capability_and_metadata_contract(&impl awaken_session_contract::work_queue::WorkQueue, u64)
-pub async fn awaken_store_conformance::work_queue::env_isolation<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
-pub async fn awaken_store_conformance::work_queue::graceful_owner_release_is_exact<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
-pub async fn awaken_store_conformance::work_queue::heartbeat_compare_and_extend<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
-pub async fn awaken_store_conformance::work_queue::observation_timestamps_are_the_injected_clock<Q: awaken_session_contract::work_queue::WorkQueue>(&Q, &awaken_agent_contract::clock::ManualClock)
-pub async fn awaken_store_conformance::work_queue::reclaim_age_boundary_cases(&impl awaken_session_contract::work_queue::WorkQueue)
-pub async fn awaken_store_conformance::work_queue::reclaim_at_ttl<Q: awaken_session_contract::work_queue::WorkQueue>(&Q, u64)
-pub async fn awaken_store_conformance::work_queue::remove_env_purges<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
-pub async fn awaken_store_conformance::work_queue::requested_reclaim_uses_refresh_clock<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
-pub async fn awaken_store_conformance::work_queue::run_suite<Q: awaken_session_contract::work_queue::WorkQueue, F: core::future::future::Future<Output = Q>>(impl core::ops::function::Fn(alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> F, u64)
-pub fn awaken_store_conformance::work_queue::session_access_digest(u64) -> awaken_session_contract::work_queue::SessionAccessDigest
-pub async fn awaken_store_conformance::work_queue::session_enqueue_is_idempotent<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
-pub async fn awaken_store_conformance::work_queue::session_ownership_lifecycle_is_single_and_fenced<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
-pub async fn awaken_store_conformance::work_queue::single_active_cap<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
-pub async fn awaken_store_conformance::work_queue::stop_frees_next<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::session_access::capability_and_metadata_contract(&impl awaken_session_work_contract::WorkQueue, u64)
+pub async fn awaken_store_conformance::work_queue::env_isolation<Q: awaken_session_work_contract::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::graceful_owner_release_is_exact<Q: awaken_session_work_contract::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::heartbeat_compare_and_extend<Q: awaken_session_work_contract::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::observation_timestamps_are_the_injected_clock<Q: awaken_session_work_contract::WorkQueue>(&Q, &awaken_agent_contract::clock::ManualClock)
+pub async fn awaken_store_conformance::work_queue::reclaim_age_boundary_cases(&impl awaken_session_work_contract::WorkQueue)
+pub async fn awaken_store_conformance::work_queue::reclaim_at_ttl<Q: awaken_session_work_contract::WorkQueue>(&Q, u64)
+pub async fn awaken_store_conformance::work_queue::remove_env_purges<Q: awaken_session_work_contract::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::requested_reclaim_uses_refresh_clock<Q: awaken_session_work_contract::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::run_suite<Q: awaken_session_work_contract::WorkQueue, F: core::future::future::Future<Output = Q>>(impl core::ops::function::Fn(alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> F, u64)
+pub fn awaken_store_conformance::work_queue::session_access_digest(u64) -> awaken_session_work_contract::SessionAccessDigest
+pub async fn awaken_store_conformance::work_queue::session_enqueue_is_idempotent<Q: awaken_session_work_contract::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::session_ownership_lifecycle_is_single_and_fenced<Q: awaken_session_work_contract::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::single_active_cap<Q: awaken_session_work_contract::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::stop_frees_next<Q: awaken_session_work_contract::WorkQueue>(&Q)
 pub mod awaken_store_conformance::worker_directory
 pub async fn awaken_store_conformance::worker_directory::assert_exact_expiry(alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>, &str)
 pub async fn awaken_store_conformance::worker_directory::assert_process_exit_receipt(alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>, &str) -> awaken_worker_contract::registry::WorkerIdentity

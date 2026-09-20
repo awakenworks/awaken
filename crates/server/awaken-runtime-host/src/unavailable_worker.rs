@@ -43,6 +43,21 @@ impl FileStore for UnavailableWorkerFiles {
 #[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl FileCatalog for UnavailableWorkerFiles {
+    async fn artifact_capture(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+    ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, FileCatalogError> {
+        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+    }
+
+    async fn replace_artifact_capture(
+        &self,
+        _request: awaken_resource_contract::ReplaceArtifactCapture,
+    ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, FileCatalogError> {
+        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+    }
+
     async fn create_file(
         &self,
         _record: FileRecord,
@@ -60,6 +75,14 @@ impl FileCatalog for UnavailableWorkerFiles {
     }
 
     async fn list_files(
+        &self,
+        _workspace_id: &str,
+        _scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+    }
+
+    async fn list_files_including_deleted(
         &self,
         _workspace_id: &str,
         _scope_id: Option<&str>,

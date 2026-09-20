@@ -1,3 +1,4 @@
+use awaken_run_ingress::ClaimedCheckpointTransport as _;
 use awaken_run_ingress::ControlDispatchQueue;
 use std::sync::Arc;
 

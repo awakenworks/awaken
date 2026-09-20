@@ -5,6 +5,40 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionContractErrorDetail(String);
+
+impl SessionContractErrorDetail {
+    #[must_use]
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self(detail.into())
+    }
+}
+
+impl std::fmt::Display for SessionContractErrorDetail {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl From<String> for SessionContractErrorDetail {
+    fn from(detail: String) -> Self {
+        Self(detail)
+    }
+}
+
+impl From<&str> for SessionContractErrorDetail {
+    fn from(detail: &str) -> Self {
+        Self(detail.to_string())
+    }
+}
+
+impl From<SessionContractErrorDetail> for String {
+    fn from(detail: SessionContractErrorDetail) -> Self {
+        detail.0
+    }
+}
+
 /// Opaque identity of one Session root, which is also the id of its root
 /// Thread.
 ///
@@ -185,3 +219,19 @@ mod tests {
         );
     }
 }
+
+/// Monotonic root revision for every mutation of one Session aggregate.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct SessionRevision(pub u64);

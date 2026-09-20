@@ -225,7 +225,7 @@ impl SkillCatalog {
         selections: &[AgentSkillBinding],
     ) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
         awaken_agent_contract::validate_agent_skills(selections)
-            .map_err(SkillStoreError::Invalid)?;
+            .map_err(|error| SkillStoreError::Invalid(error.into()))?;
         let mut bindings = Vec::with_capacity(selections.len());
         for selection in selections {
             let version = match selection.kind {
@@ -280,7 +280,7 @@ impl SkillCatalog {
                                     binding.clone(),
                                     lease.clone(),
                                 )
-                                .map_err(SkillStoreError::Invalid)?,
+                                .map_err(|error| SkillStoreError::Invalid(error.into()))?,
                             ),
                         ),
                         (Some(claim), None) => {
@@ -293,15 +293,18 @@ impl SkillCatalog {
                         .ok_or_else(|| SkillStoreError::Storage("no Skill bundle source".into()))?
                         .load(workspace, binding, authority.as_ref())
                         .await
-                        .map_err(|error| SkillStoreError::Storage(error.to_string()))?
+                        .map_err(|error| SkillStoreError::Storage(error.to_string().into()))?
                         .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?
                 }
             };
             if version.bundle_sha256 != binding.bundle_sha256 {
-                return Err(SkillStoreError::Invalid(format!(
-                    "Skill {} version {} hash changed",
-                    binding.skill_id, binding.version
-                )));
+                return Err(SkillStoreError::Invalid(
+                    format!(
+                        "Skill {} version {} hash changed",
+                        binding.skill_id, binding.version
+                    )
+                    .into(),
+                ));
             }
             versions.push(version);
         }

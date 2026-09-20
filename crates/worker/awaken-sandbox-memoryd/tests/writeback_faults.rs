@@ -380,6 +380,12 @@ impl MemoryRepository for FaultRepository {
         self.mutate(async move { inner.preserve_copy_conflict(&s, &candidate).await })
             .await
     }
+    async fn list_copy_conflicts(
+        &self,
+        s: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        self.inner.list_copy_conflicts(s).await
+    }
     async fn snapshot_heads(&self, s: &str) -> Result<Vec<Memory>, MemErr> {
         self.inner.snapshot_heads(s).await
     }

@@ -10,8 +10,8 @@ pub awaken_resource_contract::CreateFileRecordOutcome::Inserted(awaken_resource_
 impl awaken_resource_contract::CreateFileRecordOutcome
 pub fn awaken_resource_contract::CreateFileRecordOutcome::record(&self) -> &awaken_resource_contract::FileRecord
 pub enum awaken_resource_contract::FileCatalogError
-pub awaken_resource_contract::FileCatalogError::Invalid(alloc::string::String)
-pub awaken_resource_contract::FileCatalogError::Storage(alloc::string::String)
+pub awaken_resource_contract::FileCatalogError::Invalid(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::FileCatalogError::Storage(awaken_resource_contract::ResourceErrorDetail)
 pub enum awaken_resource_contract::FileReadPurpose
 pub awaken_resource_contract::FileReadPurpose::ModelContent
 pub awaken_resource_contract::FileReadPurpose::ModelContent::thread_id: alloc::string::String
@@ -58,7 +58,7 @@ pub awaken_resource_contract::RegistryRepositoryError::AlreadyExists(alloc::stri
 pub awaken_resource_contract::RegistryRepositoryError::ConcurrentModification(alloc::string::String)
 pub awaken_resource_contract::RegistryRepositoryError::CorruptData(alloc::string::String)
 pub awaken_resource_contract::RegistryRepositoryError::NotFound(alloc::string::String)
-pub awaken_resource_contract::RegistryRepositoryError::Unavailable(alloc::string::String)
+pub awaken_resource_contract::RegistryRepositoryError::Unavailable(awaken_resource_contract::ResourceErrorDetail)
 pub enum awaken_resource_contract::ReplaceArtifactCaptureOutcome
 pub awaken_resource_contract::ReplaceArtifactCaptureOutcome::Applied(awaken_resource_contract::ArtifactCapture)
 pub awaken_resource_contract::ReplaceArtifactCaptureOutcome::Conflict
@@ -85,7 +85,7 @@ pub awaken_resource_contract::ResourceKind::Repository
 pub awaken_resource_contract::ResourceKind::Skill
 pub enum awaken_resource_contract::ResourcePurgeError
 pub awaken_resource_contract::ResourcePurgeError::IdempotencyConflict(alloc::string::String)
-pub awaken_resource_contract::ResourcePurgeError::Invalid(alloc::string::String)
+pub awaken_resource_contract::ResourcePurgeError::Invalid(awaken_resource_contract::ResourceErrorDetail)
 pub awaken_resource_contract::ResourcePurgeError::InvalidTransition
 pub awaken_resource_contract::ResourcePurgeError::InvalidTransition::from: awaken_resource_contract::ResourcePurgeStatus
 pub awaken_resource_contract::ResourcePurgeError::InvalidTransition::to: awaken_resource_contract::ResourcePurgeStatus
@@ -100,7 +100,7 @@ pub awaken_resource_contract::ResourcePurgeError::RetentionHeld::not_before_unix
 pub awaken_resource_contract::ResourcePurgeError::RevisionConflict(alloc::string::String)
 pub awaken_resource_contract::ResourcePurgeError::StaleClaim
 pub awaken_resource_contract::ResourcePurgeError::StaleReclamationFence
-pub awaken_resource_contract::ResourcePurgeError::Storage(alloc::string::String)
+pub awaken_resource_contract::ResourcePurgeError::Storage(awaken_resource_contract::ResourceErrorDetail)
 pub enum awaken_resource_contract::ResourcePurgeEvidence
 pub awaken_resource_contract::ResourcePurgeEvidence::File
 pub awaken_resource_contract::ResourcePurgeEvidence::File::blob_deleted: bool
@@ -140,12 +140,12 @@ pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound
 pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound::id: alloc::string::String
 pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound::version: awaken_resource_contract::ConfigVersion
 pub awaken_resource_contract::ResourceRegistryError::CorruptData(alloc::string::String)
-pub awaken_resource_contract::ResourceRegistryError::Invalid(alloc::string::String)
+pub awaken_resource_contract::ResourceRegistryError::Invalid(awaken_resource_contract::ResourceErrorDetail)
 pub awaken_resource_contract::ResourceRegistryError::NotActive
 pub awaken_resource_contract::ResourceRegistryError::NotActive::id: alloc::string::String
 pub awaken_resource_contract::ResourceRegistryError::NotActive::state: awaken_resource_contract::ResourceState
 pub awaken_resource_contract::ResourceRegistryError::NotFound(alloc::string::String)
-pub awaken_resource_contract::ResourceRegistryError::Unavailable(alloc::string::String)
+pub awaken_resource_contract::ResourceRegistryError::Unavailable(awaken_resource_contract::ResourceErrorDetail)
 pub enum awaken_resource_contract::ResourceState
 pub awaken_resource_contract::ResourceState::Active
 pub awaken_resource_contract::ResourceState::Archived
@@ -153,10 +153,10 @@ pub awaken_resource_contract::ResourceState::Deleted
 pub awaken_resource_contract::ResourceState::Suspended
 pub enum awaken_resource_contract::SkillStoreError
 pub awaken_resource_contract::SkillStoreError::AlreadyExists(alloc::string::String)
-pub awaken_resource_contract::SkillStoreError::Invalid(alloc::string::String)
-pub awaken_resource_contract::SkillStoreError::Io(alloc::string::String)
+pub awaken_resource_contract::SkillStoreError::Invalid(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::SkillStoreError::Io(awaken_resource_contract::ResourceErrorDetail)
 pub awaken_resource_contract::SkillStoreError::NotFound(alloc::string::String)
-pub awaken_resource_contract::SkillStoreError::Storage(alloc::string::String)
+pub awaken_resource_contract::SkillStoreError::Storage(awaken_resource_contract::ResourceErrorDetail)
 pub awaken_resource_contract::SkillStoreError::VersionConflict(alloc::string::String)
 pub struct awaken_resource_contract::AggregateRevision(_)
 impl awaken_resource_contract::AggregateRevision
@@ -281,7 +281,7 @@ pub awaken_resource_contract::FileRecord::mime_type: alloc::string::String
 pub awaken_resource_contract::FileRecord::scope_id: core::option::Option<alloc::string::String>
 pub awaken_resource_contract::FileRecord::size_bytes: u64
 pub awaken_resource_contract::FileRecord::workspace_id: alloc::string::String
-pub struct awaken_resource_contract::FileStoreError(pub alloc::string::String)
+pub struct awaken_resource_contract::FileStoreError(pub awaken_resource_contract::ResourceErrorDetail)
 pub struct awaken_resource_contract::InputBinding
 pub awaken_resource_contract::InputBinding::access: awaken_resource_contract::ResourceAccess
 pub awaken_resource_contract::InputBinding::binding_id: awaken_resource_contract::BindingId
@@ -479,6 +479,17 @@ pub awaken_resource_contract::ResolvedFileContent::content_id: alloc::string::St
 pub awaken_resource_contract::ResolvedFileContent::file_id: alloc::string::String
 pub awaken_resource_contract::ResolvedFileContent::filename: alloc::string::String
 pub awaken_resource_contract::ResolvedFileContent::media_type: alloc::string::String
+pub struct awaken_resource_contract::ResourceErrorDetail(_)
+impl awaken_resource_contract::ResourceErrorDetail
+pub fn awaken_resource_contract::ResourceErrorDetail::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<&str> for awaken_resource_contract::ResourceErrorDetail
+pub fn awaken_resource_contract::ResourceErrorDetail::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_resource_contract::ResourceErrorDetail
+pub fn awaken_resource_contract::ResourceErrorDetail::from(alloc::string::String) -> Self
+impl core::convert::From<awaken_resource_contract::ResourceErrorDetail> for alloc::string::String
+pub fn alloc::string::String::from(awaken_resource_contract::ResourceErrorDetail) -> Self
+impl core::fmt::Display for awaken_resource_contract::ResourceErrorDetail
+pub fn awaken_resource_contract::ResourceErrorDetail::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_resource_contract::ResourcePurgeIntent
 pub awaken_resource_contract::ResourcePurgeIntent::attempts: u32
 pub awaken_resource_contract::ResourcePurgeIntent::blockers: alloc::vec::Vec<awaken_resource_contract::ResourceReference>

@@ -1,6 +1,7 @@
 //! Root-CAS reducers for one customer-visible Session Running interval.
 
-use super::{PersistedSession, SessionExecutionState, SessionRevision};
+use super::{PersistedSession, SessionExecutionState};
+use crate::SessionRevision;
 
 impl PersistedSession {
     /// Open the one continuous Running interval after the execution transition

@@ -339,10 +339,8 @@ commit-msg:
 pre-push:
   commands:
     # Keep push latency bounded. Full workspace tests, formal verification,
-    # Postgres suites, frontend tests/build, and public-API rustdoc generation
-    # remain explicit checks:
+    # Postgres suites, and frontend tests/build remain explicit checks:
     #   scripts/ci/check-all.sh
-    #   scripts/ci/check_public_api.sh
     documentation:
       run: scripts/ci/check-docs.sh
 
@@ -351,6 +349,12 @@ pre-push:
     # pre-commit, refused here before the push instead of at the full gate.
     rust-quick:
       run: scripts/ci/check-rust.sh --push
+
+    # Public snapshots are the review authority for contract/facade changes.
+    # Run the existing fail-closed gate; do not duplicate its crate inventory,
+    # tool pinning, or comparison policy in the hook.
+    public-api:
+      run: scripts/ci/check_public_api.sh --require-tools
 
     frontend-quick:
       run: scripts/ci/check-frontend.sh --quick

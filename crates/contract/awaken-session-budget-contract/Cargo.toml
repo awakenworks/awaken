@@ -1,0 +1,20 @@
+[package]
+name = "awaken-session-budget-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "contract"
+kinds = ["types", "spi"]
+authority = "session-budget"
+
+[dependencies]
+async-trait.workspace = true
+awaken-session-types.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
