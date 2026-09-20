@@ -11,7 +11,6 @@ import { withServer, pass } from './harness.mjs';
 import { closeHttpServer } from './http_server.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38471);
-const WS = 'ws';
 const MODEL = 'fake-haiku';
 const PROVIDER_KEY = 'sk-validity-fixture'; // awaken-allow: secret
 
@@ -44,6 +43,15 @@ async function main() {
       });
       return { status: res.status, body: await res.json().catch(() => ({})) };
     };
+
+    // The trusted edge resolves the Workspace for every config route; a
+    // `workspace_id` in the request is only a claim, and one that names a
+    // different Workspace is refused 404. Address the Workspace this
+    // installation actually resolved rather than inventing a name.
+    const context = await cfg('GET', '/v1/config/workspace-context');
+    assert.equal(context.status, 200, `workspace context: ${JSON.stringify(context.body)}`);
+    const WS = context.body.workspace_id;
+    assert.ok(WS, 'the edge resolved a Workspace');
 
     const connection = await cfg('POST', '/v1/config/provider-connections', {
       idempotency_key: 'incompatible-credential-provider-connection',

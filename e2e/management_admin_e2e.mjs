@@ -103,6 +103,12 @@ async function main() {
   const directory = await startModelDirectory('sk-admin-e2e'); // awaken-allow: secret
   try {
     await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
+      // A `workspace_id` in a request is a claim fenced against the Workspace
+      // the edge resolved; one naming another Workspace is refused 404.
+      const context = await fetch(`${base}/v1/config/workspace-context`);
+      assert.equal(context.status, 200, 'workspace context');
+      const ws = (await context.json()).workspace_id;
+      assert.ok(ws, 'the edge resolved a Workspace');
       // Cause/effect decision table for G36's single persisted input path:
       // E1 provider env present -> proposal route absent and catalog unchanged;
       // E2 explicit Provider Connection write -> catalog/credential facts appear.
@@ -145,14 +151,14 @@ async function main() {
       assert.equal(deepseekDescriptor.default_endpoints[1].base_url, 'https://api.deepseek.com/anthropic');
       assert.equal(deepseekDescriptor.default_endpoints[1].model_discovery_base_url, 'https://api.deepseek.com');
 
-      r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
+      r = await req(base, 'GET', `/v1/config/provider-connections?workspace_id=${ws}`);
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r.json.forEach((summary) => checkContract('ProviderConnectionSummary', summary));
       assert.equal(r.json.find((item) => item.provider_id === 'anthropic').status, 'not_configured');
 
       const connection = {
         idempotency_key: 'management-admin-provider-connection',
-        workspace_id: 'ws',
+        workspace_id: ws,
         provider_id: 'anthropic',
         display_name: 'Anthropic E2E',
         dialect: 'anthropic_messages',
@@ -192,7 +198,7 @@ async function main() {
       assert.ok(!JSON.stringify(r.json).includes(connection.secret), 'connection response is secret-free');
       const credId = r.json.credential.id;
       const credVersion = r.json.credential.version;
-      r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
+      r = await req(base, 'GET', `/v1/config/provider-connections?workspace_id=${ws}`);
       const readyConnection = r.json.find((item) => item.provider_id === 'anthropic');
       checkContract('ProviderConnectionSummary', readyConnection);
       assert.equal(readyConnection.status, 'ready');
@@ -259,7 +265,7 @@ async function main() {
 
       // --- resolve dry-run through the resolver, validated against the contract ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws',
+        workspace_id: ws,
         target: { model_id: 'connection-model-a' },
         binding: { type: 'exact', credential_source_id: credId },
       });
@@ -275,10 +281,10 @@ async function main() {
       // top-level `model_id` and a missing target both fail before resolution.
       for (const request of [
         {
-          workspace_id: 'ws', model_id: 'connection-model-a',
+          workspace_id: ws, model_id: 'connection-model-a',
           target: { model_id: 'connection-model-a' }, binding: { type: 'none' },
         },
-        { workspace_id: 'ws', binding: { type: 'none' } },
+        { workspace_id: ws, binding: { type: 'none' } },
       ]) {
         r = await req(base, 'POST', '/v1/config/inference/resolve', request);
         assert.equal(r.status, 422, JSON.stringify(r.json));
@@ -291,7 +297,7 @@ async function main() {
       checkContract('CredentialSource', r.json);
       assert.ok(!JSON.stringify(r.json).includes('sk-admin-e2e'), 'GET credential is secret-free');
 
-      r = await req(base, 'GET', '/v1/config/credentials?workspace_id=ws');
+      r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${ws}`);
       assert.equal(r.status, 200);
       assert.ok(Array.isArray(r.json) && r.json.some((c) => c.id === credId), 'list contains the credential');
       r.json.forEach((c) => checkContract('CredentialSource', c));
@@ -305,7 +311,7 @@ async function main() {
 
       // --- resolve with an Exact binding to a missing credential fails closed ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws',
+        workspace_id: ws,
         target: { model_id: 'connection-model-a' },
         binding: { type: 'exact', credential_source_id: 'cred_missing' },
       });
@@ -314,7 +320,7 @@ async function main() {
 
       // --- an `env` credential is rejected: proposal must be explicitly persisted ---
       r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'env', provider_id: 'anthropic', env_key: 'ANTHROPIC_API_KEY',
+        workspace_id: ws, kind: 'env', provider_id: 'anthropic', env_key: 'ANTHROPIC_API_KEY',
       });
       assert.equal(r.status, 422);
       assert.equal(r.json.code, 'credential_invalid');
@@ -323,7 +329,7 @@ async function main() {
       // --- credential pool + failover resolve ---------------------------------
       // Member A is a persisted credential that is archived before resolution.
       r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'vault', provider_id: 'anthropic', secret: 'sk-disabled', // awaken-allow: secret
+        workspace_id: ws, kind: 'vault', provider_id: 'anthropic', secret: 'sk-disabled', // awaken-allow: secret
       });
       assert.equal(r.status, 201);
       const badCredId = r.json.id;
@@ -335,7 +341,7 @@ async function main() {
 
       // Author a pool: A (ordinal 0, will fail) then the good vault credential B.
       r = await req(base, 'PUT', '/v1/config/credential-pools/pool1', {
-        id: 'pool1', workspace_id: 'ws',
+        id: 'pool1', workspace_id: ws,
         members: [
           { credential_source_id: badCredId, ordinal: 0, enabled: true, selection_weight: 0 },
           { credential_source_id: credId, ordinal: 1, enabled: true, selection_weight: 0 },
@@ -352,7 +358,7 @@ async function main() {
 
       // Resolve the pool binding: A (ordinal 0) fails to materialize -> fail over to B.
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', target: { model_id: 'connection-model-a' },
+        workspace_id: ws, target: { model_id: 'connection-model-a' },
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -362,12 +368,12 @@ async function main() {
 
       // A pool whose only member fails to materialize -> exhausted (409).
       r = await req(base, 'PUT', '/v1/config/credential-pools/pool_bad', {
-        id: 'pool_bad', workspace_id: 'ws',
+        id: 'pool_bad', workspace_id: ws,
         members: [{ credential_source_id: badCredId, ordinal: 0, enabled: true, selection_weight: 0 }],
       });
       assert.equal(r.status, 200);
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', target: { model_id: 'connection-model-a' },
+        workspace_id: ws, target: { model_id: 'connection-model-a' },
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool_bad' },
       });
       assert.equal(r.status, 409);
@@ -376,7 +382,7 @@ async function main() {
 
       // A binding to a pool that does not exist -> missing (404).
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws', target: { model_id: 'connection-model-a' },
+        workspace_id: ws, target: { model_id: 'connection-model-a' },
         binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool_missing' },
       });
       assert.equal(r.status, 404);
@@ -435,14 +441,14 @@ async function main() {
       checkContract('InferenceProfile', r.json);
       pass('PUT/GET inference-profile match the generated InferenceProfile contract');
 
-      r = await req(base, 'POST', '/v1/config/inference-profiles/prof1/resolve', { workspace_id: 'ws' });
+      r = await req(base, 'POST', '/v1/config/inference-profiles/prof1/resolve', { workspace_id: ws });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       checkContract('ResolvedInferenceView', r.json);
       assert.equal(r.json.base_url, `${directory.url}/v1/`);
       assert.equal(r.json.credential_present, true);
       pass('resolve-by-profile selects the explicit primary connection');
 
-      r = await req(base, 'POST', '/v1/config/inference-profiles/nope/resolve', { workspace_id: 'ws' });
+      r = await req(base, 'POST', '/v1/config/inference-profiles/nope/resolve', { workspace_id: ws });
       assert.equal(r.status, 404);
       pass('resolve of an unknown profile -> 404');
 
@@ -454,7 +460,7 @@ async function main() {
       checkContract('CredentialSource', r.json);
       assert.equal(r.json.status, 'disabled');
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws',
+        workspace_id: ws,
         target: {
           model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'anthropic.anthropic_messages',
         },
@@ -466,7 +472,7 @@ async function main() {
 
       // --- resolve with a None binding returns a triple with no credential ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws',
+        workspace_id: ws,
         target: {
           model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'anthropic.anthropic_messages',
         },
@@ -479,7 +485,7 @@ async function main() {
 
       // --- a binding to an unknown model fails closed (404) ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws',
+        workspace_id: ws,
         target: { model_id: 'no-such-model' },
         binding: { type: 'none' },
       });

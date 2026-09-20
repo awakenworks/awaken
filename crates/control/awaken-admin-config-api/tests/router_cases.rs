@@ -1427,3 +1427,90 @@ async fn repository_agent_input_mount_is_validated_before_persistence() {
     assert_eq!(status, StatusCode::OK, "M2: {reloaded}");
     assert_eq!(reloaded["inputs"][0]["mount_path"], "/workspace/repo", "M2");
 }
+
+/// Every route that accepts a `workspace_id` fences it against the Workspace
+/// the edge resolved.
+///
+/// Cause/effect graph: C1 a request carries a `workspace_id` the caller chose;
+/// C2 the edge resolved a Workspace for that request; C3 the claim equals it;
+/// C4 the claim differs; C5 the claim is empty. Effects: E1 the request is
+/// served against the edge-resolved Workspace; E2 the request is refused 404,
+/// the same answer as an absent resource, so cross-tenant addressing is not
+/// disclosed. Decision rules: W1=C1+C2+C3 => E1; W2=C1+C2+C4 => E2;
+/// W3=C1+C2+C5 => E1, because an empty claim selects nothing.
+///
+/// The two write routes below, `provider-connections` and `credentials`, read
+/// the claim and then answered from the edge Workspace instead: a caller could
+/// name one Workspace and have its provider connection and its sealed
+/// credential created in another, with a 201 and an id that named the second.
+/// Every read route already fenced it, so the fence was the rule and these two
+/// were the exception. The default harness derives the edge Workspace *from*
+/// the body claim, which is why no existing case could express W2; these use
+/// `call_in` to state the two independently.
+#[tokio::test]
+async fn every_workspace_claim_is_fenced_against_the_edge_resolved_workspace() {
+    let h = harness();
+    let edge = "workspace-edge";
+    let claim = |workspace: &str| -> Value {
+        json!({
+            "idempotency_key": "claim-fence",
+            "workspace_id": workspace,
+            "provider_id": "anthropic",
+            "display_name": "Anthropic",
+            "dialect": "anthropic_messages",
+            "base_url": "https://example.invalid/v1/",
+            "secret": "sk-test", // awaken-allow: secret
+        })
+    };
+    let credential = |workspace: &str| -> Value {
+        json!({
+            "workspace_id": workspace,
+            "kind": "vault",
+            "provider_id": "openai",
+            "env_key": "OPENAI_API_KEY",
+            "secret": "sk-openai", // awaken-allow: secret
+        })
+    };
+
+    // W2: a differing claim is refused before the request is otherwise read.
+    for (rule, uri, body) in [
+        (
+            "W2 provider-connections",
+            "/v1/config/provider-connections",
+            claim("some-other-workspace"),
+        ),
+        (
+            "W2 credentials",
+            "/v1/config/credentials",
+            credential("some-other-workspace"),
+        ),
+    ] {
+        let (status, problem) = call_in(&h.app, edge, "POST", uri, Some(body)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{rule}: {problem}");
+        assert_eq!(problem["code"], "not_found", "{rule}");
+    }
+
+    // W1 and W3: an equal claim and an empty claim both reach the handler, so
+    // the fence refuses only the contradiction. Neither is asserted on its
+    // business outcome here; what matters is that neither is the 404 above.
+    for (rule, uri, body) in [
+        ("W1 credentials", "/v1/config/credentials", credential(edge)),
+        ("W3 credentials", "/v1/config/credentials", credential("")),
+    ] {
+        let (status, response) = call_in(&h.app, edge, "POST", uri, Some(body)).await;
+        assert_ne!(status, StatusCode::NOT_FOUND, "{rule}: {response}");
+    }
+    let (status, created) = call_in(
+        &h.app,
+        edge,
+        "POST",
+        "/v1/config/credentials",
+        Some(credential(edge)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "W1: {created}");
+    assert_eq!(
+        created["workspace_id"], edge,
+        "W1/E1 the resource is created in the Workspace the edge resolved"
+    );
+}
