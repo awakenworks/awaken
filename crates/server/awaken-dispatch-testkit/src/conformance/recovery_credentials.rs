@@ -8,7 +8,7 @@
 /// receives the unique newer epoch and one receives None; R6 the losing/stale
 /// epoch is fenced while the current claim settles Done.
 async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -122,7 +122,7 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
 /// I5=C1+C3(diff)+C6=>exactly one admission and one rejection.
 /// Both live and tombstone phases exercise every backend.
 async fn caller_owned_run_identity_is_exact(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -245,7 +245,7 @@ async fn caller_owned_run_identity_is_exact(
 /// | T7 | Running(repair) | Pending | expired | E2+E4 |
 /// | T8 | Running(repair) | Pending | current | E5 |
 async fn committed_terminal_recovery_reuses_fenced_settlement(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -560,7 +560,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
 /// | Q8 | exact | malformed Session projection | - | - | typed admission error, no mutation |
 /// | Q9 | exact cancel | malformed Session projection | not used by cancel | - | claim without execution credentials |
 async fn incompatible_credentials_do_not_poison_broad_claims(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -931,7 +931,7 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
 /// | R2 | current | wrong mechanism | rejected |
 /// | R3 | stale after recovery | formerly exact | fenced |
 async fn attempt_credentials_are_atomic_and_epoch_fenced(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     ns: &str,
     conformance: ConformanceCapabilities,
     clock: &dyn ConformanceClock,

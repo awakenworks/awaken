@@ -3,6 +3,7 @@
 //! through the `DispatchQueue` trait, exactly as the pool would. Its own test binary
 //! (installs a one-shot injected dispatch store).
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -141,7 +142,7 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     let clock = Arc::new(ManualWorkerClock::new(0));
     let service = Arc::new(
         WorkerDispatchService::new(
-            mem.clone() as Arc<dyn DispatchQueue>,
+            mem.clone() as Arc<dyn ControlDispatchQueue>,
             Arc::new(HeaderWorkerAuthenticator),
             clock.clone(),
             Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -278,7 +279,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     let clock = Arc::new(ManualWorkerClock::new(0));
     let service = Arc::new(
         WorkerDispatchService::new(
-            mem.clone() as Arc<dyn DispatchQueue>,
+            mem.clone() as Arc<dyn ControlDispatchQueue>,
             Arc::new(HeaderWorkerAuthenticator),
             clock.clone(),
             Arc::new(FixedWorkerLeasePolicy::new(1_000)),

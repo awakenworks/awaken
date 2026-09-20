@@ -611,6 +611,11 @@ pub trait Dispatch: DispatchQueue + Inbox + Outbox {}
 
 impl<T: DispatchQueue + Inbox + Outbox> Dispatch for T {}
 
+/// The Control-side composition: a full durable dispatch store. Worker-side
+/// projections implement [`Dispatch`] only.
+pub trait ControlDispatch: ControlDispatchQueue + Inbox + Outbox {}
+impl<T: ControlDispatchQueue + Inbox + Outbox> ControlDispatch for T {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1929,33 +1934,19 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn unsupported_bounded_queries_never_fall_back_to_full_scans() {
-        // Cause/effect rules: U1 backend has no bounded identity read -> error,
-        // even for budget zero; U2 backend has no exact projection -> error,
-        // never None. Constraint: default ports cannot disguise unsupported
-        // capabilities as successful absence or call the unbounded list path.
+    #[test]
+    fn worker_side_queue_has_no_control_rung() {
+        // Cause/effect rules: L1 a queue that does not own the Control-side
+        // rung answers `control()` with None, so bounded identity reads,
+        // reservations and placement claims are unreachable from a Worker
+        // handle at the type level instead of failing at the effect; L2 a
+        // queue that owns the rung answers Some(self) and the Control suite
+        // (`awaken-dispatch-testkit`) checks its bounded reads never fall
+        // back to a full scan.
         let q = CapturingQueue::default();
         assert!(
-            matches!(
-                q.scan_dispatch_ids(None, 0).await,
-                Err(DispatchError::Rejected(_))
-            ),
-            "U1"
-        );
-        assert!(
-            matches!(
-                q.scan_dispatch_ids(None, 1).await,
-                Err(DispatchError::Rejected(_))
-            ),
-            "U1"
-        );
-        assert!(
-            matches!(
-                q.dispatch_summary(&RunId("unknown".into())).await,
-                Err(DispatchError::Rejected(_))
-            ),
-            "U2"
+            q.control().is_none(),
+            "L1 no Control rung on a capturing queue"
         );
     }
 

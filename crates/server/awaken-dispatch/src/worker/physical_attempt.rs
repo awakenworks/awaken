@@ -4,6 +4,7 @@
 //! machine. It keeps process-local serialization and the persisted Dispatch
 //! attempt slot on the one canonical drive path.
 
+use awaken_dispatch_contract::ControlDispatch;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -11,9 +12,7 @@ use std::sync::Arc;
 use super::{ClaimedSnapshotAuthority, DispatchWorker};
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{
-    AttemptAdmission, Claimed, Dispatch, DispatchError, RunClaim, SettleOutcome,
-};
+use crate::dispatch::{AttemptAdmission, Claimed, DispatchError, RunClaim, SettleOutcome};
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
@@ -36,7 +35,7 @@ pub(super) struct PhysicalAttemptRequest<'a> {
     pub clock: Arc<dyn Clock>,
 }
 
-impl<S: Dispatch + 'static> DispatchWorker<S> {
+impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     /// Cross exactly one physical model/tool/Sandbox attempt boundary.
     ///
     /// The durable claim remains the mutation fence. Its embedded physical slot

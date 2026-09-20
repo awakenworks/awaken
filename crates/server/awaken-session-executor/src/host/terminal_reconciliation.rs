@@ -6,6 +6,7 @@
 //! executor, because repair can settle only a Run already committed as terminal.
 
 use super::*;
+use awaken_dispatch_contract::ControlDispatchQueue;
 
 /// Deliver one direct cold-recovery fact from the Runtime contract's sole
 /// committed-terminal predicate. The observer factory is deliberately lazy:

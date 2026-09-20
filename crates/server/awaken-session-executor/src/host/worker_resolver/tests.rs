@@ -7,6 +7,7 @@ use super::test_support::{
     test_activation, with_empty_session_resources,
 };
 use super::*;
+use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

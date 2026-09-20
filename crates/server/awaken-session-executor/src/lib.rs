@@ -94,6 +94,7 @@ mod worker_services;
 
 use crate::session_environment::AgentSandbox as _;
 use crate::skill_catalog::skill_store_run_error;
+use awaken_dispatch_contract::ControlDispatchQueue;
 pub(crate) use dispatch_session_runtime::DispatchSessionRuntime;
 
 use std::sync::Arc;
@@ -321,8 +322,6 @@ impl SessionRuntime for ManagedHost {
         &self,
         command: awaken_session_contract::AdmitSessionRun,
     ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
-        use awaken_dispatch::DispatchQueue as _;
-
         let session_id = command.session_id.clone();
         if command.session_id.as_str().trim().is_empty()
             || command.agent_id.trim().is_empty()

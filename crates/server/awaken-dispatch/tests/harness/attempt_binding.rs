@@ -3,11 +3,12 @@ use awaken_dispatch::{
     AttemptAdmission as A, AttemptExecutionBinding, PhysicalAttempt, SettleOutcome as S,
 };
 use awaken_dispatch::{
-    DispatchQueue, PlacementRequirements, RunClaim, RunDispatch, WorkerIdentity, WorkerSnapshot,
+    PlacementRequirements, RunClaim, RunDispatch, WorkerIdentity, WorkerSnapshot,
 };
+use awaken_dispatch_contract::ControlDispatchQueue;
 
 pub async fn bound_claim(
-    store: &impl DispatchQueue,
+    store: &impl ControlDispatchQueue,
     name: &str,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) -> (RunClaim, AttemptExecutionBinding, WorkerSnapshot) {
@@ -43,7 +44,7 @@ pub async fn bound_claim(
 
 /// Shared decision table, executed against all three stores and Any delegation.
 pub async fn assert_binding_lifecycle(
-    store: &impl DispatchQueue,
+    store: &impl ControlDispatchQueue,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // C1 exact registered Worker tuple (not merely its owner string); C2 empty,

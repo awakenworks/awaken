@@ -1,3 +1,4 @@
+use awaken_dispatch::ControlDispatchQueue;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -44,7 +45,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     let service = WorkerDispatchService::new(
         Arc::new(MemoryDispatchStore::new(Arc::new(
             awaken_dispatch::SystemClock,
-        ))) as Arc<dyn DispatchQueue>,
+        ))) as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -176,7 +177,7 @@ async fn authenticated_header_cannot_register_a_different_worker_id() {
     let service = WorkerDispatchService::new(
         Arc::new(MemoryDispatchStore::new(Arc::new(
             awaken_dispatch::SystemClock,
-        ))) as Arc<dyn DispatchQueue>,
+        ))) as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         Arc::new(ManualWorkerClock::new(0)),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -271,7 +272,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         .await
         .unwrap();
     let service = WorkerDispatchService::new(
-        dispatch as Arc<dyn DispatchQueue>,
+        dispatch as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         clock,
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -406,7 +407,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         .unwrap();
 
     let service = WorkerDispatchService::new(
-        dispatch.clone() as Arc<dyn DispatchQueue>,
+        dispatch.clone() as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),

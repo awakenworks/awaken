@@ -4,6 +4,7 @@
 //! installs a one-shot injected dispatch store, so it must not share a process with
 //! other dispatch tests.
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -617,7 +618,7 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     )));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        mem as Arc<dyn DispatchQueue>,
+        mem as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(30_000)),
@@ -1294,7 +1295,7 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
     let stream = Arc::new(MemoryStreamSink::new());
     let router = dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::new(
-            mem.clone() as Arc<dyn DispatchQueue>,
+            mem.clone() as Arc<dyn ControlDispatchQueue>,
             Arc::new(HeaderWorkerAuthenticator),
             Arc::new(ManualWorkerClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),

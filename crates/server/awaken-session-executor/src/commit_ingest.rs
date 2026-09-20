@@ -6,12 +6,11 @@
 //! Paired with the dispatch transport: a worker claims a run over
 //! the dispatch transport, drives it, then commits its facts here.
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_dispatch::{
-    ClaimedOperationCoordinatorResolver, ClaimedRunCommit, DispatchQueue, RunDispatch,
-};
+use awaken_dispatch::{ClaimedOperationCoordinatorResolver, ClaimedRunCommit, RunDispatch};
 
 use crate::host::HostError;
 use crate::host::SharedHost;
@@ -56,7 +55,7 @@ fn map_host_error(error: HostError) -> awaken_dispatch::ApplicationError {
 
 #[must_use]
 pub fn claimed_commit_service(
-    dispatch: Arc<dyn DispatchQueue>,
+    dispatch: Arc<dyn ControlDispatchQueue>,
     host: Arc<SharedHost>,
 ) -> awaken_dispatch::ClaimedCommitService {
     awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(
@@ -87,6 +86,7 @@ mod tests {
         AnyDispatchStore, ApplicationErrorKind, ClaimedCommitRequest, MemoryDispatchStore,
         RunClaim, WorkerIdentity, WorkerResolver as _,
     };
+    use awaken_dispatch_contract::DispatchQueue;
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
 

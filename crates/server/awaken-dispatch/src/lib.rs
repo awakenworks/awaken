@@ -87,12 +87,13 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
-    CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt,
-    Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchSettlementError, DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox,
-    Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim,
-    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission, ControlDispatch,
+    ControlDispatchQueue, CredentialRealizationReceipt, Dispatch, DispatchCompletion,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchSettlementError,
+    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, Lease, LeaseRenewalOutcome,
+    Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]

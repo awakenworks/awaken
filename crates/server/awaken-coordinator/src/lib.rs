@@ -1379,7 +1379,7 @@ fn mount_with_managed_over_and_models(
         awaken_dispatch_http::RegisteredDispatchDependencies {
             execution_bindings: worker_execution_bindings,
             execution_stops: worker_execution_stops,
-            dispatch: dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
+            dispatch: dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
             checkpoint,
             directory: worker_directory.clone(),
             policy: worker_placement_policy
@@ -1398,7 +1398,7 @@ fn mount_with_managed_over_and_models(
     let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(
         awaken_resource_worker_http::WorkerFileContentService::new(
             host.worker_file_content_source(),
-            dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
+            dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
             worker_authenticator.clone(),
         )
         .with_worker_directory(worker_directory.clone())
@@ -1410,7 +1410,7 @@ fn mount_with_managed_over_and_models(
         awaken_resource_worker_http::worker_artifact_publication_router(Arc::new(
             awaken_resource_worker_http::WorkerArtifactPublicationService::new(
                 worker_file_application,
-                dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
+                dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
                 worker_authenticator.clone(),
                 worker_directory.clone(),
             )
@@ -1420,7 +1420,7 @@ fn mount_with_managed_over_and_models(
         awaken_resource_worker_http::WorkerMemoryService::new(
             host.memory_repository(),
             resource_registry.clone(),
-            dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
+            dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
             worker_authenticator.clone(),
             worker_directory.clone(),
         )
@@ -1428,7 +1428,7 @@ fn mount_with_managed_over_and_models(
     ));
     let repository_service = awaken_resource_worker_http::WorkerRepositoryBindingService::new(
         resource_registry,
-        dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
+        dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
         worker_authenticator.clone(),
     )
     .with_worker_directory(worker_directory.clone())
@@ -1447,7 +1447,7 @@ fn mount_with_managed_over_and_models(
             Arc::new(
                 awaken_resource_worker_http::WorkerSkillBundleService::new(
                     worker_skill_bundles,
-                    dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
+                    dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
                     worker_authenticator.clone(),
                 )
                 .with_worker_directory(worker_directory.clone())
@@ -1456,7 +1456,7 @@ fn mount_with_managed_over_and_models(
         ));
     let commit = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(
         Arc::new(awaken_session_executor::claimed_commit_service(
-            dispatch as Arc<dyn awaken_dispatch::DispatchQueue>,
+            dispatch as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
             host.clone(),
         )),
         worker_directory,

@@ -515,7 +515,10 @@ async fn worker_transport_cannot_silently_erase_an_execution_binding() {
         queue.handoff_attempt(&claim, Some(&binding)).await,
         Err(DispatchError::Rejected(_))
     ));
-    assert!(queue.load_physical_attempt(&claim.run_id).await.is_err());
+    assert!(
+        queue.control().is_none(),
+        "a Worker-side client has no Control rung: physical attempt readback is unreachable"
+    );
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,
@@ -1139,7 +1142,9 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
         .owns_local_maintenance()
     );
     assert!(!queue.owns_local_maintenance());
-    let queue = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(queue));
+    // A Worker-side client is not a Control store, so it cannot be wrapped in
+    // `AnyDispatchStore`; the maintenance refusals below are asserted on the
+    // client itself.
     assert!(!queue.owns_local_maintenance());
     let run = RunId("run-1".into());
     let thread = ThreadId("thread-1".into());
@@ -1176,4 +1181,37 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
 
     // The one legitimate no-op read: an empty inbox is correct, not pretended.
     assert!(Inbox::list(&queue, &thread).await.unwrap().is_empty());
+}
+
+// Control rung through the Host's type erasure (ADR-0081 capability ladder):
+// C1 the erased handle wraps a Worker-side transport; C2 it wraps a durable
+// store. R1 for C1 `control()` is None and a Control operation through the
+// adapter is a typed Rejected naming the missing rung, never a transport call;
+// R2 for C2 `control()` is Some, so the Coordinator keeps its Control surface
+// after the same erasure.
+#[tokio::test]
+async fn any_dispatch_store_exposes_the_control_rung_only_when_its_inner_handle_owns_it() {
+    use awaken_dispatch::{ControlDispatchQueue, DispatchQueue};
+    let worker_side =
+        awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(HttpDispatchQueue::new(
+            "http://127.0.0.1:1",
+            WorkerIdentity::new("worker-local", "boot-local", 1),
+        )));
+    assert!(worker_side.control().is_none(), "R1 no rung");
+    match worker_side
+        .reject_session_run_reservation(&RunId("run-1".into()))
+        .await
+    {
+        Err(DispatchError::Rejected(reason)) => {
+            assert!(
+                reason.contains("Control rung"),
+                "R1 names the rung: {reason}"
+            );
+        }
+        other => panic!("R1 expected a typed refusal, got {other:?}"),
+    }
+    let durable = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(
+        MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock)),
+    ));
+    assert!(durable.control().is_some(), "R2 store keeps its rung");
 }

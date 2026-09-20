@@ -4,6 +4,7 @@
 //! directly. This feature-gated fixture keeps concise backend conformance tests;
 //! it owns no state or transition authority beyond those existing components.
 
+use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
@@ -17,7 +18,7 @@ use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResul
 
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{Dispatch, DispatchSummary, PendingInput, SubmitOptions};
+use crate::dispatch::{DispatchSummary, PendingInput, SubmitOptions};
 use crate::live_control::LiveRunControlService;
 use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
@@ -32,7 +33,7 @@ pub struct DispatchTestHarness<S> {
     reader: Arc<dyn CommittedThreadView>,
 }
 
-impl<S: Dispatch + 'static> DispatchTestHarness<S> {
+impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     /// Install the session-selected attempt executor before the first claim.
     /// Queueing, fencing, scheduled actions, metrics, and settlement remain owned
     /// by the authoritative Worker; only fresh/resume execution is polymorphic.
@@ -398,7 +399,7 @@ impl<S: Dispatch + 'static> DispatchTestHarness<S> {
     }
 }
 
-impl<S: Dispatch + 'static> DispatchTestHarness<S> {
+impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     /// Persist or signal cancellation through the durable control authority.
     pub async fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
         self.live_control()

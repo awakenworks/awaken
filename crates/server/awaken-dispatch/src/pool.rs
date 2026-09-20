@@ -19,6 +19,7 @@
 //! dropped wake only defers work to the poll fallback; a crash drops the guard and
 //! leaves the lease to expire and be reclaimed.
 
+use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,7 +34,7 @@ use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{Claimed, Dispatch, PendingInput};
+use crate::dispatch::{Claimed, PendingInput};
 use crate::service::{
     DispatchServiceConfig, LocalMaintenanceSchedule, wait_for_terminal_reconciliation,
 };
@@ -105,7 +106,7 @@ pub trait WorkerResolver<S>: Send + Sync {
         claimed: &Claimed,
     ) -> Result<Option<(RunId, RunState)>, Error>
     where
-        S: Dispatch + 'static,
+        S: ControlDispatch + 'static,
     {
         self.worker_for_claimed(claimed)
             .await?
@@ -159,7 +160,7 @@ pub struct DispatchReconciler {
 }
 
 impl DispatchReconciler {
-    pub fn spawn<S: Dispatch + 'static>(
+    pub fn spawn<S: ControlDispatch + 'static>(
         store: Arc<S>,
         clock: Arc<dyn Clock>,
         wake: Arc<dyn WakeSignal>,
@@ -435,7 +436,7 @@ impl PoolAdmission {
     }
 }
 
-impl<S: Dispatch + 'static> DispatchPool<S> {
+impl<S: ControlDispatch + 'static> DispatchPool<S> {
     /// Spawn the pool with the single-process wake signal. `concurrency` is the
     /// number of runs driven in parallel (clamped to at least 1).
     pub fn spawn(
@@ -744,7 +745,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
 /// One drain task: claim a runnable dispatch, route it to its owning session's
 /// worker, drive it, repeat until idle, then await on a wake or the poll timer.
 #[allow(clippy::too_many_arguments)]
-async fn drain_loop<S: Dispatch + 'static>(
+async fn drain_loop<S: ControlDispatch + 'static>(
     store: Arc<S>,
     clock: Arc<dyn Clock>,
     shutdown: CancellationToken,
@@ -1041,7 +1042,7 @@ async fn wake_coordinator_loop(
 /// that owns its thread. Returns whether a run was claimed. On settle, notifies the
 /// [`CompletionSink`] so a foreground waiter wakes by event, not by poll.
 #[allow(clippy::too_many_arguments)]
-async fn claim_and_drive<S: Dispatch + 'static>(
+async fn claim_and_drive<S: ControlDispatch + 'static>(
     store: &Arc<S>,
     clock: &Arc<dyn Clock>,
     owner: &str,
@@ -1177,7 +1178,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     Ok(true)
 }
 
-async fn defer_after_resolution_failure<S: Dispatch + 'static>(
+async fn defer_after_resolution_failure<S: ControlDispatch + 'static>(
     store: &S,
     claim: &crate::RunClaim,
     retry_after_ms: u64,
@@ -1205,7 +1206,10 @@ async fn defer_after_resolution_failure<S: Dispatch + 'static>(
     }
 }
 
-async fn relinquish_after_claim_failure<S: Dispatch + 'static>(store: &S, claim: &crate::RunClaim) {
+async fn relinquish_after_claim_failure<S: ControlDispatch + 'static>(
+    store: &S,
+    claim: &crate::RunClaim,
+) {
     match store.relinquish_claim(claim).await {
         Ok(crate::SettleOutcome::Applied) => {}
         Ok(crate::SettleOutcome::Fenced) => tracing::debug!(
@@ -1266,7 +1270,7 @@ struct ReconciliationContext<S> {
     completion: Option<Arc<dyn CompletionSink>>,
 }
 
-async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationContext<S>) {
+async fn reconciliation_loop<S: ControlDispatch + 'static>(context: ReconciliationContext<S>) {
     // The same pool also drives database-less Workers. Their upstream already
     // owns maintenance; do not poll unsupported server verbs or a second scan.
     // Claim/renewal/retry-exhaustion stay in the independent ordinary drainers.

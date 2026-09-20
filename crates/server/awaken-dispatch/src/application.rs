@@ -1,5 +1,6 @@
 //! Protocol-neutral application ports used by Coordinator HTTP adapters.
 
+use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
@@ -7,7 +8,7 @@ use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_agent_contract::thread::commit::operation::{CommitReceipt, commit_payload_hash};
 
 use crate::commit_fence::validate_commit_dispatch_binding;
-use crate::{ClaimedCommitRequest, DispatchQueue, RunDispatch};
+use crate::{ClaimedCommitRequest, RunDispatch};
 
 /// Trusted Coordinator composition resolves an exact running execution domain
 /// before physical admission. Worker request JSON is never an implementation.
@@ -204,7 +205,7 @@ pub trait WorkerExecutionStopSource: Send + Sync {
 /// a separate complete assertion from `observe_attempt_termination`; the existing
 /// Dispatch slot is the sole retirement authority, not this return value.
 pub async fn stop_expired_predecessor(
-    dispatch: &dyn DispatchQueue,
+    dispatch: &dyn ControlDispatchQueue,
     directory: &dyn crate::WorkerDirectory,
     source: &dyn WorkerExecutionStopSource,
     recovery: Option<&dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>,
@@ -512,14 +513,14 @@ impl ClaimedOperationCoordinatorResolver for FixedOperationCoordinatorResolver {
 /// Exact-epoch committed-truth application service. Authentication and HTTP
 /// status mapping are deliberately outside this owner.
 pub struct ClaimedCommitService {
-    dispatch: Arc<dyn DispatchQueue>,
+    dispatch: Arc<dyn ControlDispatchQueue>,
     coordinator: Arc<dyn ClaimedOperationCoordinatorResolver>,
 }
 
 impl ClaimedCommitService {
     #[must_use]
     pub fn new(
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn ControlDispatchQueue>,
         coordinator: Arc<dyn OperationCoordinator>,
     ) -> Self {
         Self {
@@ -530,7 +531,7 @@ impl ClaimedCommitService {
 
     #[must_use]
     pub fn with_coordinator_resolver(
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn ControlDispatchQueue>,
         coordinator: Arc<dyn ClaimedOperationCoordinatorResolver>,
     ) -> Self {
         Self {
