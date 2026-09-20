@@ -234,20 +234,6 @@ spec:
       securityContext:
         fsGroup: 10001
         fsGroupChangePolicy: OnRootMismatch
-      initContainers:
-        - name: install-credential-envelope
-          image: busybox:1.37.0
-          imagePullPolicy: IfNotPresent
-          command: ["/bin/sh", "-ec"]
-          args: ["cp /source/keys.json /target/keys.json && chown 10001:10001 /target/keys.json && chmod 0600 /target/keys.json"]
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: false
-            runAsUser: 0
-            seccompProfile: { type: RuntimeDefault }
-          volumeMounts:
-            - { name: credential-envelope-source, mountPath: /source, readOnly: true }
-            - { name: credential-envelope, mountPath: /target }
       containers:
         - name: awaken
           image: awaken-product:latest
@@ -354,11 +340,10 @@ spec:
             items:
               - { key: tls.crt, path: tls.crt }
               - { key: tls.key, path: tls.key }
-        - name: credential-envelope-source
+        - name: credential-envelope
           secret:
             secretName: awaken-worker-credential-envelope
-            defaultMode: 256
-        - { name: credential-envelope, emptyDir: {} }
+            defaultMode: 288
         - name: data
           persistentVolumeClaim:
             claimName: awaken-product-data
@@ -386,20 +371,6 @@ spec:
       securityContext:
         fsGroup: 10001
         fsGroupChangePolicy: OnRootMismatch
-      initContainers:
-        - name: install-credential-envelope
-          image: busybox:1.37.0
-          imagePullPolicy: IfNotPresent
-          command: ["/bin/sh", "-ec"]
-          args: ["cp /source/keys.json /target/keys.json && chown 10001:10001 /target/keys.json && chmod 0600 /target/keys.json"]
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: false
-            runAsUser: 0
-            seccompProfile: { type: RuntimeDefault }
-          volumeMounts:
-            - { name: credential-envelope-source, mountPath: /source, readOnly: true }
-            - { name: credential-envelope, mountPath: /target }
       containers:
         - name: worker
           image: awaken-product:latest
@@ -447,11 +418,10 @@ spec:
                     - { path: namespace, fieldRef: { fieldPath: metadata.namespace } }
                     - { path: name, fieldRef: { fieldPath: metadata.name } }
                     - { path: uid, fieldRef: { fieldPath: metadata.uid } }
-        - name: credential-envelope-source
+        - name: credential-envelope
           secret:
             secretName: awaken-worker-credential-envelope
-            defaultMode: 256
-        - { name: credential-envelope, emptyDir: {} }
+            defaultMode: 288
         - { name: data, emptyDir: {} }
         - { name: tmp, emptyDir: { sizeLimit: 1Gi } }
 ---
