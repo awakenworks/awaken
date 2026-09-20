@@ -12,6 +12,8 @@ mod disposal;
 mod host_staging;
 #[path = "common/process.rs"]
 mod process_lifecycle;
+#[path = "common/residue.rs"]
+mod residue;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +28,11 @@ use awaken_sandbox_container::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const AGENT_PORT: u16 = 8080;
+
+/// The in-container file the signalled exec writes before it settles into its
+/// sleep, and so the observable proof that its wrapper already recorded the pid
+/// every later signal resolves.
+const EXEC_ESTABLISHED_MARKER: &str = "/tmp/awaken-it-exec.established";
 
 fn plan(cmd: &[&str]) -> ContainerPlan {
     ContainerPlan {
@@ -65,6 +72,7 @@ async fn docker_ordinary_host_staging_survives_creator_replacement() {
         Arc::new(first),
         Arc::new(peer),
         "busybox:latest",
+        residue::docker,
     )
     .await;
 }
@@ -72,10 +80,11 @@ async fn docker_ordinary_host_staging_survives_creator_replacement() {
 #[tokio::test]
 async fn docker_full_lifecycle_against_a_real_daemon() {
     let Some(rt) = runtime().await else { return };
-    let _ = rt.remove("awaken-it-life").await; // clear any leftover
+    let scope = "it-life";
+    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
 
     let id = rt
-        .create("it-life", &plan(&["sleep", "30"]))
+        .create(scope, &plan(&["sleep", "30"]))
         .await
         .expect("create+start a real container");
 
@@ -108,6 +117,7 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
         return;
     };
     let scope = format!("docker-restore-{}", std::process::id());
+    let _residue = residue::ScopeResidue::arm(&scope, residue::docker);
     let spec = common::exact_restore_spec(&scope);
     let request = common::exact_restore_request(&scope);
     let authorization = disposal::disposal_authorization(&disposal::effect_fence(
@@ -195,6 +205,7 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
 async fn docker_open_channel_dials_the_published_agent_port() {
     let Some(rt) = runtime().await else { return };
     let scope = format!("it-chan-{}", std::process::id());
+    let _residue = residue::ScopeResidue::arm(&scope, residue::docker);
 
     // Cause/effect rules: D1 a real container publishes an ephemeral Host port
     // -> the provider resolves it and the canonical factory dials that address;
@@ -243,14 +254,19 @@ async fn docker_open_channel_dials_the_published_agent_port() {
 #[tokio::test]
 async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     let Some(rt) = runtime().await else { return };
-    let _ = rt.remove("awaken-it-exec").await;
+    let scope = "it-exec";
+    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
     let id = rt
-        .create("it-exec", &plan(&["sleep", "30"]))
+        .create(scope, &plan(&["sleep", "300"]))
         .await
         .expect("create Session container");
 
     let command = pc::Command {
-        argv: vec!["sh".into(), "-c".into(), "sleep 30".into()],
+        argv: vec![
+            "sh".into(),
+            "-c".into(),
+            format!("printf established > {EXEC_ESTABLISHED_MARKER}; sleep 300"),
+        ],
         cwd: "/tmp".into(),
         env: vec![pc::EnvVar {
             name: "EXEC_MARKER".into(),
@@ -263,14 +279,56 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
         .await
         .expect("materialize public exec environment");
     let process = rt.spawn(&id, command).await.expect("spawn detached exec");
-    assert!(process.poll().await.unwrap().is_none());
     let public_id = process.id().to_string();
+
+    // What this asserts is that a handle recovered by public id signals and
+    // waits on the process that id names. The signal reaches that process
+    // through a pid the exec wrapper records inside the container *after*
+    // `spawn` has returned, so a signal racing that record fails for want of a
+    // target rather than for want of the property — which is what made this
+    // test fail under load. The exec's own first side effect is the proof the
+    // record is already written, because the wrapper records the pid and only
+    // then execs this command; the sleep behind it keeps the process alive
+    // until the signal, so no outcome here is ambiguous.
+    //
+    // No port or event carries that record, so the marker file is its only
+    // observable form and the deadline below fails loudly rather than letting
+    // an exec that never started pass for one that did.
+    let mut established = false;
+    // awaken-wait: settles on the exec's own committed in-container marker.
+    for _ in 0..150 {
+        if container_holds(&rt, &id, EXEC_ESTABLISHED_MARKER).await {
+            established = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        established,
+        "the detached exec never reached the command it was spawned for"
+    );
+    assert!(
+        process.poll().await.unwrap().is_none(),
+        "an established exec holds its sleep until something signals it"
+    );
+
     let recovered = rt
         .process(&id, &public_id)
         .await
         .expect("reattach the durable exec handle");
-    recovered.signal(pc::Signal::Term).await.unwrap();
+    recovered
+        .signal(pc::Signal::Term)
+        .await
+        .expect("a reattached handle signals the live process it named");
     assert!(recovered.wait().await.unwrap().code.is_some());
+    // Terminal-already is the other admitted outcome of signalling this handle,
+    // and the adapter owes it success rather than an error. Asserting it here
+    // is what lets the live signal above stay an unconditional expectation
+    // instead of being softened into tolerating any failure.
+    recovered
+        .signal(pc::Signal::Term)
+        .await
+        .expect("signalling a terminal handle is a no-op, not a failure");
     assert!(rt.process("wrong-container", &public_id).await.is_err());
     process_lifecycle::verify_wait_cancellation_and_signal(&rt, &id).await;
 
@@ -278,4 +336,23 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     assert!(rt.spawn(&id, empty.clone()).await.is_err());
     assert!(rt.spawn_agent(&id, empty).await.is_err());
     let _ = rt.remove(&id).await;
+}
+
+/// Whether the container already holds `path` as a regular file, asked of the
+/// container itself because that is the only observer of its own filesystem.
+async fn container_holds(rt: &DockerRuntime, container_id: &str, path: &str) -> bool {
+    let mut probe = pc::Command::new(["sh", "-c", &format!("test -f {path}")]);
+    probe.cwd = "/tmp".into();
+    probe.stdio = pc::Stdio::Null;
+    let probe = pc::materialize_process_command(&[], probe, None)
+        .await
+        .expect("materialize the establishment probe");
+    rt.spawn(container_id, probe)
+        .await
+        .expect("spawn the establishment probe")
+        .wait()
+        .await
+        .expect("await the establishment probe")
+        .code
+        == Some(0)
 }

@@ -11,7 +11,7 @@ use k8s_openapi::api::core::v1::{
     Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use kube::api::{DeleteParams, ListParams};
+use kube::api::{DeleteParams, ListParams, Preconditions};
 use kube::{Api, Client};
 
 use crate::k8s::{
@@ -20,9 +20,9 @@ use crate::k8s::{
 };
 use crate::k8s_package_realization::{
     PACKAGE_BUILD_JOB_KIND, PACKAGE_IMAGE_CHECK_JOB_KIND, bind_package_job_to_config,
-    package_build_name, package_config_annotations, package_image_check_name,
-    stamp_package_config_map, verified_package_build_result, verified_package_image_check_result,
-    verify_exact_package_config_map, verify_exact_package_job,
+    exact_package_job_pods, package_build_name, package_config_annotations,
+    package_image_check_name, stamp_package_config_map, verified_package_build_result,
+    verified_package_image_check_result, verify_exact_package_config_map, verify_exact_package_job,
 };
 use crate::{ForwardProxy, PackageImageProvisioner, RuntimeError};
 
@@ -57,6 +57,85 @@ enum ImageCheckDisposition {
     Continue,
     Missing,
     Unavailable(&'static str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobPodSnapshotDisposition {
+    Pending,
+    Verify,
+    InvalidCardinality,
+}
+
+fn job_pod_snapshot_disposition(
+    same_incarnation: bool,
+    exact_pod_count: usize,
+) -> JobPodSnapshotDisposition {
+    if !same_incarnation || exact_pod_count == 0 {
+        JobPodSnapshotDisposition::Pending
+    } else if exact_pod_count == 1 {
+        JobPodSnapshotDisposition::Verify
+    } else {
+        JobPodSnapshotDisposition::InvalidCardinality
+    }
+}
+
+fn same_job_incarnation(before: &Job, after: Option<&Job>) -> bool {
+    let before_uid = before.metadata.uid.as_deref();
+    before_uid.is_some() && before_uid == after.and_then(|job| job.metadata.uid.as_deref())
+}
+
+fn exact_owner_pod_count(job: &Job, pods: &[Pod]) -> usize {
+    let Some(job_uid) = job.metadata.uid.as_deref() else {
+        return 0;
+    };
+    pods.iter()
+        .filter(|pod| {
+            pod.metadata.deletion_timestamp.is_none()
+                && pod
+                    .metadata
+                    .owner_references
+                    .as_deref()
+                    .is_some_and(|owners| {
+                        owners.len() == 1
+                            && owners[0].api_version == "batch/v1"
+                            && owners[0].kind == "Job"
+                            && owners[0].uid == job_uid
+                            && owners[0].controller == Some(true)
+                    })
+        })
+        .count()
+}
+
+fn exact_job_delete_params(job: &Job) -> Result<DeleteParams, RuntimeError> {
+    let uid = job
+        .metadata
+        .uid
+        .clone()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| backend("package Job has no UID for exact deletion"))?;
+    let resource_version = job
+        .metadata
+        .resource_version
+        .clone()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| backend("package Job has no resourceVersion for exact deletion"))?;
+    Ok(DeleteParams::background().preconditions(Preconditions {
+        uid: Some(uid),
+        resource_version: Some(resource_version),
+    }))
+}
+
+async fn delete_exact_job(jobs: &Api<Job>, job: &Job) -> Result<(), RuntimeError> {
+    let name = job
+        .metadata
+        .name
+        .as_deref()
+        .ok_or_else(|| backend("package Job has no name for exact deletion"))?;
+    match jobs.delete(name, &exact_job_delete_params(job)?).await {
+        Ok(_) => Ok(()),
+        Err(kube::Error::Api(response)) if response.code == 404 || response.code == 409 => Ok(()),
+        Err(error) => Err(backend(error)),
+    }
 }
 
 fn image_check_observation(job: Option<Job>) -> ImageCheckObservation {
@@ -624,10 +703,45 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 tokio::time::Instant::now() >= deadline,
             ) {
                 ImageCheckDisposition::Available => {
+                    let observed_job = observed.as_ref().expect("present image-check observation");
+                    let exact_package_pods = if package {
+                        Some(
+                            exact_package_job_pods(observed_job, &listed.items, &self.namespace)
+                                .map_err(|error| backend(error.to_string()))?,
+                        )
+                    } else {
+                        None
+                    };
+                    let exact_pod_count = exact_package_pods.as_ref().map_or_else(
+                        || exact_owner_pod_count(observed_job, &listed.items),
+                        Vec::len,
+                    );
+                    let refreshed = jobs.get_opt(&name).await.map_err(backend)?;
+                    match job_pod_snapshot_disposition(
+                        same_job_incarnation(observed_job, refreshed.as_ref()),
+                        exact_pod_count,
+                    ) {
+                        JobPodSnapshotDisposition::Pending => {
+                            // GET Job and LIST Pods are not one Kubernetes snapshot.
+                            // TTL collection or same-name recreation may occur
+                            // between them. Absence cannot become either success or
+                            // permanent failure; observe the current incarnation.
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                            continue;
+                        }
+                        JobPodSnapshotDisposition::Verify => {}
+                        JobPodSnapshotDisposition::InvalidCardinality => {
+                            return Err(backend(format!(
+                                "Kubernetes image check `{name}` has multiple Pods for one Job incarnation"
+                            )));
+                        }
+                    }
                     let identity = if package {
                         Some(verified_package_image_check_result(
-                            observed.as_ref().expect("present image-check observation"),
-                            &listed.items,
+                            observed_job,
+                            exact_package_pods
+                                .as_deref()
+                                .expect("package image-check exact Pod set"),
                             &self.namespace,
                         )?)
                     } else {
@@ -641,11 +755,15 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 }
                 ImageCheckDisposition::Continue => {}
                 ImageCheckDisposition::Missing => {
-                    let _ = jobs.delete(&name, &DeleteParams::background()).await;
+                    if let Some(observed) = observed.as_ref() {
+                        delete_exact_job(&jobs, observed).await?;
+                    }
                     return Ok(None);
                 }
                 ImageCheckDisposition::Unavailable(reason) => {
-                    let _ = jobs.delete(&name, &DeleteParams::background()).await;
+                    if let Some(observed) = observed.as_ref() {
+                        delete_exact_job(&jobs, observed).await?;
+                    }
                     return Err(backend(format!("Kubernetes image check `{name}` {reason}")));
                 }
             }
@@ -737,12 +855,15 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
     use super::{
         IMAGE_CHECK_TIMEOUT_SECS, ImageCheckDisposition, ImageCheckObservation,
-        K8sPackageImageProvisioner, image_check_client_timeout, image_check_disposition,
+        JobPodSnapshotDisposition, K8sPackageImageProvisioner, exact_job_delete_params,
+        exact_owner_pod_count, image_check_client_timeout, image_check_disposition,
         image_check_identity, image_check_observation, immutable_registry_identity,
-        package_image_matches_stored_identity, terminal_image_pull_reason,
+        job_pod_snapshot_disposition, package_image_matches_stored_identity, same_job_incarnation,
+        terminal_image_pull_reason,
     };
     use crate::k8s_package_realization::{
         K8S_PACKAGE_REALIZATION_CONTRACT_VERSION, PACKAGE_BUILD_JOB_KIND,
@@ -750,6 +871,10 @@ mod tests {
         PACKAGE_IMAGE_DESTINATION_ANNOTATION, PACKAGE_JOB_KIND_ANNOTATION,
         PACKAGE_REALIZATION_CONTRACT_ANNOTATION, PACKAGE_RECIPE_FINGERPRINT_ANNOTATION,
     };
+    use k8s_openapi::api::batch::v1::Job;
+    use k8s_openapi::api::core::v1::Pod;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+    use kube::client::Body;
 
     fn test_builder() -> K8sPackageImageProvisioner {
         crate::k8s::install_rustls_crypto_provider();
@@ -776,6 +901,184 @@ mod tests {
                 .collect(),
             resolution_id: Some("env-browser:3".into()),
         }
+    }
+
+    fn observed_job(uid: &str, resource_version: &str) -> Job {
+        Job {
+            metadata: ObjectMeta {
+                name: Some("shared-check".into()),
+                uid: Some(uid.into()),
+                resource_version: Some(resource_version.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn owned_pod(job_uid: &str) -> Pod {
+        Pod {
+            metadata: ObjectMeta {
+                owner_references: Some(vec![OwnerReference {
+                    api_version: "batch/v1".into(),
+                    kind: "Job".into(),
+                    name: "shared-check".into(),
+                    uid: job_uid.into(),
+                    controller: Some(true),
+                    block_owner_deletion: Some(true),
+                }]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn job_pod_snapshot_decision_table_retries_incoherent_reads() {
+        /* Causes: C1 Job incarnation changes between GET and re-GET; C2 the
+         * same Job has zero exact Pods during controller creation or TTL
+         * deletion; C3 it has one exact Pod; C4 it has multiple exact Pods.
+         * Effects: E1 retry without success/failure; E2 verify the exact pair;
+         * E3 reject ambiguous evidence. Rules R1=C1=>E1; R2=!C1+C2=>E1;
+         * R3=!C1+C3=>E2; R4=!C1+C4=>E3. */
+        assert_eq!(
+            job_pod_snapshot_disposition(false, 1),
+            JobPodSnapshotDisposition::Pending,
+            "R1"
+        );
+        assert_eq!(
+            job_pod_snapshot_disposition(true, 0),
+            JobPodSnapshotDisposition::Pending,
+            "R2"
+        );
+        assert_eq!(
+            job_pod_snapshot_disposition(true, 1),
+            JobPodSnapshotDisposition::Verify,
+            "R3"
+        );
+        assert_eq!(
+            job_pod_snapshot_disposition(true, 2),
+            JobPodSnapshotDisposition::InvalidCardinality,
+            "R4"
+        );
+    }
+
+    #[test]
+    fn exact_job_identity_ignores_same_name_pods_from_another_incarnation() {
+        /* Causes: C1 current Job UID A and Pod owner A; C2 same-name Pod owner
+         * B; C3 re-read Job remains A or becomes B. Effects: E1 count only A;
+         * E2 reject cross-incarnation snapshots. */
+        let job_a = observed_job("uid-a", "1");
+        let job_b = observed_job("uid-b", "2");
+        assert_eq!(exact_owner_pod_count(&job_a, &[owned_pod("uid-a")]), 1);
+        assert_eq!(exact_owner_pod_count(&job_a, &[owned_pod("uid-b")]), 0);
+        assert!(same_job_incarnation(&job_a, Some(&job_a)));
+        assert!(!same_job_incarnation(&job_a, Some(&job_b)));
+        assert!(!same_job_incarnation(&job_a, None));
+    }
+
+    #[test]
+    fn package_job_cleanup_is_fenced_by_uid_and_resource_version() {
+        /* Causes: C1 an exact observed Job has UID and resourceVersion; C2
+         * either coordinate is absent. Effects: E1 emit both Kubernetes delete
+         * preconditions; E2 refuse to express an unfenced deletion. */
+        let params = exact_job_delete_params(&observed_job("uid-a", "7")).unwrap();
+        let preconditions = params.preconditions.expect("exact delete preconditions");
+        assert_eq!(preconditions.uid.as_deref(), Some("uid-a"));
+        assert_eq!(preconditions.resource_version.as_deref(), Some("7"));
+        assert!(exact_job_delete_params(&observed_job("", "7")).is_err());
+        assert!(exact_job_delete_params(&observed_job("uid-a", "")).is_err());
+    }
+
+    #[tokio::test]
+    async fn image_check_retries_zero_pod_snapshot_across_same_name_recreation() {
+        /* End-to-end observation rule. Causes: C1 create/reuse returns Job A;
+         * C2 GET observes A succeeded; C3 LIST races TTL and returns zero Pods;
+         * C4 re-GET observes same-name Job B; C5 the next observation returns
+         * B plus its exact successful Pod. Effects: E1 do not return the former
+         * invalid-evidence 503 at C3; E2 never combine A with B's Pod; E3
+         * return B's immutable kubelet digest. */
+        let image = format!("registry.local/base@sha256:{}", "a".repeat(64));
+        let builder = test_builder();
+        let (_, desired) = builder.image_check_job(&image, None).unwrap();
+        let mut job_a = desired.clone();
+        job_a.metadata.uid = Some("job-a".into());
+        job_a.metadata.resource_version = Some("1".into());
+        job_a.status = Some(k8s_openapi::api::batch::v1::JobStatus {
+            succeeded: Some(1),
+            failed: Some(0),
+            active: Some(0),
+            ..Default::default()
+        });
+        let mut job_b = job_a.clone();
+        job_b.metadata.uid = Some("job-b".into());
+        job_b.metadata.resource_version = Some("2".into());
+        let mut pod_b = owned_pod("job-b");
+        pod_b.metadata.name = Some("shared-check-pod-b".into());
+        pod_b.status = Some(k8s_openapi::api::core::v1::PodStatus {
+            container_statuses: Some(vec![k8s_openapi::api::core::v1::ContainerStatus {
+                name: "verify".into(),
+                image: image.clone(),
+                image_id: format!("containerd://{image}"),
+                ready: false,
+                restart_count: 0,
+                started: Some(false),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+
+        let calls = Arc::new(Mutex::new(0usize));
+        let service = tower::service_fn({
+            let calls = Arc::clone(&calls);
+            move |_request: http::Request<Body>| {
+                let call = {
+                    let mut calls = calls.lock().unwrap();
+                    *calls += 1;
+                    *calls
+                };
+                let value = match call {
+                    1 | 2 => serde_json::to_value(&job_a).unwrap(),
+                    3 => {
+                        serde_json::json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[]})
+                    }
+                    4 | 5 | 7 => serde_json::to_value(&job_b).unwrap(),
+                    6 => {
+                        serde_json::json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[pod_b]})
+                    }
+                    other => panic!("unexpected Kubernetes request {other}"),
+                };
+                async move {
+                    Ok::<_, std::convert::Infallible>(
+                        http::Response::builder()
+                            .status(200)
+                            .body(Body::from(serde_json::to_vec(&value).unwrap()))
+                            .unwrap(),
+                    )
+                }
+            }
+        });
+        let client = kube::Client::new(service, "default");
+        let provisioner = K8sPackageImageProvisioner::new(
+            client,
+            "awaken-system",
+            "registry.local:5000/environments",
+            Vec::new(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            provisioner
+                .resolve_image_identity(&image, None)
+                .await
+                .unwrap(),
+            Some(image),
+            "C1-C5/E1-E3"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            7,
+            "the incoherent snapshot must be retried once"
+        );
     }
 
     #[tokio::test]

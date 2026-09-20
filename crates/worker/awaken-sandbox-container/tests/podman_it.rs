@@ -11,6 +11,8 @@ mod disposal;
 mod host_staging;
 #[path = "common/process.rs"]
 mod process_lifecycle;
+#[path = "common/residue.rs"]
+mod residue;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -177,6 +179,7 @@ async fn podman_ordinary_host_staging_survives_creator_replacement() {
         Arc::new(first),
         Arc::new(peer),
         "docker.io/library/busybox:latest",
+        residue::podman,
     )
     .await;
 }
@@ -184,7 +187,7 @@ async fn podman_ordinary_host_staging_survives_creator_replacement() {
 #[tokio::test]
 async fn podman_full_lifecycle_against_a_real_binary() {
     let Some(rt) = runtime().await else { return };
-    let _ = rt.remove("awaken-it-podlife").await; // clear any leftover
+    let _residue = residue::ScopeResidue::arm("it-podlife", residue::podman);
 
     // process-as-container: the sleep IS the container's main process, cgroup-capped.
     let id = rt
@@ -219,6 +222,7 @@ async fn podman_materializes_inline_content_through_the_provider() {
     let Some(rt) = runtime().await else { return };
     let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest");
 
+    let _residue = residue::ScopeResidue::arm("pod-inline", residue::podman);
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
         scope: "pod-inline".into(),
@@ -293,6 +297,7 @@ async fn podman_separates_container_environment_from_cli_environment() {
     let rt = Arc::new(rt);
     let provider = ContainerProvider::new(rt.clone(), "docker.io/library/busybox:latest")
         .with_secret_broker(Arc::new(ProcessSecretBroker));
+    let _residue = residue::ScopeResidue::arm("pod-exec-env", residue::podman);
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
         scope: "pod-exec-env".into(),
@@ -344,7 +349,7 @@ async fn podman_separates_container_environment_from_cli_environment() {
 #[tokio::test]
 async fn podman_reports_the_agent_exit_code() {
     let Some(rt) = runtime().await else { return };
-    let _ = rt.remove("awaken-it-podexit").await;
+    let _residue = residue::ScopeResidue::arm("it-podexit", residue::podman);
 
     // A short-lived agent that exits non-zero; wait must surface the code.
     let id = rt
@@ -367,6 +372,7 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
     let broker = Arc::new(CredentialBroker(Mutex::new(initial.to_vec())));
     let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest")
         .with_secret_broker(broker.clone());
+    let _residue = residue::ScopeResidue::arm("pod-native-credential", residue::podman);
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
         scope: "pod-native-credential".into(),
