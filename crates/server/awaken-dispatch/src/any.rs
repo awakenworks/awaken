@@ -298,6 +298,12 @@ macro_rules! delegate {
 
 #[async_trait]
 impl DispatchQueue for AnyDispatchStore {
+    fn claimed_checkpoint_transport(
+        &self,
+    ) -> Option<&dyn awaken_dispatch_contract::ClaimedCheckpointTransport> {
+        self.inner.claimed_checkpoint_transport()
+    }
+
     fn owns_local_maintenance(&self) -> bool {
         self.inner.owns_local_maintenance()
     }
