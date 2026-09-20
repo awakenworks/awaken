@@ -1,7 +1,4 @@
 pub mod awaken_control
-pub use awaken_control::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE
-pub use awaken_control::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE
-pub use awaken_control::AWAKEN_WORKSPACE_USER_ROLE
 pub use awaken_control::AccountId
 pub use awaken_control::LocalBrowserAuth
 pub use awaken_control::LocalRuntimeCapability
@@ -43,9 +40,79 @@ pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'l
 pub fn awaken_control::admin_assistant::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, core::option::Option<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
 pub async fn awaken_control::admin_assistant::seed_admin_assistant(&awaken_config_service::config_plane::ConfigPlane, &str, awaken_agent_config::config::ModelSelection) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_control::authz
-pub use awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE
-pub use awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE
-pub use awaken_control::authz::AWAKEN_WORKSPACE_USER_ROLE
+pub mod awaken_control::authz::roles
+pub enum awaken_control::authz::roles::AuthorizationAction
+pub awaken_control::authz::roles::AuthorizationAction::RunCreate
+pub awaken_control::authz::roles::AuthorizationAction::RunRead
+pub awaken_control::authz::roles::AuthorizationAction::WorkspaceRead
+pub awaken_control::authz::roles::AuthorizationAction::WorkspaceWrite
+impl awaken_control::authz::roles::AuthorizationAction
+pub const fn awaken_control::authz::roles::AuthorizationAction::as_str(self) -> &'static str
+pub enum awaken_control::authz::roles::RouteAccess
+pub awaken_control::authz::roles::RouteAccess::Read
+pub awaken_control::authz::roles::RouteAccess::Write
+pub enum awaken_control::authz::roles::RouteGuardSelection
+pub awaken_control::authz::roles::RouteGuardSelection::Application
+pub awaken_control::authz::roles::RouteGuardSelection::HostedRuntime
+pub awaken_control::authz::roles::RouteGuardSelection::HostedRuntime::action: awaken_control::authz::roles::AuthorizationAction
+pub awaken_control::authz::roles::RouteGuardSelection::HostedRuntime::embedded_action: awaken_control::authz::roles::AuthorizationAction
+pub enum awaken_control::authz::roles::WorkspaceBindingRole
+pub awaken_control::authz::roles::WorkspaceBindingRole::Admin
+pub awaken_control::authz::roles::WorkspaceBindingRole::AgentPublisher
+pub awaken_control::authz::roles::WorkspaceBindingRole::Billing
+pub awaken_control::authz::roles::WorkspaceBindingRole::ClaudeCodeUser
+pub awaken_control::authz::roles::WorkspaceBindingRole::CredentialIngress
+pub awaken_control::authz::roles::WorkspaceBindingRole::Developer
+pub awaken_control::authz::roles::WorkspaceBindingRole::HostedWorkspaceAdmin
+pub awaken_control::authz::roles::WorkspaceBindingRole::User
+pub awaken_control::authz::roles::WorkspaceBindingRole::WorkspaceAdmin
+pub awaken_control::authz::roles::WorkspaceBindingRole::WorkspaceBilling
+pub awaken_control::authz::roles::WorkspaceBindingRole::WorkspaceDeveloper
+pub awaken_control::authz::roles::WorkspaceBindingRole::WorkspaceRestrictedDeveloper
+pub awaken_control::authz::roles::WorkspaceBindingRole::WorkspaceUser
+impl awaken_control::authz::roles::WorkspaceBindingRole
+pub const fn awaken_control::authz::roles::WorkspaceBindingRole::canonical_local_name(self) -> &'static str
+#[repr(u8)] pub enum awaken_control::authz::roles::WorkspaceProfileAuthority
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::ApiKeyAll
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::ApiKeyRead
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::FileAll
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::FileRead
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::ModelSupplyAll
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::ModelSupplyConnect
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::ModelSupplyRead
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::ModelSupplyWrite
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::SkillAll
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::SkillRead
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::WorkspaceAll
+pub awaken_control::authz::roles::WorkspaceProfileAuthority::WorkspaceRead
+impl awaken_control::authz::roles::WorkspaceProfileAuthority
+pub const fn awaken_control::authz::roles::WorkspaceProfileAuthority::action_pattern(self) -> &'static str
+pub enum awaken_control::authz::roles::WorkspaceProfileRole
+pub awaken_control::authz::roles::WorkspaceProfileRole::HostedAdmin
+pub awaken_control::authz::roles::WorkspaceProfileRole::HostedBuilder
+pub awaken_control::authz::roles::WorkspaceProfileRole::LegacyHostedAdmin
+pub awaken_control::authz::roles::WorkspaceProfileRole::WorkspaceMember
+pub enum awaken_control::authz::roles::WorkspaceRoleAuthority
+pub awaken_control::authz::roles::WorkspaceRoleAuthority::WorkspaceApiKeyAll
+pub awaken_control::authz::roles::WorkspaceRoleAuthority::WorkspaceConfigurationAll
+pub awaken_control::authz::roles::WorkspaceRoleAuthority::WorkspaceModelSupplyConnect
+pub awaken_control::authz::roles::WorkspaceRoleAuthority::WorkspaceModelSupplyRead
+pub awaken_control::authz::roles::WorkspaceRoleAuthority::WorkspaceSkillAll
+impl awaken_control::authz::roles::WorkspaceRoleAuthority
+pub const fn awaken_control::authz::roles::WorkspaceRoleAuthority::management_action_pattern(self) -> core::option::Option<&'static str>
+pub const fn awaken_control::authz::roles::WorkspaceRoleAuthority::resource_action_pattern(self) -> core::option::Option<&'static str>
+pub const awaken_control::authz::roles::AGENT_PUBLISHER_AUTHORITIES: &[awaken_control::authz::roles::WorkspaceRoleAuthority]
+pub const awaken_control::authz::roles::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
+pub const awaken_control::authz::roles::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE: &str
+pub const awaken_control::authz::roles::AWAKEN_WORKSPACE_USER_ROLE: &str
+pub const awaken_control::authz::roles::CREDENTIAL_INGRESS_AUTHORITIES: &[awaken_control::authz::roles::WorkspaceRoleAuthority]
+pub fn awaken_control::authz::roles::agent_publisher_role_contains(awaken_control::authz::roles::WorkspaceRoleAuthority) -> bool
+pub const fn awaken_control::authz::roles::application_route_policy(awaken_control::authz::roles::RouteAccess) -> awaken_control::authz::roles::RouteGuardSelection
+pub fn awaken_control::authz::roles::credential_ingress_role_contains(awaken_control::authz::roles::WorkspaceRoleAuthority) -> bool
+pub const fn awaken_control::authz::roles::legacy_workspace_binding_migration_target(awaken_control::authz::roles::WorkspaceBindingRole, bool, bool) -> core::option::Option<awaken_control::authz::roles::WorkspaceBindingRole>
+pub const fn awaken_control::authz::roles::run_backed_route_policy(awaken_control::authz::roles::RouteAccess) -> awaken_control::authz::roles::RouteGuardSelection
+pub const fn awaken_control::authz::roles::workspace_profile_role_authorities(awaken_control::authz::roles::WorkspaceProfileRole) -> &'static [awaken_control::authz::roles::WorkspaceProfileAuthority]
+pub fn awaken_control::authz::roles::workspace_profile_role_contains(awaken_control::authz::roles::WorkspaceProfileRole, awaken_control::authz::roles::WorkspaceProfileAuthority) -> bool
 pub enum awaken_control::authz::HostedRuntimePathMatch
 pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix
 pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix::path: alloc::string::String
@@ -82,9 +149,12 @@ pub awaken_control::authz::TokenSpec::service_id: alloc::string::String
 pub awaken_control::authz::TokenSpec::token_id: alloc::string::String
 pub awaken_control::authz::TokenSpec::workspace_id: alloc::string::String
 pub const awaken_control::authz::ADMIN_TOKEN_FILE: &str
+pub const awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
+pub const awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str
+pub const awaken_control::authz::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::authz::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::authz::BOOTSTRAP_WORKSPACE: &str
 pub const awaken_control::authz::DEFAULT_ORG_ID: &str
@@ -367,9 +437,12 @@ pub awaken_control::TokenSpec::service_id: alloc::string::String
 pub awaken_control::TokenSpec::token_id: alloc::string::String
 pub awaken_control::TokenSpec::workspace_id: alloc::string::String
 pub const awaken_control::ADMIN_TOKEN_FILE: &str
+pub const awaken_control::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
+pub const awaken_control::AWAKEN_WORKSPACE_HOSTED_BUILDER_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_TUNNEL_MANAGER_ROLE: &str
+pub const awaken_control::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::BOOTSTRAP_WORKSPACE: &str
 pub const awaken_control::DEFAULT_ORG_ID: &str

@@ -786,9 +786,11 @@ pub awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjectio
 pub awaken_runtime_contract::model_operation::PreDispatchStage::Unrecorded
 pub enum awaken_runtime_contract::model_operation::ResponseEnvelope
 pub awaken_runtime_contract::model_operation::ResponseEnvelope::CompleteBody
+pub awaken_runtime_contract::model_operation::ResponseEnvelope::CompleteErrorBody
 pub awaken_runtime_contract::model_operation::ResponseEnvelope::StreamEndFrame
 pub enum awaken_runtime_contract::model_operation::TerminalWireFact
 pub awaken_runtime_contract::model_operation::TerminalWireFact::CompleteBody
+pub awaken_runtime_contract::model_operation::TerminalWireFact::CompleteErrorBody
 pub awaken_runtime_contract::model_operation::TerminalWireFact::Status
 pub awaken_runtime_contract::model_operation::TerminalWireFact::StreamEndFrame
 pub awaken_runtime_contract::model_operation::TerminalWireFact::Unrecorded

@@ -533,6 +533,7 @@ pub awaken_provisioning_contract::SandboxEffectFence::runtime_incarnation: alloc
 impl awaken_provisioning_contract::SandboxEffectFence
 pub fn awaken_provisioning_contract::SandboxEffectFence::authorizes_effect_successor(&self, &Self) -> bool
 pub const fn awaken_provisioning_contract::SandboxEffectFence::expired_at(&self, u64) -> bool
+pub fn awaken_provisioning_contract::SandboxEffectFence::for_operation(impl core::convert::Into<alloc::string::String>, &impl awaken_provisioning_contract::FenceToken) -> core::result::Result<Self, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::SandboxEffectFence::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, u64, u64) -> core::result::Result<Self, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::SandboxEffectFence::same_effect_identity(&self, &Self) -> bool
 pub fn awaken_provisioning_contract::SandboxEffectFence::validate_identity(&self) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>
@@ -541,6 +542,7 @@ impl awaken_provisioning_contract::FenceToken for awaken_provisioning_contract::
 pub fn awaken_provisioning_contract::SandboxEffectFence::authorizes_successor(&self, &Self) -> bool where Self: core::marker::Sized
 pub fn awaken_provisioning_contract::SandboxEffectFence::epoch(&self) -> u64
 pub fn awaken_provisioning_contract::SandboxEffectFence::expires_at_unix_ms(&self) -> u64
+pub fn awaken_provisioning_contract::SandboxEffectFence::is_live_at(&self, u64) -> bool
 pub fn awaken_provisioning_contract::SandboxEffectFence::owner(&self) -> &str
 pub fn awaken_provisioning_contract::SandboxEffectFence::runtime_incarnation(&self) -> &str
 pub fn awaken_provisioning_contract::SandboxEffectFence::same_realization_lease(&self, &Self) -> bool where Self: core::marker::Sized
@@ -743,6 +745,7 @@ pub trait awaken_provisioning_contract::FenceToken
 pub fn awaken_provisioning_contract::FenceToken::authorizes_successor(&self, &Self) -> bool where Self: core::marker::Sized
 pub fn awaken_provisioning_contract::FenceToken::epoch(&self) -> u64
 pub fn awaken_provisioning_contract::FenceToken::expires_at_unix_ms(&self) -> u64
+pub fn awaken_provisioning_contract::FenceToken::is_live_at(&self, u64) -> bool
 pub fn awaken_provisioning_contract::FenceToken::owner(&self) -> &str
 pub fn awaken_provisioning_contract::FenceToken::runtime_incarnation(&self) -> &str
 pub fn awaken_provisioning_contract::FenceToken::same_realization_lease(&self, &Self) -> bool where Self: core::marker::Sized
@@ -751,6 +754,7 @@ impl awaken_provisioning_contract::FenceToken for awaken_provisioning_contract::
 pub fn awaken_provisioning_contract::SandboxEffectFence::authorizes_successor(&self, &Self) -> bool where Self: core::marker::Sized
 pub fn awaken_provisioning_contract::SandboxEffectFence::epoch(&self) -> u64
 pub fn awaken_provisioning_contract::SandboxEffectFence::expires_at_unix_ms(&self) -> u64
+pub fn awaken_provisioning_contract::SandboxEffectFence::is_live_at(&self, u64) -> bool
 pub fn awaken_provisioning_contract::SandboxEffectFence::owner(&self) -> &str
 pub fn awaken_provisioning_contract::SandboxEffectFence::runtime_incarnation(&self) -> &str
 pub fn awaken_provisioning_contract::SandboxEffectFence::same_realization_lease(&self, &Self) -> bool where Self: core::marker::Sized
@@ -820,6 +824,7 @@ pub fn awaken_provisioning_contract::check_environment_soundness(&awaken_provisi
 pub fn awaken_provisioning_contract::checkpoint_exclusions_fingerprint(&[alloc::string::String]) -> alloc::string::String
 pub fn awaken_provisioning_contract::decide_lease_action(&awaken_provisioning_contract::LeaseGrant, awaken_provisioning_contract::LivenessSignals) -> awaken_provisioning_contract::LeaseAction
 pub fn awaken_provisioning_contract::egress_permitted(&awaken_provisioning_contract::LeaseGrant, u64, bool) -> bool
+pub const fn awaken_provisioning_contract::fence_is_live_at(u64, u64) -> bool
 pub const fn awaken_provisioning_contract::fence_succession(u64, u64, u64, u64, bool) -> core::option::Option<awaken_provisioning_contract::FenceSuccession>
 pub async fn awaken_provisioning_contract::materialize_process_command(&[awaken_provisioning_contract::EnvVar], awaken_provisioning_contract::Command, core::option::Option<&alloc::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>>) -> core::result::Result<awaken_provisioning_contract::MaterializedCommand, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::memory_materialization_mount_path(&str) -> alloc::string::String

@@ -1,4 +1,95 @@
 pub mod awaken_store_conformance
+pub mod awaken_store_conformance::env_registry
+pub async fn awaken_store_conformance::env_registry::archive_preserves_authoritative_history<R: awaken_environment_contract::EnvRegistry>(&R)
+pub async fn awaken_store_conformance::env_registry::environment_instants_are_the_injected_clock<R: awaken_environment_contract::EnvRegistry>(&R, &awaken_agent_contract::clock::ManualClock)
+pub async fn awaken_store_conformance::env_registry::idempotent_create_decision_table<R: awaken_environment_contract::EnvRegistry>(&R)
+pub async fn awaken_store_conformance::env_registry::make<R: awaken_environment_contract::EnvRegistry>(&R, &str) -> alloc::string::String
+pub async fn awaken_store_conformance::env_registry::missing_id_fails_closed<R: awaken_environment_contract::EnvRegistry>(&R)
+pub async fn awaken_store_conformance::env_registry::nested_config_patch_is_atomic_and_durable<R: awaken_environment_contract::EnvRegistry>(&R)
+pub async fn awaken_store_conformance::env_registry::package_network_invariant_is_atomic<R: awaken_environment_contract::EnvRegistry>(&R)
+pub async fn awaken_store_conformance::env_registry::revision_decision_table<R: awaken_environment_contract::EnvRegistry>(&R)
+pub async fn awaken_store_conformance::env_registry::run_suite<R: awaken_environment_contract::EnvRegistry>(impl core::ops::function::Fn(alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> R)
+pub async fn awaken_store_conformance::env_registry::sandbox_binding_is_one_environment_revision<R: awaken_environment_contract::EnvRegistry>(&R)
+pub async fn awaken_store_conformance::env_registry::scope_round_trips_and_updates<R: awaken_environment_contract::EnvRegistry>(&R)
+pub async fn awaken_store_conformance::env_registry::unique_ids<R: awaken_environment_contract::EnvRegistry>(&R)
+pub mod awaken_store_conformance::resource_registry
+pub async fn awaken_store_conformance::resource_registry::listing_is_partitioned_by_workspace<S: awaken_resource_contract::registry::ResourceRegistryRepository>(&S)
+pub fn awaken_store_conformance::resource_registry::memory_store(&str, &str) -> awaken_resource_contract::registry::MemoryStoreAggregate
+pub async fn awaken_store_conformance::resource_registry::memory_store_cas_laws<S: awaken_resource_contract::registry::ResourceRegistryRepository>(&S)
+pub fn awaken_store_conformance::resource_registry::repository(&str, &str) -> awaken_resource_contract::registry::RepositoryAggregate
+pub async fn awaken_store_conformance::resource_registry::repository_cas_laws<S: awaken_resource_contract::registry::ResourceRegistryRepository>(&S)
+pub async fn awaken_store_conformance::resource_registry::run_suite<S: awaken_resource_contract::registry::ResourceRegistryRepository, F: core::future::future::Future<Output = S>>(impl core::ops::function::Fn() -> F)
+pub mod awaken_store_conformance::session_store
+pub enum awaken_store_conformance::session_store::CasRule
+pub awaken_store_conformance::session_store::CasRule::Create
+pub awaken_store_conformance::session_store::CasRule::CreateIdempotencyMismatch
+pub awaken_store_conformance::session_store::CasRule::CreateReceiptAsMutation
+pub awaken_store_conformance::session_store::CasRule::CreateReplay
+pub awaken_store_conformance::session_store::CasRule::Delete
+pub awaken_store_conformance::session_store::CasRule::DeleteReplay
+pub awaken_store_conformance::session_store::CasRule::Replace
+pub awaken_store_conformance::session_store::CasRule::ReplaceIdempotencyMismatch
+pub awaken_store_conformance::session_store::CasRule::ReplaceReplay
+pub awaken_store_conformance::session_store::CasRule::ReplaceReplayWrongExpected
+pub awaken_store_conformance::session_store::CasRule::ReplaceReplayWrongOwner
+pub awaken_store_conformance::session_store::CasRule::StaleRevision
+pub awaken_store_conformance::session_store::CasRule::WrongOwner
+pub async fn awaken_store_conformance::session_store::absent_id_reads_none<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub fn awaken_store_conformance::session_store::at(u64) -> alloc::string::String
+pub fn awaken_store_conformance::session_store::complete_terminal_cleanup(&mut awaken_session_contract::session_repo::persisted_session::PersistedSession)
+pub async fn awaken_store_conformance::session_store::concurrent_phase_transition_has_one_count_snapshot<R>(alloc::sync::Arc<R>) where R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore + 'static
+pub async fn awaken_store_conformance::session_store::concurrent_root_cas_has_one_authoritative_winner<R>(alloc::sync::Arc<R>) where R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore + 'static
+pub async fn awaken_store_conformance::session_store::create_receipt_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub async fn awaken_store_conformance::session_store::create_receipt_race_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(alloc::sync::Arc<R>)
+pub async fn awaken_store_conformance::session_store::create_session<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R, &str, awaken_session_contract::session_repo::persisted_session::PersistedSession, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
+pub async fn awaken_store_conformance::session_store::credential_source_dependency_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub fn awaken_store_conformance::session_store::delete_mutation(&awaken_session_contract::session_repo::persisted_session::PersistedSession, &str) -> awaken_session_contract::session_repo::repository_port::SessionMutation
+pub async fn awaken_store_conformance::session_store::deleted_event_admission_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub async fn awaken_store_conformance::session_store::deployment_cas_decision_table<R: awaken_deployment_contract::DeploymentRepository + awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R, [&dyn awaken_deployment_contract::DeploymentRepository; 3])
+pub fn awaken_store_conformance::session_store::deployment_fact(&str, &str) -> awaken_deployment_contract::DeploymentLifecycleFact
+pub fn awaken_store_conformance::session_store::deployment_record(&str, u64, bool) -> awaken_deployment_contract::model::DeploymentView
+pub async fn awaken_store_conformance::session_store::environment_state_is_atomic_and_non_destructive<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub fn awaken_store_conformance::session_store::fact(&str, &str, &str) -> awaken_session_contract::lifecycle::ManagedLifecycleFact
+pub async fn awaken_store_conformance::session_store::global_environment_phase_count_has_no_recovery_batch_limit<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub fn awaken_store_conformance::session_store::hibernated_environment(&str, &str) -> awaken_session_contract::environment::SessionEnvironmentState
+pub fn awaken_store_conformance::session_store::install_legacy_completion_wire(&mut awaken_session_contract::session_repo::persisted_session::PersistedSession, &awaken_session_contract::terminal_cleanup::effects::SessionCleanupCommand)
+pub async fn awaken_store_conformance::session_store::lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed>(&R, Arm) where R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore, Arm: core::ops::function::FnOnce() -> Armed, Armed: core::future::future::Future<Output = ()>
+pub async fn awaken_store_conformance::session_store::lifecycle_outbox_tracks_every_committed_transition<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub async fn awaken_store_conformance::session_store::ownership_is_one_atomic_repository_fact<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub async fn awaken_store_conformance::session_store::pending_resource_activation_index_is_durable<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub fn awaken_store_conformance::session_store::record(&str, &awaken_session_contract::session_repo::repository_port::SessionMutationPayload) -> awaken_session_contract::session_repo::repository_port::IdempotencyRecord
+pub async fn awaken_store_conformance::session_store::replace_session<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R, &str, awaken_session_contract::session_repo::persisted_session::PersistedSession, &str, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
+pub async fn awaken_store_conformance::session_store::root_cas_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub async fn awaken_store_conformance::session_store::run_suite<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore + 'static>(impl core::ops::function::Fn() -> R)
+pub async fn awaken_store_conformance::session_store::save_get_round_trips<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub async fn awaken_store_conformance::session_store::save_is_idempotent_upsert<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub async fn awaken_store_conformance::session_store::scan_query_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub fn awaken_store_conformance::session_store::session(&str, &str) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
+pub async fn awaken_store_conformance::session_store::tombstone_requires_hidden_completed_cleanup<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub async fn awaken_store_conformance::session_store::vault_reference_index_returns_only_live_scoped_sessions<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
+pub fn awaken_store_conformance::session_store::with_mcp_credential_source(awaken_session_contract::session_repo::persisted_session::PersistedSession, &str) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
+pub mod awaken_store_conformance::work_queue
+pub mod awaken_store_conformance::work_queue::session_access
+pub async fn awaken_store_conformance::work_queue::session_access::capability_and_metadata_contract(&impl awaken_session_contract::work_queue::WorkQueue, u64)
+pub async fn awaken_store_conformance::work_queue::env_isolation<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::graceful_owner_release_is_exact<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::heartbeat_compare_and_extend<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::observation_timestamps_are_the_injected_clock<Q: awaken_session_contract::work_queue::WorkQueue>(&Q, &awaken_agent_contract::clock::ManualClock)
+pub async fn awaken_store_conformance::work_queue::reclaim_age_boundary_cases(&impl awaken_session_contract::work_queue::WorkQueue)
+pub async fn awaken_store_conformance::work_queue::reclaim_at_ttl<Q: awaken_session_contract::work_queue::WorkQueue>(&Q, u64)
+pub async fn awaken_store_conformance::work_queue::remove_env_purges<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::requested_reclaim_uses_refresh_clock<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::run_suite<Q: awaken_session_contract::work_queue::WorkQueue, F: core::future::future::Future<Output = Q>>(impl core::ops::function::Fn(alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> F, u64)
+pub fn awaken_store_conformance::work_queue::session_access_digest(u64) -> awaken_session_contract::work_queue::SessionAccessDigest
+pub async fn awaken_store_conformance::work_queue::session_enqueue_is_idempotent<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::session_ownership_lifecycle_is_single_and_fenced<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::single_active_cap<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub async fn awaken_store_conformance::work_queue::stop_frees_next<Q: awaken_session_contract::work_queue::WorkQueue>(&Q)
+pub mod awaken_store_conformance::worker_directory
+pub async fn awaken_store_conformance::worker_directory::assert_exact_expiry(alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>, &str)
+pub async fn awaken_store_conformance::worker_directory::assert_process_exit_receipt(alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>, &str) -> awaken_worker_contract::registry::WorkerIdentity
+pub async fn awaken_store_conformance::worker_directory::assert_registry(alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>, &str)
+pub fn awaken_store_conformance::worker_directory::registration(&str, &str) -> awaken_worker_contract::registry::WorkerRegistration
 pub async fn awaken_store_conformance::commit_operation_is_idempotent_and_cas<S: awaken_agent_contract::thread::commit::coordinator::OperationCoordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader + awaken_agent_contract::thread::read::recovery::RunRecoverySource>(&S)
 pub async fn awaken_store_conformance::commit_then_read<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)
 pub async fn awaken_store_conformance::commits_accumulate<S: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::checkpoint::CheckpointReader>(&S)
