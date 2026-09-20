@@ -117,7 +117,7 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
 # pure predicates were admitting five real Kubernetes creations — the Sandbox
 # Pod among them — and the podman backend had no registered leaf at all. A
 # number that falls because the rule stopped looking is not progress.
-CANCEL_SAFETY_BASELINE = 62
+CANCEL_SAFETY_BASELINE = 61
 
 FN_HEAD = re.compile(r"\bfn\s+([A-Za-z_]\w*)\s*")
 IMPL_HEAD = re.compile(r"\bimpl\b")
