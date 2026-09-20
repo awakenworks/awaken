@@ -28,7 +28,7 @@ impl McpAttachmentContentDigest {
     /// unwind bound and proves nothing about the comparison.
     #[cfg(kani)]
     #[must_use]
-    pub(crate) fn proof_representative(same: bool) -> Self {
+    pub fn proof_representative(same: bool) -> Self {
         Self(if same { "a" } else { "b" }.into())
     }
 
