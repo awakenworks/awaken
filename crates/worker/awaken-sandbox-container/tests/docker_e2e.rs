@@ -5,6 +5,9 @@
 //! when Docker is absent, so a machine without it still passes `cargo test`.
 #![cfg(feature = "docker")]
 
+#[path = "common/residue.rs"]
+mod residue;
+
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
@@ -64,12 +67,11 @@ async fn a_containerized_agent_speaks_the_wire_over_a_published_port() {
         .status();
 
     let port = 8080;
-    // A per-process scope so parallel/re-runs never collide on the container name; a
-    // best-effort pre-removal reaps any leftover from an interrupted prior run.
+    // A per-process scope so parallel/re-runs never collide on the container
+    // name, and a guard that removes this scope's container now and again on
+    // the way out, including while a panic unwinds.
     let scope = format!("docker-e2e-{}", std::process::id());
-    let _ = std::process::Command::new("docker")
-        .args(["rm", "-f", &format!("awaken-{scope}")])
-        .status();
+    let _residue = residue::ScopeResidue::arm(scope.as_str(), residue::docker);
 
     let runtime = DockerRuntime::connect_local(port).expect("docker client");
     let provider = ContainerProvider::new(Arc::new(runtime), "busybox:latest");

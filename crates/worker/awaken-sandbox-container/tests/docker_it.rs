@@ -12,6 +12,8 @@ mod disposal;
 mod host_staging;
 #[path = "common/process.rs"]
 mod process_lifecycle;
+#[path = "common/residue.rs"]
+mod residue;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,6 +67,7 @@ async fn docker_ordinary_host_staging_survives_creator_replacement() {
         Arc::new(first),
         Arc::new(peer),
         "busybox:latest",
+        residue::docker,
     )
     .await;
 }
@@ -72,10 +75,11 @@ async fn docker_ordinary_host_staging_survives_creator_replacement() {
 #[tokio::test]
 async fn docker_full_lifecycle_against_a_real_daemon() {
     let Some(rt) = runtime().await else { return };
-    let _ = rt.remove("awaken-it-life").await; // clear any leftover
+    let scope = "it-life";
+    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
 
     let id = rt
-        .create("it-life", &plan(&["sleep", "30"]))
+        .create(scope, &plan(&["sleep", "30"]))
         .await
         .expect("create+start a real container");
 
@@ -108,6 +112,7 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
         return;
     };
     let scope = format!("docker-restore-{}", std::process::id());
+    let _residue = residue::ScopeResidue::arm(&scope, residue::docker);
     let spec = common::exact_restore_spec(&scope);
     let request = common::exact_restore_request(&scope);
     let authorization = disposal::disposal_authorization(&disposal::effect_fence(
@@ -195,6 +200,7 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
 async fn docker_open_channel_dials_the_published_agent_port() {
     let Some(rt) = runtime().await else { return };
     let scope = format!("it-chan-{}", std::process::id());
+    let _residue = residue::ScopeResidue::arm(&scope, residue::docker);
 
     // Cause/effect rules: D1 a real container publishes an ephemeral Host port
     // -> the provider resolves it and the canonical factory dials that address;
@@ -243,9 +249,10 @@ async fn docker_open_channel_dials_the_published_agent_port() {
 #[tokio::test]
 async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     let Some(rt) = runtime().await else { return };
-    let _ = rt.remove("awaken-it-exec").await;
+    let scope = "it-exec";
+    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
     let id = rt
-        .create("it-exec", &plan(&["sleep", "30"]))
+        .create(scope, &plan(&["sleep", "30"]))
         .await
         .expect("create Session container");
 

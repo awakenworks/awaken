@@ -7,6 +7,9 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features docker --test pool_docker`
 #![cfg(feature = "docker")]
 
+#[path = "common/residue.rs"]
+mod residue;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,6 +88,9 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
     let provider = Arc::new(ContainerProvider::new(Arc::new(runtime), "busybox:latest"));
     let pool = WarmContainerPool::new(provider, 2);
+    // Warm capacity mints its own never-repeated scopes, but the Session scope
+    // below is fixed and so is the one this suite can poison for its next run.
+    let _residue = residue::ScopeResidue::arm("pool-session", residue::docker);
     let session_spec = spec("pool-session");
 
     // Pre-provision 2 empty environments for this shape (cold-start capacity).
@@ -179,6 +185,8 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
     let provider = Arc::new(ContainerProvider::new(Arc::new(runtime), "busybox:latest"));
     let pool = WarmContainerPool::new(provider, 2);
+    let _base_residue = residue::ScopeResidue::arm("mount-base", residue::docker);
+    let _mounted_residue = residue::ScopeResidue::arm("mount-session", residue::docker);
 
     // A poolable base shape, pre-warmed.
     let base = spec("mount-base");
