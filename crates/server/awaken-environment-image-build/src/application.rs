@@ -38,6 +38,7 @@ pub struct EnvironmentImageBuildCoordinator {
     builder: Arc<dyn EnvironmentImageBuilder>,
     base_image: String,
     policy: EnvironmentImageBuildPolicy,
+    transition_hint: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl EnvironmentImageBuildCoordinator {
@@ -76,6 +77,22 @@ impl EnvironmentImageBuildCoordinator {
             builder,
             base_image,
             policy,
+            transition_hint: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Install the process-local delivery hint used when an exact build-state
+    /// CAS succeeds. The build store remains authoritative; this callback only
+    /// wakes an existing dependent reconciliation owner so it need not wait for
+    /// an unrelated global retry backoff.
+    pub fn install_transition_hint(
+        &self,
+        hint: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(), EnvironmentImageBuildError> {
+        self.transition_hint.set(hint).map_err(|_| {
+            EnvironmentImageBuildError::Conflict(
+                "Environment image-build transition hint is already installed".into(),
+            )
         })
     }
 
@@ -98,28 +115,33 @@ impl EnvironmentImageBuildCoordinator {
         else {
             return Ok(false);
         };
-        let failure = match self.builder.build(&claim.demand).await {
+        let result = match self.builder.build(&claim.demand).await {
             Ok(image) => match self.builder.available(&claim.demand, &image).await {
-                Ok(true) => {
-                    self.store
-                        .complete(&claim, &image, crate::now_unix_ms())
-                        .await?;
-                    None
-                }
-                Ok(false) => Some("builder returned an unavailable image".to_owned()),
-                Err(error) => Some(error.to_string()),
+                Ok(true) => Ok(image),
+                Ok(false) => Err("builder returned an unavailable image".to_owned()),
+                Err(error) => Err(error.to_string()),
             },
-            Err(error) => Some(error.to_string()),
+            Err(error) => Err(error.to_string()),
         };
-        if let Some(message) = failure {
-            self.store
-                .fail(
-                    &claim,
-                    &message,
-                    crate::now_unix_ms(),
-                    retry_delay_ms(&self.policy, claim.lease_epoch),
-                )
-                .await?;
+        let transitioned = match result {
+            Ok(image) => {
+                self.store
+                    .complete(&claim, &image, crate::now_unix_ms())
+                    .await?
+            }
+            Err(message) => {
+                self.store
+                    .fail(
+                        &claim,
+                        &message,
+                        crate::now_unix_ms(),
+                        retry_delay_ms(&self.policy, claim.lease_epoch),
+                    )
+                    .await?
+            }
+        };
+        if transitioned && let Some(hint) = self.transition_hint.get() {
+            hint();
         }
         Ok(true)
     }
@@ -266,7 +288,7 @@ fn retry_delay_ms(policy: &EnvironmentImageBuildPolicy, attempt: u64) -> u64 {
 mod tests {
     use std::sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     use awaken_environment_contract::{
@@ -417,8 +439,11 @@ mod tests {
         // availability (C3). Each cause must produce the same authoritative
         // Failed transition (E1), preserve attempt=1 (E2), and schedule the
         // first retry at the policy base delay (E3). Decision-table rules
-        // R1=C1, R2=C2, and R3=C3 cover every failure edge; successful Ready
-        // behavior is covered by registration_worker_and_readiness_follow_one_demand_path.
+        // R1=C1, R2=C2, and R3=C3 cover every failure edge. C4 the durable
+        // Failed CAS succeeds; C5 no build can be claimed. E4 emit one
+        // dependency hint for C4 and none for C5. R4=C1|C2|C3+C4=>E4;
+        // R5=C5=>no E4. Successful Ready hints are covered by
+        // registration_worker_and_readiness_follow_one_demand_path.
         for (rule, mode, expected_message) in [
             ("R1", FailureMode::Build, "build failed"),
             (
@@ -437,6 +462,13 @@ mod tests {
                 EnvironmentImageBuildPolicy::default(),
             )
             .unwrap();
+            let hints = Arc::new(AtomicUsize::new(0));
+            let observed = hints.clone();
+            coordinator
+                .install_transition_hint(Arc::new(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                }))
+                .unwrap();
             let packaged = registration(
                 &format!("env-{rule}"),
                 EnvironmentConfig::Cloud {
@@ -451,6 +483,16 @@ mod tests {
             let demand = coordinator.demand(&packaged, None).await.unwrap().unwrap();
             let before = crate::now_unix_ms();
             assert!(coordinator.run_once("builder-a").await.unwrap(), "{rule}");
+            assert_eq!(hints.load(Ordering::SeqCst), 1, "{rule}: R4/E4");
+            assert!(
+                !coordinator.run_once("builder-a").await.unwrap(),
+                "{rule}: R5"
+            );
+            assert_eq!(
+                hints.load(Ordering::SeqCst),
+                1,
+                "{rule}: R5 no duplicate hint"
+            );
             let after = crate::now_unix_ms();
             let record = store.get(&demand.build_key).await.unwrap().unwrap();
             let EnvironmentImageBuildState::Failed {
@@ -490,7 +532,9 @@ mod tests {
         // readiness pass the same exact demand plus stored image into the one
         // availability port; a missing image invalidates Ready but cannot build
         // outside the claim/lease worker. R8 a cancelled service token exits
-        // the worker without a detached loop.
+        // the worker without a detached loop. R9 each exact Ready CAS emits one
+        // dependency hint; idle polls emit none and one process cannot install
+        // competing hint sinks.
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
         let builder = Arc::new(FakeBuilder {
@@ -510,6 +554,19 @@ mod tests {
                 },
             )
             .unwrap(),
+        );
+        let transition_hints = Arc::new(AtomicUsize::new(0));
+        let observed_hints = transition_hints.clone();
+        coordinator
+            .install_transition_hint(Arc::new(move || {
+                observed_hints.fetch_add(1, Ordering::SeqCst);
+            }))
+            .unwrap();
+        assert!(
+            coordinator
+                .install_transition_hint(Arc::new(|| {}))
+                .is_err(),
+            "R9 one process owns one transition-hint sink"
         );
         let registrar = BuildAwareExecutableEnvironmentRegistrar::new(
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
@@ -557,6 +614,11 @@ mod tests {
         );
         assert!(coordinator.run_once("builder-a").await.unwrap(), "R4");
         assert_eq!(
+            transition_hints.load(Ordering::SeqCst),
+            1,
+            "R9 Ready CAS wakes once"
+        );
+        assert_eq!(
             coordinator.ready_image(&packaged, None).await.unwrap(),
             Some("registry/awaken:base@sha256:resolved@sha256:ready".into()),
             "R5"
@@ -577,6 +639,11 @@ mod tests {
             .await
             .unwrap();
         assert!(coordinator.run_once("builder-a").await.unwrap(), "R6");
+        assert_eq!(
+            transition_hints.load(Ordering::SeqCst),
+            2,
+            "R9 each distinct Ready CAS wakes once"
+        );
         assert_eq!(
             coordinator
                 .ready_image(&packaged, Some("registry/policy-base@sha256:exact"))
