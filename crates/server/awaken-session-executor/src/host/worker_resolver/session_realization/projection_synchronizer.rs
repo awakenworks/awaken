@@ -738,7 +738,7 @@ mod tests {
         projection.agent_publication = Some(snapshot.clone());
         let control = RecoveryControl::fixed(projection.clone());
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
-        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,
             binding_sink.clone(),
         );
@@ -749,7 +749,7 @@ mod tests {
             expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
                 + 60_000,
         };
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
             projection,
@@ -774,7 +774,7 @@ mod tests {
                     initial == InitialEnvironment::LostResponse,
                 ),
             );
-            awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
                 &managed,
                 sink.clone(),
             );
@@ -809,7 +809,7 @@ mod tests {
                     .unwrap()
                     .exact_matches(&candidate)
             );
-            awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
                 &managed,
                 binding_sink.clone(),
             );
@@ -1172,7 +1172,7 @@ mod tests {
                 )
             });
             if let Some(sink) = &cancelled_sink {
-                awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+                awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
                     &managed,
                     sink.clone(),
                 );
@@ -1273,7 +1273,7 @@ mod tests {
                     b"same physical durable root"
                 );
                 retired.push(candidate.environment);
-                awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+                awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
                     &managed,
                     binding_sink.clone(),
                 );
@@ -1532,7 +1532,7 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
         let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,
             Arc::new(LegacyUnownedEnvironmentBindingSink),
         );

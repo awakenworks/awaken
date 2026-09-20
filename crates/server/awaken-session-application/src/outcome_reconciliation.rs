@@ -83,7 +83,12 @@ impl SessionApplication {
                     .push((String::from(session_id), error.to_string()));
                 continue;
             }
-            match self.runtime().continue_outcome(session_id.as_str()).await {
+            match match self.runtime().outcomes() {
+                Some(role) => role.continue_outcome(session_id.as_str()).await,
+                None => Err(awaken_session_contract::RunError::unavailable(
+                    "OutcomeRuntime is unsupported by this runtime",
+                )),
+            } {
                 Ok(Some(OutcomeDrive::Completed(_))) => report.settled += 1,
                 Ok(Some(OutcomeDrive::Awaiting)) => report.pending += 1,
                 Ok(None) => {}

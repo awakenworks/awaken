@@ -30,6 +30,12 @@ async fn deliver(
         crate::session_slot::FrozenProjectionReceipt::from_projection(&projection).unwrap();
     let incoming = serde_json::json!({"revision": receipt.revision.0, "fingerprint": receipt.fingerprint, "binding": projection.environment.binding().unwrap_or("none")});
     let result = managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })?
         .install_session_projection(
             "projection-convergence",
             projection,

@@ -181,13 +181,15 @@ pub use run_application::{
     epoch_millis_to_rfc3339, paginate_history, project_epoch_millis, rfc3339_to_epoch_millis,
 };
 pub use session::{
-    AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool, DelegatedRun,
-    DelegatedRunSnapshot, LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry,
-    LiveInboxError, LiveInboxSnapshot, McpAttachmentRealizer, OutcomeDrive, OutcomeFailure,
-    OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionBudgetResumeDelivery,
-    SessionBudgetResumeDisposition, SessionBudgetResumeTicket, SessionEnvironmentBindingSink,
-    SessionInit, SessionModelUsage, SessionRuntime, SessionSandboxLayout,
-    SessionThreadLiveSubscription, SessionUsage, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, BudgetRuntime, BuiltinTool, CapabilityRuntime, CommittedOutcomeProjection,
+    CoordinationRuntime, CustomTool, DelegatedRun, DelegatedRunSnapshot, EnvironmentRuntime,
+    LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
+    LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer, NeutralRuntime, OutcomeDrive,
+    OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime, Pending, RealizationRuntime,
+    RunError, RunErrorKind, SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
+    SessionBudgetResumeTicket, SessionEnvironmentBindingSink, SessionInit, SessionModelUsage,
+    SessionRuntime, SessionSandboxLayout, SessionThreadLiveSubscription, SessionUsage, StepOutcome,
+    StreamingRunRuntime, TerminalCleanupRuntime, ThreadReadRuntime, ToolPermissionDecision,
 };
 pub use session_id::SessionId;
 pub use session_realization::{
@@ -237,3 +239,11 @@ pub use terminal_cleanup::{
     validate_continuation_memory_materializations, validate_continuation_memory_reconciliation,
 };
 pub use tool_configuration::SessionToolConfiguration;
+
+/// Hidden re-exports so [`neutral_role!`] expands in any crate without that crate
+/// naming the contract's dependencies.
+#[doc(hidden)]
+pub mod __macro_support {
+    pub use async_trait;
+    pub use awaken_agent_contract;
+}

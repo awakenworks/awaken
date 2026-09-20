@@ -13,7 +13,8 @@ fn accepted() -> Value {
         "user":{"username":"system:serviceaccount:workers:executor", "uid":"sa-uid", "extra":{
             "authentication.kubernetes.io/pod-name":["worker-1"],
             "authentication.kubernetes.io/pod-uid":["uid-a"]
-        }}
+        }
+    }
     }})
 }
 

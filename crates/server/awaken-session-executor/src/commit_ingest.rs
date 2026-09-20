@@ -531,7 +531,7 @@ mod tests {
         managed
             .install_agent_coordination_application(Arc::downgrade(&application))
             .expect("C5 install canonical Session application authority");
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
             claimed_memory_projection(&root_publication, &override_candidate, &manifest),
