@@ -14,6 +14,8 @@
 #![cfg(feature = "docker")]
 
 mod common;
+#[path = "common/residue.rs"]
+mod residue;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,7 +24,7 @@ use async_trait::async_trait;
 use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ForwardProxy, command_of};
+use awaken_sandbox_container::{ContainerProvider, ForwardProxy, command_of};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
 
@@ -95,12 +97,13 @@ fn egress_probe_spec(scope: &str, network: pc::NetworkPolicy) -> pc::SandboxSpec
 /// non-zero as a stream error instead).
 async fn run_to_exit(
     provider: &ContainerProvider<DockerRuntime>,
-    rt: &Arc<DockerRuntime>,
     scope: &str,
     spec: &pc::SandboxSpec,
 ) -> Option<i32> {
-    // Clear any container left by a previously-aborted run (name = `awaken-<scope>`).
-    let _ = rt.remove(&format!("awaken-{scope}")).await;
+    // Own this scope's container for the whole row: swept before creation so a
+    // leftover from an aborted run cannot fail this one closed, and swept again
+    // on the way out even if an assertion below unwinds past `dispose`.
+    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
 
     let sandbox = provider.create(spec).await.expect("create real container");
     let command = command_of(spec);
@@ -130,11 +133,10 @@ async fn run_to_exit(
 /// `Some(0)` = had egress, `Some(1)` = confined.
 async fn probe_exit(
     provider: &ContainerProvider<DockerRuntime>,
-    rt: &Arc<DockerRuntime>,
     scope: &str,
     network: pc::NetworkPolicy,
 ) -> Option<i32> {
-    run_to_exit(provider, rt, scope, &egress_probe_spec(scope, network)).await
+    run_to_exit(provider, scope, &egress_probe_spec(scope, network)).await
 }
 
 /// A process-as-container running `command` with a caller-owned host file bound read-only
@@ -176,18 +178,12 @@ fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpe
 
 #[tokio::test]
 async fn deny_egress_confines_a_real_container() {
-    let Some((provider, rt)) = setup().await else {
+    let Some((provider, _)) = setup().await else {
         return;
     };
 
     // Unrestricted: the container has a default route (the daemon bridge).
-    let open = probe_exit(
-        &provider,
-        &rt,
-        "pw-egress-open",
-        pc::NetworkPolicy::Unrestricted,
-    )
-    .await;
+    let open = probe_exit(&provider, "pw-egress-open", pc::NetworkPolicy::Unrestricted).await;
     assert_eq!(
         open,
         Some(0),
@@ -196,7 +192,7 @@ async fn deny_egress_confines_a_real_container() {
 
     // None: the daemon gives it an empty network — the SAME probe must now fail. This
     // proves the adapter *applies* the planned `NetworkMode::None`, not just plans it.
-    let denied = probe_exit(&provider, &rt, "pw-egress-none", pc::NetworkPolicy::None).await;
+    let denied = probe_exit(&provider, "pw-egress-none", pc::NetworkPolicy::None).await;
     assert_eq!(
         denied,
         Some(1),
@@ -206,7 +202,7 @@ async fn deny_egress_confines_a_real_container() {
 
 #[tokio::test]
 async fn inline_content_is_materialized_and_readable_in_a_real_container() {
-    let Some((provider, rt)) = setup().await else {
+    let Some((provider, _)) = setup().await else {
         return;
     };
     // An `Inline` mount carries self-contained bytes (no host file, no store id) — the
@@ -243,7 +239,7 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
         lease_ttl_secs: None,
         control_services: Default::default(),
     };
-    let exit = run_to_exit(&provider, &rt, "pw-inline", &spec).await;
+    let exit = run_to_exit(&provider, "pw-inline", &spec).await;
     assert_eq!(
         exit,
         Some(0),
@@ -253,7 +249,7 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
 
 #[tokio::test]
 async fn multiple_memory_stores_enforce_exact_access_and_seal_the_parent_in_real_docker() {
-    let Some((provider, rt)) = setup().await else {
+    let Some((provider, _)) = setup().await else {
         return;
     };
     let memory = Arc::new(VolatileMemoryRepository::new());
@@ -318,7 +314,7 @@ async fn multiple_memory_stores_enforce_exact_access_and_seal_the_parent_in_real
     };
 
     assert_eq!(
-        run_to_exit(&provider, &rt, "pw-memory-boundary", &spec).await,
+        run_to_exit(&provider, "pw-memory-boundary", &spec).await,
         Some(0),
         "real Docker must enforce both child access modes and the sealed parent",
     );
@@ -395,7 +391,7 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
         control_services: Default::default(),
     };
 
-    let exit = run_to_exit(&provider, &rt, "pw-native-credential", &spec).await;
+    let exit = run_to_exit(&provider, "pw-native-credential", &spec).await;
     assert_eq!(exit, Some(0));
     assert_eq!(broker.bytes.lock().unwrap().as_slice(), refreshed);
 }
@@ -443,7 +439,7 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
         lease_ttl_secs: None,
         control_services: Default::default(),
     };
-    let exit = run_to_exit(&provider, &rt, "pw-file-blob", &spec).await;
+    let exit = run_to_exit(&provider, "pw-file-blob", &spec).await;
     assert_eq!(
         exit,
         Some(0),
@@ -453,7 +449,7 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
 
 #[tokio::test]
 async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
-    let Some((provider, rt)) = setup().await else {
+    let Some((provider, _)) = setup().await else {
         return;
     };
     // A repo checkout on the container tier reuses the CacheVolume primitive: the host clones
@@ -499,7 +495,7 @@ async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
         lease_ttl_secs: None,
         control_services: Default::default(),
     };
-    let exit = run_to_exit(&provider, &rt, "pw-repodir", &spec).await;
+    let exit = run_to_exit(&provider, "pw-repodir", &spec).await;
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         exit,
@@ -510,7 +506,7 @@ async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
 
 #[tokio::test]
 async fn file_bind_is_readable_and_read_only_is_enforced_in_a_real_container() {
-    let Some((provider, rt)) = setup().await else {
+    let Some((provider, _)) = setup().await else {
         return;
     };
 
@@ -522,7 +518,6 @@ async fn file_bind_is_readable_and_read_only_is_enforced_in_a_real_container() {
     // Read: the bound resource is visible inside the container.
     let read = run_to_exit(
         &provider,
-        &rt,
         "pw-file-read",
         &file_bind_spec(
             "pw-file-read",
@@ -540,7 +535,6 @@ async fn file_bind_is_readable_and_read_only_is_enforced_in_a_real_container() {
     // Read-only enforced: a write to the `:ro` bind fails at the OS.
     let write = run_to_exit(
         &provider,
-        &rt,
         "pw-file-ro",
         &file_bind_spec("pw-file-ro", &host_file, "echo mutate > /data/in.txt"),
     )
@@ -564,7 +558,7 @@ async fn file_bind_is_readable_and_read_only_is_enforced_in_a_real_container() {
 /// (fail-open) would miss, the memory analogue of the egress `deny_egress` probe.
 #[tokio::test]
 async fn a_memory_cap_oom_kills_an_over_allocating_container() {
-    let Some((provider, rt)) = setup().await else {
+    let Some((provider, _)) = setup().await else {
         return;
     };
 
@@ -596,7 +590,6 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
     // Capped at 16 MiB: the 32 MiB allocation blows the cgroup -> OOM-kill (137).
     let capped = run_to_exit(
         &provider,
-        &rt,
         "mem-capped",
         &hog(
             "mem-capped",
@@ -617,7 +610,6 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
     // was the cgroup, not the workload.
     let uncapped = run_to_exit(
         &provider,
-        &rt,
         "mem-uncapped",
         &hog("mem-uncapped", pc::ResourceLimits::default()),
     )

@@ -13,6 +13,9 @@
 //! Run: `cargo test -p awaken-sandbox-container --features docker --test hand_docker`
 #![cfg(feature = "docker")]
 
+#[path = "common/residue.rs"]
+mod residue;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,6 +73,7 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
     let host_sock = rv.join("hand.sock");
     let _ = std::fs::remove_file(&host_sock);
 
+    let _residue = residue::ScopeResidue::arm("hand-rv", residue::docker);
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
     let provider = ContainerProvider::new(Arc::new(runtime), "python:3-slim");
 
