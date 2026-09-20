@@ -2,7 +2,7 @@ use std::path::Path;
 
 use awaken_session_executor::{
     AcpWorkerProfile, ContainerHandResidency, ContainerMcpRelayExposure, ContentCaptureSettings,
-    ContentRedaction, PackageImageBuilder, SandboxSettings, SandboxTier, Wake,
+    ContentRedaction, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, Wake,
 };
 
 use super::file_schema::FileConfig;
@@ -62,7 +62,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             );
         }
     };
-    let sandbox = SandboxSettings {
+    let mut sandbox = SandboxSettings {
         trusted_host_enabled: file.sandbox_trusted_host_enabled.unwrap_or(false),
         trusted_host_scoped_execution: file.sandbox_trusted_host_scoped_execution.unwrap_or(false),
         allow_local_fallback: file.sandbox_allow_local_fallback.unwrap_or(false),
@@ -82,14 +82,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .k8s_namespace
             .clone()
             .unwrap_or_else(|| "default".to_owned()),
-        k8s_image_pull_secrets: file
-            .k8s_image_pull_secrets
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .collect(),
+        k8s_image_pull_secrets: Vec::new(),
         // The operator selects the existing retained-PVC policy. Omission
         // preserves ephemeral roots and cannot advertise retained Session support.
         k8s_continuation_volume: file.k8s_continuation_volume.clone(),
@@ -109,39 +102,27 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .podman_bin
             .clone()
             .unwrap_or_else(|| sandbox_defaults.podman_bin.clone()),
-        package_image_registry: file
-            .package_image_registry
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.trim_end_matches('/').to_owned()),
+        package_image_registry: None,
+        package_registry_auth_file: None,
+        package_registry_insecure: false,
+        package_build_host_network: false,
+        k8s_buildkit_image: sandbox_defaults.k8s_buildkit_image.clone(),
+        package_image_builder: None,
+        package_local_cache_ttl_secs: sandbox_defaults.package_local_cache_ttl_secs,
+        inherit_agent_stderr: false,
+    };
+    SandboxPackageSettingsInput {
+        k8s_image_pull_secrets: file.k8s_image_pull_secrets.clone().unwrap_or_default(),
+        package_image_registry: file.package_image_registry.clone(),
         package_registry_auth_file: file.package_registry_auth_file.clone(),
         package_registry_insecure: file.package_registry_insecure.unwrap_or(false),
         package_build_host_network: file.package_build_host_network.unwrap_or(false),
-        k8s_buildkit_image: file
-            .k8s_buildkit_image
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&sandbox_defaults.k8s_buildkit_image)
-            .to_owned(),
-        package_image_builder: file
-            .package_image_builder
-            .as_deref()
-            .map(|value| match value {
-                "docker" => Ok(PackageImageBuilder::Docker),
-                "podman" => Ok(PackageImageBuilder::Podman),
-                "k8s" => Ok(PackageImageBuilder::Kubernetes),
-                other => Err(format!(
-                    "invalid package_image_builder={other:?}: expected docker, podman or k8s"
-                )),
-            })
-            .transpose()?,
-        package_local_cache_ttl_secs: file
-            .package_local_cache_ttl_secs
-            .unwrap_or(sandbox_defaults.package_local_cache_ttl_secs),
+        k8s_buildkit_image: file.k8s_buildkit_image.clone(),
+        package_image_builder: file.package_image_builder.clone(),
+        package_local_cache_ttl_secs: file.package_local_cache_ttl_secs,
         inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
-    };
+    }
+    .apply(sandbox_tier, &mut sandbox)?;
     if sandbox.container_hand_residency == ContainerHandResidency::Resident
         && sandbox_tier != SandboxTier::K8s
     {
@@ -157,28 +138,6 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
     }
     if let Some(policy) = sandbox.k8s_continuation_volume.as_ref() {
         policy.validate().map_err(|error| error.to_string())?;
-    }
-    if sandbox.package_image_builder.is_some() && sandbox.package_image_registry.is_none() {
-        return Err("package_image_builder requires a non-empty package_image_registry".to_owned());
-    }
-    if sandbox.package_registry_auth_file.is_some() && sandbox.package_image_registry.is_none() {
-        return Err(
-            "package_registry_auth_file requires a non-empty package_image_registry".to_owned(),
-        );
-    }
-    if sandbox.package_registry_insecure && sandbox.package_image_registry.is_none() {
-        return Err("package_registry_insecure requires a non-empty package_image_registry".into());
-    }
-    if sandbox_tier == SandboxTier::K8s
-        && (sandbox.package_image_builder.is_some() ^ sandbox.package_image_registry.is_some())
-    {
-        return Err(
-            "Kubernetes package provisioning requires package_image_builder and package_image_registry together"
-                .to_owned(),
-        );
-    }
-    if sandbox.package_local_cache_ttl_secs == 0 {
-        return Err("package image local cache TTL must be non-zero".to_owned());
     }
     if sandbox.warm_pool_size > 0
         && (sandbox.warm_pool_total_size < sandbox.warm_pool_size

@@ -451,6 +451,95 @@ impl Default for SandboxSettings {
     }
 }
 
+/// File-adapter input for package-image and private-registry sandbox policy.
+/// CLI and standalone Worker keep separate authority schemas, then lower this
+/// shared subset exactly once into [`SandboxSettings`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SandboxPackageSettingsInput {
+    pub k8s_image_pull_secrets: Vec<String>,
+    pub package_image_registry: Option<String>,
+    pub package_registry_auth_file: Option<PathBuf>,
+    pub package_registry_insecure: bool,
+    pub package_build_host_network: bool,
+    pub k8s_buildkit_image: Option<String>,
+    pub package_image_builder: Option<String>,
+    pub package_local_cache_ttl_secs: Option<u64>,
+    pub inherit_agent_stderr: bool,
+}
+
+impl SandboxPackageSettingsInput {
+    pub fn apply(self, tier: SandboxTier, settings: &mut SandboxSettings) -> Result<(), String> {
+        settings.k8s_image_pull_secrets = self
+            .k8s_image_pull_secrets
+            .into_iter()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .collect();
+        settings.package_image_registry = self
+            .package_image_registry
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.trim_end_matches('/').to_owned());
+        settings.package_registry_auth_file = self.package_registry_auth_file;
+        settings.package_registry_insecure = self.package_registry_insecure;
+        settings.package_build_host_network = self.package_build_host_network;
+        if let Some(image) = self
+            .k8s_buildkit_image
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            settings.k8s_buildkit_image = image.to_owned();
+        }
+        settings.package_image_builder = self
+            .package_image_builder
+            .as_deref()
+            .map(|value| match value {
+                "docker" => Ok(PackageImageBuilder::Docker),
+                "podman" => Ok(PackageImageBuilder::Podman),
+                "k8s" => Ok(PackageImageBuilder::Kubernetes),
+                other => Err(format!(
+                    "invalid package_image_builder={other:?}: expected docker, podman or k8s"
+                )),
+            })
+            .transpose()?;
+        settings.package_local_cache_ttl_secs = self
+            .package_local_cache_ttl_secs
+            .unwrap_or(settings.package_local_cache_ttl_secs);
+        settings.inherit_agent_stderr = self.inherit_agent_stderr;
+
+        if settings.package_image_builder.is_some() && settings.package_image_registry.is_none() {
+            return Err("package_image_builder requires a non-empty package_image_registry".into());
+        }
+        if settings.package_registry_auth_file.is_some()
+            && settings.package_image_registry.is_none()
+        {
+            return Err(
+                "package_registry_auth_file requires a non-empty package_image_registry".into(),
+            );
+        }
+        if settings.package_registry_insecure && settings.package_image_registry.is_none() {
+            return Err(
+                "package_registry_insecure requires a non-empty package_image_registry".into(),
+            );
+        }
+        if tier == SandboxTier::K8s
+            && (settings.package_image_builder.is_some()
+                ^ settings.package_image_registry.is_some())
+        {
+            return Err(
+                "Kubernetes package provisioning requires package_image_builder and package_image_registry together"
+                    .into(),
+            );
+        }
+        if settings.package_local_cache_ttl_secs == 0 {
+            return Err("package image local cache TTL must be non-zero".into());
+        }
+        Ok(())
+    }
+}
+
 /// Redactor selected for captured model/tool content.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ContentRedaction {
@@ -985,6 +1074,74 @@ mod tests {
         DeploymentConfig {
             dispatch_owner: "host-1".into(),
             ..DeploymentConfig::ephemeral()
+        }
+    }
+
+    #[test]
+    fn package_sandbox_settings_have_one_cause_effect_table() {
+        // Causes: P1 registry+builder are both present; P2 either one is absent
+        // on K8s; P3 auth/insecure lacks a registry; P4 builder token is unknown;
+        // P5 TTL is zero; P6 pull Secret/registry/build image have surrounding
+        // whitespace. Effects: E1 P1 normalizes and admits; E2 P2-P5 reject;
+        // E3 P6 preserves only non-empty normalized coordinates. CLI and the
+        // standalone Worker call this same owner, so these rules cannot drift.
+        let apply = |input: SandboxPackageSettingsInput, tier| {
+            let mut settings = SandboxSettings::default();
+            let result = input.apply(tier, &mut settings);
+            (result, settings)
+        };
+        let (result, settings) = apply(
+            SandboxPackageSettingsInput {
+                k8s_image_pull_secrets: vec![" registry-auth ".into(), " ".into()],
+                package_image_registry: Some(" registry.example/team/ ".into()),
+                k8s_buildkit_image: Some(" mirror/buildkit:1 ".into()),
+                package_image_builder: Some("k8s".into()),
+                inherit_agent_stderr: true,
+                ..Default::default()
+            },
+            SandboxTier::K8s,
+        );
+        assert!(result.is_ok(), "P1/P6: {result:?}");
+        assert_eq!(settings.k8s_image_pull_secrets, ["registry-auth"]);
+        assert_eq!(
+            settings.package_image_registry.as_deref(),
+            Some("registry.example/team")
+        );
+        assert_eq!(settings.k8s_buildkit_image, "mirror/buildkit:1");
+        assert_eq!(
+            settings.package_image_builder,
+            Some(PackageImageBuilder::Kubernetes)
+        );
+        assert!(settings.inherit_agent_stderr);
+
+        for input in [
+            SandboxPackageSettingsInput {
+                package_image_registry: Some("registry.example/team".into()),
+                ..Default::default()
+            },
+            SandboxPackageSettingsInput {
+                package_image_builder: Some("k8s".into()),
+                ..Default::default()
+            },
+            SandboxPackageSettingsInput {
+                package_registry_auth_file: Some("/secret/config.json".into()),
+                ..Default::default()
+            },
+            SandboxPackageSettingsInput {
+                package_registry_insecure: true,
+                ..Default::default()
+            },
+            SandboxPackageSettingsInput {
+                package_image_builder: Some("unknown".into()),
+                package_image_registry: Some("registry.example/team".into()),
+                ..Default::default()
+            },
+            SandboxPackageSettingsInput {
+                package_local_cache_ttl_secs: Some(0),
+                ..Default::default()
+            },
+        ] {
+            assert!(apply(input, SandboxTier::K8s).0.is_err(), "P2-P5");
         }
     }
 
