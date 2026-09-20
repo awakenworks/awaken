@@ -15,6 +15,26 @@ pub(super) const EVENT_RECOVERY_CONCURRENCY: usize = 16;
 /// the earlier conservative fan-out independently of Event throughput.
 pub(super) const RESOURCE_RECOVERY_CONCURRENCY: usize = 4;
 
+/// New nonterminal Resource generations are on the Session start critical path.
+/// When they exist, admit every one before a single background audit/terminal
+/// cleanup candidate. The one background share preserves deterministic cleanup
+/// progress without letting permanently slow old roots occupy the whole sweep.
+pub(super) fn select_resource_candidates(
+    candidates: &SessionRecoveryCandidates,
+) -> Vec<SessionRecoveryCandidate> {
+    let (mut activations, background): (Vec<_>, Vec<_>) = candidates
+        .sessions
+        .iter()
+        .filter(|candidate| candidate.interests.resources)
+        .cloned()
+        .partition(|candidate| candidate.interests.resource_activation);
+    if activations.is_empty() {
+        return background;
+    }
+    activations.extend(background.into_iter().take(1));
+    activations
+}
+
 /// One bounded scheduler for independent roots in every Session recovery phase.
 /// This is not Worker capacity or a second queue. Each caller still reloads its
 /// root and owns all domain decisions and effects. A phase joins every result

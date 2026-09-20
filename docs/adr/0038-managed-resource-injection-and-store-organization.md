@@ -505,6 +505,27 @@ at each capture stage, exact acknowledgement-loss replay and no stale rebase.
   (`MountRequirement`/`RealizedMount`), `awaken-capability` (`reconcile`).
 - [INVARIANTS.md](../INVARIANTS.md) — G3, G9, G13, G16, G21.
 
+## Amendment — 2026-09-21: startup Resource recovery has bounded priority
+
+The existing durable Session reconciliation index and the single Resource
+recovery sweep remain authoritative. A nonterminal Session whose Resource
+generation is not yet committed is on the startup critical path; periodic
+reference audits and terminal cleanup are background work. When both classes are
+present in one scan, the sweep admits every startup activation in stable order
+plus the first background root. Unselected background roots remain in the same
+durable reconciliation index for a later cycle. When no startup activation is
+present, the existing sweep processes all background candidates as before.
+
+This is a scheduling hint only. Every admitted candidate reloads the Session and
+uses the existing Resource CAS/effect receipts; it grants no execution authority,
+does not create another queue or cursor, and cannot clear terminal Dispatch
+quiescence. One background share per busy cycle preserves cleanup progress while
+preventing several slow historical cleanup roots from occupying all four
+external-effect slots ahead of newly created Sessions. Decision-table and owned
+cancellation tests qualify the executable composition; arbitrary continuous
+arrival, external provider latency and scheduler fairness are not formally
+proved.
+
 ## Amendment — 2026-09-05: configurable provider-relative resource prompt variables
 
 `ResolvedInput` remains the sole resource-binding authority and its existing
