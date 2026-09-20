@@ -94,9 +94,16 @@ async function main() {
 
     // ---- arm 2: the credential-validation probe, valid + invalid -----------
     await withServer('management', Number(process.env.E2E_PORT), async (base) => {
+      // A body `workspace_id` is a claim fenced against the Workspace the edge
+      // resolved; one that names another Workspace is refused 404. Address the
+      // Workspace this installation actually resolved.
+      const context = await fetch(`${base}/v1/config/workspace-context`);
+      assert.equal(context.status, 200, 'workspace context');
+      const ws = (await context.json()).workspace_id;
+      assert.ok(ws, 'the edge resolved a Workspace');
       let r = await req(base, 'POST', '/v1/config/provider-connections', {
         idempotency_key: 'managed-fake-upstream-provider-connection',
-        workspace_id: 'ws',
+        workspace_id: ws,
         provider_id: 'anthropic',
         display_name: 'Anthropic',
         dialect: 'anthropic_messages',
@@ -106,20 +113,20 @@ async function main() {
       });
       assert.equal(r.status, 201);
       r = await req(base, 'POST', `/v1/config/credentials/${r.json.credential.id}/validate`, {
-        workspace_id: 'ws', model_id: 'fake-haiku',
+        workspace_id: ws, model_id: 'fake-haiku',
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.equal(r.json.status, 'valid', `good key probes valid: ${JSON.stringify(r.json)}`);
       pass('probe: good key -> valid (live probe over the fake upstream)');
 
       r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'vault', provider_id: 'anthropic',
+        workspace_id: ws, kind: 'vault', provider_id: 'anthropic',
         env_key: 'ANTHROPIC_API_KEY',
         secret: 'sk-wrong-key', // awaken-allow: secret
       });
       assert.equal(r.status, 201);
       r = await req(base, 'POST', `/v1/config/credentials/${r.json.id}/validate`, {
-        workspace_id: 'ws', model_id: 'fake-haiku',
+        workspace_id: ws, model_id: 'fake-haiku',
       });
       assert.equal(r.status, 200);
       assert.equal(r.json.status, 'invalid', `wrong key probes invalid: ${JSON.stringify(r.json)}`);

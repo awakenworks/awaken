@@ -593,6 +593,12 @@ async fn test_and_save_provider_connection(
     Json(body): Json<SaveProviderConnectionRequest>,
 ) -> Result<(StatusCode, Json<ProviderConnectionView>), Problem> {
     let rid = req_id(&headers);
+    // Fence the claim before anything else reads it: a write that ignored it
+    // would create the connection under the Workspace the edge resolved while
+    // the caller believed it had addressed the one it named.
+    if claims_another_workspace(&body.workspace_id, &workspace_id) {
+        return Err(resource_workspace_problem(&rid));
+    }
     if !capabilities.models.byok_enabled {
         return Err(model_supply_managed(&rid));
     }
@@ -1550,6 +1556,12 @@ async fn post_credential(
     Json(body): Json<EnterCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialSourceView>), Problem> {
     let rid = req_id(&headers);
+    // See `test_and_save_provider_connection`: the claim is fenced before the
+    // request is otherwise read, so a credential is never sealed into a
+    // Workspace the caller did not name.
+    if claims_another_workspace(&body.workspace_id, &workspace_id) {
+        return Err(resource_workspace_problem(&rid));
+    }
     if body.idempotency_key.is_none()
         && !capabilities.models.byok_enabled
         && body.descriptor.is_none()
