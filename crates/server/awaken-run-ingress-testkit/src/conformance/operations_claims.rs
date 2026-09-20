@@ -55,7 +55,7 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
     namespace: &str,
     clock: &dyn ConformanceClock,
 ) where
-    S: DispatchQueue + ?Sized,
+    S: ControlDispatchQueue + ?Sized,
 {
     // Both cases need a row that has actually burned its retry budget, so each
     // one claims, loses the lease, and is recovered by a successor. Only the
@@ -72,19 +72,13 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
         .await
         .expect("enqueue retained run");
     let retained_first = store
-        .claim_run(
-            &retained,
-            "occupied-a",
-            LEASE_MS,
-            1_000,
-            &Default::default(),
-        )
+        .claim_run(&retained, "occupied-a", LEASE_MS, &Default::default())
         .await
         .expect("retained claim")
         .expect("retained run is runnable");
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&retained_first.lease), 1_000, None)
+            .begin_attempt(&RunClaim::from(&retained_first.lease), None)
             .await
             .expect("install retained physical attempt"),
         AttemptAdmission::Applied,
@@ -92,13 +86,7 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
     );
     clock.advance_past(retained_first.lease.expires_ms).await;
     let retained_recovered = store
-        .claim_run(
-            &retained,
-            "occupied-a2",
-            LEASE_MS,
-            retained_first.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim_run(&retained, "occupied-a2", LEASE_MS, &Default::default())
         .await
         .expect("retained recovery")
         .expect("retained run is recoverable");
@@ -130,13 +118,13 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
         .expect("enqueue stuck run");
     store.cancel(&stuck).await.expect("record cancel intent");
     let stuck_first = store
-        .claim_run(&stuck, "occupied-b", LEASE_MS, 5_000, &Default::default())
+        .claim_run(&stuck, "occupied-b", LEASE_MS, &Default::default())
         .await
         .expect("stuck claim")
         .expect("a cancelled row is still claimable");
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&stuck_first.lease), 5_000, None)
+            .begin_attempt(&RunClaim::from(&stuck_first.lease), None)
             .await
             .expect("install stuck physical attempt"),
         AttemptAdmission::Applied,
@@ -144,13 +132,7 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
     );
     clock.advance_past(stuck_first.lease.expires_ms).await;
     let stuck_successor = store
-        .claim_run(
-            &stuck,
-            "occupied-c",
-            LEASE_MS,
-            stuck_first.lease.expires_ms.saturating_add(1),
-            &Default::default(),
-        )
+        .claim_run(&stuck, "occupied-c", LEASE_MS, &Default::default())
         .await
         .expect("successor recovery")
         .expect("the stuck run is recoverable");
@@ -163,7 +145,7 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
     // live (Blocked) or has since expired (Fenced). The invariant under test is
     // that neither ever grants the executor.
     let successor_admission = store
-        .begin_attempt(&RunClaim::from(&stuck_successor.lease), sweep_now, None)
+        .begin_attempt(&RunClaim::from(&stuck_successor.lease), None)
         .await
         .expect("successor admission is decidable");
     assert!(
@@ -181,7 +163,7 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
     // the asymmetry the fix depends on; widening it here would be a regression.
     assert!(
         store
-            .claim_retry_exhausted("occupied-auto", LEASE_MS, sweep_now, 1)
+            .claim_retry_exhausted("occupied-auto", LEASE_MS, sweep_now)
             .await
             .expect("automatic retry exhaustion is decidable")
             .is_none(),
@@ -216,13 +198,7 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
     );
     assert!(
         store
-            .claim_run(
-                &stuck,
-                "occupied-d",
-                LEASE_MS,
-                sweep_now.saturating_add(2),
-                &Default::default(),
-            )
+            .claim_run(&stuck, "occupied-d", LEASE_MS, &Default::default(),)
             .await
             .expect("claiming a dead letter is decidable")
             .is_none(),
