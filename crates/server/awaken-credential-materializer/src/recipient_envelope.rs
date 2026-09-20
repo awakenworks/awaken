@@ -95,7 +95,11 @@ impl RecipientKeyEnvelope {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o077 != 0 {
+            // Kubernetes Secret volumes are owned by root and made readable by
+            // the Pod's exact fsGroup. Accept that read-only group projection,
+            // while still rejecting group mutation/execution and every
+            // permission granted to unrelated users.
+            if metadata.permissions().mode() & 0o037 != 0 {
                 return Err(CredentialMaterialError::Invalid);
             }
         }

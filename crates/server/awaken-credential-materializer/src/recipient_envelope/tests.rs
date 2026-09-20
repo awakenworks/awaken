@@ -330,9 +330,14 @@ async fn key_removal_and_replacement_are_observed_before_use_without_restart() {
 
 /// Configuration partitions: D21 missing/empty/oversized file, invalid JSON,
 /// zero/excessive TTL, no keys, repeated id/holder/key, invalid key size/base64,
-/// blank identity, Platform recipient or public file permissions => startup
-/// rejects. Error formatting must not echo document bytes. These are adapter
-/// configuration partitions rather than combinations of runtime authority.
+/// blank identity, Platform recipient or non-private file permissions =>
+/// startup rejects. Permission cause/effect rules: R1 owner-only 0600 and R2
+/// owner/controlled-group read-only 0640/0440 are private and accepted; R3
+/// group write/execute or any other-user permission is rejected. R2 is the
+/// Kubernetes Secret + fsGroup projection; R3 proves it cannot widen into a
+/// shared mutable/public key file. Error formatting must not echo document
+/// bytes. These are adapter configuration partitions rather than combinations
+/// of runtime authority.
 #[test]
 fn malformed_or_ambiguous_key_documents_fail_closed_without_echoing_secrets() {
     let root = tempfile::tempdir().unwrap();
@@ -376,7 +381,13 @@ fn malformed_or_ambiguous_key_documents_fail_closed_without_echoing_secrets() {
     {
         use std::os::unix::fs::PermissionsExt;
         write(&path, &document());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(RecipientKeyEnvelope::open(&path).is_err());
+        for mode in [0o600, 0o640, 0o440] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(RecipientKeyEnvelope::open(&path).is_ok(), "R1/R2 {mode:o}");
+        }
+        for mode in [0o660, 0o650, 0o644, 0o604] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(RecipientKeyEnvelope::open(&path).is_err(), "R3 {mode:o}");
+        }
     }
 }

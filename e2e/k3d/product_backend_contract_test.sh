@@ -97,9 +97,16 @@ grep -q 'secretName: awaken-worker-upstream-tls' "$RENDERED"
 grep -q 'name: awaken-worker-upstream-ca' "$RENDERED"
 [[ "$(grep -c 'credential_envelope_keys_file = "/etc/awaken-credential-envelope/keys.json"' "$RENDERED")" -eq 2 ]]
 [[ "$(grep -c 'secretName: awaken-worker-credential-envelope' "$RENDERED")" -eq 2 ]]
-[[ "$(grep -c 'defaultMode: 256' "$RENDERED")" -eq 2 ]]
-[[ "$(grep -c 'name: install-credential-envelope' "$RENDERED")" -eq 2 ]]
-[[ "$(grep -c 'chmod 0600 /target/keys.json' "$RENDERED")" -eq 2 ]]
+# Credential projection cause/effect table: C1 exact Secret + C2 pod fsGroup +
+# C3 read-only group mode + C4 no init participant => both processes can read
+# one private key source and the Worker remains bindable. D1 C1..C4 => two
+# direct 0440 projections and zero init/source-copy paths. D2 !C3 or !C4 => the
+# static contract fails before deployment, preventing startup failure or an
+# execution domain that PodProcessObserver must reject.
+[[ "$(grep -c 'defaultMode: 288' "$RENDERED")" -eq 2 ]]
+[[ "$(grep -c 'name: credential-envelope$' "$RENDERED")" -eq 4 ]]
+! grep -q 'credential-envelope-source' "$RENDERED"
+! grep -q 'name: install-credential-envelope' "$RENDERED"
 grep -q -- '- jobs' "$RENDERED"
 grep -q -- '- pods/exec' "$RENDERED"
 grep -q -- '- pods/portforward' "$RENDERED"
