@@ -66,21 +66,22 @@ print(sorted(set(values))[0])
   printf '%s\n' "$digest"
 }
 
-# Render one deployment-owned Kubernetes Sandbox image placeholder with the
-# exact manifest identity admitted and imported by the caller. Runtime rejects
-# mutable control-forwarder images, so a missing or duplicated binding must fail
-# before Kubernetes sees any workload.
+# Render an exact, caller-declared number of deployment-owned Kubernetes
+# Sandbox image placeholders with one admitted immutable identity. Runtime
+# rejects mutable control-forwarder images, so count drift must fail before
+# Kubernetes sees any workload.
 k3d_render_sandbox_image() {
-  local overlay="${1:-}" image="${2:-}" manifest marker_count
+  local overlay="${1:-}" image="${2:-}" expected_count="${3:-1}" manifest marker_count
   [[ -n "$overlay" && "$overlay" != -* ]] || return 2
+  [[ "$expected_count" =~ ^[1-9][0-9]*$ ]] || return 2
   k3d_validate_image_digest "$image" || return 2
   manifest=$(kubectl kustomize "$overlay") || return "$?"
   marker_count=$( { grep -oF '__AWAKEN_SANDBOX_IMAGE__' <<<"$manifest" || true; } | wc -l)
-  [[ "$marker_count" = "1" ]] || {
-    echo "Kubernetes deployment must contain exactly one Sandbox image pin" >&2
+  [[ "$marker_count" = "$expected_count" ]] || {
+    echo "Kubernetes deployment Sandbox image pin count drifted" >&2
     return 2
   }
-  printf '%s\n' "${manifest/__AWAKEN_SANDBOX_IMAGE__/$image}"
+  printf '%s\n' "${manifest//__AWAKEN_SANDBOX_IMAGE__/$image}"
 }
 
 k3d_capacity_preflight() {
@@ -775,11 +776,12 @@ k3d_harness_selftest() (
     document='container_image = "__AWAKEN_SANDBOX_IMAGE__"'
     rendered=$(k3d_render_sandbox_image fixture "$digest")
     [[ "$rendered" = "container_image = \"$digest\"" ]]
-    for document in \
-      'container_image = "tag:latest"' \
-      'first = "__AWAKEN_SANDBOX_IMAGE__" second = "__AWAKEN_SANDBOX_IMAGE__"'; do
+    for document in 'container_image = "tag:latest"'; do
       ! k3d_render_sandbox_image fixture "$digest" >/dev/null 2>&1
     done
+    document='first = "__AWAKEN_SANDBOX_IMAGE__" second = "__AWAKEN_SANDBOX_IMAGE__"'
+    [[ "$(k3d_render_sandbox_image fixture "$digest" 2 | grep -oF "$digest" | wc -l)" = 2 ]]
+    ! k3d_render_sandbox_image fixture "$digest" 1 >/dev/null 2>&1
     document='container_image = "__AWAKEN_SANDBOX_IMAGE__"'
     ! k3d_render_sandbox_image fixture tag:latest >/dev/null 2>&1
     ! k3d_render_sandbox_image --fixture "$digest" >/dev/null 2>&1

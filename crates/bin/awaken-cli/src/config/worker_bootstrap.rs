@@ -18,10 +18,9 @@ impl KubernetesWorkerTransport {
         mode: super::OperatingMode,
         has_signing_trust: bool,
     ) -> Result<(), String> {
-        let owns_coordinator_and_worker =
-            role == Role::AllInOne && mode == super::OperatingMode::Local;
-        let owns_coordinator = role == Role::Coordinator && mode == super::OperatingMode::Server;
-        if !(owns_coordinator || owns_coordinator_and_worker) || has_signing_trust {
+        let owns_coordinator = (role == Role::Coordinator && mode == super::OperatingMode::Server)
+            || (role == Role::AllInOne && mode == super::OperatingMode::Local);
+        if !owns_coordinator || has_signing_trust {
             return Err("worker_kubernetes requires a server-mode Coordinator or local AllInOne and cannot be mixed with worker_trust_credentials_file".into());
         }
         if self.provider_id.trim().is_empty() || self.provider_id.trim() != self.provider_id {
@@ -50,13 +49,9 @@ pub(super) fn validate_file_ownership(
         policy.validate(role, mode, file.worker_trust_credentials_file.is_some())?;
     }
     if file.worker_kubernetes_identity_directory.is_some()
-        && !((role == Role::Worker && mode == super::OperatingMode::Server)
-            || (role == Role::AllInOne && mode == super::OperatingMode::Local))
+        && (role != Role::Worker || mode != super::OperatingMode::Server)
     {
-        return Err(
-            "worker_kubernetes_identity_directory is owned by a server-mode Worker or local AllInOne"
-                .into(),
-        );
+        return Err("worker_kubernetes_identity_directory is owned by a server-mode Worker".into());
     }
     if role == Role::Coordinator && file.credential_envelope_keys_file.is_some() {
         return Err(
@@ -163,47 +158,6 @@ mod tests {
         } else {
             assert!(result.unwrap_err().contains("container-k8s"), "F2");
         }
-        let projection = tempfile::tempdir().unwrap();
-        for (name, value) in [
-            ("namespace", "workers"),
-            ("name", "worker-a"),
-            ("uid", "uid-a"),
-            ("token", "fixture-token"),
-        ] {
-            std::fs::write(projection.path().join(name), value).unwrap();
-        }
-        let all_in_one: FileConfig = toml::from_str(&format!(
-            r#"
-                role = "all-in-one"
-                mode = "local"
-                run_local_pool = true
-                worker_kubernetes_identity_directory = {projection:?}
-                [worker_kubernetes]
-                namespace = "workers"
-                service_account = "executor"
-                audience = "awaken-worker"
-                provider_id = "cluster-a"
-            "#,
-            projection = projection.path().to_str().unwrap()
-        ))
-        .unwrap();
-        let all_in_one = resolve(all_in_one);
-        assert_eq!(
-            all_in_one.is_ok(),
-            cfg!(feature = "container-k8s"),
-            "F1b local AllInOne owns both Pod-bound transport ends: {:?}",
-            all_in_one.as_ref().err()
-        );
-        #[cfg(feature = "container-k8s")]
-        assert_eq!(
-            all_in_one
-                .unwrap()
-                .worker
-                .kubernetes_identity_directory
-                .as_deref(),
-            Some(projection.path()),
-            "F1b"
-        );
         for (role, mode) in [
             ("coordinator", "server"),
             ("control", "server"),
@@ -230,10 +184,12 @@ mod tests {
 
     #[test]
     fn kubernetes_trust_policy_is_role_feature_and_credential_exclusive() {
-        // K1 Coordinator+Server or AllInOne+Local + no signer + compiled
-        // adapter => accepted. K2 every other role/mode/signing-trust
-        // combination => rejected before client discovery; K3 missing build
-        // feature also fails closed. Cross the complete finite space.
+        // K1 Coordinator+Server or coordinator-owning AllInOne+Local, no signer,
+        // compiled adapter => accepted. The AllInOne still cannot own a projected
+        // Worker identity: its restartable API Pod is not an execution domain.
+        // K2 any other role/mode/signing-trust combination => rejected before
+        // client discovery; K3 missing build feature also fails closed. Cross
+        // the complete finite role/mode/credential space, not just happy paths.
         let policy = KubernetesWorkerTransport {
             namespace: "workers".into(),
             service_account: "executor".into(),
