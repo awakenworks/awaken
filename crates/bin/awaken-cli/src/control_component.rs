@@ -51,12 +51,20 @@ pub(super) async fn control_component_for_process(
         .control
         .as_ref()
         .expect("Control process requires Control stores");
-    let assistant_catalog = control.catalog.snapshot().await.unwrap_or_default();
+    // Composition, not a request path: a store that cannot be read here has to
+    // say so. Defaulting these to empty produced a startup panic about the
+    // catalog holding no Anthropic offering, which is a true statement about an
+    // empty catalog and a wrong explanation of a store outage.
+    let assistant_catalog = control
+        .catalog
+        .snapshot()
+        .await
+        .unwrap_or_else(|error| panic!("the Control model catalog cannot be read: {error}"));
     let assistant_credentials = control
         .credentials
         .list(execution_workspace)
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|error| panic!("the Control credential store cannot be read: {error}"));
     let assistant_model_selection = assistant_selection::select(
         &assistant_catalog,
         &assistant_credentials,

@@ -917,32 +917,34 @@ pub trait MemoryRepository: Send + Sync {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr>;
     /// The memory at `path`, or `None`.
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr>;
-    /// Create a memory at `path`. `PathConflict` if it already exists.
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr>;
-    /// The canonical create mutation with optional authenticated attribution.
+    /// The canonical create mutation. `PathConflict` if the path already
+    /// exists. `actor` is the authenticated author, `None` when the caller has
+    /// none to state.
+    ///
+    /// Attribution is part of the operation, not an enhancement of it, so this
+    /// is the method an implementation provides. A decorator that forwarded
+    /// only the unattributed spelling used to strip the author from a backend
+    /// that would have recorded it; requiring this method makes that a compile
+    /// error instead of a silent loss.
     async fn create_as(
         &self,
         store: &str,
         path: &str,
         content: &str,
         actor: Option<&MemoryActor>,
-    ) -> Result<Memory, MemErr> {
-        let _ = actor;
-        self.create(store, path, content).await
+    ) -> Result<Memory, MemErr>;
+    /// Create a memory at `path` with no stated author.
+    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
+        self.create_as(store, path, content, None).await
     }
     /// Atomically compare-and-swap the head of memory `id`, optionally moving it to
     /// `target_path` in the same repository operation. Content, path, displaced-target
     /// deletion, and history either all commit or all roll back. Only the complete
     /// observed generation may apply or report an already-current retry; every stale
     /// identity, version, or digest returns [`MemErr::Conflict`] with the live head.
-    async fn update_head(
-        &self,
-        store: &str,
-        base: &MemoryGeneration,
-        content: &str,
-        target_path: Option<&str>,
-    ) -> Result<Memory, MemErr>;
-    /// The canonical CAS mutation with optional authenticated attribution.
+    /// The canonical CAS mutation, with the authenticated author when the
+    /// caller has one. See [`MemoryRepository::create_as`] for why attribution
+    /// is required rather than defaulted.
     async fn update_head_as(
         &self,
         store: &str,
@@ -950,9 +952,17 @@ pub trait MemoryRepository: Send + Sync {
         content: &str,
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr>;
+    /// The same CAS mutation with no stated author.
+    async fn update_head(
+        &self,
+        store: &str,
+        base: &MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        let _ = actor;
-        self.update_head(store, base, content, target_path).await
+        self.update_head_as(store, base, content, target_path, None)
+            .await
     }
     /// Content-only convenience over [`MemoryRepository::update_head`].
     async fn update(
@@ -987,59 +997,64 @@ pub trait MemoryRepository: Send + Sync {
     /// its version.
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
     /// Delete the memory at `path` (idempotent — deleting an absent path is `Ok`).
-    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr>;
-    /// The canonical path delete with optional authenticated attribution.
+    /// The canonical path delete, with the authenticated author when the
+    /// caller has one. Idempotent: deleting an absent path is `Ok`. See
+    /// [`MemoryRepository::create_as`] for why attribution is required.
     async fn delete_by_path_as(
         &self,
         store: &str,
         path: &str,
         actor: Option<&MemoryActor>,
-    ) -> Result<(), MemErr> {
-        let _ = actor;
-        self.delete_by_path(store, path).await
+    ) -> Result<(), MemErr>;
+    /// The same delete with no stated author.
+    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        self.delete_by_path_as(store, path, None).await
     }
     /// Delete `path` only while it is still the exact head observed by a caller.
     /// Returns `false` when the path is already absent (the requested outcome is
     /// already true). A different id or sha returns [`MemErr::Conflict`] carrying
     /// the live head and never deletes it. This closes the create/delete ABA window
     /// for materialized-copy reconciliation.
-    async fn delete_if_match(
-        &self,
-        store: &str,
-        path: &str,
-        base: &MemoryGeneration,
-    ) -> Result<bool, MemErr>;
-    /// The canonical conditional delete with optional authenticated attribution.
-    /// Implementations that persist version authorship override this method while
-    /// audit-neutral adapters may use the default delegation.
+    /// The canonical conditional delete, with the authenticated author when
+    /// the caller has one. See [`MemoryRepository::create_as`] for why
+    /// attribution is required.
     async fn delete_if_match_as(
         &self,
         store: &str,
         path: &str,
         base: &MemoryGeneration,
         actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr>;
+    /// The same conditional delete with no stated author.
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base: &MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        let _ = actor;
-        self.delete_if_match(store, path, base).await
+        self.delete_if_match_as(store, path, base, None).await
     }
     /// Ordered version history for this store.
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr>;
     /// Redact one historical version's content. Returns `None` when the version
     /// does not belong to this store. Repeated redaction is idempotent.
-    async fn redact_version(
-        &self,
-        store: &str,
-        version_id: &str,
-    ) -> Result<Option<MemoryVersion>, MemErr>;
-    /// The canonical redaction with optional authenticated attribution.
+    /// The canonical redaction, with the authenticated author when the caller
+    /// has one. Returns `None` when the version does not belong to this store;
+    /// repeated redaction is idempotent. See [`MemoryRepository::create_as`]
+    /// for why attribution is required.
     async fn redact_version_as(
         &self,
         store: &str,
         version_id: &str,
         actor: Option<&MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr>;
+    /// The same redaction with no stated author.
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr> {
-        let _ = actor;
-        self.redact_version(store, version_id).await
+        self.redact_version_as(store, version_id, None).await
     }
     /// Physically remove every live head and immutable history row in `store`.
     /// The lifecycle reclaimer calls this only after tombstone, retention,

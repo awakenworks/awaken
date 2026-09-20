@@ -46,12 +46,16 @@ impl DreamSessionSource for FixedSessionFacts {
         Vec::new()
     }
 
-    async fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
-        Some(DreamUsage {
+    async fn session_usage(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+    ) -> Result<Option<DreamUsage>, String> {
+        Ok(Some(DreamUsage {
             input_tokens: 12,
             output_tokens: 3,
             ..Default::default()
-        })
+        }))
     }
 }
 
@@ -68,12 +72,16 @@ impl DreamSessionSource for AlternateSessionFacts {
         Vec::new()
     }
 
-    async fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
-        Some(DreamUsage {
+    async fn session_usage(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+    ) -> Result<Option<DreamUsage>, String> {
+        Ok(Some(DreamUsage {
             input_tokens: 99,
             output_tokens: 8,
             ..Default::default()
-        })
+        }))
     }
 }
 
@@ -1099,11 +1107,11 @@ async fn canceled_dream_keeps_projecting_trailing_session_usage() {
             &self,
             _workspace_id: &str,
             _session_id: &str,
-        ) -> Option<DreamUsage> {
-            Some(DreamUsage {
+        ) -> Result<Option<DreamUsage>, String> {
+            Ok(Some(DreamUsage {
                 input_tokens: self.0.load(std::sync::atomic::Ordering::SeqCst),
                 ..Default::default()
-            })
+            }))
         }
     }
 

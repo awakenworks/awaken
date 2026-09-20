@@ -65,8 +65,18 @@ pub trait DreamSessionSource: Send + Sync {
 
     /// Read the ordinary auxiliary Session's cumulative committed usage. Dream
     /// never persists a second copy of these execution facts.
-    async fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
-        None
+    ///
+    /// Three answers, kept distinct: `Ok(Some)` is the Session's usage,
+    /// `Ok(None)` is "this source has no usage to give for that Session" (it
+    /// belongs to another Workspace, or this source tracks none), and `Err` is
+    /// "the store could not tell me". Collapsing the last into the middle
+    /// reports an unreadable Dream as a free one.
+    async fn session_usage(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+    ) -> Result<Option<DreamUsage>, String> {
+        Ok(None)
     }
 }
 
@@ -477,7 +487,15 @@ impl DreamApplication {
         *self.model_readiness.lock().unwrap() = Some(source);
     }
 
-    async fn project_process(&self, process: &DreamProcess) -> Dream {
+    /// Project one Dream, reading the Session's usage when there is a Session
+    /// to read it from.
+    ///
+    /// A usage read that fails is reported as a failure. Defaulting it renders
+    /// "the Session store could not tell me" as "this Dream consumed nothing",
+    /// and a caller cannot tell a free Dream from an unreadable one. Zero is
+    /// still the answer where there is genuinely nothing to read: a Dream with
+    /// no Session, or no configured Session source.
+    async fn project_process(&self, process: &DreamProcess) -> Result<Dream, DreamApiError> {
         let source = self.session_source.lock().unwrap().clone();
         let usage = match (
             source,
@@ -489,10 +507,16 @@ impl DreamApplication {
             (Some(source), Some(session_id)) => source
                 .session_usage(&process.workspace_id, session_id)
                 .await
+                .map_err(|error| {
+                    DreamApiError::Unavailable(format!(
+                        "Dream {} usage is unreadable: {error}",
+                        process.id
+                    ))
+                })?
                 .unwrap_or_default(),
             _ => DreamUsage::default(),
         };
-        process.project(usage)
+        Ok(process.project(usage))
     }
 
     /// Configure the opt-in automatic Dream policy for one Workspace-owned
@@ -825,7 +849,7 @@ impl DreamApplication {
             }
         }
         let id = job.id.clone();
-        let projected = self.project_process(&job).await;
+        let projected = self.project_process(&job).await?;
         let cancellation = DreamCancellation::default();
         self.cancellations
             .lock()
@@ -1085,7 +1109,7 @@ impl DreamApplication {
         if process.workspace_id != workspace_id {
             return Err(DreamApiError::NotFound);
         }
-        Ok(self.project_process(&process).await)
+        self.project_process(&process).await
     }
 
     pub async fn list(
@@ -1129,7 +1153,7 @@ impl DreamApplication {
             .flatten();
         let mut data = Vec::with_capacity(selected.len());
         for job in selected {
-            data.push(self.project_process(job).await);
+            data.push(self.project_process(job).await?);
         }
         Ok(DreamPage { data, next_page })
     }
@@ -1140,7 +1164,7 @@ impl DreamApplication {
             return Err(DreamApiError::NotFound);
         }
         if current.status == DreamStatus::Canceled && !current.cleanup_pending {
-            return Ok(self.project_process(&current).await);
+            return self.project_process(&current).await;
         }
         if current.status.is_terminal() && current.status != DreamStatus::Canceled {
             return Err(DreamApiError::BadRequest(
@@ -1181,10 +1205,10 @@ impl DreamApplication {
             if observed.cleanup_pending {
                 return Err(DreamApiError::Unavailable(error.message));
             }
-            return Ok(self.project_process(&observed).await);
+            return self.project_process(&observed).await;
         }
         let settled = self.commit_cleanup_receipt(id).await?;
-        Ok(self.project_process(&settled).await)
+        self.project_process(&settled).await
     }
 
     pub async fn archive(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
@@ -1198,13 +1222,13 @@ impl DreamApplication {
             ));
         }
         if current.archived_at.is_some() {
-            return Ok(self.project_process(&current).await);
+            return self.project_process(&current).await;
         }
         let job = self.commit_job_update(id, |job| {
             job.archived_at = Some(now_ms());
             Ok(())
         })?;
-        Ok(self.project_process(&job).await)
+        self.project_process(&job).await
     }
 }
 
@@ -1381,6 +1405,145 @@ mod tests {
             model: DreamModelInput::Id("claude-sonnet-5".into()),
             instructions: None,
             output_behavior: DreamOutputBehavior::CreateNew,
+        }
+    }
+
+    /// Usage-read cause/effect graph: C1 the Session source cannot read a
+    /// Dream's usage; C2 it reads it and there is none to give; C3 there is no
+    /// Session source at all. Effects: E1 the projection fails and says the
+    /// usage is unreadable; E2 the projection succeeds reporting zero usage.
+    /// Decision rules: U1=C1 => E1; U2=C2 => E2; U3=C3 => E2.
+    ///
+    /// U1 is the rule that changed. The read used to default to zero, so an
+    /// unreadable Dream and a Dream that genuinely consumed nothing produced
+    /// the same answer and a caller could not tell a store outage from a free
+    /// Dream.
+    #[tokio::test]
+    async fn an_unreadable_dream_usage_is_reported_not_reported_as_zero() {
+        struct Usage(Result<Option<DreamUsage>, String>);
+        #[async_trait]
+        impl DreamSessionSource for Usage {
+            async fn eligible_sessions(
+                &self,
+                _workspace_id: &str,
+                _updated_after_ms: u64,
+                _limit: usize,
+            ) -> Vec<awaken_session_contract::SessionId> {
+                Vec::new()
+            }
+
+            async fn session_usage(
+                &self,
+                _workspace_id: &str,
+                _session_id: &str,
+            ) -> Result<Option<DreamUsage>, String> {
+                self.0.clone()
+            }
+        }
+
+        let process = DreamProcess {
+            id: "dream_1".into(),
+            workspace_id: "workspace".into(),
+            status: DreamStatus::Completed,
+            source_memory_store_id: "memory-a".into(),
+            output_behavior: DreamOutputBehavior::CreateNew,
+            session_ids: Vec::new(),
+            model: DreamModelConfig {
+                id: "claude-sonnet-5".into(),
+                speed: None,
+            },
+            request_guidance: None,
+            agent_id: "dream".into(),
+            result_memory_store_id: Some("result".into()),
+            session_id: Some(awaken_session_contract::SessionId::from(
+                "session-a".to_string(),
+            )),
+            transcript_file_ids: Vec::new(),
+            cleanup_pending: false,
+            created_at: 0,
+            ended_at: Some(1),
+            archived_at: None,
+            error: None,
+            policy_key: None,
+        };
+        let application = DreamApplication::with_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryDreamProcessStore::default()),
+        )
+        .unwrap();
+
+        application.bind_session_source(Arc::new(Usage(Err("store unavailable".into()))));
+        let failure = application
+            .project_process(&process)
+            .await
+            .expect_err("U1/E1");
+        assert!(
+            matches!(&failure, DreamApiError::Unavailable(message)
+                if message.contains("dream_1") && message.contains("store unavailable")),
+            "U1/E1 the failure names the Dream and the cause, got {failure:?}"
+        );
+
+        let recorded = DreamUsage {
+            input_tokens: 7,
+            ..Default::default()
+        };
+        application.bind_session_source(Arc::new(Usage(Ok(Some(recorded.clone())))));
+        assert_eq!(
+            application
+                .project_process(&process)
+                .await
+                .expect("U2")
+                .usage,
+            recorded,
+            "U2/E2 a readable usage is reported as itself"
+        );
+
+        application.bind_session_source(Arc::new(Usage(Ok(Some(DreamUsage::default())))));
+        assert_eq!(
+            application
+                .project_process(&process)
+                .await
+                .expect("U2")
+                .usage,
+            DreamUsage::default(),
+            "U2/E2 a Dream that consumed nothing still reports zero"
+        );
+
+        let without_source = DreamApplication::with_store(
+            Arc::new(NoopExecutor),
+            Arc::new(InMemoryDreamProcessStore::default()),
+        )
+        .unwrap();
+        assert_eq!(
+            without_source
+                .project_process(&process)
+                .await
+                .expect("U3")
+                .usage,
+            DreamUsage::default(),
+            "U3/E2 no Session source is not a failure"
+        );
+    }
+
+    struct NoopExecutor;
+
+    #[async_trait]
+    impl DreamExecutor for NoopExecutor {
+        async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
+            Ok(())
+        }
+
+        async fn prepare(&self, _request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
+            unreachable!("projection test runs no Dream")
+        }
+
+        async fn execute(
+            &self,
+            _request: &DreamRequest,
+            _preparation: &DreamPreparation,
+            _cancellation: DreamCancellation,
+        ) -> Result<(), DreamFailure> {
+            unreachable!("projection test runs no Dream")
         }
     }
 

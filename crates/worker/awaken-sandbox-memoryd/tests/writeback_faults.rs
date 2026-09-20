@@ -389,27 +389,45 @@ impl MemoryRepository for FaultRepository {
     async fn get_by_path(&self, s: &str, p: &str) -> Result<Option<Memory>, MemErr> {
         self.inner.get_by_path(s, p).await
     }
-    async fn create(&self, s: &str, p: &str, c: &str) -> Result<Memory, MemErr> {
-        let (inner, s, p, c) = (self.inner.clone(), s.to_owned(), p.to_owned(), c.to_owned());
-        self.mutate(async move { inner.create(&s, &p, &c).await })
+    async fn create_as(
+        &self,
+        s: &str,
+        p: &str,
+        c: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        let (inner, s, p, c, actor) = (
+            self.inner.clone(),
+            s.to_owned(),
+            p.to_owned(),
+            c.to_owned(),
+            actor.cloned(),
+        );
+        self.mutate(async move { inner.create_as(&s, &p, &c, actor.as_ref()).await })
             .await
     }
-    async fn update_head(
+    async fn update_head_as(
         &self,
         s: &str,
         base: &awaken_resource_contract::MemoryGeneration,
         c: &str,
         target: Option<&str>,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
     ) -> Result<Memory, MemErr> {
-        let (inner, s, base, c, target) = (
+        let (inner, s, base, c, target, actor) = (
             self.inner.clone(),
             s.to_owned(),
             base.clone(),
             c.to_owned(),
             target.map(str::to_owned),
+            actor.cloned(),
         );
-        self.mutate(async move { inner.update_head(&s, &base, &c, target.as_deref()).await })
-            .await
+        self.mutate(async move {
+            inner
+                .update_head_as(&s, &base, &c, target.as_deref(), actor.as_ref())
+                .await
+        })
+        .await
     }
     async fn update_materialized(
         &self,
@@ -431,24 +449,45 @@ impl MemoryRepository for FaultRepository {
     async fn rename(&self, s: &str, a: &str, b: &str) -> Result<Memory, MemErr> {
         self.inner.rename(s, a, b).await
     }
-    async fn delete_by_path(&self, s: &str, p: &str) -> Result<(), MemErr> {
-        self.inner.delete_by_path(s, p).await
+    async fn delete_by_path_as(
+        &self,
+        s: &str,
+        p: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<(), MemErr> {
+        self.inner.delete_by_path_as(s, p, actor).await
     }
-    async fn delete_if_match(
+    async fn delete_if_match_as(
         &self,
         s: &str,
         p: &str,
         base: &awaken_resource_contract::MemoryGeneration,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
     ) -> Result<bool, MemErr> {
-        let (inner, s, p, base) = (self.inner.clone(), s.to_owned(), p.to_owned(), base.clone());
-        self.mutate(async move { inner.delete_if_match(&s, &p, &base).await })
-            .await
+        let (inner, s, p, base, actor) = (
+            self.inner.clone(),
+            s.to_owned(),
+            p.to_owned(),
+            base.clone(),
+            actor.cloned(),
+        );
+        self.mutate(async move {
+            inner
+                .delete_if_match_as(&s, &p, &base, actor.as_ref())
+                .await
+        })
+        .await
     }
     async fn list_versions(&self, s: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         self.inner.list_versions(s).await
     }
-    async fn redact_version(&self, s: &str, id: &str) -> Result<Option<MemoryVersion>, MemErr> {
-        self.inner.redact_version(s, id).await
+    async fn redact_version_as(
+        &self,
+        s: &str,
+        id: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        self.inner.redact_version_as(s, id, actor).await
     }
     async fn purge_store(&self, s: &str) -> Result<MemoryPurgeSummary, MemErr> {
         self.inner.purge_store(s).await
