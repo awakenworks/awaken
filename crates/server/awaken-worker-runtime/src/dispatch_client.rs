@@ -227,10 +227,10 @@ impl HttpDispatchQueue {
                 }
             };
             if response.status().is_server_error() {
-                last_retryable_error = Some(format!(
-                    "idempotent dispatch transport server returned {}",
-                    response.status()
-                ));
+                // Reuse the one bounded response decoder. Retrying must not
+                // erase the Coordinator's precise failure evidence and leave
+                // operators with only an unhelpful status code.
+                last_retryable_error = Some(dispatch_response_error(response).await.to_string());
                 if attempt < IDEMPOTENT_TRANSPORT_ATTEMPTS {
                     tokio::time::sleep(IDEMPOTENT_TRANSPORT_RETRY_DELAY).await;
                     continue;
