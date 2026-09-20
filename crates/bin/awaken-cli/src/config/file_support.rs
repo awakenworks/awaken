@@ -133,7 +133,7 @@ pub(super) fn select_store_url(
 pub(super) fn resolve_dispatch_backend(
     database_url: Option<&String>,
     role: Role,
-    run_local_pool: bool,
+    _run_local_pool: bool,
 ) -> Result<DispatchBackend, String> {
     if database_url.is_some_and(|url| !is_postgres_url(url)) {
         return Err("runtime_database_url must be postgres://".to_owned());
@@ -145,9 +145,6 @@ pub(super) fn resolve_dispatch_backend(
     };
     if role == Role::Coordinator && backend != DispatchBackend::Postgres {
         return Err("Coordinator requires runtime_database_url".to_owned());
-    }
-    if role == Role::AllInOne && !run_local_pool && backend != DispatchBackend::Postgres {
-        return Err("run_local_pool=false requires runtime_database_url".to_owned());
     }
     Ok(backend)
 }

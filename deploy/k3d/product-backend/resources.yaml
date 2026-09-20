@@ -54,10 +54,6 @@ data:
     k8s_continuation_volume = { storage_class_name = "local-path", size = "1Gi" }
     container_image = "__AWAKEN_SANDBOX_IMAGE__"
     sandbox_dir = "/var/lib/awaken-worker/sandboxes"
-    package_image_registry = "k3d-awaken-registry.localhost:5000/environments"
-    package_image_builder = "k8s"
-    package_registry_insecure = true
-    k8s_buildkit_image = "k3d-awaken-registry.localhost:5000/system/buildkit:v0.30.0-rootless"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -73,6 +69,9 @@ data:
       access_log /dev/stdout;
       client_body_temp_path /tmp/client_temp;
       proxy_temp_path /tmp/proxy_temp;
+      fastcgi_temp_path /tmp/fastcgi_temp;
+      uwsgi_temp_path /tmp/uwsgi_temp;
+      scgi_temp_path /tmp/scgi_temp;
       server {
         listen 8443 ssl;
         ssl_certificate /etc/awaken-worker-tls/tls.crt;
