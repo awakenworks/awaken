@@ -30,7 +30,7 @@ impl SessionMcpAttachmentSet {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        generations.sort_by_key(crate::stable_fingerprint);
+        generations.sort_by_key(awaken_agent_contract::stable_fingerprint);
         if generations.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(McpAttachmentError::QuiescenceSetMismatch);
         }
@@ -50,7 +50,7 @@ impl SessionMcpAttachmentSet {
     ) -> Result<usize, McpAttachmentError> {
         let expected = self.active_generation_refs(session_id)?;
         let mut asserted = quiesced.to_vec();
-        asserted.sort_by_key(crate::stable_fingerprint);
+        asserted.sort_by_key(awaken_agent_contract::stable_fingerprint);
         if asserted.windows(2).any(|pair| pair[0] == pair[1]) || asserted != expected {
             return Err(McpAttachmentError::QuiescenceSetMismatch);
         }

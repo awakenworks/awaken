@@ -3,7 +3,7 @@
 //! through the `DispatchQueue` trait, exactly as the pool would. Its own test binary
 //! (installs a one-shot injected dispatch store).
 
-use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_dispatch_contract::{ClaimedCheckpointTransport as _, ControlDispatchQueue};
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};

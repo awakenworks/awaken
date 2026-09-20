@@ -17,9 +17,8 @@ async fn publish_mcp_projection(
     mcp: &dyn McpAttachmentRealizer,
     generation: &McpGenerationRef,
 ) -> Result<(), RunError> {
-    let receipt = mcp
-        .publish_mcp_generation_receipt(generation.clone())
-        .await?;
+    let receipt =
+        awaken_session_contract::publish_mcp_generation_receipt(mcp, generation.clone()).await?;
     receipt
         .verify(generation, McpProjectionEffectKind::Publish)
         .map_err(|_| {
@@ -34,7 +33,8 @@ async fn drain_mcp_projection(
     mcp: &dyn McpAttachmentRealizer,
     generation: &McpGenerationRef,
 ) -> Result<(), RunError> {
-    let receipt = mcp.drain_mcp_generation_receipt(generation.clone()).await?;
+    let receipt =
+        awaken_session_contract::drain_mcp_generation_receipt(mcp, generation.clone()).await?;
     receipt
         .verify(generation, McpProjectionEffectKind::Drain)
         .map_err(|_| {

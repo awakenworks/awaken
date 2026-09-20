@@ -624,7 +624,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_dispatch_contract::ClaimedSessionControl for RenewalDuringStageControl {
+    impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RenewalDuringStageControl {
         async fn resume_frozen(
             &self,
             _claim: &awaken_dispatch::RunClaim,
@@ -789,6 +789,16 @@ mod tests {
             _command: awaken_session_contract::FailSessionRealization,
         ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
             Ok(())
+        }
+
+        async fn renew_session_realization(
+            &self,
+            _command: awaken_session_contract::RenewSessionRealization,
+        ) -> Result<
+            awaken_session_contract::SessionRealizationLeaseReceipt,
+            awaken_session_contract::SessionRealizationControlFailure,
+        > {
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
         }
     }
 
@@ -1193,7 +1203,8 @@ mod tests {
             ..Default::default()
         });
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_session_control(control.clone()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_session_realization_control(control.clone()),
         );
         let _managed = crate::ManagedHost::new(host.clone())
             .with_mcp_attachment_realizer(realizer.clone())
@@ -1300,7 +1311,8 @@ mod tests {
         });
         let realizer = Arc::new(RecordingMcpRealizer::default());
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_session_control(control.clone()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_session_realization_control(control.clone()),
         );
         let _managed = crate::ManagedHost::new(host.clone())
             .with_mcp_attachment_realizer(realizer.clone())
@@ -1343,7 +1355,8 @@ mod tests {
         });
         let realizer = Arc::new(RecordingMcpRealizer::default());
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_session_control(control.clone()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_session_realization_control(control.clone()),
         );
         let _managed = crate::ManagedHost::new(host.clone())
             .with_mcp_attachment_realizer(realizer.clone())

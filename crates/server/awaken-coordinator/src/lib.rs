@@ -1424,7 +1424,8 @@ fn mount_with_managed_over_and_models(
             worker_authenticator.clone(),
             worker_directory.clone(),
         )
-        .with_session_control(session_application.clone()),
+        .with_materialization_control(session_application.clone())
+        .with_terminal_memory_control(session_application.clone()),
     ));
     let repository_service = awaken_resource_worker_http::WorkerRepositoryBindingService::new(
         resource_registry,

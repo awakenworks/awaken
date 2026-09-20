@@ -2393,6 +2393,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-session-budget-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-session-types",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "awaken-session-contract"
 version = "1.0.0"
 dependencies = [
@@ -2404,6 +2414,12 @@ dependencies = [
  "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-runtime-contract",
+ "awaken-session-budget-contract",
+ "awaken-session-dream-contract",
+ "awaken-session-event-contract",
+ "awaken-session-mcp-contract",
+ "awaken-session-types",
+ "awaken-session-work-contract",
  "http",
  "proptest",
  "schemars 1.2.1",
@@ -2411,6 +2427,28 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "awaken-session-dream-contract"
+version = "1.0.0"
+dependencies = [
+ "awaken-session-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "awaken-session-event-contract"
+version = "1.0.0"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-reliability-testkit",
+ "awaken-session-types",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -2485,6 +2523,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-session-mcp-contract"
+version = "1.0.0"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-resource-contract",
+ "awaken-session-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "awaken-session-store"
 version = "1.0.0"
 dependencies = [
@@ -2509,6 +2560,26 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "awaken-session-types"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "awaken-session-work-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-session-types",
+ "serde",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

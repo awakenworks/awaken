@@ -961,7 +961,7 @@ impl crate::SharedHost {
     /// assignment before this recovery drive observed it.
     pub(crate) async fn reconcile_terminal_cleanup_for_lease(
         &self,
-        control: &dyn awaken_session_contract::SessionRealizationControl,
+        control: &dyn awaken_session_contract::SessionTerminalCleanupControl,
         session_id: &awaken_session_contract::SessionId,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<bool, crate::HostError> {
@@ -1024,9 +1024,9 @@ impl crate::SharedHost {
     ) -> Result<usize, crate::HostError> {
         const MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP: usize = 64;
 
-        let control = self.session_control.as_ref().ok_or_else(|| {
+        let control = self.terminal_cleanup_control.as_ref().ok_or_else(|| {
             crate::HostError::internal(
-                "active Worker Session projection has no Control renewal client",
+                "active Worker Session projection has no terminal cleanup Control client",
             )
         })?;
         let mut recovered = 0;

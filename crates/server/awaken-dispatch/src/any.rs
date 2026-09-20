@@ -1,7 +1,7 @@
 //! A runtime-selectable dispatch backend: one type that carries either the SQLite
 //! or the Postgres store, chosen at assembly time (single-machine vs a multi-node
 //! fleet sharing one Postgres queue, ADR-0019). It holds the active backend as an
-//! `Arc<dyn Dispatch>` and re-implements the `DispatchQueue`/`Inbox`/`Outbox`
+//! `Arc<dyn Dispatch>` plus exact optional durable roles
 //! bundle by delegating through that trait object, so
 //! `DispatchWorker<AnyDispatchStore>` and `DispatchService<AnyDispatchStore>`
 //! carry either backend behind one concrete, non-generic type — the host holds a
@@ -20,14 +20,13 @@ use crate::{PlacementPolicy, WorkerSnapshot};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
     CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt,
     Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary,
-    Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
+    DurableDispatch, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
     SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
     SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
@@ -43,6 +42,7 @@ use awaken_dispatch_contract::RunDispatch;
 /// was selected and forwards every call to it.
 pub struct AnyDispatchStore {
     inner: Arc<dyn Dispatch>,
+    continuation: Option<Arc<dyn awaken_dispatch_contract::SessionContinuationOutbox>>,
     operational: Option<Arc<dyn DispatchOperationalFeed>>,
     stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
 }
@@ -233,10 +233,11 @@ impl AnyDispatchStore {
     }
 
     #[cfg(feature = "durable")]
-    fn from_store(store: impl Dispatch + DispatchOperationalFeed + 'static) -> Self {
+    fn from_store(store: impl DurableDispatch + DispatchOperationalFeed + 'static) -> Self {
         let store = Arc::new(store);
         Self {
             inner: store.clone(),
+            continuation: Some(store.clone()),
             operational: Some(store),
             stream_checkpoint: None,
         }
@@ -248,12 +249,13 @@ impl AnyDispatchStore {
         let store = Arc::new(store);
         Self {
             inner: store.clone(),
+            continuation: Some(store.clone()),
             operational: Some(store),
             stream_checkpoint: Some(stream_checkpoint),
         }
     }
 
-    /// Wrap an already-built [`Dispatch`] implementation behind this concrete type.
+    /// Wrap a Worker-side or otherwise non-continuation [`Dispatch`].
     /// The neutral seam for a composition root that assembles its own backend — e.g.
     /// a horizontal-scaling shard fan-out (`ShardedDispatchQueue`) that composes N
     /// per-shard stores. The composition injects this value into its host explicitly;
@@ -261,6 +263,18 @@ impl AnyDispatchStore {
     pub fn from_dispatch(inner: Arc<dyn Dispatch>) -> Self {
         Self {
             inner,
+            continuation: None,
+            operational: None,
+            stream_checkpoint: None,
+        }
+    }
+
+    /// Wrap an already-built durable composition and retain its exact Session
+    /// continuation role alongside the base dispatch surface.
+    pub fn from_durable_dispatch(inner: Arc<dyn DurableDispatch>) -> Self {
+        Self {
+            inner: inner.clone(),
+            continuation: Some(inner),
             operational: None,
             stream_checkpoint: None,
         }
@@ -324,39 +338,6 @@ impl DispatchQueue for AnyDispatchStore {
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         delegate!(self, lock_commit_epoch(claim))
-    }
-
-    async fn load_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
-        delegate!(self, load_stream_checkpoint(claim))
-    }
-
-    async fn put_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-        checkpoint: StreamCheckpoint,
-    ) -> Result<SettleOutcome, DispatchError> {
-        delegate!(self, put_stream_checkpoint(claim, checkpoint))
-    }
-
-    async fn delete_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<SettleOutcome, DispatchError> {
-        delegate!(self, delete_stream_checkpoint(claim))
-    }
-
-    async fn load_recovery_snapshot(
-        &self,
-        claim: &RunClaim,
-        session_work_authority: Option<
-            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
-        >,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
-    {
-        delegate!(self, load_recovery_snapshot(claim, session_work_authority))
     }
 
     async fn enqueue_with(
@@ -717,6 +698,13 @@ impl Outbox for AnyDispatchStore {
         delegate!(self, stage(input))
     }
 
+    async fn relay(&self) -> Result<usize, DispatchError> {
+        delegate!(self, relay())
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::SessionContinuationOutbox for AnyDispatchStore {
     async fn stage_session_resume(
         &self,
         input: PendingInput,
@@ -724,19 +712,20 @@ impl Outbox for AnyDispatchStore {
         prior_session_activity_epoch: Option<u64>,
         session_activity_epoch: Option<u64>,
     ) -> Result<bool, DispatchError> {
-        delegate!(
-            self,
-            stage_session_resume(
+        self.continuation
+            .as_ref()
+            .ok_or_else(|| {
+                DispatchError::Rejected(
+                    "Dispatch composition has no Session continuation Outbox".into(),
+                )
+            })?
+            .stage_session_resume(
                 input,
                 session_thread_id,
                 prior_session_activity_epoch,
-                session_activity_epoch
+                session_activity_epoch,
             )
-        )
-    }
-
-    async fn relay(&self) -> Result<usize, DispatchError> {
-        delegate!(self, relay())
+            .await
     }
 
     async fn relay_and_enqueue(
@@ -745,6 +734,36 @@ impl Outbox for AnyDispatchStore {
         request: RunDispatch,
         admission: ContinuationAdmission,
     ) -> Result<(), DispatchError> {
-        delegate!(self, relay_and_enqueue(input, request, admission))
+        self.continuation
+            .as_ref()
+            .ok_or_else(|| {
+                DispatchError::Rejected(
+                    "Dispatch composition has no Session continuation Outbox".into(),
+                )
+            })?
+            .relay_and_enqueue(input, request, admission)
+            .await
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn erased_dispatch_retains_only_the_roles_selected_by_composition() {
+        // Cause/effect table. C1 a Worker/topology supplies only `Dispatch`;
+        // C2 a Coordinator supplies `DurableDispatch`. E1 C1 exposes no atomic
+        // Session continuation role; E2 C2 retains that exact role. This is a
+        // construction-time partition: neither branch probes an operation and
+        // catches an "unsupported" failure to infer topology.
+        let backend = Arc::new(crate::MemoryDispatchStore::new(Arc::new(
+            crate::SystemClock,
+        )));
+        let worker = AnyDispatchStore::from_dispatch(backend.clone());
+        let coordinator = AnyDispatchStore::from_durable_dispatch(backend);
+
+        assert!(worker.continuation.is_none(), "C1/E1");
+        assert!(coordinator.continuation.is_some(), "C2/E2");
     }
 }

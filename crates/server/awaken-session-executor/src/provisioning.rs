@@ -1264,17 +1264,17 @@ impl ArtifactHarvester {
             .publisher
             .capture(&workspace, thread, fence.as_ref())
             .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
         if let Some(capture) = &current_capture {
             capture
                 .verify_scope(&workspace, thread)
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
         }
         let expected_revision = current_capture.map_or(0, |capture| capture.revision);
         let artifacts = env
             .capture_artifacts()
             .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
         let idempotency_scope = terminal_effect.map(|effect| effect.operation_id().to_string());
         let mut receipts = Vec::new();
         for captured in artifacts {
@@ -1282,10 +1282,9 @@ impl ArtifactHarvester {
             let bytes = captured.bytes;
             let content_id = awaken_resource_contract::content_id(&bytes);
             if content_id != artifact.content_hash || content_id != artifact.id {
-                return Err(ResourcePurgeError::Storage(format!(
-                    "artifact `{}` changed during harvest",
-                    artifact.path
-                )));
+                return Err(ResourcePurgeError::Storage(
+                    format!("artifact `{}` changed during harvest", artifact.path).into(),
+                ));
             }
             let logical_path = pc::WorkspaceLayout::outputs_relative(&artifact.path)
                 .or_else(|| artifact.path.strip_prefix("/outputs/"))
@@ -1310,15 +1309,15 @@ impl ArtifactHarvester {
             };
             publication
                 .verify()
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
             let receipt = self
                 .publisher
                 .publish(publication.clone())
                 .await
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
             receipt
                 .verify(&publication)
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
             receipts.push(receipt);
         }
         let replacement = awaken_resource_contract::ReplaceArtifactCapture {
@@ -1334,10 +1333,10 @@ impl ArtifactHarvester {
             .publisher
             .replace_capture(replacement.clone(), fence.as_ref())
             .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
         replacement
             .verify_outcome(&outcome)
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
         if outcome == awaken_resource_contract::ReplaceArtifactCaptureOutcome::Conflict {
             return Err(ResourcePurgeError::RevisionConflict(
                 "output capture changed; a fresh harvest is required".into(),
@@ -1362,7 +1361,7 @@ impl ArtifactHarvester {
             .publisher
             .recover(recovery)
             .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
         Ok(HarvestedArtifacts { receipts })
     }
 }

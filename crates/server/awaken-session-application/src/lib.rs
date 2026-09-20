@@ -12,9 +12,9 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationErr
 #[cfg(test)]
 use awaken_session_contract::SessionExecutionState;
 use awaken_session_contract::{
-    LifecycleFactNotifier, McpAttachmentRealizer, McpTarget, PersistedSession, RunError,
-    SandboxProvisioning, SessionEnvironmentBindingSink, SessionRecoveryQuarantine,
-    SessionRepository, SessionRuntime, SessionRuntimePlacement, SessionScan,
+    CompleteSessionRuntime, LifecycleFactNotifier, McpAttachmentRealizer, McpTarget,
+    PersistedSession, RunError, SandboxProvisioning, SessionEnvironmentBindingSink,
+    SessionRecoveryQuarantine, SessionRepository, SessionRuntimePlacement, SessionScan,
 };
 
 /// Drain the repository's one typed keyset index before any reconciler starts

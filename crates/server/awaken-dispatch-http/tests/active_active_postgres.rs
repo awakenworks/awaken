@@ -28,6 +28,7 @@ use awaken_dispatch::{
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
     WorkerRegistration, WorkerSnapshot, WorkerState,
 };
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_dispatch_http::{
     WorkerDispatchService, dispatch_transport_router_with_service,
     registered_worker_transport_router_with_services,

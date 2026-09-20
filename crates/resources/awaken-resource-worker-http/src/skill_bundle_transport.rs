@@ -55,7 +55,8 @@ pub struct WorkerSkillBundleService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
-    session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
+    materialization_control:
+        Option<Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>>,
 }
 
 impl WorkerSkillBundleService {
@@ -70,7 +71,7 @@ impl WorkerSkillBundleService {
             dispatch,
             authenticator,
             directory: None,
-            session_control: None,
+            materialization_control: None,
         }
     }
 
@@ -85,9 +86,9 @@ impl WorkerSkillBundleService {
     #[must_use]
     pub fn with_session_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+        control: Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>,
     ) -> Self {
-        self.session_control = Some(control);
+        self.materialization_control = Some(control);
         self
     }
 }
@@ -152,7 +153,7 @@ async fn read_skill_bundle(
             let (Some(identity), Some(directory), Some(control)) = (
                 request.identity.as_ref(),
                 service.directory.as_deref(),
-                service.session_control.as_deref(),
+                service.materialization_control.as_deref(),
             ) else {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             };

@@ -46,7 +46,7 @@ impl ReplaceArtifactCapture {
         };
         let actual = self
             .decide(Some(capture))
-            .map_err(|error| FileCatalogError::Storage(error.to_string()))?;
+            .map_err(|error| FileCatalogError::Storage(error.to_string().into()))?;
         if actual != ReplaceArtifactCaptureOutcome::Replayed(capture.clone()) {
             return Err(FileCatalogError::Storage(
                 "noncanonical output capture receipt".into(),

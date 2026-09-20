@@ -245,7 +245,7 @@ pub(crate) fn decode_intent(data: &str) -> Result<ResourcePurgeIntent, ResourceP
 }
 
 pub(crate) fn storage(error: impl ToString) -> ResourcePurgeError {
-    ResourcePurgeError::Storage(error.to_string())
+    ResourcePurgeError::Storage(error.to_string().into())
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]

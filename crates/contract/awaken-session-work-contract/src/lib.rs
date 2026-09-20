@@ -10,11 +10,12 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
+use awaken_session_types::{SessionContractErrorDetail, SessionId};
 // The UTC calendar codec is owned by the wall-clock port, so a Work receipt and
 // an Environment record spell the same reading identically.
 #[cfg(kani)]
 use awaken_agent_contract::clock::utc::bounded_rfc3339_nanos;
-pub(crate) use awaken_agent_contract::clock::utc::{
+pub use awaken_agent_contract::clock::utc::{
     MAX_RFC3339_NANOS, format_rfc3339_utc_nanos, parse_rfc3339_utc_nanos,
 };
 #[cfg(test)]
@@ -266,7 +267,7 @@ pub struct ClaimedWork {
 pub struct WorkSessionAccess {
     pub work_id: String,
     pub environment_id: String,
-    pub session_id: crate::SessionId,
+    pub session_id: SessionId,
     pub lease_owner: String,
     pub lease_epoch: u64,
     pub expires_at_unix_ms: u64,
@@ -280,7 +281,7 @@ pub struct WorkSessionAccess {
 pub struct SessionWorkLease {
     pub work_id: String,
     pub environment_id: String,
-    pub session_id: crate::SessionId,
+    pub session_id: SessionId,
     /// Exact authenticated execution owner. For a registered Worker this is
     /// its incarnation-qualified lease owner, not the reusable display id.
     pub owner: String,
@@ -298,7 +299,7 @@ pub struct SessionWorkLease {
 /// Thread truth or admitting a Session effect.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionWorkAuthorityReceipt {
-    session_id: crate::SessionId,
+    session_id: SessionId,
     worker_owner: String,
     authority: SessionWorkAuthorityCoordinate,
 }
@@ -354,14 +355,14 @@ impl SessionWorkAuthorityReceipt {
             SessionWorkOwnership::Leased(_) => return None,
         };
         Some(Self {
-            session_id: crate::SessionId::from(session_id),
+            session_id: SessionId::from(session_id),
             worker_owner: worker_owner.to_string(),
             authority,
         })
     }
 
     #[must_use]
-    pub fn session_id(&self) -> &crate::SessionId {
+    pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 
@@ -398,27 +399,29 @@ impl SessionWorkAuthorityReceipt {
         }
     }
 
-    /// Bind this Work observation to the realized Session directive without
-    /// copying either authority. A leased receipt must name the directive's
-    /// self-hosted Environment and exact runtime incarnation; a NotRequired
-    /// receipt is valid only for a non-self-hosted projection.
+    /// Compare the receipt with the immutable realization facts projected by
+    /// the Session facade, without depending back on its directive type.
     #[must_use]
     pub fn binds_realization(
         &self,
         session_id: &str,
-        directive: &crate::SessionRealizationDirective,
+        runtime_incarnation: &str,
+        environment_self_hosted: bool,
+        environment_id: &str,
     ) -> bool {
-        let environment = &directive.projection.baseline.environment;
         let (scope_matches, environment_matches) = match &self.authority {
-            SessionWorkAuthorityCoordinate::NotRequired => (!environment.self_hosted, true),
-            SessionWorkAuthorityCoordinate::Leased { environment_id, .. } => (
-                environment.self_hosted,
-                environment_id == &environment.environment_id,
+            SessionWorkAuthorityCoordinate::NotRequired => (!environment_self_hosted, true),
+            SessionWorkAuthorityCoordinate::Leased {
+                environment_id: leased_environment,
+                ..
+            } => (
+                environment_self_hosted,
+                leased_environment == environment_id,
             ),
         };
         exact_session_work_coordinate(
             self.session_id == session_id,
-            self.worker_owner == directive.authority.lease.runtime_incarnation,
+            self.worker_owner == runtime_incarnation,
             scope_matches,
             true,
             environment_matches,
@@ -433,7 +436,7 @@ impl SessionWorkAuthorityReceipt {
 /// until [`SessionWorkAuthorityReceipt::matches_observation`] succeeds.
 pub async fn acquire_session_work_receipt(
     authority: &dyn SessionWorkLeaseAuthority,
-    session_id: &crate::SessionId,
+    session_id: &SessionId,
     worker_owner: &str,
     now_ms: u64,
     acquisition: SessionWorkAcquisition,
@@ -465,7 +468,7 @@ fn proof_representative_lease(
     SessionWorkLease {
         work_id: if work { "k" } else { "K" }.to_string(),
         environment_id: if environment { "e" } else { "E" }.to_string(),
-        session_id: crate::SessionId::from(if session { "s" } else { "S" }),
+        session_id: SessionId::from(if session { "s" } else { "S" }),
         owner: if owner { "w" } else { "W" }.to_string(),
         epoch: u64::from(epoch),
         expires_at_unix_ms: if expiry { 10 } else { 20 },
@@ -642,7 +645,7 @@ pub trait SessionWorkLeaseAuthority: Send + Sync {
 
     async fn acquire_session_work(
         &self,
-        session_id: &crate::SessionId,
+        session_id: &SessionId,
         worker_owner: &str,
         now_ms: u64,
         acquisition: SessionWorkAcquisition,
@@ -802,7 +805,7 @@ pub struct QueueStats {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkQueueError {
     #[error("work queue storage failure: {0}")]
-    Storage(String),
+    Storage(SessionContractErrorDetail),
 }
 
 /// The port the environments work-queue routes drive. In-memory by default; a
@@ -817,7 +820,7 @@ pub trait WorkQueue: Send + Sync {
     async fn enqueue_session(
         &self,
         env_id: &str,
-        session_id: &crate::SessionId,
+        session_id: &SessionId,
     ) -> Result<String, WorkQueueError>;
     /// Explicitly wake an existing stopped Session work item, or create it when
     /// absent. Unlike reconciliation's [`Self::enqueue_session`], this command
@@ -826,7 +829,7 @@ pub trait WorkQueue: Send + Sync {
     async fn wake_session(
         &self,
         env_id: &str,
-        session_id: &crate::SessionId,
+        session_id: &SessionId,
     ) -> Result<String, WorkQueueError>;
     /// Seed a `healthcheck` work item (its inner id is the work id); returns it.
     async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
@@ -967,7 +970,7 @@ pub trait WorkQueue: Send + Sync {
     async fn retire_session(
         &self,
         env_id: &str,
-        session_id: &crate::SessionId,
+        session_id: &SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Registered-Worker settlement transition. Retire only the exact current
     /// Session Work owner and lease epoch in one store compare-and-set; a stale
@@ -984,7 +987,7 @@ pub trait WorkQueue: Send + Sync {
     async fn acquire_session(
         &self,
         env_id: &str,
-        session_id: &crate::SessionId,
+        session_id: &SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
@@ -1033,15 +1036,11 @@ mod tests {
             async fn enqueue_session(
                 &self,
                 _: &str,
-                _: &crate::SessionId,
+                _: &SessionId,
             ) -> Result<String, WorkQueueError> {
                 Ok("work_1".into())
             }
-            async fn wake_session(
-                &self,
-                _: &str,
-                _: &crate::SessionId,
-            ) -> Result<String, WorkQueueError> {
+            async fn wake_session(&self, _: &str, _: &SessionId) -> Result<String, WorkQueueError> {
                 Ok("work_1".into())
             }
             async fn enqueue_healthcheck(&self, _: &str) -> Result<String, WorkQueueError> {
@@ -1106,14 +1105,14 @@ mod tests {
             async fn retire_session(
                 &self,
                 _: &str,
-                _: &crate::SessionId,
+                _: &SessionId,
             ) -> Result<Option<WorkItem>, WorkQueueError> {
                 Ok(None)
             }
             async fn acquire_session(
                 &self,
                 _: &str,
-                _: &crate::SessionId,
+                _: &SessionId,
                 _: &str,
                 _: u64,
             ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
@@ -1166,7 +1165,7 @@ mod tests {
             panic!("D1/E1: the default must refuse, not hand back a digest-less claim");
         };
         assert!(
-            detail.contains("Session-access digest"),
+            detail.to_string().contains("Session-access digest"),
             "D1/E1 the refusal names the missing capability, got {detail:?}"
         );
         // D2/E2: the unqualified sibling still answers, so the refusal is about

@@ -10,7 +10,7 @@ use sqlx::Row;
 use crate::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 
 fn storage(error: impl std::fmt::Display) -> DreamProcessStoreError {
-    DreamProcessStoreError::Storage(error.to_string())
+    DreamProcessStoreError::Storage(error.to_string().into())
 }
 
 fn encode(record: &impl Serialize) -> Result<String, DreamProcessStoreError> {

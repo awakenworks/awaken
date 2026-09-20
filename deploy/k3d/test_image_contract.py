@@ -168,14 +168,18 @@ def main() -> None:
         assert " /usr/local/bin/awaken\n" not in role_image
     # Cause/effect decision table. C5 Docker uses a non-default Buildx driver;
     # C6 the production-image acceptance command immediately runs the tagged
-    # image. E3 the build explicitly loads its result into Docker's image store.
-    # Rule I5: C5+C6 => E3; Podman keeps its ordinary engine-owned output path.
+    # image; C7 Docker provenance policy is absent or already validated into
+    # the sole build argument array. E3 the build explicitly loads its result
+    # into Docker's image store; E4 the exact provenance selection reaches that
+    # same build instead of a parallel command. Rules: I5 C5+C6 => E3; I5b
+    # C5+C7 => E4. Podman keeps its ordinary engine-owned output path.
     sandbox_build = (
         Path(__file__).parent.parent / "images" / "sandbox" / "build.sh"
     ).read_text()
     assert 'if [[ "${engine##*/}" == "docker" ]]' in sandbox_build
     assert (
-        'run_with_deadline "$build_timeout_seconds" "$engine" build --load --platform linux/amd64 "$@"'
+        'run_with_deadline "$build_timeout_seconds" "$engine" build --load --platform linux/amd64 \\\n'
+        '      "${build_provenance_args[@]}" "$@"'
         in sandbox_build
     )
     assert (

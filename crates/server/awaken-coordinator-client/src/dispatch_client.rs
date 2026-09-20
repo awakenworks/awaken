@@ -406,97 +406,6 @@ impl DispatchQueue for HttpDispatchQueue {
         ))
     }
 
-    async fn load_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
-        let value = self
-            .post(
-                "/v1/worker/checkpoint/get",
-                &CheckpointRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                    checkpoint: None,
-                },
-                self.worker_id(),
-            )
-            .await?;
-        serde_json::from_value(value.get("checkpoint").cloned().unwrap_or_default())
-            .map_err(|error| DispatchError::Rejected(format!("decode checkpoint: {error}")))
-    }
-
-    async fn put_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-        checkpoint: StreamCheckpoint,
-    ) -> Result<SettleOutcome, DispatchError> {
-        let value = self
-            .post(
-                "/v1/worker/checkpoint/put",
-                &CheckpointRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                    checkpoint: Some(checkpoint),
-                },
-                self.worker_id(),
-            )
-            .await?;
-        Ok(
-            if value.get("applied").and_then(|v| v.as_bool()) == Some(true) {
-                SettleOutcome::Applied
-            } else {
-                SettleOutcome::Fenced
-            },
-        )
-    }
-
-    async fn delete_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<SettleOutcome, DispatchError> {
-        let value = self
-            .post(
-                "/v1/worker/checkpoint/delete",
-                &CheckpointRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                    checkpoint: None,
-                },
-                self.worker_id(),
-            )
-            .await?;
-        Ok(
-            if value.get("applied").and_then(|v| v.as_bool()) == Some(true) {
-                SettleOutcome::Applied
-            } else {
-                SettleOutcome::Fenced
-            },
-        )
-    }
-
-    async fn load_recovery_snapshot(
-        &self,
-        claim: &RunClaim,
-        session_work_authority: Option<
-            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
-        >,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
-    {
-        let value = self
-            .post_idempotent(
-                "/v1/worker/recovery/snapshot",
-                &RecoveryRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                    session_work_authority: session_work_authority.cloned(),
-                },
-                self.worker_id(),
-            )
-            .await?;
-        serde_json::from_value(value.get("snapshot").cloned().unwrap_or_default())
-            .map_err(|error| DispatchError::Rejected(format!("decode recovery snapshot: {error}")))
-    }
-
     async fn bind_sandbox(
         &self,
         claim: &RunClaim,
@@ -948,6 +857,106 @@ impl DispatchQueue for HttpDispatchQueue {
     }
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         Self::server_local("list_dispatches")
+    }
+
+    fn claimed_checkpoint_transport(
+        &self,
+    ) -> Option<&dyn awaken_dispatch_contract::ClaimedCheckpointTransport> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::ClaimedCheckpointTransport for HttpDispatchQueue {
+    async fn load_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/checkpoint/get",
+                &CheckpointRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    checkpoint: None,
+                },
+                self.worker_id(),
+            )
+            .await?;
+        serde_json::from_value(value.get("checkpoint").cloned().unwrap_or_default())
+            .map_err(|error| DispatchError::Rejected(format!("decode checkpoint: {error}")))
+    }
+
+    async fn put_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+        checkpoint: StreamCheckpoint,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/checkpoint/put",
+                &CheckpointRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    checkpoint: Some(checkpoint),
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(|v| v.as_bool()) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
+
+    async fn delete_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/checkpoint/delete",
+                &CheckpointRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    checkpoint: None,
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(|v| v.as_bool()) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
+
+    async fn load_recovery_snapshot(
+        &self,
+        claim: &RunClaim,
+        session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
+    {
+        let value = self
+            .post_idempotent(
+                "/v1/worker/recovery/snapshot",
+                &RecoveryRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    session_work_authority: session_work_authority.cloned(),
+                },
+                self.worker_id(),
+            )
+            .await?;
+        serde_json::from_value(value.get("snapshot").cloned().unwrap_or_default())
+            .map_err(|error| DispatchError::Rejected(format!("decode recovery snapshot: {error}")))
     }
 }
 

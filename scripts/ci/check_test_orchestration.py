@@ -720,7 +720,7 @@ def push_gate_commands(gate: str) -> tuple[str, ...]:
 
 
 def rust_hook_errors(hooks: str, gate: str) -> list[str]:
-    """Rust hook composition delegates each static scan to the existing gate.
+    """Rust hook composition delegates each scan to its existing gate.
 
     Pre-commit runs `--quick`; pre-push runs `--push`, which is `--quick` plus
     everything `--full` compiles or lints plus the two ledger checks. The gate
@@ -745,6 +745,11 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
         errors.append("Rust pre-push must delegate to the canonical gate's --push mode once")
     if "check-rust.sh --quick" in pre_push:
         errors.append("Rust pre-push still runs --quick, which skips clippy and the formal ledger")
+    public_api_command = "run: scripts/ci/check_public_api.sh --require-tools"
+    if pre_push.count(public_api_command) != 1:
+        errors.append(
+            "pre-push must invoke the canonical fail-closed public API gate exactly once"
+        )
     push_branch = re.search(r"(?ms)^  --quick\|--push\)\n(.*?)^    ;;", gate)
     push_body = push_branch.group(1) if push_branch else ""
     if not push_branch or 'if [ "$mode" = "--push" ]' not in push_body:
@@ -1214,17 +1219,19 @@ def self_test() -> None:
     # Push-mode table. Causes: P1 pre-commit runs --quick; P2 pre-push runs
     # --push; P3 the gate's --push branch runs workspace clippy under
     # -D warnings; P4 it runs the formal coverage ledger; P5 pre-push still
-    # names --quick. Effects: accept / reject.
-    # | Rule | P1 | P2 | P3 | P4 | P5 | Effect |
-    # | H5   | T  | T  | T  | T  | F  | accept |
-    # | H6   | F  | T  | T  | T  | F  | reject: pre-commit off --quick |
-    # | H7   | T  | F  | T  | T  | T  | reject: pre-push still --quick |
-    # | H8   | T  | F  | T  | T  | F  | reject: pre-push names no gate mode |
-    # | H9   | T  | T  | F  | T  | F  | reject: --push without clippy |
-    # | H10  | T  | T  | T  | F  | F  | reject: --push without the ledger |
-    # | H11  | T  | T  | T* | T  | F  | reject: clippy present but warnings allowed |
+    # names --quick; P6 the hook invokes the canonical fail-closed public API
+    # gate exactly once. Effects: accept / reject.
+    # | Rule | P1 | P2 | P3 | P4 | P5 | P6 | Effect |
+    # | H5   | T  | T  | T  | T  | F  | T  | accept |
+    # | H6   | F  | T  | T  | T  | F  | T  | reject: pre-commit off --quick |
+    # | H7   | T  | F  | T  | T  | T  | T  | reject: pre-push still --quick |
+    # | H8   | T  | F  | T  | T  | F  | T  | reject: pre-push names no gate mode |
+    # | H9   | T  | T  | F  | T  | F  | T  | reject: --push without clippy |
+    # | H10  | T  | T  | T  | F  | F  | T  | reject: --push without the ledger |
+    # | H11  | T  | T  | T* | T  | F  | T  | reject: clippy present but warnings allowed |
     # | H12  | --full widens its compile/lint surface, --push does not | reject |
     # | H13  | the lint surface is narrower than the compiled surface  | reject |
+    # | H14  | T  | T  | T  | T  | F  | F  | reject: public API unchecked |
     pre_push_at = hooks.index("\npre-push:")
     assert rust_hook_errors(
         hooks[:pre_push_at].replace("check-rust.sh --quick", "check-rust.sh --push") + hooks[pre_push_at:],
@@ -1270,6 +1277,10 @@ def self_test() -> None:
     assert rust_hook_errors(hooks, without_ledger), "H10 --push must run the formal ledger"
     allowing = gate[:push_start] + push_body.replace("-D warnings", "-W warnings") + gate[push_end:]
     assert rust_hook_errors(hooks, allowing), "H11 --push clippy must deny warnings"
+    assert rust_hook_errors(
+        hooks.replace("run: scripts/ci/check_public_api.sh --require-tools", "run: true"),
+        gate,
+    ), "H14 pre-push must run the canonical public API gate"
     assert rust_hook_errors(hooks, gate.replace("  --quick|--push)", "  --quick)")), "H8 gate without a --push branch"
     # Generated trigger-glob table, on a synthetic hook file.
     # | Rule | generated regions match the render | declaring checker wired | Effect |

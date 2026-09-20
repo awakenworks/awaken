@@ -28,6 +28,42 @@ impl Outbox for MemoryDispatchStore {
         Ok(true)
     }
 
+    async fn relay(&self) -> Result<usize, DispatchError> {
+        let mut state = lock(&self.state)?;
+        // Validate the whole in-memory transaction before moving anything: an
+        // outbox retry may match an existing pending row exactly, but the same
+        // id with another payload is corruption and must leave the outbox intact.
+        for input in &state.outbox {
+            if let Some(existing) = state
+                .pending
+                .iter()
+                .find(|pending| pending.input.message_id == input.message_id)
+                && existing.input != *input
+            {
+                return Err(DispatchError::Conflict(format!(
+                    "idempotency key `{}` was reused with another relayed payload",
+                    input.message_id
+                )));
+            }
+        }
+        let staged = std::mem::take(&mut state.outbox);
+        let relayed = staged.len();
+        for input in staged {
+            // Idempotent target append: skip a message already pending.
+            if !state
+                .pending
+                .iter()
+                .any(|p| p.input.message_id == input.message_id)
+            {
+                append_pending(&mut state, input)?;
+            }
+        }
+        Ok(relayed)
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::SessionContinuationOutbox for MemoryDispatchStore {
     async fn stage_session_resume(
         &self,
         input: PendingInput,
@@ -86,39 +122,6 @@ impl Outbox for MemoryDispatchStore {
             .session_activity_epoch = session_activity_epoch;
         state.outbox.push(input);
         Ok(true)
-    }
-
-    async fn relay(&self) -> Result<usize, DispatchError> {
-        let mut state = lock(&self.state)?;
-        // Validate the whole in-memory transaction before moving anything: an
-        // outbox retry may match an existing pending row exactly, but the same
-        // id with another payload is corruption and must leave the outbox intact.
-        for input in &state.outbox {
-            if let Some(existing) = state
-                .pending
-                .iter()
-                .find(|pending| pending.input.message_id == input.message_id)
-                && existing.input != *input
-            {
-                return Err(DispatchError::Conflict(format!(
-                    "idempotency key `{}` was reused with another relayed payload",
-                    input.message_id
-                )));
-            }
-        }
-        let staged = std::mem::take(&mut state.outbox);
-        let relayed = staged.len();
-        for input in staged {
-            // Idempotent target append: skip a message already pending.
-            if !state
-                .pending
-                .iter()
-                .any(|p| p.input.message_id == input.message_id)
-            {
-                append_pending(&mut state, input)?;
-            }
-        }
-        Ok(relayed)
     }
 
     async fn relay_and_enqueue(

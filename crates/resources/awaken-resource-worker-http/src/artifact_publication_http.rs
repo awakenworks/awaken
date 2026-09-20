@@ -7,9 +7,7 @@ use awaken_resource_contract::{
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
 };
 use awaken_dispatch_contract::{ArtifactPublicationFence, DispatchQueue, RunClaim};
-use awaken_session_contract::{
-    SessionEnvironmentOperation, SessionRealizationControl, SessionTerminalCleanupEffect,
-};
+use awaken_session_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -403,7 +401,10 @@ pub struct WorkerArtifactPublicationService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
-    session_control: Option<Arc<dyn SessionRealizationControl>>,
+    terminal_preparation_control:
+        Option<Arc<dyn awaken_session_contract::SessionTerminalPreparationControl>>,
+    checkpoint_artifact_control:
+        Option<Arc<dyn awaken_session_contract::SessionCheckpointArtifactControl>>,
 }
 
 impl WorkerArtifactPublicationService {
@@ -419,16 +420,41 @@ impl WorkerArtifactPublicationService {
             dispatch,
             authenticator,
             directory,
-            session_control: None,
+            terminal_preparation_control: None,
+            checkpoint_artifact_control: None,
         }
     }
 
     #[must_use]
-    pub fn with_session_control(
+    pub fn with_terminal_preparation_control(
         mut self,
-        session_control: Arc<dyn SessionRealizationControl>,
+        control: Arc<dyn awaken_session_contract::SessionTerminalPreparationControl>,
     ) -> Self {
-        self.session_control = Some(session_control);
+        self.terminal_preparation_control = Some(control);
+        self
+    }
+
+    #[must_use]
+    pub fn with_checkpoint_artifact_control(
+        mut self,
+        control: Arc<dyn awaken_session_contract::SessionCheckpointArtifactControl>,
+    ) -> Self {
+        self.checkpoint_artifact_control = Some(control);
+        self
+    }
+
+    /// Install the two independent Session roles used by Artifact publication
+    /// from one composition object. The stored trait objects remain separate;
+    /// this helper adds no aggregate behavior or fallback path.
+    #[must_use]
+    pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
+    where
+        T: awaken_session_contract::SessionTerminalPreparationControl
+            + awaken_session_contract::SessionCheckpointArtifactControl
+            + 'static,
+    {
+        self.terminal_preparation_control = Some(control.clone());
+        self.checkpoint_artifact_control = Some(control);
         self
     }
 }
@@ -522,7 +548,7 @@ async fn authorize_terminal_artifact(
         SessionWorkerEffectTemporalRule::SessionRoot,
     )
     .await?;
-    let Some(control) = service.session_control.as_deref() else {
+    let Some(control) = service.terminal_preparation_control.as_deref() else {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
     authorize_workspace_result(
@@ -556,7 +582,7 @@ async fn authorize_checkpoint_release_artifact(
         SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
     )
     .await?;
-    let Some(control) = service.session_control.as_deref() else {
+    let Some(control) = service.checkpoint_artifact_control.as_deref() else {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
     authorize_workspace_result(

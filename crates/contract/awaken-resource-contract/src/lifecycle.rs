@@ -47,9 +47,9 @@ impl ResourceTarget {
             ("resource_id", self.resource_id.as_str()),
         ] {
             if value.trim().is_empty() {
-                return Err(ResourcePurgeError::Invalid(format!(
-                    "target {name} must not be empty"
-                )));
+                return Err(ResourcePurgeError::Invalid(
+                    format!("target {name} must not be empty").into(),
+                ));
             }
         }
         Ok(())
@@ -211,7 +211,7 @@ pub struct ResourcePurgeIntent {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourcePurgeError {
     #[error("invalid resource purge intent: {0}")]
-    Invalid(String),
+    Invalid(crate::ResourceErrorDetail),
     #[error("resource purge intent `{0}` was not found")]
     NotFound(String),
     #[error("resource purge idempotency key `{0}` has different content")]
@@ -237,7 +237,7 @@ pub enum ResourcePurgeError {
         to: ResourcePurgeStatus,
     },
     #[error("resource purge repository failure: {0}")]
-    Storage(String),
+    Storage(crate::ResourceErrorDetail),
 }
 
 impl ResourcePurgeIntent {
@@ -278,9 +278,9 @@ impl ResourcePurgeIntent {
             ("idempotency_key", self.idempotency_key.as_str()),
         ] {
             if value.trim().is_empty() {
-                return Err(ResourcePurgeError::Invalid(format!(
-                    "{name} must not be empty"
-                )));
+                return Err(ResourcePurgeError::Invalid(
+                    format!("{name} must not be empty").into(),
+                ));
             }
         }
         if self

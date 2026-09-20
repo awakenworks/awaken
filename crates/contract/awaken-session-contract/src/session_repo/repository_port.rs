@@ -3,21 +3,7 @@ use async_trait::async_trait;
 use super::{PersistedSession, SessionExecutionState, SessionScan, SessionScanQuery};
 use crate::{ManagedLifecycleFact, SessionId};
 
-/// Monotonic root revision for every mutation of one Session aggregate.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct SessionRevision(pub u64);
+use crate::SessionRevision;
 
 /// Durable owner fence for all process-local Session projections. Runtime and
 /// Worker identities are opaque to the Session domain.

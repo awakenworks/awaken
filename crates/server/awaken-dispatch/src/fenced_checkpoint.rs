@@ -57,10 +57,16 @@ impl StreamCheckpointStore for FencedStreamCheckpointStore {
             // Fall back to the authority over the transport. Its Result is
             // translated here, once and explicitly: a transport failure is
             // ignorance about the remote checkpoint, never its absence.
-            Err(_) => match self.dispatch.load_stream_checkpoint(&self.claim).await {
-                Ok(Some(checkpoint)) => Observed::Present(checkpoint),
-                Ok(None) => Observed::Absent,
-                Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+            Err(_) => match self.dispatch.claimed_checkpoint_transport() {
+                Some(remote) => match remote.load_stream_checkpoint(&self.claim).await {
+                    Ok(Some(checkpoint)) => Observed::Present(checkpoint),
+                    Ok(None) => Observed::Absent,
+                    Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+                },
+                None => Observed::Unknown(UnknownCause::Storage(
+                    "checkpoint composition has neither a local epoch guard nor a remote transport"
+                        .into(),
+                )),
             },
         }
     }
@@ -84,6 +90,12 @@ impl StreamCheckpointStore for FencedStreamCheckpointStore {
             )),
             Err(_) => self
                 .dispatch
+                .claimed_checkpoint_transport()
+                .ok_or_else(|| {
+                    StreamCheckpointError::Storage(
+                        "checkpoint composition has no remote transport".into(),
+                    )
+                })?
                 .put_stream_checkpoint(&self.claim, checkpoint)
                 .await
                 .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
@@ -110,6 +122,12 @@ impl StreamCheckpointStore for FencedStreamCheckpointStore {
             )),
             Err(_) => self
                 .dispatch
+                .claimed_checkpoint_transport()
+                .ok_or_else(|| {
+                    StreamCheckpointError::Storage(
+                        "checkpoint composition has no remote transport".into(),
+                    )
+                })?
                 .delete_stream_checkpoint(&self.claim)
                 .await
                 .map_err(|error| StreamCheckpointError::Storage(error.to_string()))

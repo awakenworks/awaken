@@ -1,5 +1,6 @@
 use super::*;
-use crate::session_repo::{PersistedSession, SessionRevision, mutation_tests::session};
+use crate::SessionRevision;
+use crate::session_repo::{PersistedSession, mutation_tests::session};
 
 fn assert_frame(
     actual: &PersistedSession,

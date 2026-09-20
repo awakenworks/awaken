@@ -206,11 +206,11 @@ pub enum ResourceRegistryError {
     #[error("resource `{0}` was concurrently modified")]
     ConcurrentModification(String),
     #[error("invalid resource registry command: {0}")]
-    Invalid(String),
+    Invalid(crate::ResourceErrorDetail),
     #[error("resource registry data is corrupt: {0}")]
     CorruptData(String),
     #[error("resource registry is unavailable: {0}")]
-    Unavailable(String),
+    Unavailable(crate::ResourceErrorDetail),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -224,7 +224,7 @@ pub enum RegistryRepositoryError {
     #[error("stored resource registry data is corrupt: {0}")]
     CorruptData(String),
     #[error("resource registry repository is unavailable: {0}")]
-    Unavailable(String),
+    Unavailable(crate::ResourceErrorDetail),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,13 +353,16 @@ fn validate_publish(
             current,
         }),
         ConfigPublicationDecision::VersionExhausted => Err(ResourceRegistryError::Invalid(
-            format!("resource `{id}` exhausted config versions"),
+            format!("resource `{id}` exhausted config versions").into(),
         )),
-        ConfigPublicationDecision::NonSuccessor => Err(ResourceRegistryError::Invalid(format!(
-            "resource `{id}` config version must advance from {} to {}",
-            current.0,
-            current.0 + 1
-        ))),
+        ConfigPublicationDecision::NonSuccessor => Err(ResourceRegistryError::Invalid(
+            format!(
+                "resource `{id}` config version must advance from {} to {}",
+                current.0,
+                current.0 + 1
+            )
+            .into(),
+        )),
     }
 }
 
@@ -427,7 +430,7 @@ impl MemoryStoreAggregate {
         let timestamps = definition.timestamps;
         definition.timestamps = ResourceTimestamps::default();
         let request = serde_json::to_string(&(&definition, &initial_config))
-            .map_err(|error| ResourceRegistryError::Invalid(error.to_string()))?;
+            .map_err(|error| ResourceRegistryError::Invalid(error.to_string().into()))?;
         definition.timestamps = timestamps;
         let mut aggregate = Self::register(definition, initial_config)?;
         aggregate.creation_request_sha256 = Some(crate::memory_sha256_hex(&request));
@@ -625,7 +628,7 @@ impl RepositoryAggregate {
         let timestamps = definition.timestamps;
         definition.timestamps = ResourceTimestamps::default();
         let request = serde_json::to_string(&(&definition, &initial_config))
-            .map_err(|error| ResourceRegistryError::Invalid(error.to_string()))?;
+            .map_err(|error| ResourceRegistryError::Invalid(error.to_string().into()))?;
         definition.timestamps = timestamps;
         let mut aggregate = Self::register(definition, initial_config)?;
         aggregate.creation_request_sha256 = Some(crate::memory_sha256_hex(&request));

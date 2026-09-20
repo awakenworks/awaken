@@ -17,16 +17,16 @@ impl awaken_dispatch_testkit::ConformanceCapabilities
 pub const awaken_dispatch_testkit::ConformanceCapabilities::LOCAL_STORE: Self
 pub const awaken_dispatch_testkit::ConformanceCapabilities::WORKER_TRANSPORT: Self
 pub struct awaken_dispatch_testkit::DispatchRecoveryHistory
-pub awaken_dispatch_testkit::DispatchRecoveryHistory::blocked_successor: awaken_dispatch_contract::dispatch::AttemptAdmission
-pub awaken_dispatch_testkit::DispatchRecoveryHistory::first_attempt: awaken_dispatch_contract::dispatch::AttemptAdmission
+pub awaken_dispatch_testkit::DispatchRecoveryHistory::blocked_successor: awaken_dispatch_contract::dispatch::model::AttemptAdmission
+pub awaken_dispatch_testkit::DispatchRecoveryHistory::first_attempt: awaken_dispatch_contract::dispatch::model::AttemptAdmission
 pub awaken_dispatch_testkit::DispatchRecoveryHistory::first_epoch: u64
 pub awaken_dispatch_testkit::DispatchRecoveryHistory::live_rows_after_settlement: usize
-pub awaken_dispatch_testkit::DispatchRecoveryHistory::predecessor_finish: awaken_dispatch_contract::dispatch::SettleOutcome
+pub awaken_dispatch_testkit::DispatchRecoveryHistory::predecessor_finish: awaken_dispatch_contract::dispatch::model::SettleOutcome
 pub awaken_dispatch_testkit::DispatchRecoveryHistory::recovered_epoch: u64
-pub awaken_dispatch_testkit::DispatchRecoveryHistory::stale_settlement: awaken_dispatch_contract::dispatch::SettleOutcome
-pub awaken_dispatch_testkit::DispatchRecoveryHistory::successor_attempt: awaken_dispatch_contract::dispatch::AttemptAdmission
-pub awaken_dispatch_testkit::DispatchRecoveryHistory::successor_finish: awaken_dispatch_contract::dispatch::SettleOutcome
-pub awaken_dispatch_testkit::DispatchRecoveryHistory::successor_settlement: awaken_dispatch_contract::dispatch::SettleOutcome
+pub awaken_dispatch_testkit::DispatchRecoveryHistory::stale_settlement: awaken_dispatch_contract::dispatch::model::SettleOutcome
+pub awaken_dispatch_testkit::DispatchRecoveryHistory::successor_attempt: awaken_dispatch_contract::dispatch::model::AttemptAdmission
+pub awaken_dispatch_testkit::DispatchRecoveryHistory::successor_finish: awaken_dispatch_contract::dispatch::model::SettleOutcome
+pub awaken_dispatch_testkit::DispatchRecoveryHistory::successor_settlement: awaken_dispatch_contract::dispatch::model::SettleOutcome
 pub struct awaken_dispatch_testkit::ManualStoreClock(_)
 impl awaken_dispatch_testkit::ManualStoreClock
 pub fn awaken_dispatch_testkit::ManualStoreClock::clock(&self) -> alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>
@@ -52,12 +52,12 @@ impl<F> awaken_dispatch_testkit::ConformanceClock for F where F: core::ops::func
 pub fn F::advance_past<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn F::exact_boundary_is_controllable(&self) -> bool
 pub fn F::set(&self, u64)
-pub async fn awaken_dispatch_testkit::assert_atomic_report_continuation_conformance(&dyn awaken_dispatch_contract::dispatch::ControlDispatch, &str)
-pub async fn awaken_dispatch_testkit::assert_atomic_report_continuation_conformance_with_clock(&dyn awaken_dispatch_contract::dispatch::ControlDispatch, &str, &dyn awaken_dispatch_testkit::ConformanceClock)
-pub async fn awaken_dispatch_testkit::assert_dispatch_conformance<S: awaken_dispatch_contract::dispatch::ControlDispatch>(&S, &str, awaken_dispatch_testkit::ConformanceCapabilities)
-pub async fn awaken_dispatch_testkit::assert_dispatch_conformance_with_clock<S: awaken_dispatch_contract::dispatch::ControlDispatch>(&S, &str, awaken_dispatch_testkit::ConformanceCapabilities, &dyn awaken_dispatch_testkit::ConformanceClock)
+pub async fn awaken_dispatch_testkit::assert_atomic_report_continuation_conformance(&dyn awaken_dispatch_contract::dispatch::aggregate::DurableControlDispatch, &str)
+pub async fn awaken_dispatch_testkit::assert_atomic_report_continuation_conformance_with_clock(&dyn awaken_dispatch_contract::dispatch::aggregate::DurableControlDispatch, &str, &dyn awaken_dispatch_testkit::ConformanceClock)
+pub async fn awaken_dispatch_testkit::assert_dispatch_conformance<S: awaken_dispatch_contract::dispatch::aggregate::ControlDispatch>(&S, &str, awaken_dispatch_testkit::ConformanceCapabilities)
+pub async fn awaken_dispatch_testkit::assert_dispatch_conformance_with_clock<S: awaken_dispatch_contract::dispatch::aggregate::ControlDispatch>(&S, &str, awaken_dispatch_testkit::ConformanceCapabilities, &dyn awaken_dispatch_testkit::ConformanceClock)
 pub async fn awaken_dispatch_testkit::assert_dispatch_operational_feed_conformance<S>(&S, &str) where S: awaken_dispatch_contract::dispatch::ControlDispatchQueue + awaken_dispatch_contract::operational::DispatchOperationalFeed + ?core::marker::Sized
 pub async fn awaken_dispatch_testkit::assert_dispatch_operational_feed_conformance_with_clock<S>(&S, &str, &dyn awaken_dispatch_testkit::ConformanceClock) where S: awaken_dispatch_contract::dispatch::ControlDispatchQueue + awaken_dispatch_contract::operational::DispatchOperationalFeed + ?core::marker::Sized
-pub async fn awaken_dispatch_testkit::assert_session_reply_activity_rotation_conformance(&dyn awaken_dispatch_contract::dispatch::ControlDispatch, &str)
-pub async fn awaken_dispatch_testkit::assert_session_reply_activity_rotation_conformance_with_clock(&dyn awaken_dispatch_contract::dispatch::ControlDispatch, &str, &dyn awaken_dispatch_testkit::ConformanceClock)
+pub async fn awaken_dispatch_testkit::assert_session_reply_activity_rotation_conformance(&dyn awaken_dispatch_contract::dispatch::aggregate::DurableControlDispatch, &str)
+pub async fn awaken_dispatch_testkit::assert_session_reply_activity_rotation_conformance_with_clock(&dyn awaken_dispatch_contract::dispatch::aggregate::DurableControlDispatch, &str, &dyn awaken_dispatch_testkit::ConformanceClock)
 pub async fn awaken_dispatch_testkit::record_dispatch_recovery_history(&dyn awaken_dispatch_contract::dispatch::ControlDispatchQueue, &str, &dyn awaken_dispatch_testkit::ConformanceClock) -> awaken_dispatch_testkit::DispatchRecoveryHistory

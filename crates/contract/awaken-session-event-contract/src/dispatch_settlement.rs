@@ -91,7 +91,7 @@ pub const fn session_event_dispatch_settlement_plan(
 /// or the System command frozen into such a pending User's own reservation.
 /// The three classes of retained Event the idling predicate distinguishes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RetainedInputClass {
+pub enum RetainedInputClass {
     /// An ordinary User command. Its unprocessed admission is queued work, not
     /// physical activity, so it cannot by itself hold the Session Running.
     OrdinaryUser,
@@ -107,7 +107,7 @@ impl SessionEventCommand {
     /// command variant forces an arm here rather than silently falling into an
     /// inert class.
     #[must_use]
-    pub(crate) const fn retained_input_class(&self) -> RetainedInputClass {
+    pub const fn retained_input_class(&self) -> RetainedInputClass {
         match self {
             Self::UserMessage { .. } => RetainedInputClass::OrdinaryUser,
             Self::SystemMessage { .. } => RetainedInputClass::ReservedSystem,
@@ -126,7 +126,7 @@ impl SessionEventCommand {
 /// reservation froze it is itself still pending -- a System standing alone is
 /// real pending work.
 #[must_use]
-pub(crate) const fn retained_event_is_inert(
+pub const fn retained_event_is_inert(
     processed: bool,
     class: RetainedInputClass,
     previous: Option<(RetainedInputClass, bool)>,
@@ -151,7 +151,7 @@ pub(crate) const fn retained_event_is_inert(
 /// already processed, or the Run is Awaiting and every still-pending Event is
 /// inert by [`retained_event_is_inert`].
 #[must_use]
-pub(crate) fn session_inputs_allow_idle(
+pub fn session_inputs_allow_idle(
     batches: &[SessionEventBatch],
     boundary: crate::SessionAgentRunBoundary,
 ) -> bool {
@@ -178,7 +178,7 @@ pub(crate) fn session_inputs_allow_idle(
 /// not model the database or queue: it joins the exact production plan result
 /// with the same root's activity-removal and input-actionability facts.
 #[must_use]
-pub(crate) const fn session_event_execution_may_close(
+pub const fn session_event_execution_may_close(
     dispatch: SessionEventDispatchSettlementPlan,
     exact_activity_removed: bool,
     last_active: bool,

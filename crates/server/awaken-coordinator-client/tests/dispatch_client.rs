@@ -26,6 +26,7 @@ use awaken_dispatch::{
     MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome,
     StreamObservationRequest, SubmitOptions, WorkerIdentity,
 };
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,

@@ -1258,7 +1258,7 @@ impl From<DreamApiError> for DreamPolicyApplicationError {
             DreamApiError::BadRequest(message) => Self::BadRequest(message),
             DreamApiError::NotFound => Self::NotFound,
             DreamApiError::Conflict(message) => Self::Conflict(message),
-            DreamApiError::Unavailable(message) => Self::Unavailable(message),
+            DreamApiError::Unavailable(message) => Self::Unavailable(message.into()),
         }
     }
 }

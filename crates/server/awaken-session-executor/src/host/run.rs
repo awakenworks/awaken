@@ -3,6 +3,7 @@
 
 use super::types::VerifiedStepProjection;
 use super::*;
+use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 
 mod projection;

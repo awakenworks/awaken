@@ -1,7 +1,11 @@
 use super::*;
 use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_contract::SessionId;
-use awaken_session_contract::SessionRealizationControl;
+use awaken_session_contract::{
+    SessionRealizationControl, SessionResourceMaterializationControl, SessionTerminalCleanupQueue,
+    SessionTerminalDisposalControl, SessionTerminalMemoryControl,
+    SessionTerminalPreparationControl, SessionTerminalRepositoryPublicationControl,
+};
 
 #[test]
 fn lifecycle_cancellation_interrupts_a_held_recovery_scan() {

@@ -982,7 +982,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
 }
 
 #[async_trait::async_trait]
-impl awaken_dispatch_contract::ClaimedSessionControl for RecordingSessionControl {
+impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RecordingSessionControl {
     async fn resume_frozen(
         &self,
         claim: &awaken_dispatch::RunClaim,
@@ -1115,6 +1115,22 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         self.phases.lock().unwrap().push("fail");
         Ok(())
     }
+
+    async fn renew_session_realization(
+        &self,
+        command: awaken_session_contract::RenewSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationLeaseReceipt,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.phases.lock().unwrap().push("renew");
+        let mut lease = command.asserted_lease;
+        if command.requested_expires_at_unix_ms < lease.expires_at_unix_ms {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
+        Ok(crate::session_slot::test_lease_receipt(lease))
+    }
 }
 
 fn ordinary_frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
@@ -1175,7 +1191,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     let host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub")
             .with_dispatch_store(dispatch.clone())
-            .with_session_control(Arc::new(RecordingSessionControl {
+            .with_session_realization_control(Arc::new(RecordingSessionControl {
                 resume_calls: resume_calls.clone(),
                 continuations: continuations.clone(),
                 phases: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1381,7 +1397,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_dispatch_store(dispatch.clone())
-                .with_session_control(Arc::new(RecordingSessionControl {
+                .with_session_realization_control(Arc::new(RecordingSessionControl {
                     resume_calls: resume_calls.clone(),
                     continuations: Arc::new(std::sync::Mutex::new(Vec::new())),
                     phases: phases.clone(),
@@ -2818,7 +2834,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_dispatch_store(dispatch.clone())
-                .with_session_control(Arc::new(RecordingSessionControl {
+                .with_session_realization_control(Arc::new(RecordingSessionControl {
                     resume_calls: calls.clone(),
                     continuations: Arc::new(std::sync::Mutex::new(Vec::new())),
                     phases: Arc::new(std::sync::Mutex::new(Vec::new())),

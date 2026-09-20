@@ -1,0 +1,18 @@
+[package]
+name = "awaken-session-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "contract"
+kinds = ["types"]
+authority = "session-identity"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -163,6 +163,47 @@ mod tests {
                 "fixture",
             ))
         }
+
+        async fn capture(
+            &self,
+            _workspace_id: &str,
+            _session_id: &str,
+            _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+        ) -> Result<
+            Option<awaken_resource_contract::ArtifactCapture>,
+            awaken_resource_contract::ArtifactPublicationError,
+        > {
+            Err(awaken_resource_contract::ArtifactPublicationError::new(
+                "fixture does not capture Artifacts",
+            ))
+        }
+
+        async fn replace_capture(
+            &self,
+            _request: awaken_resource_contract::ReplaceArtifactCapture,
+            _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+        ) -> Result<
+            awaken_resource_contract::ReplaceArtifactCaptureOutcome,
+            awaken_resource_contract::ArtifactPublicationError,
+        > {
+            Err(awaken_resource_contract::ArtifactPublicationError::new(
+                "fixture does not replace Artifact captures",
+            ))
+        }
+
+        async fn recover(
+            &self,
+            _recovery: awaken_resource_contract::ArtifactRecovery<
+                awaken_dispatch::ArtifactPublicationFence,
+            >,
+        ) -> Result<
+            Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
+            awaken_resource_contract::ArtifactPublicationError,
+        > {
+            Err(awaken_resource_contract::ArtifactPublicationError::new(
+                "fixture does not recover Artifacts",
+            ))
+        }
     }
 
     #[test]

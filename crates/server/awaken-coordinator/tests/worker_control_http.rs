@@ -1,3 +1,4 @@
+use awaken_dispatch::ClaimedCheckpointTransport as _;
 use awaken_dispatch::ControlDispatchQueue;
 use std::sync::Arc;
 

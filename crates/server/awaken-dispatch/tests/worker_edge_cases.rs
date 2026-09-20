@@ -29,9 +29,10 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    ContinuationAdmission, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, Outbox,
-    RunDispatch, SqliteDispatchStore, SubmitOptions,
+    ContinuationAdmission, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch,
+    SqliteDispatchStore, SubmitOptions,
 };
+use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_inmem::MemoryCommitCoordinator;

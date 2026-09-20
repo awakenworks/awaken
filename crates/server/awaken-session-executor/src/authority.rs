@@ -408,7 +408,11 @@ impl EphemeralRuntimeAuthority {
 
     #[must_use]
     pub fn new() -> Self {
-        let dispatch = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(
+        // The ephemeral authority is the Coordinator-side durable owner used by
+        // scenario/integration compositions. Preserve its atomic Session
+        // continuation role when erasing the concrete Memory store; the
+        // Worker-only constructor intentionally omits that role.
+        let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_dispatch(Arc::new(
             awaken_dispatch::MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock)),
         ));
         Self {

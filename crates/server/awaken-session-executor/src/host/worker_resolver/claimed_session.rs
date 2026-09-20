@@ -158,7 +158,12 @@ pub(super) async fn install_claimed_session_projection(
             )
         })?;
     if let Some(receipt) = claimed.session_work_authority.as_ref()
-        && !receipt.binds_realization(&thread_id.0, &directive)
+        && !receipt.binds_realization(
+            &thread_id.0,
+            &directive.authority.lease.runtime_incarnation,
+            directive.projection.baseline.environment.self_hosted,
+            &directive.projection.baseline.environment.environment_id,
+        )
     {
         return Err(HostWorkerResolver::execution_error(
             "Session realization directive identity does not match claimed Work authority",

@@ -61,7 +61,7 @@ fn migrate_guarded(conn: &awaken_sqlite_pool::SharedSqliteConnection) -> Result<
 }
 
 fn storage(err: impl std::fmt::Display) -> SkillStoreError {
-    SkillStoreError::Storage(err.to_string())
+    SkillStoreError::Storage(err.to_string().into())
 }
 
 async fn with_conn<T, F>(

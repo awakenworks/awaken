@@ -146,6 +146,32 @@ struct RecordingSessionCoordination {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionAgentCoordination for RecordingSessionCoordination {
+    async fn admit_session_run_activity(
+        &self,
+        _session_id: &awaken_session_contract::SessionId,
+        _agent_id: &str,
+        _run_id: &RunId,
+        _mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<
+        awaken_session_contract::SessionRunActivityAdmission,
+        awaken_session_contract::RunError,
+    > {
+        Err(awaken_session_contract::RunError::bad_request(
+            "settlement fixture does not admit Session activity",
+        ))
+    }
+
+    async fn admit_session_model_request(
+        &self,
+        _session_id: &awaken_session_contract::SessionId,
+        _thread_id: &ThreadId,
+        _run_id: &RunId,
+    ) -> Result<bool, awaken_session_contract::RunError> {
+        Err(awaken_session_contract::RunError::bad_request(
+            "settlement fixture does not admit model requests",
+        ))
+    }
+
     async fn list_session_agents(
         &self,
         _session_id: &awaken_session_contract::SessionId,

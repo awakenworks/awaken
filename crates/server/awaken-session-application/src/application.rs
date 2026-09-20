@@ -152,7 +152,7 @@ impl Default for SessionApplicationConfiguration {
 pub struct SessionApplication {
     clock: Arc<dyn awaken_agent_contract::clock::Clock>,
     configuration: SessionApplicationConfiguration,
-    runtime: Arc<dyn SessionRuntime>,
+    runtime: Arc<dyn CompleteSessionRuntime>,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credential_source: Option<Arc<dyn SessionCredentialSource>>,
     credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,
@@ -218,7 +218,7 @@ impl SessionApplication {
 
     #[must_use]
     pub fn new(
-        runtime: Arc<dyn SessionRuntime>,
+        runtime: Arc<dyn CompleteSessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
         sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
@@ -234,7 +234,7 @@ impl SessionApplication {
 
     #[must_use]
     pub fn new_with_configuration(
-        runtime: Arc<dyn SessionRuntime>,
+        runtime: Arc<dyn CompleteSessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
         sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
@@ -243,11 +243,25 @@ impl SessionApplication {
         let lifecycle_outbox: Arc<dyn awaken_session_contract::LifecycleOutbox> =
             sessions_repo.clone();
         let sessions_repo: Arc<dyn SessionRepository> = sessions_repo;
-        if let Some(role) = runtime.realization() {
-            role.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
+        assert!(
+            runtime.realization().is_some()
+                && runtime.coordination().is_some()
+                && runtime.budget().is_some()
+                && runtime.streaming_runs().is_some()
+                && runtime.environment().is_some()
+                && runtime.thread_reads().is_some()
+                && runtime.terminal_cleanup().is_some()
+                && runtime.outcomes().is_some()
+                && runtime.live_inbox().is_some()
+                && runtime.capability().is_some(),
+            "CompleteSessionRuntime must expose every role at composition"
+        );
+        runtime
+            .realization()
+            .expect("complete runtime realization role")
+            .install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
                 sessions_repo.clone(),
             )));
-        }
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
@@ -324,7 +338,7 @@ impl SessionApplication {
     }
 
     #[must_use]
-    pub(crate) fn runtime(&self) -> &dyn SessionRuntime {
+    pub(crate) fn runtime(&self) -> &dyn CompleteSessionRuntime {
         self.runtime.as_ref()
     }
 
@@ -977,7 +991,9 @@ async fn self_hosted_work_environment(
         Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
         Err(error) => {
             return Err(
-                awaken_session_contract::work_queue::WorkQueueError::Storage(error.to_string()),
+                awaken_session_contract::work_queue::WorkQueueError::Storage(
+                    error.to_string().into(),
+                ),
             );
         }
     };

@@ -35,7 +35,7 @@ pub use awaken_resource_contract::{
 };
 
 fn e(x: impl ToString) -> FileStoreError {
-    FileStoreError(x.to_string())
+    FileStoreError(x.to_string().into())
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -47,13 +47,13 @@ fn decode_artifact_capture(
 ) -> Result<ArtifactCapture, FileCatalogError> {
     let revision = awaken_sql_storage::StoredU64::try_from(revision)
         .map(awaken_sql_storage::StoredU64::domain_value)
-        .map_err(|error| FileCatalogError::Storage(error.to_string()))?;
+        .map_err(|error| FileCatalogError::Storage(error.to_string().into()))?;
     let capture = ArtifactCapture {
         workspace_id,
         session_id,
         revision,
         file_ids: serde_json::from_str(file_ids_json)
-            .map_err(|error| FileCatalogError::Storage(error.to_string()))?,
+            .map_err(|error| FileCatalogError::Storage(error.to_string().into()))?,
     };
     capture.verify_scope(&capture.workspace_id, &capture.session_id)?;
     Ok(capture)
@@ -442,10 +442,9 @@ impl FileCatalog for InMemoryFileStore {
             }
         }
         if files.contains_key(&record.id) {
-            return Err(FileCatalogError::Invalid(format!(
-                "file id `{}` already exists",
-                record.id
-            )));
+            return Err(FileCatalogError::Invalid(
+                format!("file id `{}` already exists", record.id).into(),
+            ));
         }
         files.insert(record.id.clone(), record.clone());
         Ok(CreateFileRecordOutcome::Inserted(record))

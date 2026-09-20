@@ -212,7 +212,15 @@ pub struct SharedHost {
     pub(crate) attempt_decorator: Option<AttemptExecutorDecorator>,
     /// Outbound claim-fenced Control client used to realize an already-frozen
     /// Session projection on this Worker.
-    pub(crate) session_control: Option<Arc<dyn awaken_dispatch_contract::ClaimedSessionControl>>,
+    pub(crate) session_control:
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedSessionRealizationControl>>,
+    pub(crate) session_coordination_control:
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedSessionCoordinationControl>>,
+    /// Terminal cleanup is an independent aggregate role. A Worker may expose
+    /// claimed coordination without owning cold cleanup; composition installs
+    /// this exact role only when the transport supports it.
+    pub(crate) terminal_cleanup_control:
+        Option<Arc<dyn awaken_session_contract::SessionTerminalCleanupControl>>,
     pub(crate) provider: LocalProvider,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.

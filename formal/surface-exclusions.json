@@ -443,6 +443,24 @@
       ]
     },
     {
+      "path": "crates/stores/awaken-store-conformance/src/session_store/cas.rs",
+      "boundary": "test_support_crate",
+      "reason": "SessionStore root-CAS, tombstone, idempotency and create-replay rows split from the existing trait-generic conformance owner. It remains tooling-only and every durable backend invokes it through the same run_suite entrypoint.",
+      "evidence": [
+        "crates/stores/awaken-store-conformance/src/session_store.rs",
+        "crates/stores/awaken-session-store/tests/session_repo_conformance.rs"
+      ]
+    },
+    {
+      "path": "crates/stores/awaken-store-conformance/src/session_store/deployment.rs",
+      "boundary": "test_support_crate",
+      "reason": "DeploymentRepository CAS, capacity and scheduled-claim rows split from the existing SessionStore conformance owner because both ports share the same root transaction. It remains tooling-only and creates no product admission path.",
+      "evidence": [
+        "crates/stores/awaken-store-conformance/src/session_store.rs",
+        "crates/stores/awaken-session-store/tests/session_repo_conformance.rs"
+      ]
+    },
+    {
       "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
       "boundary": "test_support_crate",
       "reason": "Trait-generic WorkQueue conformance suite (ADR-0081 §7). It is a tooling-only test library every backend's test target calls; no product crate links or invokes it, and it admits nothing at runtime.",

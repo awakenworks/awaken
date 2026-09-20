@@ -230,6 +230,45 @@ impl Outbox for SqliteDispatchStore {
         .await
     }
 
+    async fn relay(&self) -> Result<usize, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let staged: Vec<(String, String)> = {
+                let mut stmt = conn
+                    .prepare(&format!("SELECT message_id, payload FROM {p}_outbox"))
+                    .map_err(store_error)?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(store_error)?;
+                rows.collect::<Result<_, _>>().map_err(store_error)?
+            };
+
+            let mut relayed = 0;
+            for (message_id, payload) in staged {
+                let input = normalize_pending_millis(
+                    serde_json::from_str::<PendingInput>(&payload).map_err(json_err)?,
+                );
+                // One transaction per message: idempotent target append, then
+                // drop the outbox row.
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(store_error)?;
+                append_pending_row(&tx, p, &input)?;
+                tx.execute(
+                    &format!("DELETE FROM {p}_outbox WHERE message_id = ?1"),
+                    params![message_id],
+                )
+                .map_err(store_error)?;
+                tx.commit().map_err(store_error)?;
+                relayed += 1;
+            }
+            Ok(relayed)
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore {
     async fn stage_session_resume(
         &self,
         input: PendingInput,
@@ -354,42 +393,6 @@ impl Outbox for SqliteDispatchStore {
             .map_err(store_error)?;
             tx.commit().map_err(store_error)?;
             Ok(true)
-        })
-        .await
-    }
-
-    async fn relay(&self) -> Result<usize, DispatchError> {
-        self.with_conn(move |conn, p| {
-            let staged: Vec<(String, String)> = {
-                let mut stmt = conn
-                    .prepare(&format!("SELECT message_id, payload FROM {p}_outbox"))
-                    .map_err(store_error)?;
-                let rows = stmt
-                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                    .map_err(store_error)?;
-                rows.collect::<Result<_, _>>().map_err(store_error)?
-            };
-
-            let mut relayed = 0;
-            for (message_id, payload) in staged {
-                let input = normalize_pending_millis(
-                    serde_json::from_str::<PendingInput>(&payload).map_err(json_err)?,
-                );
-                // One transaction per message: idempotent target append, then
-                // drop the outbox row.
-                let tx = conn
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(store_error)?;
-                append_pending_row(&tx, p, &input)?;
-                tx.execute(
-                    &format!("DELETE FROM {p}_outbox WHERE message_id = ?1"),
-                    params![message_id],
-                )
-                .map_err(store_error)?;
-                tx.commit().map_err(store_error)?;
-                relayed += 1;
-            }
-            Ok(relayed)
         })
         .await
     }

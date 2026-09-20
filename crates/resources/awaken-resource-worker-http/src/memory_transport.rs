@@ -14,8 +14,7 @@ use awaken_resource_contract::{
 };
 use awaken_dispatch_contract::{DispatchQueue, ResourceOperationFence, RunClaim};
 use awaken_session_contract::{
-    SessionRealizationControl, SessionResourceMaterializationIntent, SessionTerminalMemoryIntent,
-    SessionTerminalMemoryTarget,
+    SessionResourceMaterializationIntent, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
 };
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
@@ -235,6 +234,7 @@ enum MemoryOperation {
     PreserveCopyConflict {
         candidate: awaken_resource_contract::MemoryCopyConflict,
     },
+    ListCopyConflicts {},
     /// `{}` and not a bare unit: a unit variant of an internally tagged enum
     /// escapes the container's `deny_unknown_fields`, so a mis-tagged write
     /// would decode as a read and silently perform nothing.
@@ -266,7 +266,7 @@ enum MemoryOperation {
 
 impl MemoryOperation {
     fn writes(&self) -> bool {
-        !matches!(self, Self::Snapshot {})
+        !matches!(self, Self::Snapshot {} | Self::ListCopyConflicts {})
     }
 }
 
@@ -283,10 +283,21 @@ struct MemoryOperationRequest {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum MemoryOperationResponse {
     CopyConflictPreserved {},
-    Snapshot { heads: Vec<WireMemory> },
-    Memory { memory: WireMemory },
-    Deleted { deleted: bool },
-    Error { error: MemoryWireError },
+    CopyConflicts {
+        candidates: Vec<awaken_resource_contract::MemoryCopyConflict>,
+    },
+    Snapshot {
+        heads: Vec<WireMemory>,
+    },
+    Memory {
+        memory: WireMemory,
+    },
+    Deleted {
+        deleted: bool,
+    },
+    Error {
+        error: MemoryWireError,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -392,7 +403,9 @@ pub struct WorkerMemoryService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
-    session_control: Option<Arc<dyn SessionRealizationControl>>,
+    materialization_control:
+        Option<Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>>,
+    terminal_memory_control: Option<Arc<dyn awaken_session_contract::SessionTerminalMemoryControl>>,
 }
 
 impl WorkerMemoryService {
@@ -410,16 +423,26 @@ impl WorkerMemoryService {
             dispatch,
             authenticator,
             directory,
-            session_control: None,
+            materialization_control: None,
+            terminal_memory_control: None,
         }
     }
 
     #[must_use]
-    pub fn with_session_control(
+    pub fn with_materialization_control(
         mut self,
-        session_control: Arc<dyn SessionRealizationControl>,
+        control: Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>,
     ) -> Self {
-        self.session_control = Some(session_control);
+        self.materialization_control = Some(control);
+        self
+    }
+
+    #[must_use]
+    pub fn with_terminal_memory_control(
+        mut self,
+        control: Arc<dyn awaken_session_contract::SessionTerminalMemoryControl>,
+    ) -> Self {
+        self.terminal_memory_control = Some(control);
         self
     }
 }
@@ -498,6 +521,7 @@ fn terminal_operation_allowed(
                 candidate.content.is_some() && !heads.iter().any(|head| head.path == candidate.path)
             }
         },
+        MemoryOperation::ListCopyConflicts {} => true,
         MemoryOperation::Snapshot {} => true,
         MemoryOperation::Create { path, .. } => !heads.iter().any(|head| head.path == *path),
         MemoryOperation::UpdateHead {
@@ -605,7 +629,7 @@ async fn memory_operation(
             {
                 return status.into_response();
             }
-            let Some(control) = service.session_control.as_deref() else {
+            let Some(control) = service.terminal_memory_control.as_deref() else {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             };
             let target = match control
@@ -650,7 +674,7 @@ async fn memory_operation(
             {
                 return status.into_response();
             }
-            let Some(control) = service.session_control.as_deref() else {
+            let Some(control) = service.materialization_control.as_deref() else {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             };
             let workspace_id = match control
@@ -710,6 +734,11 @@ async fn memory_operation(
             .preserve_copy_conflict(&memory_store_id, &candidate)
             .await
             .map(|()| MemoryOperationResponse::CopyConflictPreserved {}),
+        MemoryOperation::ListCopyConflicts {} => service
+            .repository
+            .list_copy_conflicts(&memory_store_id)
+            .await
+            .map(|candidates| MemoryOperationResponse::CopyConflicts { candidates }),
         MemoryOperation::Snapshot {} => service
             .repository
             .snapshot_heads(&memory_store_id)
@@ -922,6 +951,21 @@ impl MemoryRepository for HttpMemoryRepository {
             MemoryOperationResponse::CopyConflictPreserved {} => Ok(()),
             _ => Err(MemErr::Storage(
                 "Memory copy retention response kind mismatch".into(),
+            )),
+        }
+    }
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        match self
+            .writeback
+            .send(store, MemoryOperation::ListCopyConflicts {})
+            .await?
+        {
+            MemoryOperationResponse::CopyConflicts { candidates } => Ok(candidates),
+            _ => Err(MemErr::Storage(
+                "Memory copy-conflict response kind mismatch".into(),
             )),
         }
     }

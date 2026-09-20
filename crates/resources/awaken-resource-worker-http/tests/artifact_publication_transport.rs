@@ -262,60 +262,7 @@ impl FileApplicationService for CountingFileApplication {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for ExactArtifactControl {
-    async fn begin_session_realization(
-        &self,
-        _command: awaken_session_contract::BeginSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                "test control has no realization driver".into(),
-            ),
-        )
-    }
-
-    async fn activate_session_realization(
-        &self,
-        _command: awaken_session_contract::ActivateSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                "test control has no realization driver".into(),
-            ),
-        )
-    }
-
-    async fn acknowledge_session_realization(
-        &self,
-        _command: awaken_session_contract::AcknowledgeSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                "test control has no realization driver".into(),
-            ),
-        )
-    }
-
-    async fn fail_session_realization(
-        &self,
-        _command: awaken_session_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                "test control has no realization driver".into(),
-            ),
-        )
-    }
-
+impl awaken_session_contract::SessionTerminalPreparationControl for ExactArtifactControl {
     async fn authorize_terminal_cleanup_effect(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
@@ -345,6 +292,21 @@ impl awaken_session_contract::SessionRealizationControl for ExactArtifactControl
         )
     }
 
+    async fn record_terminal_cleanup_preparation(
+        &self,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        _preparation: awaken_session_contract::SessionCleanupPreparation,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "Artifact authorization fixture does not admit cleanup receipts".into(),
+            ),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionCheckpointArtifactControl for ExactArtifactControl {
     async fn authorize_checkpoint_release_artifact_effect(
         &self,
         session_id: &awaken_session_contract::SessionId,
