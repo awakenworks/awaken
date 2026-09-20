@@ -95,6 +95,9 @@ grep -q 'https://awaken-product:8443' "$RENDERED"
 grep -q 'image: nginx:1.27-alpine' "$RENDERED"
 grep -q 'secretName: awaken-worker-upstream-tls' "$RENDERED"
 grep -q 'name: awaken-worker-upstream-ca' "$RENDERED"
+[[ "$(grep -c 'credential_envelope_keys_file = "/etc/awaken-credential-envelope/keys.json"' "$RENDERED")" -eq 2 ]]
+[[ "$(grep -c 'secretName: awaken-worker-credential-envelope' "$RENDERED")" -eq 2 ]]
+[[ "$(grep -c 'defaultMode: 256' "$RENDERED")" -eq 2 ]]
 grep -q -- '- jobs' "$RENDERED"
 grep -q -- '- pods/exec' "$RENDERED"
 grep -q -- '- pods/portforward' "$RENDERED"

@@ -22,6 +22,7 @@ data:
     run_local_pool = false
     no_browser = true
     identity_mode = "self-managed"
+    credential_envelope_keys_file = "/etc/awaken-credential-envelope/keys.json"
     worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product" }
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
@@ -46,6 +47,7 @@ data:
     worker_server = "https://awaken-product:8443"
     worker_server_ca_certificate_file = "/etc/awaken-worker-tls/ca.crt"
     worker_kubernetes_identity_directory = "/var/run/awaken-worker-identity"
+    credential_envelope_keys_file = "/etc/awaken-credential-envelope/keys.json"
     worker_admin_listen = "0.0.0.0:9090"
     worker_drain_grace_secs = 15
     worker_max_concurrent = 10
@@ -291,6 +293,9 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/awaken
+            - name: credential-envelope
+              mountPath: /etc/awaken-credential-envelope
+              readOnly: true
             - name: tmp
               mountPath: /tmp
         - name: worker-tls
@@ -335,6 +340,10 @@ spec:
             items:
               - { key: tls.crt, path: tls.crt }
               - { key: tls.key, path: tls.key }
+        - name: credential-envelope
+          secret:
+            secretName: awaken-worker-credential-envelope
+            defaultMode: 256
         - name: data
           persistentVolumeClaim:
             claimName: awaken-product-data
@@ -388,6 +397,7 @@ spec:
             - { name: config, mountPath: /etc/awaken-worker, readOnly: true }
             - { name: upstream-tls, mountPath: /etc/awaken-worker-tls, readOnly: true }
             - { name: identity, mountPath: /var/run/awaken-worker-identity, readOnly: true }
+            - { name: credential-envelope, mountPath: /etc/awaken-credential-envelope, readOnly: true }
             - { name: data, mountPath: /var/lib/awaken-worker }
             - { name: tmp, mountPath: /tmp }
       volumes:
@@ -408,6 +418,10 @@ spec:
                     - { path: namespace, fieldRef: { fieldPath: metadata.namespace } }
                     - { path: name, fieldRef: { fieldPath: metadata.name } }
                     - { path: uid, fieldRef: { fieldPath: metadata.uid } }
+        - name: credential-envelope
+          secret:
+            secretName: awaken-worker-credential-envelope
+            defaultMode: 256
         - { name: data, emptyDir: {} }
         - { name: tmp, emptyDir: { sizeLimit: 1Gi } }
 ---
