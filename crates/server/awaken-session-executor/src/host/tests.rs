@@ -2,6 +2,7 @@ use super::*;
 use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_contract::SessionId;
+use awaken_session_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
 mod mcp_relay_lease;
 mod projection_convergence;
 mod resource_staging_lease;
@@ -1260,7 +1261,7 @@ async fn install_complete_test_session(
     let runtime = runtime.unwrap_or_else(|| "default".into());
     let tools = tools.unwrap_or_else(|| {
         awaken_session_contract::SessionToolConfiguration::from_capabilities(
-            &awaken_session_contract::SessionRuntime::capabilities(managed),
+            &awaken_session_contract::CapabilityRuntime::capabilities(managed),
         )
     });
     let publication = managed.host.agent_publications.as_ref().and_then(|source| {
@@ -1316,7 +1317,7 @@ async fn install_complete_test_session(
         0,
         awaken_session_contract::ResolvedSessionResources::default(),
     );
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         managed,
         thread,
         awaken_session_contract::FrozenSessionProjection {
@@ -1366,16 +1367,23 @@ async fn install_complete_test_session_for_realization(
     thread: &str,
     init: awaken_session_contract::SessionInit,
 ) -> Result<(), awaken_session_contract::RunError> {
-    managed.install_environment_binding_sink(Arc::new(BindingOrderSink {
-        host: Arc::downgrade(&managed.host),
-        authorize_calls: AtomicUsize::new(0),
-        calls: AtomicUsize::new(0),
-        observed_before_publish: AtomicBool::new(false),
-        fail: false,
-        require_realization: false,
-        owned_session_id: None,
-        committed_environment: None,
-    }));
+    managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })?
+        .install_environment_binding_sink(Arc::new(BindingOrderSink {
+            host: Arc::downgrade(&managed.host),
+            authorize_calls: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+            observed_before_publish: AtomicBool::new(false),
+            fail: false,
+            require_realization: false,
+            owned_session_id: None,
+            committed_environment: None,
+        }));
     install_complete_test_session(managed, thread, init).await?;
     managed
         .host
@@ -1443,7 +1451,7 @@ async fn install_complete_memory_test_session(
     install_complete_test_session(managed, thread, init)
         .await
         .expect("install complete Memory Session projection");
-    awaken_session_contract::SessionRuntime::apply_session_inputs(
+    awaken_session_contract::EnvironmentRuntime::apply_session_inputs(
         managed,
         thread,
         &resource_transition(
@@ -2282,7 +2290,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .with_repository_binding_verifier(Arc::new(RepositoryClaimRecorder::default()))
             .install_dispatch_session_runtime();
         let initial_dispatch = projection("authority amendment", false);
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &amendment_managed,
             "authority-amendment",
             initial_dispatch.clone(),
@@ -2345,7 +2353,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .unwrap_or(false),
             "A1/E2 rejection is side-effect free"
         );
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &amendment_managed,
             "authority-amendment",
             amended_dispatch.clone(),
@@ -2461,7 +2469,15 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     });
     let branch_managed =
         crate::ManagedHost::new(branch_host.clone()).install_dispatch_session_runtime();
-    branch_managed.install_environment_binding_sink(branch_sink.clone());
+    branch_managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(branch_sink.clone());
     let mut branch = projection("branch prompt", false);
     branch_host
         .install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
@@ -2633,6 +2649,11 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         }
         assert!(
             managed
+                .thread_reads()
+                .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime"
+                ))
+                .expect("runtime role")
                 .committed_messages("prompt-thread")
                 .await
                 .expect("prompt Thread truth")
@@ -2687,6 +2708,11 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         assert!(
             managed
+                .thread_reads()
+                .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime"
+                ))
+                .expect("runtime role")
                 .committed_messages("context-thread")
                 .await
                 .expect("C4 committed truth")
@@ -3100,6 +3126,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
 
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(command.clone())
             .await
             .expect("R1 reservation"),
@@ -3108,6 +3139,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(command.clone())
             .await
             .expect("R1 exact Reserved replay"),
@@ -3118,6 +3154,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     retraced.traceparent = Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(retraced)
             .await
             .expect("R4 trace-only replay"),
@@ -3128,6 +3169,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     changed_operation.operation_id = "cold-session-reservation-other-op".into();
     assert!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(changed_operation)
             .await
             .is_err(),
@@ -3135,6 +3181,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .session_run_state(
                 &SessionId::from(thread),
                 &RunId("cold-session-reservation-run".into())
@@ -3177,6 +3228,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .clear();
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(empty_capabilities.clone())
             .await
             .expect("R3 reserve empty capabilities"),
@@ -3189,7 +3245,15 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .required_worker_capabilities
         .insert("application:added-after-reservation/v1".into());
     assert!(
-        managed.reserve_session_run(added_capability).await.is_err(),
+        managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
+            .reserve_session_run(added_capability)
+            .await
+            .is_err(),
         "R3/E6 empty-to-present capability change conflicts"
     );
     let mut recovery_command = command.clone();
@@ -3202,6 +3266,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     )];
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(recovery_command.clone())
             .await
             .expect("R1 reserve recovery probe"),
@@ -3225,6 +3294,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(recovery_command)
             .await
             .expect("R1 exact Recovery replay"),
@@ -3257,6 +3331,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(command.clone())
             .await
             .expect("R1 exact Activated replay"),
@@ -3331,6 +3410,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(command)
             .await
             .expect("R1 exact Completed replay"),
@@ -3388,6 +3472,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(empty_capabilities.clone())
             .await
             .expect("R3 exact empty-capability Completed replay"),
@@ -3398,6 +3487,13 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     completed_changed_operation.operation_id =
         "cold-session-empty-capabilities-completed-other-op".into();
     let completed_operation_error = managed
+        .coordination()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .reserve_session_run(completed_changed_operation)
         .await
         .expect_err("R2 completed operation change conflicts");
@@ -3412,6 +3508,13 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .required_worker_capabilities
         .insert("application:added-after-completion/v1".into());
     let completed_capability_error = managed
+        .coordination()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .reserve_session_run(completed_added_capability)
         .await
         .expect_err("R3 completed empty-to-present capability change conflicts");
@@ -5023,6 +5126,13 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         resources.clone(),
     );
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs("memory-replay", &replay)
         .await
         .expect("cold durable generation installs beside the adopted Environment");
@@ -5094,6 +5204,13 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         // Memory pin; compare the completed projection, not command equality.
         for previous in [resources.clone(), changed.clone()] {
             let error = managed
+                .environment()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "EnvironmentRuntime is unsupported by this runtime",
+                    )
+                })
+                .expect("runtime role")
                 .apply_session_inputs(
                     "memory-replay",
                     &resource_transition(host.local_workspace(), 1, previous, 2, changed.clone()),
@@ -5118,6 +5235,13 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         );
     }
     let error = managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "memory-replay",
             &resource_transition(
@@ -5595,6 +5719,13 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     };
     let attached = effective_resources(vec![res.clone()]);
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "t-attach",
             &resource_transition(
@@ -5672,6 +5803,13 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 
     // Detach removes exactly that mount again.
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "t-attach",
             &resource_transition(host.local_workspace(), 1, attached, 2, Default::default()),
@@ -5796,6 +5934,13 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     durable["inputs"][0]["mount_path"] = serde_json::Value::String("/repo".into());
     let invalid = serde_json::from_value(durable).expect("decode historical Resource manifest");
     let error = managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "invalid-live-repository",
             &resource_transition(
@@ -5966,6 +6111,13 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     );
 
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "t-repo-detach",
             &resource_transition(
@@ -6050,6 +6202,13 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     }]);
 
     let error = managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "t-local-attach",
             &resource_transition(
@@ -6636,6 +6795,13 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         };
     let managed = crate::ManagedHost::new(host.clone());
     managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .validate_session_sandbox_layout(
             "worker-prospective-valid",
             &layout(
@@ -6646,6 +6812,13 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         )
         .expect("P1 Worker admission needs no Coordinator provider");
     let conflict = managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .validate_session_sandbox_layout(
             "worker-prospective-conflict",
             &layout(
@@ -6657,6 +6830,13 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .expect_err("P2 structural conflict remains fail-closed");
     assert!(conflict.to_string().contains("overlaps"), "P2: {conflict}");
     let local_error = managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .validate_session_sandbox_layout(
             "local-prospective-valid",
             &layout(
@@ -8234,7 +8414,15 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
     let thread = "claimed-ordinary-environment-authority";
     host.session_slots.update(thread, |slot| {
         slot.dispatch_claim = Some(awaken_dispatch::RunClaim {
@@ -8294,7 +8482,15 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
 
     let (left, right) = tokio::join!(
         host.ctx_for("binding-order", None),
@@ -8319,7 +8515,15 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
     use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let sink = Arc::new(ResponseLossBindingSink::default());
-    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
 
     let first_error = match host.ctx_for("binding-response-loss", None).await {
         Err(error) => error,
@@ -8399,7 +8603,15 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
         committed: std::sync::Mutex::new(Some((intent.effect_id().to_string(), binding.clone()))),
         ..Default::default()
     });
-    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
 
     let context = tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -8569,7 +8781,15 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
 
     let error = match host.ctx_for("binding-restart", None).await {
         Ok(_) => panic!("R1 missing realization reached provider I/O"),
@@ -8611,7 +8831,15 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
         calls: AtomicUsize::new(0),
         accepted_epoch: AtomicU64::new(3),
     });
-    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
 
     let first = match host.ctx_for("binding-moving-fence", None).await {
         Ok(_) => panic!("C1 reached provider I/O"),
@@ -8719,7 +8947,15 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host)
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
 
     let error = match host.ctx_for("binding-failure", None).await {
         Ok(_) => panic!("binding failure must not publish a context"),
@@ -8767,7 +9003,15 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         committed_environment: None,
     });
     let managed = install_test_dispatch_runtime(&host);
-    managed.install_environment_binding_sink(sink.clone());
+    managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
     managed
         .install_complete_test_session(
             "deferred-hand",
@@ -8833,7 +9077,15 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         committed_environment: None,
     });
     let managed = install_test_dispatch_runtime(&host);
-    managed.install_environment_binding_sink(sink.clone());
+    managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
     managed
         .install_complete_test_session(
             "deferred-failure",
@@ -9574,6 +9826,13 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         .await
         .expect("canonical Repository path stages through the complete projection");
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "canonical-repository-path",
             &resource_transition(host.local_workspace(), 0, Default::default(), 0, resources),
@@ -9681,7 +9940,15 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         owned_session_id: None,
         committed_environment: None,
     });
-    managed.install_environment_binding_sink(initial_binding_sink.clone());
+    managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(initial_binding_sink.clone());
     let resources = effective_repository(
         "repository-publication",
         remote.to_str().unwrap(),
@@ -9733,7 +10000,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     // transition before any Environment can exist. The complete Runtime port
     // owns both effects; no test-only preparation or direct slot write may
     // create a competing partial projection.
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         session_id,
         ordinary_projection.clone(),
@@ -9896,7 +10163,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
             resources.clone(),
         ),
     );
-    awaken_session_contract::SessionRuntime::install_terminal_cleanup_assignment(
+    awaken_session_contract::TerminalCleanupRuntime::install_terminal_cleanup_assignment(
         &managed,
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
@@ -9908,10 +10175,24 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     .await
     .expect("P1 install the aggregate-fenced publication assignment");
     let first = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P1 publish");
     let replay = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P2 replay");
@@ -10048,7 +10329,15 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         owned_session_id: None,
         committed_environment: None,
     });
-    replacement_managed.install_environment_binding_sink(replacement_binding_sink.clone());
+    replacement_managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(replacement_binding_sink.clone());
 
     assert!(
         !replacement_host.session_slots.contains(session_id)
@@ -13915,6 +14204,13 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .await
         .unwrap();
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "t-rot",
             &resource_transition(
@@ -13971,6 +14267,13 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // The Managed adapter stores the supplied credential in the Vault and publishes a
     // new Repository config before invoking this complete-manifest runtime port.
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "t-rot",
             &resource_transition(
@@ -14212,6 +14515,13 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             .await
             .unwrap_or_else(|error| panic!("{}: {error}", case.rule));
         managed
+            .environment()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "EnvironmentRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
             .apply_session_inputs(
                 &thread,
                 &resource_transition(host.local_workspace(), 0, Default::default(), 0, resources),
@@ -14647,6 +14957,13 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .await
         .expect("prepare pinned Skill");
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "skill-revoke",
             &resource_transition(&workspace, 0, Default::default(), 0, resources),
@@ -14680,6 +14997,13 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("installed manifest");
 
     managed
+        .environment()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "EnvironmentRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .apply_session_inputs(
             "skill-revoke",
             &resource_transition(
@@ -18936,7 +19260,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         .previous_resource_manifest
         .clone()
         .expect("HS1 frozen source manifest");
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
         projection,
@@ -18993,7 +19317,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         }))
         .expect("HS1 decode the aggregate-owned preparation transport");
 
-    let error = awaken_session_contract::SessionRuntime::prepare_checkpoint_source_disposal(
+    let error = awaken_session_contract::EnvironmentRuntime::prepare_checkpoint_source_disposal(
         &managed,
         thread,
         &preparation,
@@ -19634,6 +19958,12 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     let asserted_effect = effect.clone();
     let mut preparation = tokio::spawn(async move {
         managed
+            .terminal_cleanup()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime",
+                )
+            })?
             .prepare_terminal_cleanup_for_effect(effect, authorization)
             .await
     });
@@ -19743,7 +20073,7 @@ async fn install_terminal_recovery_projection(
     environment: awaken_session_contract::SessionEnvironmentState,
 ) -> awaken_session_contract::FrozenSessionProjection {
     let mut projection = remote_terminal_cleanup_projection();
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         managed,
         thread,
         projection.clone(),
@@ -19818,6 +20148,13 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let preparation = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
         .await
         .expect("HS2 total-absence terminal preparation");
@@ -19844,6 +20181,13 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     events.lock().unwrap().clear();
     let disposal_effect = terminal_disposal_effect(preparation, lease, &terminal_projection);
     let disposal = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
         .expect("HS2 total-absence physical-disposal proof");
@@ -19925,6 +20269,13 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let preparation = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
         .await
         .expect("HS3 prepare exact disposing cleanup");
@@ -19970,6 +20321,13 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         "HS3/E1 physical disposal inherits continuation fpA exactly",
     );
     let disposal = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
         .expect("HS3 resume exact physical disposal");
@@ -20042,7 +20400,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     let managed = managed_with_resource_source(host.clone());
 
     let mut projection = terminal_memory_projection();
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
         projection.clone(),
@@ -20081,6 +20439,13 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E1 closed authorization carries exact continuation A/fpA",
     );
     let preparation = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect, authorization)
         .await
         .expect("A1 exact inherited preparation closes physical response loss");
@@ -20108,6 +20473,13 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E3 aggregate disposal keeps exact A/fpA",
     );
     managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .dispose_terminal_cleanup_for_effect(disposal_effect)
         .await
         .expect("A1/E3 total absence is exact physical response-loss success");
@@ -20159,7 +20531,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
         let managed = managed_with_resource_source(host.clone());
 
         let mut projection = terminal_memory_projection();
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
             projection.clone(),
@@ -20224,6 +20596,13 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             let preparation_authorization =
                 terminal_preparation_authorization(&effect, &projection);
             let error = managed
+                .terminal_cleanup()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "TerminalCleanupRuntime is unsupported by this runtime",
+                    )
+                })
+                .expect("runtime role")
                 .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
                 .await
                 .expect_err("M0 unavailable writable Memory must fail before source effects");
@@ -20301,7 +20680,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     let managed = managed_with_resource_source(host.clone());
 
     let projection = terminal_memory_projection();
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
         projection.clone(),
@@ -20322,6 +20701,13 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
 
     let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
     let preparation = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
         .expect("HM0b exact provider absence closes missing handle evidence");
@@ -20550,6 +20936,13 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             for _ in 0..2 {
                 let authorization = terminal_preparation_authorization(&effect, &projection);
                 let error = managed
+                    .terminal_cleanup()
+                    .ok_or_else(|| {
+                        awaken_session_contract::RunError::unavailable(
+                            "TerminalCleanupRuntime is unsupported by this runtime",
+                        )
+                    })
+                    .expect("runtime role")
                     .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
                     .await
                     .expect_err("H5/H6 rejected Memory cannot prepare disposal");
@@ -20581,6 +20974,13 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
         let preparation = managed
+            .terminal_cleanup()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
             .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
             .await
             .unwrap_or_else(|error| panic!("{} terminal Memory cleanup: {error}", rule.name));
@@ -20678,6 +21078,13 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
         let disposal = managed
+            .terminal_cleanup()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .unwrap_or_else(|error| panic!("{} terminal physical disposal: {error}", rule.name));
@@ -20738,7 +21145,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     install_test_session_application(&host);
 
     let mut terminal_projection = remote_terminal_cleanup_projection();
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         "t-end",
         terminal_projection.clone(),
@@ -20912,15 +21319,27 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         terminal_preparation_authorization(&effect, &terminal_projection);
     let before = host.prepared_session_environment("t-end");
     let (archive, recovery) = tokio::join!(
-        managed.prepare_terminal_cleanup_for_effect(
-            effect.clone(),
-            preparation_authorization.clone(),
-        ),
-        managed.prepare_terminal_cleanup_for_effect(
-            effect.clone(),
-            preparation_authorization.clone(),
-        )
-    );
+            managed
+                .terminal_cleanup()
+                .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime"
+                ))
+                .expect("runtime role")
+                .prepare_terminal_cleanup_for_effect(
+                    effect.clone(),
+                    preparation_authorization.clone(),
+                ),
+            managed
+                .terminal_cleanup()
+                .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime"
+                ))
+                .expect("runtime role")
+                .prepare_terminal_cleanup_for_effect(
+                    effect.clone(),
+                    preparation_authorization.clone(),
+                )
+        );
     if conflicting {
         for outcome in [archive, recovery] {
             let error = outcome.expect_err("U4 inconsistent root must fail closed");
@@ -20979,6 +21398,13 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )).unwrap(), "U retains missing ordinary commit evidence");
     }
     managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .acknowledge_terminal_cleanup_preparation(&effect)
         .await;
     assert!(
@@ -21019,6 +21445,13 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "T2/E4 retains the exact terminal projection until durable acknowledgement"
     );
     managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .acknowledge_terminal_cleanup_disposal(&disposal_effect)
         .await;
     assert!(host.registered_thread_workspace("t-end").is_none(), "T3/E5");
@@ -21029,6 +21462,13 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     );
 
     let replay_error = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
         .expect_err("T4 retired generation fails closed");
@@ -21069,6 +21509,13 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )
         .expect("T4 close the foreign Host preparation input");
     let missing_error = managed
+        .terminal_cleanup()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "TerminalCleanupRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(missing_effect, missing_authorization)
         .await
         .expect_err("T4 unknown generation fails closed");
@@ -21193,6 +21640,13 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                 .await;
 
         let preparation = managed
+            .terminal_cleanup()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
             .prepare_terminal_cleanup_for_effect(
                 effect.clone(),
                 terminal_preparation_authorization(&effect, &projection),
@@ -21220,6 +21674,11 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         *worker.current.lock().unwrap() = None;
         assert!(
             managed
+                .terminal_cleanup()
+                .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime"
+                ))
+                .expect("runtime role")
                 .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
                 .await
                 .is_err(),
@@ -21296,11 +21755,25 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         });
         probe.restored_release.notify_one();
         let first = managed
+            .terminal_cleanup()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 dispose exact restore target");
         probe.restored_release.notify_one();
         let replay = managed
+            .terminal_cleanup()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 replay after disposal receipt loss");
@@ -21329,6 +21802,13 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
 
         managed
+            .terminal_cleanup()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime",
+                )
+            })
+            .expect("runtime role")
             .acknowledge_terminal_cleanup_disposal(&disposal_effect)
             .await;
         assert!(!host.session_slots.contains(thread), "TR3/E4");
@@ -23305,7 +23785,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let mut projection = remote_terminal_cleanup_projection();
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         "remote-terminal-worker",
         projection.clone(),
@@ -23481,7 +23961,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
 
     let ordinary_id = "renewal-beside-terminal";
     let ordinary_projection = remote_terminal_cleanup_projection();
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         ordinary_id,
         ordinary_projection.clone(),
@@ -26109,4 +26589,27 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         server.bearer().is_none(),
         "G2 the Host must hold no upstream material on a mediated route"
     );
+}
+
+// Session runtime role ladder (ADR-0081 §3): C1 the production host. R1 it owns
+// every role, so a Coordinator composed over `ManagedHost` never meets a
+// `None` rung; the ladder exists for narrower runtimes and fakes, and this law
+// is what lets protocol adapters select roles without a fallback path.
+#[test]
+fn managed_host_owns_every_session_runtime_role() {
+    fn assert_all(host: &dyn awaken_session_contract::SessionRuntime) {
+        assert!(host.realization().is_some(), "R1 realization");
+        assert!(host.coordination().is_some(), "R1 coordination");
+        assert!(host.budget().is_some(), "R1 budget");
+        assert!(host.streaming_runs().is_some(), "R1 streaming runs");
+        assert!(host.environment().is_some(), "R1 environment");
+        assert!(host.thread_reads().is_some(), "R1 thread reads");
+        assert!(host.terminal_cleanup().is_some(), "R1 terminal cleanup");
+        assert!(host.outcomes().is_some(), "R1 outcomes");
+        assert!(host.live_inbox().is_some(), "R1 live inbox");
+        assert!(host.capability().is_some(), "R1 capability");
+    }
+    let shared = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let host = crate::ManagedHost::new(shared);
+    assert_all(&host);
 }

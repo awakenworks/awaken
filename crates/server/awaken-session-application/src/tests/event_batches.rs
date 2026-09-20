@@ -118,10 +118,129 @@ impl EventBatchRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for EventBatchRuntime {
+    async fn run(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        NoopRuntime.run(agent, thread, content).await
+    }
+
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        decision: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
+        NoopRuntime.resume(thread, tool_use_id, decision).await
+    }
+
+    async fn resume_custom(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    ) -> Result<StepOutcome, RunError> {
+        NoopRuntime
+            .resume_custom(thread, tool_use_id, content, is_error)
+            .await
+    }
+
+    fn model(&self) -> String {
+        "event-batch-test-model".into()
+    }
+
+    fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
+        Some(self)
+    }
+
+    fn coordination(&self) -> Option<&dyn awaken_session_contract::CoordinationRuntime> {
+        Some(self)
+    }
+
+    fn streaming_runs(&self) -> Option<&dyn awaken_session_contract::StreamingRunRuntime> {
+        Some(self)
+    }
+
+    fn thread_reads(&self) -> Option<&dyn awaken_session_contract::ThreadReadRuntime> {
+        Some(self)
+    }
+
+    fn outcomes(&self) -> Option<&dyn awaken_session_contract::OutcomeRuntime> {
+        Some(self)
+    }
+
+    fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
+        Some(self)
+    }
+
+    fn environment(&self) -> Option<&dyn awaken_session_contract::EnvironmentRuntime> {
+        Some(self)
+    }
+
+    fn terminal_cleanup(&self) -> Option<&dyn awaken_session_contract::TerminalCleanupRuntime> {
+        Some(self)
+    }
+
+    fn live_inbox(&self) -> Option<&dyn awaken_session_contract::LiveInboxRuntime> {
+        Some(self)
+    }
+
+    fn capability(&self) -> Option<&dyn awaken_session_contract::CapabilityRuntime> {
+        Some(self)
+    }
+}
+
+awaken_session_contract::neutral_role!(BudgetRuntime for EventBatchRuntime);
+
+awaken_session_contract::neutral_role!(EnvironmentRuntime for EventBatchRuntime);
+
+awaken_session_contract::neutral_role!(TerminalCleanupRuntime for EventBatchRuntime);
+
+awaken_session_contract::neutral_role!(LiveInboxRuntime for EventBatchRuntime);
+
+awaken_session_contract::neutral_role!(CapabilityRuntime for EventBatchRuntime);
+
+#[async_trait::async_trait]
+impl awaken_session_contract::RealizationRuntime for EventBatchRuntime {
     fn observe_realization_request(
         &self,
     ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
         crate::tests::test_realization_request_started()
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Reconcile the existing Runtime projections through the given Control
+    /// owner. Local and Worker deployment use one slot-based selection and
+    /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
+    async fn renew_session_realization_projections(
+        &self,
+        control: &dyn awaken_session_contract::SessionRealizationControl,
+        owner: &str,
+        runtime_incarnation: &str,
+        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+    ) -> Result<usize, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
+            .await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Validate the exact provider-effective Sandbox layout without publishing
+    /// process-local state or performing provider, cache, Skill, File, Vault,
+    /// Repository, or Git I/O. Session creation and Resource mutation call this
+    /// before their durable/effect boundaries; Runtime repeats it at the final
+    /// realization edge as defense in depth.
+    fn validate_session_sandbox_layout(
+        &self,
+        thread: &str,
+        layout: &awaken_session_contract::SessionSandboxLayout,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime.validate_session_sandbox_layout(thread, layout)
     }
 
     async fn install_session_projection(
@@ -150,10 +269,55 @@ impl SessionRuntime for EventBatchRuntime {
         install_complete_test_projection(self, thread, projection, mode).await
     }
 
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
+    /// an already-installed realization fence. This is the only lease-only
+    /// Runtime mutation; it deliberately carries no projection or phase action.
+    async fn renew_session_realization_lease(
+        &self,
+        thread: &str,
+        lease: awaken_session_contract::ObservedSessionRealizationLease,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .renew_session_realization_lease(thread, lease)
+            .await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Forget one failed realization fence from disposable Runtime state. The
+    /// aggregate remains the sole lease authority: this hook only prevents a
+    /// later retry from authorizing effects with a lease that Control has
+    /// already failed or may have failed before losing its response.
+    async fn invalidate_session_realization_lease(
+        &self,
+        thread: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .invalidate_session_realization_lease(thread, lease)
+            .await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Install the durable callback used at the exact sandbox creation boundary.
+    fn install_environment_binding_sink(
+        &self,
+        sink: std::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+    ) {
+        awaken_session_contract::NeutralRuntime.install_environment_binding_sink(sink)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::CoordinationRuntime for EventBatchRuntime {
     async fn reserve_session_run(
         &self,
-        command: AdmitSessionRun,
-    ) -> Result<SessionRunReservation, RunError> {
+        command: awaken_session_contract::AdmitSessionRun,
+    ) -> Result<awaken_session_contract::SessionRunReservation, awaken_session_contract::RunError>
+    {
         let barriers = self.reservation_barriers.lock().unwrap().take();
         if let Some((entered, release)) = barriers {
             entered.wait().await;
@@ -242,6 +406,27 @@ impl SessionRuntime for EventBatchRuntime {
         Ok(SessionRunActivation::Activated)
     }
 
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Register a foreground observer before publishing a delivery, then wait
+    /// for the exact committed Run to become `Awaiting` or `Ended`.
+    ///
+    /// The admission plan is produced only after the Session application has
+    /// committed its exact activity receipt. Recovery-only plans still wait on
+    /// committed Thread truth and never create another reservation/activity.
+    /// Public queued Event acceptance has its own durable command boundary and
+    /// does not wait through this foreground observation port.
+    async fn activate_and_observe_session_run(
+        &self,
+        admission: awaken_session_contract::AdmittedSessionRun,
+        input_message_ids: Vec<String>,
+        sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .activate_and_observe_session_run(admission, input_message_ids, sink)
+            .await
+    }
+
     async fn session_run_state(
         &self,
         _session_id: &SessionId,
@@ -249,6 +434,388 @@ impl SessionRuntime for EventBatchRuntime {
     ) -> Result<Option<RunState>, RunError> {
         self.run_state_reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.states.lock().unwrap().get(&run_id.0).cloned())
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Read the runtime-owned, durable child-Run relationships for `thread`.
+    /// Protocol adapters use this only to rebuild disposable projections after a
+    /// restart; the runtime relationship registry remains the sole authority.
+    async fn delegated_runs(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<awaken_session_contract::DelegatedRun>, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .delegated_runs(thread)
+            .await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Admit one ordinary child Run after the Session application has validated
+    /// the frozen roster and lifecycle. Implementations must use their canonical
+    /// durable Run ingress; the default fails closed rather than spawning a
+    /// process-local task.
+    async fn admit_coordinated_run(
+        &self,
+        command: awaken_session_contract::CoordinatedRunCommand,
+    ) -> Result<
+        awaken_session_contract::SessionAgentMessageReceipt,
+        awaken_session_contract::RunError,
+    > {
+        awaken_session_contract::NeutralRuntime
+            .admit_coordinated_run(command)
+            .await
+    }
+
+    async fn coordinated_threads(
+        &self,
+        session_id: &SessionId,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
+        Ok(vec![CoordinatedThreadLink {
+            session_id: session_id.clone(),
+            thread_id: ThreadId("event-child".into()),
+            target: CoordinatedThreadTarget::Agent {
+                agent_id: "event-child-agent".into(),
+            },
+            created_by_operation_id: "event-child-create".into(),
+            latest_run_id: Some(RunId("event-child-run".into())),
+        }])
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Subscribe to neutral live observations for one already-admitted root or
+    /// child logical Thread. `None` is the fail-closed default: committed events
+    /// remain available, but no Runtime without an exact Thread-scoped observer
+    /// can accidentally leak previews across Threads. This port is a view over
+    /// the Runtime's existing live hub, not another fan-out or replay owner.
+    async fn subscribe_session_thread_live(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+        thread_id: &str,
+    ) -> Result<
+        Option<Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>,
+        awaken_session_contract::RunError,
+    > {
+        awaken_session_contract::NeutralRuntime
+            .subscribe_session_thread_live(session_id, thread_id)
+            .await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Admit one Session-approved child report as immutable input of the
+    /// deterministic primary Run. Implementations must not stage a parallel
+    /// Outbox/Inbox message for this internal Agent-to-Agent transfer.
+    async fn continue_session_agent_report(
+        &self,
+        command: awaken_session_contract::SessionAgentReportContinuation,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .continue_session_agent_report(command)
+            .await
+    }
+
+    async fn interrupt_session_thread(
+        &self,
+        session_id: &SessionId,
+        child_thread_id: &ThreadId,
+    ) -> Result<(), RunError> {
+        self.child_interrupt_calls.fetch_add(1, Ordering::SeqCst);
+        self.trace
+            .lock()
+            .unwrap()
+            .push(format!("interrupt:{}", child_thread_id.0));
+        if self.fail_child_interrupt_once.swap(false, Ordering::SeqCst) {
+            return Err(RunError::unavailable(
+                "scripted interruption before child effect",
+            ));
+        }
+        self.child_interrupt_effects
+            .lock()
+            .unwrap()
+            .insert((session_id.to_string(), child_thread_id.0.clone()));
+        Ok(())
+    }
+
+    async fn session_thread_tool_reply_fence(
+        &self,
+        command: &SessionThreadToolReplyCommand,
+    ) -> Result<SessionThreadToolReplyFence, RunError> {
+        if command.expected_run_id.0.trim().is_empty()
+            || command.expected_correlation_id.trim().is_empty()
+            || command.tool_use_id.trim().is_empty()
+        {
+            return Err(RunError::bad_request("incomplete scripted reply"));
+        }
+        let operation = command.activity_operation_id();
+        let staged = self.staged_tool_replies.lock().unwrap();
+        if staged.get(&operation) == Some(command) {
+            return Ok(SessionThreadToolReplyFence {
+                activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                    prior_epoch: None,
+                },
+                already_applied: true,
+            });
+        }
+        if staged.values().any(|existing| {
+            existing.session_id == command.session_id
+                && existing.expected_run_id == command.expected_run_id
+                && existing.expected_correlation_id == command.expected_correlation_id
+        }) {
+            return Err(RunError::bad_request(
+                "scripted awaiting correlation was answered by another operation",
+            ));
+        }
+        drop(staged);
+        let prior_session_activity_epoch = self.tool_reply_prior_epoch.load(Ordering::SeqCst);
+        if prior_session_activity_epoch == 0 {
+            return Err(RunError::internal(
+                "scripted reply has no prior Session activity epoch",
+            ));
+        }
+        Ok(SessionThreadToolReplyFence {
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(prior_session_activity_epoch),
+            },
+            already_applied: false,
+        })
+    }
+
+    async fn reply_session_thread_tool(
+        &self,
+        delivery: SessionThreadToolReplyDelivery,
+    ) -> Result<(), RunError> {
+        self.tool_reply_calls.fetch_add(1, Ordering::SeqCst);
+        self.trace
+            .lock()
+            .unwrap()
+            .push(format!("reply:{}", delivery.command.tool_use_id));
+        let operation = delivery.command.activity_operation_id();
+        let mut staged = self.staged_tool_replies.lock().unwrap();
+        if let Some(existing) = staged.get(&operation) {
+            if existing != &delivery.command {
+                return Err(RunError::bad_request(
+                    "scripted reply operation changed payload",
+                ));
+            }
+        } else {
+            staged.insert(operation, delivery.command);
+        }
+        drop(staged);
+        if self
+            .fail_tool_reply_after_stage_once
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(RunError::unavailable(
+                "scripted crash after durable reply stage",
+            ));
+        }
+        Ok(())
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Foreground form of [`Self::reply_session_thread_tool`]. The durable
+    /// reply ingress remains identical; implementations additionally register
+    /// before publication and project the next committed Step from Thread
+    /// truth. No inline executor is authorized by this observation policy.
+    async fn reply_and_observe_session_thread_tool(
+        &self,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
+    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .reply_and_observe_session_thread_tool(delivery)
+            .await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Stop the parent Run, wait until it can no longer commit a delegation, and
+    /// then read the complete child set from durable runtime authority.
+    async fn quiesce_terminal_delegations(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, awaken_session_contract::RunError>
+    {
+        self.streaming_runs()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "StreamingRunRuntime is unsupported by this runtime",
+                )
+            })?
+            .interrupt(thread)
+            .await?;
+        Ok(awaken_session_contract::DelegatedRunSnapshot {
+            delegated_runs: self.delegated_runs(thread).await?,
+            coordinated_thread_ids: Vec::new(),
+            watermark: 0,
+            runtime_commit_cursor: self
+                .thread_reads()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "ThreadReadRuntime is unsupported by this runtime",
+                    )
+                })?
+                .session_thread_recovery_snapshot(
+                    &awaken_session_contract::SessionId::from(thread),
+                    thread,
+                )
+                .await?
+                .map(|snapshot| snapshot.store_cursor)
+                .unwrap_or_default(),
+        })
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Validate one model-facing Agent command against the source Run's exact
+    /// committed `ActiveToolBatch`. Implementations must use the same atomic
+    /// Thread recovery prefix as ordinary crash recovery; a process-local tool
+    /// context or authenticated Worker claim alone is not sufficient proof of
+    /// call identity or payload. Success returns the command reconstructed from
+    /// that committed prefix; Session policy consumes that value instead of
+    /// trusting a second copy supplied by the caller. The fail-closed default
+    /// keeps lightweight runtimes from silently becoming a second trusted
+    /// command source.
+    async fn validate_session_agent_message_source(
+        &self,
+        command: &awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<
+        awaken_session_contract::SessionAgentMessageCommand,
+        awaken_session_contract::RunError,
+    > {
+        awaken_session_contract::NeutralRuntime
+            .validate_session_agent_message_source(command)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::StreamingRunRuntime for EventBatchRuntime {
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Run one request with its protocol-projected, backend-neutral content
+    /// owner. Adapters that do not support attributed capture may use the
+    /// compatibility default; runtime hosts override it and persist attribution
+    /// on the durable activation.
+    async fn run_attributed(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _data_subject_id: Option<String>,
+    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        self.run(agent, thread, content).await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Run one user request, installing `sink` as the Run's best-effort live-progress
+    /// channel so the adapter can project in-flight `stream::Kind` into
+    /// `event_start`/`event_delta` previews. The committed [`awaken_session_contract::StepOutcome`] is
+    /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
+    /// default ignores the sink and delegates to `run`, so a host without a
+    /// streaming path (or a test double) is unaffected.
+    async fn run_streaming(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        self.run(agent, thread, content).await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Streaming counterpart of [`run_attributed`](Self::run_attributed).
+    async fn run_streaming_attributed(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _data_subject_id: Option<String>,
+        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        self.run_streaming(agent, thread, content, sink).await
+    }
+
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+        self.primary_interrupt_calls.fetch_add(1, Ordering::SeqCst);
+        self.trace.lock().unwrap().push("interrupt:primary".into());
+        if self
+            .fail_primary_interrupt_once
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(RunError::unavailable(
+                "scripted interruption before primary effect",
+            ));
+        }
+        self.primary_interrupt_effects
+            .lock()
+            .unwrap()
+            .insert(thread.to_string());
+        Ok(())
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Rebind `thread` to `model` for its subsequent Runs (R5, per-Run override).
+    /// The default is a no-op, so a host without per-thread model routing is
+    /// unaffected; the server impl re-stages the thread's model and evicts the
+    /// cached context so the next Run resolves the new executor.
+    async fn rebind_model(
+        &self,
+        thread: &str,
+        model: &str,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .rebind_model(thread, model)
+            .await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Whether the thread's selected model accepts a system message after the
+    /// conversation has started. Runtimes whose models do not support this can
+    /// fail admission before the Managed adapter persists the inbound event.
+    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+        awaken_session_contract::NeutralRuntime
+            .supports_mid_conversation_system(thread)
+            .await
+    }
+
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// The tool currently blocking `thread`, if any. Admission uses this
+    /// read-only projection to reject events that cannot legally precede the
+    /// matching result; resume remains the sole mutating authority.
+    async fn pending_tool(
+        &self,
+        thread: &str,
+    ) -> Result<Option<awaken_session_contract::Pending>, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .pending_tool(thread)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ThreadReadRuntime for EventBatchRuntime {
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// True when durable truth already exists for `thread`. Session-id minting
+    /// consults this to skip ids a previous process persisted; implementations
+    /// MUST answer without materializing any per-thread state (no context
+    /// build, no cache entry) — probing must be free of side effects. The
+    /// default reports nothing, so an ephemeral host mints densely from 0.
+    async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .owns_thread(thread)
+            .await
     }
 
     async fn committed_messages(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
@@ -337,120 +904,107 @@ impl SessionRuntime for EventBatchRuntime {
         ))
     }
 
-    async fn coordinated_threads(
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Read one exact committed Run through the same internally consistent
+    /// logical-Thread prefix. Settlement already owns the immutable Run id from
+    /// its guarded dispatch and must not rediscover it through a process-local
+    /// "latest Run" projection.
+    ///
+    /// The compatibility default filters the existing Thread snapshot. Shared
+    /// durable adapters override this method so a cold replica can query its
+    /// authoritative [`RunRecoverySource`](awaken_agent_contract::thread::read::recovery::RunRecoverySource)
+    /// directly by `run_id`.
+    async fn session_thread_run_recovery_snapshot(
         &self,
-        session_id: &SessionId,
-        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
-        Ok(vec![CoordinatedThreadLink {
-            session_id: session_id.clone(),
-            thread_id: ThreadId("event-child".into()),
-            target: CoordinatedThreadTarget::Agent {
-                agent_id: "event-child-agent".into(),
-            },
-            created_by_operation_id: "event-child-create".into(),
-            latest_run_id: Some(RunId("event-child-run".into())),
-        }])
+        session_id: &awaken_session_contract::SessionId,
+        thread_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<
+        Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+        awaken_session_contract::RunError,
+    > {
+        let Some(mut snapshot) = self
+            .session_thread_recovery_snapshot(session_id, thread_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !snapshot.runs.iter().any(|run| &run.id == run_id) {
+            return Ok(None);
+        }
+        snapshot.claimed_run_id = run_id.clone();
+        Ok(Some(snapshot))
     }
 
-    async fn session_thread_tool_reply_fence(
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Read committed Run lifecycle facts after `cursor`. The commit log remains
+    /// the sole authority; Managed uses this projection to observe Runs accepted
+    /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
+    async fn committed_run_lifecycle(
         &self,
-        command: &SessionThreadToolReplyCommand,
-    ) -> Result<SessionThreadToolReplyFence, RunError> {
-        if command.expected_run_id.0.trim().is_empty()
-            || command.expected_correlation_id.trim().is_empty()
-            || command.tool_use_id.trim().is_empty()
-        {
-            return Err(RunError::bad_request("incomplete scripted reply"));
-        }
-        let operation = command.activity_operation_id();
-        let staged = self.staged_tool_replies.lock().unwrap();
-        if staged.get(&operation) == Some(command) {
-            return Ok(SessionThreadToolReplyFence {
-                activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
-                    prior_epoch: None,
-                },
-                already_applied: true,
-            });
-        }
-        if staged.values().any(|existing| {
-            existing.session_id == command.session_id
-                && existing.expected_run_id == command.expected_run_id
-                && existing.expected_correlation_id == command.expected_correlation_id
-        }) {
-            return Err(RunError::bad_request(
-                "scripted awaiting correlation was answered by another operation",
-            ));
-        }
-        drop(staged);
-        let prior_session_activity_epoch = self.tool_reply_prior_epoch.load(Ordering::SeqCst);
-        if prior_session_activity_epoch == 0 {
-            return Err(RunError::internal(
-                "scripted reply has no prior Session activity epoch",
-            ));
-        }
-        Ok(SessionThreadToolReplyFence {
-            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
-                prior_epoch: Some(prior_session_activity_epoch),
-            },
-            already_applied: false,
-        })
+        thread: &str,
+        cursor: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_agent_contract::RunLifecyclePage, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .committed_run_lifecycle(thread, cursor, limit)
+            .await
     }
 
-    async fn reply_session_thread_tool(
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Read the durable disposition of one logical child Thread through its
+    /// parent Session's physical commit partition. Legacy Threads without the
+    /// state cell remain Active.
+    async fn session_thread_disposition(
         &self,
-        delivery: SessionThreadToolReplyDelivery,
-    ) -> Result<(), RunError> {
-        self.tool_reply_calls.fetch_add(1, Ordering::SeqCst);
-        self.trace
-            .lock()
-            .unwrap()
-            .push(format!("reply:{}", delivery.command.tool_use_id));
-        let operation = delivery.command.activity_operation_id();
-        let mut staged = self.staged_tool_replies.lock().unwrap();
-        if let Some(existing) = staged.get(&operation) {
-            if existing != &delivery.command {
-                return Err(RunError::bad_request(
-                    "scripted reply operation changed payload",
-                ));
-            }
-        } else {
-            staged.insert(operation, delivery.command);
-        }
-        drop(staged);
-        if self
-            .fail_tool_reply_after_stage_once
-            .swap(false, Ordering::SeqCst)
-        {
-            return Err(RunError::unavailable(
-                "scripted crash after durable reply stage",
-            ));
-        }
-        Ok(())
+        session_id: &awaken_session_contract::SessionId,
+        thread_id: &str,
+    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .session_thread_disposition(session_id, thread_id)
+            .await
     }
 
-    async fn interrupt_session_thread(
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Commit the absorbing archive disposition on one logical child Thread
+    /// through its parent Session partition. Implementations must not mutate a
+    /// protocol cache or open child-named storage.
+    async fn archive_session_thread(
         &self,
-        session_id: &SessionId,
-        child_thread_id: &ThreadId,
-    ) -> Result<(), RunError> {
-        self.child_interrupt_calls.fetch_add(1, Ordering::SeqCst);
-        self.trace
-            .lock()
-            .unwrap()
-            .push(format!("interrupt:{}", child_thread_id.0));
-        if self.fail_child_interrupt_once.swap(false, Ordering::SeqCst) {
-            return Err(RunError::unavailable(
-                "scripted interruption before child effect",
-            ));
-        }
-        self.child_interrupt_effects
-            .lock()
-            .unwrap()
-            .insert((session_id.to_string(), child_thread_id.0.clone()));
-        Ok(())
+        session_id: &awaken_session_contract::SessionId,
+        thread_id: &str,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        awaken_session_contract::NeutralRuntime
+            .archive_session_thread(session_id, thread_id)
+            .await
     }
 
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Read one exact terminal Outcome projection from committed Thread truth.
+    /// `None` means the id is absent or still active. Implementations must not
+    /// resume the Outcome or reconstruct a terminal from an in-process
+    /// [`awaken_session_contract::StepOutcome`].
+    async fn committed_outcome_projection(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+    ) -> Result<
+        Option<awaken_session_contract::CommittedOutcomeProjection>,
+        awaken_session_contract::RunError,
+    > {
+        awaken_session_contract::NeutralRuntime
+            .committed_outcome_projection(thread, outcome_id)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::OutcomeRuntime for EventBatchRuntime {
     async fn prepare_outcome(
         &self,
         _thread: &str,
@@ -504,6 +1058,30 @@ impl SessionRuntime for EventBatchRuntime {
         Ok(source_commit_cursor)
     }
 
+    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // answered this role method with anything but the refusal below.
+    /// Convenience composition over the canonical prepare/continue phases.
+    async fn define_outcome(
+        &self,
+        thread: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<awaken_session_contract::OutcomeDrive, awaken_session_contract::RunError> {
+        let outcome_id = awaken_session_contract::session_outcome_convenience_id(
+            thread,
+            description,
+            rubric,
+            max_iterations,
+        );
+        let _ = self
+            .prepare_outcome(thread, &outcome_id, description, rubric, max_iterations)
+            .await?;
+        self.continue_outcome(thread)
+            .await?
+            .ok_or_else(|| RunError::internal("prepared Outcome is not active"))
+    }
+
     async fn continue_outcome(&self, _thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
         self.outcome_continue_calls.fetch_add(1, Ordering::SeqCst);
         if !self.outcome_active.load(Ordering::SeqCst) {
@@ -517,58 +1095,6 @@ impl SessionRuntime for EventBatchRuntime {
         } else {
             Some(OutcomeDrive::Awaiting)
         })
-    }
-
-    async fn run(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<ContentBlock>,
-    ) -> Result<StepOutcome, RunError> {
-        NoopRuntime.run(agent, thread, content).await
-    }
-
-    async fn resume(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        decision: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        NoopRuntime.resume(thread, tool_use_id, decision).await
-    }
-
-    async fn resume_custom(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        content: Vec<ContentBlock>,
-        is_error: bool,
-    ) -> Result<StepOutcome, RunError> {
-        NoopRuntime
-            .resume_custom(thread, tool_use_id, content, is_error)
-            .await
-    }
-
-    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
-        self.primary_interrupt_calls.fetch_add(1, Ordering::SeqCst);
-        self.trace.lock().unwrap().push("interrupt:primary".into());
-        if self
-            .fail_primary_interrupt_once
-            .swap(false, Ordering::SeqCst)
-        {
-            return Err(RunError::unavailable(
-                "scripted interruption before primary effect",
-            ));
-        }
-        self.primary_interrupt_effects
-            .lock()
-            .unwrap()
-            .insert(thread.to_string());
-        Ok(())
-    }
-
-    fn model(&self) -> String {
-        "event-batch-test-model".into()
     }
 }
 
@@ -4383,6 +4909,11 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
         .expect("C1 canonical projection");
     assert_eq!(
         runtime
+            .coordination()
+            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+                "CoordinationRuntime is unsupported by this runtime"
+            ))
+            .expect("runtime role")
             .reserve_session_run(AdmitSessionRun {
                 session_id: command.session_id.clone(),
                 agent_id: command.agent_id.clone(),

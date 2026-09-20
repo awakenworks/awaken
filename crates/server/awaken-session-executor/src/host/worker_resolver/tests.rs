@@ -176,7 +176,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     let ephemeral = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let ephemeral_managed = managed_test_host(ephemeral.clone());
     let session_id = "ephemeral-report-root";
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &ephemeral_managed,
         session_id,
         empty_frozen_projection(ephemeral.local_workspace(), eager_environment()),
@@ -377,7 +377,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     )
     .expect("encode complete ordinary Runtime projection");
     let complete_activation = delegated("cold-delegation", "run-cold-delegation");
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         "cold-delegation",
         empty_frozen_projection_for_snapshot(
@@ -513,7 +513,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
             .with_agent_publications(Arc::new(catalog)),
     );
     let managed = managed_test_host(host.clone());
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         "claimed-cache",
         empty_frozen_projection_for_snapshot(host.local_workspace(), deferred_environment(), &root),
@@ -645,7 +645,15 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         binding: std::sync::Mutex::new(None),
     });
     let managed = prepare_deferred_session(host.clone(), "durable-lazy").await;
-    managed.install_environment_binding_sink(sink.clone());
+    managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(sink.clone());
     let claimed = claim(&store, "durable-lazy", "run-lazy", "worker-a", now, &clock).await;
     let resolver = HostWorkerResolver {
         host: Arc::downgrade(&host),
@@ -712,7 +720,15 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         binding: std::sync::Mutex::new(None),
     });
     let loss_managed = prepare_deferred_session(loss_host.clone(), "durable-loss").await;
-    loss_managed.install_environment_binding_sink(loss_sink.clone());
+    loss_managed
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })
+        .expect("runtime role")
+        .install_environment_binding_sink(loss_sink.clone());
     let loss_now = awaken_dispatch::SystemClock.now_ms();
     let loss_claim = claim(
         &loss_store,
@@ -889,7 +905,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone()),
     );
     let activation = test_activation(thread, "run-cold-stdio-recovery");
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
         empty_frozen_projection_for_snapshot(
@@ -1169,7 +1185,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
             })),
     );
     let managed = managed_test_host(host.clone());
-    awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+    awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
         &managed,
         Arc::new(ToggleBindingSink {
             fail: AtomicBool::new(false),
@@ -1288,7 +1304,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     );
 
     let ordinary_activation = test_activation("ordinary-run", "run-without-session");
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         "ordinary-run",
         empty_frozen_projection_for_snapshot(
@@ -1599,7 +1615,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .unwrap(),
     );
 
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         "thread-cold-resource",
         frozen_projection_for_manifest(
@@ -1753,7 +1769,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     for thread in ["exact-cold-transition", "mismatched-cold-transition"] {
         let mut projection = frozen_projection_for_manifest(deferred_environment(), &revision_one);
         projection.previous_resource_manifest = Some(revision_one.clone());
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
             projection,
@@ -1771,7 +1787,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     let mut active_projection =
         frozen_projection_for_manifest(deferred_environment(), &revision_two);
     active_projection.previous_resource_manifest = Some(revision_one.clone());
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         active_thread,
         active_projection,
@@ -1890,7 +1906,7 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         4,
         awaken_session_contract::ResolvedSessionResources::default(),
     );
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         "thread-generation-fence",
         frozen_projection_for_manifest(
@@ -2812,7 +2828,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                 })),
         );
         let managed = managed_test_host(host.clone());
-        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,
             Arc::new(ToggleBindingSink {
                 fail: AtomicBool::new(false),
@@ -2864,7 +2880,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             claimed.request.admission_shape(),
             awaken_dispatch_contract::DispatchAdmissionShape::OrdinaryRoot
         );
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &managed,
             &thread,
             frozen,
@@ -2898,7 +2914,7 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
     };
     let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let managed = managed_test_host(host.clone());
-    awaken_session_contract::SessionRuntime::install_session_projection(
+    awaken_session_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
         projection,

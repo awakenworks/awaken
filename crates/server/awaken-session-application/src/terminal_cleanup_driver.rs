@@ -49,7 +49,14 @@ async fn next_work(
     )>,
     SessionRealizationDriveError,
 > {
-    let started = runtime.observe_realization_request()?;
+    let started = runtime
+        .realization()
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::unavailable(
+                "RealizationRuntime is unsupported by this runtime",
+            )
+        })?
+        .observe_realization_request()?;
     match control.terminal_cleanup_work(session_id, lease).await {
         Ok(work) => Ok(work.map(|work| (work, started))),
         Err(SessionRealizationControlFailure::NotFound) => Ok(None),
@@ -74,6 +81,12 @@ pub async fn drive_session_terminal_cleanup(
     'drive: for _ in 0..8 {
         let Some((work, started)) = next_work(control, runtime, session_id, &lease).await? else {
             runtime
+                .terminal_cleanup()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "TerminalCleanupRuntime is unsupported by this runtime",
+                    )
+                })?
                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                 .await;
             return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -84,6 +97,12 @@ pub async fn drive_session_terminal_cleanup(
             ));
         }
         runtime
+            .terminal_cleanup()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "TerminalCleanupRuntime is unsupported by this runtime",
+                )
+            })?
             .install_terminal_cleanup_assignment(
                 &work.assignment,
                 work.assignment.authority.clone().observed(started),
@@ -101,6 +120,12 @@ pub async fn drive_session_terminal_cleanup(
                     Ok(projection) => projection,
                     Err(SessionRealizationControlFailure::NotFound) => {
                         runtime
+                            .terminal_cleanup()
+                            .ok_or_else(|| {
+                                awaken_session_contract::RunError::unavailable(
+                                    "TerminalCleanupRuntime is unsupported by this runtime",
+                                )
+                            })?
                             .acknowledge_completed_terminal_cleanup(session_id, &lease)
                             .await;
                         return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -123,6 +148,12 @@ pub async fn drive_session_terminal_cleanup(
                 }
                 let current_lease = projection.current_lease;
                 let effect = runtime
+                    .terminal_cleanup()
+                    .ok_or_else(|| {
+                        awaken_session_contract::RunError::unavailable(
+                            "TerminalCleanupRuntime is unsupported by this runtime",
+                        )
+                    })?
                     .execute_terminal_repository_publication_for_lease(
                         projection.command,
                         &current_lease,
@@ -152,6 +183,12 @@ pub async fn drive_session_terminal_cleanup(
                     Ok(()) => {}
                     Err(SessionRealizationControlFailure::NotFound) => {
                         runtime
+                            .terminal_cleanup()
+                            .ok_or_else(|| {
+                                awaken_session_contract::RunError::unavailable(
+                                    "TerminalCleanupRuntime is unsupported by this runtime",
+                                )
+                            })?
                             .acknowledge_completed_terminal_cleanup(session_id, &lease)
                             .await;
                         return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -178,6 +215,12 @@ pub async fn drive_session_terminal_cleanup(
                             Ok(authorization) => authorization,
                             Err(SessionRealizationControlFailure::NotFound) => {
                                 runtime
+                                    .terminal_cleanup()
+                                    .ok_or_else(|| {
+                                        awaken_session_contract::RunError::unavailable(
+                                            "TerminalCleanupRuntime is unsupported by this runtime",
+                                        )
+                                    })?
                                     .acknowledge_completed_terminal_cleanup(session_id, &lease)
                                     .await;
                                 return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -192,6 +235,12 @@ pub async fn drive_session_terminal_cleanup(
                     authorization.verify_for(&effect)?;
                     workspace_matches(&expected_workspace, authorization.workspace_id())?;
                     let preparation = match runtime
+                        .terminal_cleanup()
+                        .ok_or_else(|| {
+                            awaken_session_contract::RunError::unavailable(
+                                "TerminalCleanupRuntime is unsupported by this runtime",
+                            )
+                        })?
                         .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
                         .await
                     {
@@ -207,14 +256,32 @@ pub async fn drive_session_terminal_cleanup(
                     {
                         Ok(()) => {
                             runtime
+                                .terminal_cleanup()
+                                .ok_or_else(|| {
+                                    awaken_session_contract::RunError::unavailable(
+                                        "TerminalCleanupRuntime is unsupported by this runtime",
+                                    )
+                                })?
                                 .acknowledge_terminal_cleanup_preparation(&effect)
                                 .await;
                         }
                         Err(SessionRealizationControlFailure::NotFound) => {
                             runtime
+                                .terminal_cleanup()
+                                .ok_or_else(|| {
+                                    awaken_session_contract::RunError::unavailable(
+                                        "TerminalCleanupRuntime is unsupported by this runtime",
+                                    )
+                                })?
                                 .acknowledge_terminal_cleanup_preparation(&effect)
                                 .await;
                             runtime
+                                .terminal_cleanup()
+                                .ok_or_else(|| {
+                                    awaken_session_contract::RunError::unavailable(
+                                        "TerminalCleanupRuntime is unsupported by this runtime",
+                                    )
+                                })?
                                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                                 .await;
                             return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -243,6 +310,12 @@ pub async fn drive_session_terminal_cleanup(
                         Ok(workspace) => workspace,
                         Err(SessionRealizationControlFailure::NotFound) => {
                             runtime
+                                .terminal_cleanup()
+                                .ok_or_else(|| {
+                                    awaken_session_contract::RunError::unavailable(
+                                        "TerminalCleanupRuntime is unsupported by this runtime",
+                                    )
+                                })?
                                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                                 .await;
                             return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -251,6 +324,12 @@ pub async fn drive_session_terminal_cleanup(
                     };
                 workspace_matches(&expected_workspace, &authorized_workspace)?;
                 let receipt = runtime
+                    .terminal_cleanup()
+                    .ok_or_else(|| {
+                        awaken_session_contract::RunError::unavailable(
+                            "TerminalCleanupRuntime is unsupported by this runtime",
+                        )
+                    })?
                     .dispose_terminal_cleanup_for_effect(effect.clone())
                     .await?;
                 match control
@@ -258,8 +337,22 @@ pub async fn drive_session_terminal_cleanup(
                     .await
                 {
                     Ok(()) | Err(SessionRealizationControlFailure::NotFound) => {
-                        runtime.acknowledge_terminal_cleanup_disposal(&effect).await;
                         runtime
+                            .terminal_cleanup()
+                            .ok_or_else(|| {
+                                awaken_session_contract::RunError::unavailable(
+                                    "TerminalCleanupRuntime is unsupported by this runtime",
+                                )
+                            })?
+                            .acknowledge_terminal_cleanup_disposal(&effect)
+                            .await;
+                        runtime
+                            .terminal_cleanup()
+                            .ok_or_else(|| {
+                                awaken_session_contract::RunError::unavailable(
+                                    "TerminalCleanupRuntime is unsupported by this runtime",
+                                )
+                            })?
                             .acknowledge_completed_terminal_cleanup(session_id, &lease)
                             .await;
                         return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -272,6 +365,12 @@ pub async fn drive_session_terminal_cleanup(
     match next_work(control, runtime, session_id, &lease).await? {
         None => {
             runtime
+                .terminal_cleanup()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "TerminalCleanupRuntime is unsupported by this runtime",
+                    )
+                })?
                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                 .await;
             Ok(SessionTerminalCleanupDriveOutcome::Completed)
@@ -573,20 +672,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SessionRuntime for RecordingRuntime {
-        fn observe_realization_request(
-            &self,
-        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
-        {
-            // The ordering fixture uses a fixed model clock; elapsed-time
-            // decisions and real OS sampling have separate executable tests.
-            Ok(
-                awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
-                    std::time::Instant::now(),
-                    std::time::Duration::ZERO,
-                ),
-            )
-        }
-
         fn model(&self) -> String {
             "test-model".into()
         }
@@ -619,20 +704,180 @@ mod tests {
             unreachable!("terminal-only fixture")
         }
 
-        async fn install_terminal_cleanup_assignment(
-            &self,
-            _assignment: &SessionTerminalCleanupAssignment,
-            _proof: awaken_session_contract::ObservedSessionRealizationLease,
-        ) -> Result<(), RunError> {
-            self.events.lock().unwrap().push("install".into());
-            Ok(())
+        fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
+            Some(self)
         }
 
+        fn terminal_cleanup(&self) -> Option<&dyn awaken_session_contract::TerminalCleanupRuntime> {
+            Some(self)
+        }
+
+        fn coordination(&self) -> Option<&dyn awaken_session_contract::CoordinationRuntime> {
+            Some(self)
+        }
+
+        fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
+            Some(self)
+        }
+
+        fn streaming_runs(&self) -> Option<&dyn awaken_session_contract::StreamingRunRuntime> {
+            Some(self)
+        }
+
+        fn environment(&self) -> Option<&dyn awaken_session_contract::EnvironmentRuntime> {
+            Some(self)
+        }
+
+        fn thread_reads(&self) -> Option<&dyn awaken_session_contract::ThreadReadRuntime> {
+            Some(self)
+        }
+
+        fn outcomes(&self) -> Option<&dyn awaken_session_contract::OutcomeRuntime> {
+            Some(self)
+        }
+
+        fn live_inbox(&self) -> Option<&dyn awaken_session_contract::LiveInboxRuntime> {
+            Some(self)
+        }
+
+        fn capability(&self) -> Option<&dyn awaken_session_contract::CapabilityRuntime> {
+            Some(self)
+        }
+    }
+
+    awaken_session_contract::neutral_role!(CoordinationRuntime for RecordingRuntime);
+
+    awaken_session_contract::neutral_role!(BudgetRuntime for RecordingRuntime);
+
+    awaken_session_contract::neutral_role!(StreamingRunRuntime for RecordingRuntime);
+
+    awaken_session_contract::neutral_role!(EnvironmentRuntime for RecordingRuntime);
+
+    awaken_session_contract::neutral_role!(ThreadReadRuntime for RecordingRuntime);
+
+    awaken_session_contract::neutral_role!(OutcomeRuntime for RecordingRuntime);
+
+    awaken_session_contract::neutral_role!(LiveInboxRuntime for RecordingRuntime);
+
+    awaken_session_contract::neutral_role!(CapabilityRuntime for RecordingRuntime);
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::RealizationRuntime for RecordingRuntime {
+        fn observe_realization_request(
+            &self,
+        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
+        {
+            // The ordering fixture uses a fixed model clock; elapsed-time
+            // decisions and real OS sampling have separate executable tests.
+            Ok(
+                awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+                    std::time::Instant::now(),
+                    std::time::Duration::ZERO,
+                ),
+            )
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Reconcile the existing Runtime projections through the given Control
+        /// owner. Local and Worker deployment use one slot-based selection and
+        /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
+        async fn renew_session_realization_projections(
+            &self,
+            control: &dyn awaken_session_contract::SessionRealizationControl,
+            owner: &str,
+            runtime_incarnation: &str,
+            timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+        ) -> Result<usize, awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime
+                .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Validate the exact provider-effective Sandbox layout without publishing
+        /// process-local state or performing provider, cache, Skill, File, Vault,
+        /// Repository, or Git I/O. Session creation and Resource mutation call this
+        /// before their durable/effect boundaries; Runtime repeats it at the final
+        /// realization edge as defense in depth.
+        fn validate_session_sandbox_layout(
+            &self,
+            thread: &str,
+            layout: &awaken_session_contract::SessionSandboxLayout,
+        ) -> Result<(), awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime.validate_session_sandbox_layout(thread, layout)
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Install one complete Control-frozen Session projection. Dispatch and
+        /// realization are explicit modes of this single port; callers must never
+        /// lower publication, baseline, request context, Environment, or lease
+        /// fields independently.
+        async fn install_session_projection(
+            &self,
+            thread: &str,
+            projection: awaken_session_contract::FrozenSessionProjection,
+            mode: awaken_session_contract::SessionProjectionInstallMode,
+        ) -> Result<(), awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime
+                .install_session_projection(thread, projection, mode)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
+        /// an already-installed realization fence. This is the only lease-only
+        /// Runtime mutation; it deliberately carries no projection or phase action.
+        async fn renew_session_realization_lease(
+            &self,
+            thread: &str,
+            lease: awaken_session_contract::ObservedSessionRealizationLease,
+        ) -> Result<(), awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime
+                .renew_session_realization_lease(thread, lease)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Forget one failed realization fence from disposable Runtime state. The
+        /// aggregate remains the sole lease authority: this hook only prevents a
+        /// later retry from authorizing effects with a lease that Control has
+        /// already failed or may have failed before losing its response.
+        async fn invalidate_session_realization_lease(
+            &self,
+            thread: &str,
+            lease: &awaken_session_contract::SessionRealizationLease,
+        ) -> Result<(), awaken_session_contract::RunError> {
+            awaken_session_contract::NeutralRuntime
+                .invalidate_session_realization_lease(thread, lease)
+                .await
+        }
+
+        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // answered this role method with anything but the refusal below.
+        /// Install the durable callback used at the exact sandbox creation boundary.
+        fn install_environment_binding_sink(
+            &self,
+            sink: std::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+        ) {
+            awaken_session_contract::NeutralRuntime.install_environment_binding_sink(sink)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::TerminalCleanupRuntime for RecordingRuntime {
         async fn execute_terminal_repository_publication_for_lease(
             &self,
             _command: awaken_session_contract::SessionRepositoryPublicationCommand,
             lease: &awaken_session_contract::SessionRealizationLease,
-        ) -> Result<SessionRepositoryPublicationEffect, RunError> {
+        ) -> Result<
+            awaken_session_contract::SessionRepositoryPublicationEffect,
+            awaken_session_contract::RunError,
+        > {
             self.events.lock().unwrap().push(format!(
                 "publish:{}:{}",
                 lease.epoch, lease.expires_at_unix_ms
@@ -703,6 +948,15 @@ mod tests {
             _lease: &awaken_session_contract::SessionRealizationLease,
         ) {
             self.events.lock().unwrap().push("ack-completed".into());
+        }
+
+        async fn install_terminal_cleanup_assignment(
+            &self,
+            _assignment: &SessionTerminalCleanupAssignment,
+            _proof: awaken_session_contract::ObservedSessionRealizationLease,
+        ) -> Result<(), RunError> {
+            self.events.lock().unwrap().push("install".into());
+            Ok(())
         }
     }
 

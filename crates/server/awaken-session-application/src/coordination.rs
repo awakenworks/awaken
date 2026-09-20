@@ -85,6 +85,12 @@ impl SessionApplication {
     > {
         let snapshot = self
             .runtime()
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .session_thread_run_recovery_snapshot(
                 &command.session_id,
                 &command.source_thread_id.0,
@@ -126,7 +132,16 @@ impl SessionApplication {
                 "a coordinated child Thread must differ from its primary Session",
             ));
         }
-        let links = self.runtime().coordinated_threads(session_id, None).await?;
+        let links = self
+            .runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
+            .coordinated_threads(session_id, None)
+            .await?;
         if !links
             .iter()
             .any(|link| link.session_id == session_id && link.thread_id == *child_thread_id)
@@ -269,6 +284,12 @@ impl SessionApplication {
         }
         let fence = self
             .runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .session_thread_tool_reply_fence(&command)
             .await?;
         if !fence.already_applied
@@ -278,6 +299,12 @@ impl SessionApplication {
                 .await?;
             if self
                 .runtime()
+                .thread_reads()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "ThreadReadRuntime is unsupported by this runtime",
+                    )
+                })?
                 .session_thread_disposition(&command.session_id, &child_thread_id.0)
                 .await?
                 == awaken_agent_contract::ThreadDisposition::Archived
@@ -380,6 +407,12 @@ impl SessionApplication {
         }
         let snapshot = self
             .runtime()
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await?
             .ok_or_else(|| RunError::bad_request("Session Thread has no committed Run"))?;
@@ -439,6 +472,12 @@ impl SessionApplication {
             self.prepare_session_thread_tool_reply(command).await?;
         let result = self
             .runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .reply_and_observe_session_thread_tool(delivery)
             .await;
         if let Some(epoch) = session_activity_epoch {
@@ -501,6 +540,12 @@ impl SessionAgentCoordination for SessionApplication {
         }
         let snapshot = self
             .runtime()
+            .thread_reads()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "ThreadReadRuntime is unsupported by this runtime",
+                )
+            })?
             .session_thread_recovery_snapshot(session_id, &thread_id.0)
             .await?
             .ok_or_else(|| {
@@ -576,12 +621,24 @@ impl SessionAgentCoordination for SessionApplication {
         }
         let command = self
             .runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .validate_session_agent_message_source(&command)
             .await?;
         let (owner, session) = self.coordination_session(&command.session_id).await?;
         let roster = self.coordination_roster(&owner, &session)?;
         let existing_links = self
             .runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .coordinated_threads(&command.session_id, None)
             .await?;
 
@@ -608,6 +665,12 @@ impl SessionAgentCoordination for SessionApplication {
             SessionAgentTarget::ExistingThread { thread_id } => {
                 if self
                     .runtime()
+                    .thread_reads()
+                    .ok_or_else(|| {
+                        awaken_session_contract::RunError::unavailable(
+                            "ThreadReadRuntime is unsupported by this runtime",
+                        )
+                    })?
                     .session_thread_disposition(&command.session_id, &thread_id.0)
                     .await?
                     == awaken_agent_contract::ThreadDisposition::Archived
@@ -636,6 +699,12 @@ impl SessionAgentCoordination for SessionApplication {
                     })?;
                 if let Some(snapshot) = self
                     .runtime()
+                    .thread_reads()
+                    .ok_or_else(|| {
+                        awaken_session_contract::RunError::unavailable(
+                            "ThreadReadRuntime is unsupported by this runtime",
+                        )
+                    })?
                     .session_thread_recovery_snapshot(&command.session_id, &thread_id.0)
                     .await?
                 {
@@ -678,6 +747,12 @@ impl SessionAgentCoordination for SessionApplication {
         let session_id = command.session_id.clone();
         let admitted = self
             .runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .admit_coordinated_run(CoordinatedRunCommand {
                 intent,
                 session_id: command.session_id,
@@ -775,6 +850,12 @@ impl SessionAgentCoordination for SessionApplication {
                 // Failure is absorbing for an ordinary coordinated Thread. The
                 // existing Dispatch interrupt precedes direct settlement.
                 self.runtime()
+                    .coordination()
+                    .ok_or_else(|| {
+                        awaken_session_contract::RunError::unavailable(
+                            "CoordinationRuntime is unsupported by this runtime",
+                        )
+                    })?
                     .interrupt_session_thread(&command.session_id, &command.source_thread_id)
                     .await?;
             }
@@ -838,6 +919,12 @@ impl SessionAgentCoordination for SessionApplication {
         );
         let continued = self
             .runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .continue_session_agent_report(SessionAgentReportContinuation {
                 session_id: command.session_id.clone(),
                 source_thread_id: command.source_thread_id,
@@ -917,6 +1004,12 @@ impl SessionAgentCoordination for SessionApplication {
         self.validate_coordinated_thread(session_id, child_thread_id)
             .await?;
         self.runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
             .interrupt_session_thread(session_id, child_thread_id)
             .await
     }
@@ -927,7 +1020,16 @@ impl SessionAgentCoordination for SessionApplication {
     ) -> Result<(), RunError> {
         let (session_id, session_activity_epoch, delivery) =
             self.prepare_session_thread_tool_reply(command).await?;
-        let result = self.runtime().reply_session_thread_tool(delivery).await;
+        let result = self
+            .runtime()
+            .coordination()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "CoordinationRuntime is unsupported by this runtime",
+                )
+            })?
+            .reply_session_thread_tool(delivery)
+            .await;
         if let Some(epoch) = session_activity_epoch {
             self.settle_definitive_coordination_rejection(&session_id, epoch, &result)
                 .await?;

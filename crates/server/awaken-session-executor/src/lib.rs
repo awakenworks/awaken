@@ -190,6 +190,107 @@ pub enum SessionRunBackgroundInstallError {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
+    async fn run(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
+        let result = self
+            .host
+            .run(Some(agent), thread, vec![user_message(content)])
+            .await;
+        crate::step_projection::finish_managed_step(result)
+    }
+
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        decision: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
+        let result = self
+            .host
+            .resume(thread, tool_use_id, HostResume::Permission(decision))
+            .await;
+        crate::step_projection::finish_managed_step(result)
+    }
+
+    async fn resume_custom(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
+        let result = self
+            .host
+            .resume(
+                thread,
+                tool_use_id,
+                HostResume::ClientResult { content, is_error },
+            )
+            .await;
+        crate::step_projection::finish_managed_step(result)
+    }
+
+    fn model(&self) -> String {
+        self.host.model()
+    }
+
+    fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
+        Some(self)
+    }
+
+    fn coordination(&self) -> Option<&dyn awaken_session_contract::CoordinationRuntime> {
+        Some(self)
+    }
+
+    fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
+        Some(self)
+    }
+
+    fn streaming_runs(&self) -> Option<&dyn awaken_session_contract::StreamingRunRuntime> {
+        Some(self)
+    }
+
+    fn environment(&self) -> Option<&dyn awaken_session_contract::EnvironmentRuntime> {
+        Some(self)
+    }
+
+    fn thread_reads(&self) -> Option<&dyn awaken_session_contract::ThreadReadRuntime> {
+        Some(self)
+    }
+
+    fn terminal_cleanup(&self) -> Option<&dyn awaken_session_contract::TerminalCleanupRuntime> {
+        Some(self)
+    }
+
+    fn outcomes(&self) -> Option<&dyn awaken_session_contract::OutcomeRuntime> {
+        Some(self)
+    }
+
+    fn live_inbox(&self) -> Option<&dyn awaken_session_contract::LiveInboxRuntime> {
+        Some(self)
+    }
+
+    fn capability(&self) -> Option<&dyn awaken_session_contract::CapabilityRuntime> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::RealizationRuntime for ManagedHost {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        awaken_local_process::authority_proof_started()
+            .map_err(|error| RunError::unavailable(format!("authority clock: {error}")))
+    }
+
     async fn renew_session_realization_projections(
         &self,
         control: &dyn awaken_session_contract::SessionRealizationControl,
@@ -207,12 +308,6 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
-    fn observe_realization_request(
-        &self,
-    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
-        awaken_local_process::authority_proof_started()
-            .map_err(|error| RunError::unavailable(format!("authority clock: {error}")))
-    }
     fn validate_session_sandbox_layout(
         &self,
         thread: &str,
@@ -253,7 +348,13 @@ impl SessionRuntime for ManagedHost {
         if mode.adopts_resident_environment()
             && let Some(binding) = projection.environment.binding()
         {
-            self.adopt_session_environment(&projection.baseline.agent_id, thread, binding)
+            self.environment()
+                .ok_or_else(|| {
+                    awaken_session_contract::RunError::unavailable(
+                        "EnvironmentRuntime is unsupported by this runtime",
+                    )
+                })?
+                .adopt_session_environment(&projection.baseline.agent_id, thread, binding)
                 .await?;
         }
         Ok(())
@@ -306,18 +407,10 @@ impl SessionRuntime for ManagedHost {
             .write()
             .expect("environment binding sink lock poisoned") = Some(sink);
     }
+}
 
-    async fn install_terminal_cleanup_assignment(
-        &self,
-        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
-        proof: awaken_session_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), RunError> {
-        self.host
-            .install_terminal_cleanup_projection(assignment, proof)
-            .await
-            .map_err(to_run_error)
-    }
-
+#[async_trait::async_trait]
+impl awaken_session_contract::CoordinationRuntime for ManagedHost {
     async fn reserve_session_run(
         &self,
         command: awaken_session_contract::AdmitSessionRun,
@@ -533,34 +626,6 @@ impl SessionRuntime for ManagedHost {
         Ok(Some(self.host.hub.live_subscription(thread_id)))
     }
 
-    async fn session_thread_disposition(
-        &self,
-        session_id: &awaken_session_contract::SessionId,
-        thread_id: &str,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
-        self.host
-            .session_thread_disposition(
-                session_id.as_str(),
-                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
-            )
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_contract::SessionId,
-        thread_id: &str,
-    ) -> Result<(), RunError> {
-        self.host
-            .archive_session_thread(
-                session_id.as_str(),
-                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
-            )
-            .await
-            .map_err(to_run_error)
-    }
-
     async fn continue_session_agent_report(
         &self,
         command: awaken_session_contract::SessionAgentReportContinuation,
@@ -614,6 +679,29 @@ impl SessionRuntime for ManagedHost {
         crate::step_projection::settled_step(receipt)
     }
 
+    async fn quiesce_terminal_delegations(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, RunError> {
+        self.host
+            .quiesce_terminal_delegations(thread)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn validate_session_agent_message_source(
+        &self,
+        command: &awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<awaken_session_contract::SessionAgentMessageCommand, RunError> {
+        self.host
+            .validate_session_agent_message_source(command)
+            .await
+            .map_err(to_run_error)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::BudgetRuntime for ManagedHost {
     async fn resume_budget_reached(
         &self,
         delivery: awaken_session_contract::SessionBudgetResumeDelivery,
@@ -634,94 +722,36 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
-    async fn quiesce_terminal_delegations(
+    async fn session_usage(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.host
-            .quiesce_terminal_delegations(thread)
+            .session_thread_usage(
+                thread,
+                &awaken_agent_contract::agent::thread::Id(thread.to_string()),
+            )
             .await
             .map_err(to_run_error)
     }
 
-    async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
-        self.host
-            .has_durable_thread(thread)
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn prepare_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
-        self.host
-            .prepare_terminal_cleanup_effect(effect, authorization)
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn acknowledge_terminal_cleanup_preparation(
-        &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
-    ) {
-        self.host
-            .acknowledge_terminal_cleanup_preparation(effect)
-            .await;
-    }
-
-    async fn dispose_terminal_cleanup_for_effect(
-        &self,
-        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
-        self.host
-            .dispose_terminal_cleanup_effect(effect)
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn acknowledge_terminal_cleanup_disposal(
-        &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) {
-        self.host
-            .acknowledge_terminal_cleanup_disposal(effect)
-            .await;
-    }
-
-    async fn acknowledge_completed_terminal_cleanup(
+    async fn session_thread_usage(
         &self,
         session_id: &awaken_session_contract::SessionId,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) {
+        thread_id: &str,
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.host
-            .acknowledge_completed_terminal_cleanup(session_id.as_str(), lease)
-            .await;
+            .session_thread_usage(
+                session_id.as_str(),
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            )
+            .await
+            .map_err(to_run_error)
     }
+}
 
-    async fn execute_terminal_repository_publication_for_lease(
-        &self,
-        command: awaken_session_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
-        self.publish_terminal_repository(command, lease).await
-    }
-
-    async fn run(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<ContentBlock>,
-    ) -> Result<StepOutcome, RunError> {
-        self.validate_thread_resource_bindings(thread).await?;
-        let result = self
-            .host
-            .run(Some(agent), thread, vec![user_message(content)])
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
+#[async_trait::async_trait]
+impl awaken_session_contract::StreamingRunRuntime for ManagedHost {
     async fn run_attributed(
         &self,
         agent: &str,
@@ -781,172 +811,8 @@ impl SessionRuntime for ManagedHost {
         crate::step_projection::finish_managed_step(result)
     }
 
-    async fn resume(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        decision: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        self.validate_thread_resource_bindings(thread).await?;
-        let result = self
-            .host
-            .resume(thread, tool_use_id, HostResume::Permission(decision))
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
-    async fn resume_custom(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        content: Vec<ContentBlock>,
-        is_error: bool,
-    ) -> Result<StepOutcome, RunError> {
-        self.validate_thread_resource_bindings(thread).await?;
-        let result = self
-            .host
-            .resume(
-                thread,
-                tool_use_id,
-                HostResume::ClientResult { content, is_error },
-            )
-            .await;
-        crate::step_projection::finish_managed_step(result)
-    }
-
-    async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
-        match self.host.live_inbox(thread).await {
-            Some(inbox) => LiveInboxSnapshot {
-                active: true,
-                version: inbox.version(),
-                messages: inbox
-                    .list()
-                    .into_iter()
-                    .map(|entry| LiveInboxEntry {
-                        id: entry.id.0,
-                        content: entry.message.content,
-                    })
-                    .collect(),
-            },
-            None => LiveInboxSnapshot::inactive(),
-        }
-    }
-
-    async fn live_inbox_queue(
-        &self,
-        thread: &str,
-        content: Vec<ContentBlock>,
-    ) -> Result<u64, LiveInboxError> {
-        let inbox = self
-            .host
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
-        // Queued through the wire surface — an out-of-band injection into a live
-        // run, so it is tagged External (what a product maps operator steering onto).
-        match inbox.offer_as(MessageOrigin::External, user_message(content)) {
-            Offer::Accepted(id) => Ok(id.0),
-            // The attempt closed between lookup and offer, or its finite live
-            // identity space was exhausted: both route like no active inbox.
-            Offer::Closed => Err(LiveInboxError::Inactive),
-        }
-    }
-
-    async fn live_inbox_remove(&self, thread: &str, id: u64) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .host
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
-        inbox
-            .remove(LiveInboxMessageId(id))
-            .map(|_| ())
-            .map_err(to_live_inbox_error)
-    }
-
-    async fn live_inbox_replace(
-        &self,
-        thread: &str,
-        id: u64,
-        content: Vec<ContentBlock>,
-    ) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .host
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
-        inbox
-            .replace(LiveInboxMessageId(id), user_message(content))
-            .map_err(to_live_inbox_error)
-    }
-
-    async fn live_inbox_reorder(
-        &self,
-        thread: &str,
-        order: Vec<u64>,
-    ) -> Result<(), LiveInboxError> {
-        let inbox = self
-            .host
-            .live_inbox(thread)
-            .await
-            .ok_or(LiveInboxError::Inactive)?;
-        let order: Vec<LiveInboxMessageId> = order.into_iter().map(LiveInboxMessageId).collect();
-        inbox.reorder(&order).map_err(to_live_inbox_error)
-    }
-
-    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
-        managed_model_capability::supports_mid_conversation_system(
-            &self.host.model_for_thread(thread),
-        )
-    }
-
-    async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        self.host.pending_tool(thread).await.map_err(to_run_error)
-    }
-
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.host.interrupt(thread).await.map_err(to_run_error)
-    }
-
-    async fn define_outcome(
-        &self,
-        thread: &str,
-        description: &str,
-        rubric: &str,
-        max_iterations: u32,
-    ) -> Result<OutcomeDrive, RunError> {
-        managed_outcome::define(&self.host, thread, description, rubric, max_iterations).await
-    }
-
-    async fn prepare_outcome(
-        &self,
-        thread: &str,
-        outcome_id: &str,
-        description: &str,
-        rubric: &str,
-        max_iterations: u32,
-    ) -> Result<u64, RunError> {
-        managed_outcome::prepare(
-            &self.host,
-            thread,
-            outcome_id,
-            description,
-            rubric,
-            max_iterations,
-        )
-        .await
-    }
-
-    async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
-        managed_outcome::resume(&self.host, thread).await
-    }
-
-    async fn committed_outcome_projection(
-        &self,
-        thread: &str,
-        outcome_id: &str,
-    ) -> Result<Option<awaken_session_contract::CommittedOutcomeProjection>, RunError> {
-        managed_outcome::committed_projection(&self.host, thread, outcome_id).await
     }
 
     /// Replace only the already-selected model projection for one Session and
@@ -960,30 +826,19 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
-    async fn resolve_session_skills(
-        &self,
-        workspace_id: &str,
-        skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<Vec<awaken_session_contract::ResolvedSkillBinding>, RunError> {
-        if skills.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.host
-            .skills
-            .resolve(workspace_id, skills)
-            .await
-            .map_err(skill_store_run_error)
+    async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
+        managed_model_capability::supports_mid_conversation_system(
+            &self.host.model_for_thread(thread),
+        )
     }
 
-    async fn apply_session_inputs(
-        &self,
-        thread: &str,
-        transition: &awaken_session_contract::SessionResourceTransition,
-    ) -> Result<(), RunError> {
-        self.apply_session_inputs_with_context(thread, transition, None, None)
-            .await
+    async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
+        self.host.pending_tool(thread).await.map_err(to_run_error)
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::EnvironmentRuntime for ManagedHost {
     async fn replace_session_tools(
         &self,
         thread: &str,
@@ -1098,6 +953,40 @@ impl SessionRuntime for ManagedHost {
             .await
     }
 
+    async fn resolve_session_skills(
+        &self,
+        workspace_id: &str,
+        skills: &[awaken_agent_contract::AgentSkillBinding],
+    ) -> Result<Vec<awaken_session_contract::ResolvedSkillBinding>, RunError> {
+        if skills.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.host
+            .skills
+            .resolve(workspace_id, skills)
+            .await
+            .map_err(skill_store_run_error)
+    }
+
+    async fn apply_session_inputs(
+        &self,
+        thread: &str,
+        transition: &awaken_session_contract::SessionResourceTransition,
+    ) -> Result<(), RunError> {
+        self.apply_session_inputs_with_context(thread, transition, None, None)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ThreadReadRuntime for ManagedHost {
+    async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
+        self.host
+            .has_durable_thread(thread)
+            .await
+            .map_err(to_run_error)
+    }
+
     /// Committed transcript from durable truth, so the adapter can rehydrate a
     /// session lost to a process restart and resume its awaiting run (ADR-0039).
     async fn committed_messages(
@@ -1106,35 +995,6 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<Vec<awaken_agent_contract::Message>, RunError> {
         self.host
             .committed_messages(thread)
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
-        let feed = self
-            .host
-            .run_lifecycle_feed(thread)
-            .await
-            .map_err(to_run_error)?;
-        awaken_agent_contract::RunLifecycleFeed::events_after(feed.as_ref(), cursor, limit)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))
-    }
-
-    async fn session_usage(
-        &self,
-        thread: &str,
-    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
-        self.host
-            .session_thread_usage(
-                thread,
-                &awaken_agent_contract::agent::thread::Id(thread.to_string()),
-            )
             .await
             .map_err(to_run_error)
     }
@@ -1150,16 +1010,6 @@ impl SessionRuntime for ManagedHost {
                 session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             )
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn validate_session_agent_message_source(
-        &self,
-        command: &awaken_session_contract::SessionAgentMessageCommand,
-    ) -> Result<awaken_session_contract::SessionAgentMessageCommand, RunError> {
-        self.host
-            .validate_session_agent_message_source(command)
             .await
             .map_err(to_run_error)
     }
@@ -1187,13 +1037,29 @@ impl SessionRuntime for ManagedHost {
             .then_some(snapshot))
     }
 
-    async fn session_thread_usage(
+    async fn committed_run_lifecycle(
+        &self,
+        thread: &str,
+        cursor: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
+        let feed = self
+            .host
+            .run_lifecycle_feed(thread)
+            .await
+            .map_err(to_run_error)?;
+        awaken_agent_contract::RunLifecycleFeed::events_after(feed.as_ref(), cursor, limit)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))
+    }
+
+    async fn session_thread_disposition(
         &self,
         session_id: &awaken_session_contract::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
         self.host
-            .session_thread_usage(
+            .session_thread_disposition(
                 session_id.as_str(),
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             )
@@ -1201,10 +1067,221 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
-    fn model(&self) -> String {
-        self.host.model()
+    async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+        thread_id: &str,
+    ) -> Result<(), RunError> {
+        self.host
+            .archive_session_thread(
+                session_id.as_str(),
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            )
+            .await
+            .map_err(to_run_error)
     }
 
+    async fn committed_outcome_projection(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+    ) -> Result<Option<awaken_session_contract::CommittedOutcomeProjection>, RunError> {
+        managed_outcome::committed_projection(&self.host, thread, outcome_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::TerminalCleanupRuntime for ManagedHost {
+    async fn execute_terminal_repository_publication_for_lease(
+        &self,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
+        self.publish_terminal_repository(command, lease).await
+    }
+
+    async fn prepare_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        self.host
+            .prepare_terminal_cleanup_effect(effect, authorization)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn acknowledge_terminal_cleanup_preparation(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) {
+        self.host
+            .acknowledge_terminal_cleanup_preparation(effect)
+            .await;
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        self.host
+            .dispose_terminal_cleanup_effect(effect)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn acknowledge_terminal_cleanup_disposal(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) {
+        self.host
+            .acknowledge_terminal_cleanup_disposal(effect)
+            .await;
+    }
+
+    async fn acknowledge_completed_terminal_cleanup(
+        &self,
+        session_id: &awaken_session_contract::SessionId,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) {
+        self.host
+            .acknowledge_completed_terminal_cleanup(session_id.as_str(), lease)
+            .await;
+    }
+
+    async fn install_terminal_cleanup_assignment(
+        &self,
+        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        proof: awaken_session_contract::ObservedSessionRealizationLease,
+    ) -> Result<(), RunError> {
+        self.host
+            .install_terminal_cleanup_projection(assignment, proof)
+            .await
+            .map_err(to_run_error)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::OutcomeRuntime for ManagedHost {
+    async fn prepare_outcome(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<u64, RunError> {
+        managed_outcome::prepare(
+            &self.host,
+            thread,
+            outcome_id,
+            description,
+            rubric,
+            max_iterations,
+        )
+        .await
+    }
+
+    async fn define_outcome(
+        &self,
+        thread: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<OutcomeDrive, RunError> {
+        managed_outcome::define(&self.host, thread, description, rubric, max_iterations).await
+    }
+
+    async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
+        managed_outcome::resume(&self.host, thread).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::LiveInboxRuntime for ManagedHost {
+    async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
+        match self.host.live_inbox(thread).await {
+            Some(inbox) => LiveInboxSnapshot {
+                active: true,
+                version: inbox.version(),
+                messages: inbox
+                    .list()
+                    .into_iter()
+                    .map(|entry| LiveInboxEntry {
+                        id: entry.id.0,
+                        content: entry.message.content,
+                    })
+                    .collect(),
+            },
+            None => LiveInboxSnapshot::inactive(),
+        }
+    }
+
+    async fn live_inbox_queue(
+        &self,
+        thread: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<u64, LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        // Queued through the wire surface — an out-of-band injection into a live
+        // run, so it is tagged External (what a product maps operator steering onto).
+        match inbox.offer_as(MessageOrigin::External, user_message(content)) {
+            Offer::Accepted(id) => Ok(id.0),
+            // The attempt closed between lookup and offer, or its finite live
+            // identity space was exhausted: both route like no active inbox.
+            Offer::Closed => Err(LiveInboxError::Inactive),
+        }
+    }
+
+    async fn live_inbox_remove(&self, thread: &str, id: u64) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        inbox
+            .remove(LiveInboxMessageId(id))
+            .map(|_| ())
+            .map_err(to_live_inbox_error)
+    }
+
+    async fn live_inbox_replace(
+        &self,
+        thread: &str,
+        id: u64,
+        content: Vec<ContentBlock>,
+    ) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        inbox
+            .replace(LiveInboxMessageId(id), user_message(content))
+            .map_err(to_live_inbox_error)
+    }
+
+    async fn live_inbox_reorder(
+        &self,
+        thread: &str,
+        order: Vec<u64>,
+    ) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        let order: Vec<LiveInboxMessageId> = order.into_iter().map(LiveInboxMessageId).collect();
+        inbox.reorder(&order).map_err(to_live_inbox_error)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::CapabilityRuntime for ManagedHost {
     /// Advertise the host's provisioned surface on the created session: its built-in
     /// tools (folded into the agent toolset by the adapter), client tools, offered
     /// skills, and delegate roster. (MCP servers and file resources are not advertised

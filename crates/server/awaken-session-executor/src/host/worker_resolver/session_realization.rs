@@ -104,7 +104,7 @@ mod tests {
         eager_environment, install_complete_projection_for_snapshot, managed_test_host,
         test_activation, with_empty_session_resources,
     };
-    use awaken_session_contract::SessionRuntime as _;
+    use awaken_session_contract::RealizationRuntime;
     use std::sync::{Arc, Mutex};
 
     /// Legacy raw-claim merge cause/effect graph: C1 the durable Environment
@@ -1427,11 +1427,11 @@ mod tests {
         let original_control = RecoveryControl::fixed(original_projection.clone());
         let original_binding_sink =
             Arc::new(RecoveryEnvironmentBindingSink::new(&original_control));
-        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
             &original_managed,
             original_binding_sink.clone(),
         );
-        awaken_session_contract::SessionRuntime::install_session_projection(
+        awaken_session_contract::RealizationRuntime::install_session_projection(
             &original_managed,
             thread,
             original_projection,
@@ -1515,7 +1515,7 @@ mod tests {
             crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone()),
         );
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
-        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,
             binding_sink,
         );
@@ -1802,7 +1802,7 @@ mod tests {
         let unpinned_managed = crate::ManagedHost::new(unpinned_host.clone())
             .with_mcp_attachment_realizer(unpinned_realizer.clone())
             .install_dispatch_session_runtime();
-        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
             &unpinned_managed,
             Arc::new(ToggleBindingSink {
                 fail: std::sync::atomic::AtomicBool::new(false),
@@ -1892,7 +1892,7 @@ mod tests {
             crate::ManagedHost::new(rebuild_host.clone()).install_dispatch_session_runtime();
         let rebuild_control = RecoveryControl::fixed(rebuild_frozen.clone());
         let rebuild_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&rebuild_control));
-        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
             &rebuild_managed,
             rebuild_sink,
         );
@@ -1953,7 +1953,7 @@ mod tests {
             crate::ManagedHost::new(continuity_host.clone()).install_dispatch_session_runtime();
         let continuity_control = RecoveryControl::fixed(continuity_frozen.clone());
         let continuity_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&continuity_control));
-        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
             &continuity_managed,
             continuity_sink,
         );

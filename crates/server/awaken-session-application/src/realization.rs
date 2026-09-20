@@ -151,7 +151,14 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
     fn observe_realization_request(
         &self,
     ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
-        self.runtime.observe_realization_request()
+        self.runtime
+            .realization()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                )
+            })?
+            .observe_realization_request()
     }
 
     async fn synchronize_session_projection(
@@ -162,6 +169,12 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
         prepare_session: bool,
     ) -> Result<(), RunError> {
         self.runtime
+            .realization()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                )
+            })?
             .install_session_projection(
                 session_id.as_str(),
                 projection.clone(),
@@ -179,6 +192,12 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
         lease: &SessionRealizationLease,
     ) -> Result<(), RunError> {
         self.runtime
+            .realization()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                )
+            })?
             .invalidate_session_realization_lease(session_id.as_str(), lease)
             .await
     }
@@ -213,7 +232,15 @@ impl SessionApplication {
                 "Resident Environment has no exact realization lease",
             )
         })?;
-        let request_started = self.runtime().observe_realization_request()?;
+        let request_started = self
+            .runtime()
+            .realization()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                )
+            })?
+            .observe_realization_request()?;
         let projection = self
             .frozen_session_projection(owner_scope.to_string(), session, true)
             .await?;
@@ -566,6 +593,12 @@ impl SessionApplication {
                 SessionRealizationError::Effect(RunError::internal(error.to_string()))
             })?;
         self.runtime()
+            .realization()
+            .ok_or_else(|| {
+                SessionRealizationError::Effect(awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                ))
+            })?
             .install_session_projection(
                 session.session_id.as_str(),
                 projection,
@@ -607,6 +640,12 @@ impl SessionApplication {
             .await;
         let request_started = self
             .runtime()
+            .realization()
+            .ok_or_else(|| {
+                SessionRealizationError::Effect(awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                ))
+            })?
             .observe_realization_request()
             .map_err(SessionRealizationError::Effect)?;
         let lease_expires_at_unix_ms = now_unix_ms()
@@ -671,6 +710,12 @@ impl SessionApplication {
     /// Renew due local projections through the lease-only root-CAS command.
     pub async fn renew_due_session_realizations(&self) -> Result<usize, SessionRealizationError> {
         self.runtime()
+            .realization()
+            .ok_or_else(|| {
+                SessionRealizationError::Effect(awaken_session_contract::RunError::unavailable(
+                    "RealizationRuntime is unsupported by this runtime",
+                ))
+            })?
             .renew_session_realization_projections(
                 &RefreshedSessionRealizationControl(self),
                 self.local_realization_owner(),
