@@ -16,14 +16,14 @@ data:
   config.toml: |
     data_dir = "/var/lib/awaken"
     bind = "0.0.0.0:8080"
+    internal_bind = "0.0.0.0:8081"
     mode = "local"
     role = "all-in-one"
-    run_local_pool = true
-    worker_max_concurrent = 10
+    run_local_pool = false
     no_browser = true
     identity_mode = "self-managed"
-    worker_kubernetes_identity_directory = "/var/run/awaken-worker-identity"
-    worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-product", audience = "awaken-worker", provider_id = "k3d-awaken-product" }
+    credential_envelope_keys_file = "/etc/awaken-credential-envelope/keys.json"
+    worker_kubernetes = { namespace = "awaken-system", service_account = "awaken-worker", audience = "awaken-worker", provider_id = "k3d-awaken-product" }
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
     k8s_namespace = "awaken-system"
@@ -36,9 +36,71 @@ data:
     k8s_buildkit_image = "k3d-awaken-registry.localhost:5000/system/buildkit:v0.30.0-rootless"
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: awaken-worker-config
+data:
+  worker.toml: |
+    data_dir = "/var/lib/awaken-worker"
+    mode = "server"
+    role = "worker"
+    worker_server = "https://awaken-product:8443"
+    worker_server_ca_certificate_file = "/etc/awaken-worker-tls/ca.crt"
+    worker_kubernetes_identity_directory = "/var/run/awaken-worker-identity"
+    credential_envelope_keys_file = "/etc/awaken-credential-envelope/keys.json"
+    worker_admin_listen = "0.0.0.0:9090"
+    worker_drain_grace_secs = 15
+    worker_max_concurrent = 10
+    sandbox_tier = "k8s"
+    k8s_namespace = "awaken-system"
+    k8s_continuation_volume = { storage_class_name = "local-path", size = "1Gi" }
+    container_image = "__AWAKEN_SANDBOX_IMAGE__"
+    sandbox_dir = "/var/lib/awaken-worker/sandboxes"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: awaken-worker-tls-route
+data:
+  nginx.conf: |
+    worker_processes 1;
+    pid /tmp/nginx.pid;
+    error_log /dev/stderr notice;
+    events { worker_connections 1024; }
+    http {
+      access_log /dev/stdout;
+      client_body_temp_path /tmp/client_temp;
+      proxy_temp_path /tmp/proxy_temp;
+      fastcgi_temp_path /tmp/fastcgi_temp;
+      uwsgi_temp_path /tmp/uwsgi_temp;
+      scgi_temp_path /tmp/scgi_temp;
+      server {
+        listen 8443 ssl;
+        ssl_certificate /etc/awaken-worker-tls/tls.crt;
+        ssl_certificate_key /etc/awaken-worker-tls/tls.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        client_max_body_size 16m;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        location / {
+          proxy_pass http://127.0.0.1:8081;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header Connection "";
+        }
+      }
+    }
+---
+apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: awaken-product
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: awaken-worker
 automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -77,6 +139,18 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: awaken-product
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: awaken-product-runtime
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: awaken-coordinator-client
+subjects:
+  - kind: ServiceAccount
+    name: awaken-worker
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -130,6 +204,9 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+    - name: worker-tls
+      port: 8443
+      targetPort: worker-tls
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -157,6 +234,20 @@ spec:
       securityContext:
         fsGroup: 10001
         fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: install-credential-envelope
+          image: busybox:1.37.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args: ["cp /source/keys.json /target/keys.json && chown 10001:10001 /target/keys.json && chmod 0600 /target/keys.json"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile: { type: RuntimeDefault }
+          volumeMounts:
+            - { name: credential-envelope-source, mountPath: /source, readOnly: true }
+            - { name: credential-envelope, mountPath: /target }
       containers:
         - name: awaken
           image: awaken-product:latest
@@ -178,6 +269,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: internal
+              containerPort: 8081
           startupProbe:
             httpGet:
               path: /readyz
@@ -212,38 +305,155 @@ spec:
             - name: config
               mountPath: /etc/awaken
               readOnly: true
-            - name: worker-identity
-              mountPath: /var/run/awaken-worker-identity
-              readOnly: true
             - name: data
               mountPath: /var/lib/awaken
+            - name: credential-envelope
+              mountPath: /etc/awaken-credential-envelope
+              readOnly: true
             - name: tmp
               mountPath: /tmp
+        - name: worker-tls
+          image: nginx:1.27-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["nginx", "-c", "/etc/nginx-worker/nginx.conf", "-g", "daemon off;"]
+          ports:
+            - name: worker-tls
+              containerPort: 8443
+          startupProbe:
+            tcpSocket: { port: worker-tls }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket: { port: worker-tls }
+            periodSeconds: 2
+          livenessProbe:
+            tcpSocket: { port: worker-tls }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            runAsNonRoot: true
+            runAsUser: 101
+            runAsGroup: 101
+            seccompProfile: { type: RuntimeDefault }
+          volumeMounts:
+            - { name: worker-tls-route, mountPath: /etc/nginx-worker, readOnly: true }
+            - { name: worker-tls-identity, mountPath: /etc/awaken-worker-tls, readOnly: true }
       volumes:
         - name: config
           configMap:
             name: awaken-product-config
-        - name: worker-identity
-          projected:
-            sources:
-              - downwardAPI:
-                  items:
-                    - path: namespace
-                      fieldRef: { fieldPath: metadata.namespace }
-                    - path: name
-                      fieldRef: { fieldPath: metadata.name }
-                    - path: uid
-                      fieldRef: { fieldPath: metadata.uid }
-              - serviceAccountToken:
-                  path: token
-                  audience: awaken-worker
-                  expirationSeconds: 3600
+        - { name: worker-tls-route, configMap: { name: awaken-worker-tls-route } }
+        - name: worker-tls-identity
+          secret:
+            secretName: awaken-worker-upstream-tls
+            items:
+              - { key: tls.crt, path: tls.crt }
+              - { key: tls.key, path: tls.key }
+        - name: credential-envelope-source
+          secret:
+            secretName: awaken-worker-credential-envelope
+            defaultMode: 256
+        - { name: credential-envelope, emptyDir: {} }
         - name: data
           persistentVolumeClaim:
             claimName: awaken-product-data
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: awaken-worker
+  labels:
+    app.kubernetes.io/name: awaken-worker
+spec:
+  backoffLimit: 100
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: awaken-worker
+      finalizers: [awaken.dev/worker-process-evidence]
+    spec:
+      serviceAccountName: awaken-worker
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: install-credential-envelope
+          image: busybox:1.37.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args: ["cp /source/keys.json /target/keys.json && chown 10001:10001 /target/keys.json && chmod 0600 /target/keys.json"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile: { type: RuntimeDefault }
+          volumeMounts:
+            - { name: credential-envelope-source, mountPath: /source, readOnly: true }
+            - { name: credential-envelope, mountPath: /target }
+      containers:
+        - name: worker
+          image: awaken-product:latest
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken-worker"]
+          args: ["--server", "https://awaken-product:8443", "--config", "/etc/awaken-worker/worker.toml"]
+          ports:
+            - { name: admin, containerPort: 9090 }
+          readinessProbe:
+            httpGet: { path: /readyz, port: admin }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "2", memory: 3Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          volumeMounts:
+            - { name: config, mountPath: /etc/awaken-worker, readOnly: true }
+            - { name: upstream-tls, mountPath: /etc/awaken-worker-tls, readOnly: true }
+            - { name: identity, mountPath: /var/run/awaken-worker-identity, readOnly: true }
+            - { name: credential-envelope, mountPath: /etc/awaken-credential-envelope, readOnly: true }
+            - { name: data, mountPath: /var/lib/awaken-worker }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: config, configMap: { name: awaken-worker-config } }
+        - name: upstream-tls
+          configMap:
+            name: awaken-worker-upstream-ca
+            items: [{ key: ca.crt, path: ca.crt }]
+        - name: identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: awaken-worker
+                  expirationSeconds: 600
+              - downwardAPI:
+                  items:
+                    - { path: namespace, fieldRef: { fieldPath: metadata.namespace } }
+                    - { path: name, fieldRef: { fieldPath: metadata.name } }
+                    - { path: uid, fieldRef: { fieldPath: metadata.uid } }
+        - name: credential-envelope-source
+          secret:
+            secretName: awaken-worker-credential-envelope
+            defaultMode: 256
+        - { name: credential-envelope, emptyDir: {} }
+        - { name: data, emptyDir: {} }
+        - { name: tmp, emptyDir: { sizeLimit: 1Gi } }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -263,3 +473,10 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: awaken-worker
+      ports:
+        - protocol: TCP
+          port: 8443
