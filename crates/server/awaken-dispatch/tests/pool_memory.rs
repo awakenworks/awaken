@@ -1127,7 +1127,8 @@ async fn assert_recovered_claim_thread_concurrency(same_thread: bool) {
 
     // Causes: C1 one queue claim fails; C2 the next claim and resolution succeed;
     // C3 that Run blocks inside a tool; C4 another Thread is runnable and pool
-    // capacity is two. Effects: E1 the outage permits only one recovery probe;
+    // capacity is two; C5 the volatile store and pool both use the production
+    // SystemClock. Effects: E1 the outage permits only one recovery probe;
     // E2 recovered admission releases the peer before C3 finishes; E3 each Run
     // executes once and settles after explicit release. Decision rule P1:
     // C1+C2+C3+C4 => E2, not serialization until the first Run settles.
@@ -1138,7 +1139,7 @@ async fn assert_recovered_claim_thread_concurrency(same_thread: bool) {
     // and no external wake prevent timers from disguising a lost handoff.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let store = Arc::new(FlakyDispatchStore::new(1));
+    let store = Arc::new(FlakyDispatchStore::new(1, Arc::new(SystemClock)));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(DispatchWorker::new(
         runtime,
