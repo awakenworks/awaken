@@ -29,7 +29,12 @@ use crate::{DispatchQueue, FencedStreamCheckpointStore, MemoryDispatchStore, Run
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::AttemptRecoveryMode;
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
+use awaken_runtime_contract::{
+    AttemptCredentialBinding, AttemptCredentialDelivery, CandidateFingerprint, CredentialAccess,
+    CredentialExecutionPolicy, CredentialMaterialSource, CredentialRealizationKind, CredentialRef,
+    CredentialUsage, ExecutableAgentSnapshot, ModelExposurePolicy, PlaintextBoundary,
+    PlaintextHolder, RuntimeRunContext,
+};
 use tokio_util::sync::CancellationToken;
 
 #[test]
@@ -751,7 +756,9 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
     )
     .with_context(parent_context)
     .with_recovery_projection(projection.clone());
-    let context = worker.execution_context_with(&child_claim, None, &None, &[], None);
+    let context = worker
+        .execution_context_with(&child_claim, None, &None, &[], &[], None)
+        .expect("R1 exact child context");
 
     assert_eq!(
         context
@@ -796,4 +803,74 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
         .verify_current()
         .await
         .expect("R1/E4 child claim is current");
+}
+
+#[tokio::test]
+async fn worker_rejects_unmatched_claim_delivery_without_panicking() {
+    // Cause/effect graph: C1 a claimed binding exists; C2 a transported delivery
+    // names that exact candidate and epoch. E1 construct the claim-fenced
+    // Runtime context; E2 return a normal execution error before model or tool
+    // entry. Constraint: transport validation is defense in depth; the Runtime
+    // contract remains the sole delivery-admission authority.
+    //
+    // | Rule | C1 | C2 | Effect |
+    // |---|---|---|---|
+    // | R1 | yes | yes | E1 (covered by contract and HTTP integration tests) |
+    // | R2 | yes | no  | E2 |
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(crate::ManualClock::new(
+        0,
+    ))));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let claimed = store
+        .claim_new_run(
+            crate::RunDispatch::new(RunActivation::new(
+                RunId("delivery-run".into()),
+                ThreadId("delivery-thread".into()),
+                ExecutableAgentSnapshot::builder("delivery-snapshot")
+                    .model(
+                        awaken_runtime_contract::resolved::ModelBinding::parse(
+                            "test", "test", "native",
+                        )
+                        .expect("R2 complete model binding"),
+                    )
+                    .build(),
+                Vec::new(),
+            )),
+            "worker",
+            1_000,
+            &Default::default(),
+        )
+        .await
+        .expect("R2 fixture admission")
+        .expect("R2 fixture claim");
+    let claim = RunClaim::from(&claimed.lease);
+    let worker = DispatchWorker::new(Arc::new(Runtime::new()), store, commit, "worker");
+    let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
+    let credential = CredentialRef {
+        id: "credential-a".into(),
+        revision: 1,
+    };
+    let binding = AttemptCredentialBinding {
+        candidate_fingerprint: CandidateFingerprint("candidate-a".into()),
+        credential: credential.clone(),
+        selected_plaintext_holder: holder.clone(),
+        selected_realization_kind: CredentialRealizationKind::WorkerProviderAdapter,
+        claim_epoch: claim.epoch,
+    };
+    let delivery = AttemptCredentialDelivery {
+        candidate_fingerprint: CandidateFingerprint("candidate-b".into()),
+        access: CredentialAccess::new(
+            credential,
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::ProviderAdapter,
+            CredentialExecutionPolicy::exact(holder, ModelExposurePolicy::Forbidden),
+        ),
+        claim_epoch: claim.epoch,
+    };
+
+    let result = worker.execution_context_with(&claim, None, &None, &[binding], &[delivery], None);
+    assert!(
+        matches!(result, Err(Error::Execution(_))),
+        "R2/E2 invalid claim delivery must fail closed instead of panicking"
+    );
 }

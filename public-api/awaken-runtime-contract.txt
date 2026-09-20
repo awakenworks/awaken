@@ -347,6 +347,12 @@ pub awaken_runtime_contract::credential::AttemptCredentialBindingError::MissingP
 pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization
 pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization::backend: alloc::string::String
 pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization::boundary: awaken_credential_contract::PlaintextBoundary
+pub enum awaken_runtime_contract::credential::AttemptCredentialDeliveryError
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryError::AuthorityMismatch
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryError::BindingMismatch
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryError::DuplicateCandidate
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryError::EnvelopeMissing
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryError::Fingerprint(alloc::string::String)
 pub enum awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision
 pub awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision::Collision
 pub awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision::ExactReplay
@@ -362,11 +368,23 @@ pub awaken_runtime_contract::credential::AttemptCredentialBinding::claim_epoch: 
 pub awaken_runtime_contract::credential::AttemptCredentialBinding::credential: awaken_credential_contract::CredentialRef
 pub awaken_runtime_contract::credential::AttemptCredentialBinding::selected_plaintext_holder: awaken_credential_contract::PlaintextHolder
 pub awaken_runtime_contract::credential::AttemptCredentialBinding::selected_realization_kind: awaken_credential_contract::realization_capabilities::CredentialRealizationKind
+pub struct awaken_runtime_contract::credential::AttemptCredentialDelivery
+pub awaken_runtime_contract::credential::AttemptCredentialDelivery::access: awaken_credential_contract::CredentialAccess
+pub awaken_runtime_contract::credential::AttemptCredentialDelivery::candidate_fingerprint: awaken_runtime_contract::credential::CandidateFingerprint
+pub awaken_runtime_contract::credential::AttemptCredentialDelivery::claim_epoch: u64
+pub struct awaken_runtime_contract::credential::AttemptCredentialDeliveryRequest
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryRequest::binding: awaken_credential_contract::custody::CredentialMaterialBinding
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryRequest::candidate_fingerprint: awaken_runtime_contract::credential::CandidateFingerprint
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryRequest::claim_epoch: u64
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryRequest::published_access: awaken_credential_contract::CredentialAccess
+pub awaken_runtime_contract::credential::AttemptCredentialDeliveryRequest::selected_plaintext_holder: awaken_credential_contract::PlaintextHolder
 pub struct awaken_runtime_contract::credential::AttemptCredentialRealization
 impl awaken_runtime_contract::credential::AttemptCredentialRealization
 pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::binding_for(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<core::option::Option<&awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::CredentialReceiptError>
 pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::bindings(&self) -> &[awaken_runtime_contract::credential::AttemptCredentialBinding]
+pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::delivered_access_for(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_credential_contract::CredentialAccess) -> core::result::Result<core::option::Option<&awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::credential::AttemptCredentialDeliveryError>
 pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::new(alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, alloc::sync::Arc<dyn awaken_runtime_contract::credential::CredentialRealizationRecorder>) -> Self
+pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::new_with_deliveries(alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialDelivery>, alloc::sync::Arc<dyn awaken_runtime_contract::credential::CredentialRealizationRecorder>) -> core::result::Result<Self, awaken_runtime_contract::credential::AttemptCredentialDeliveryError>
 pub async fn awaken_runtime_contract::credential::AttemptCredentialRealization::record(&self, &awaken_runtime_contract::credential::AttemptCredentialBinding) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialRealizationRecordError>
 pub struct awaken_runtime_contract::credential::CandidateFingerprint(pub alloc::string::String)
 pub struct awaken_runtime_contract::credential::CredentialRealizationReceipt
@@ -380,11 +398,17 @@ impl awaken_runtime_contract::credential::CredentialRealizationReceipt
 pub fn awaken_runtime_contract::credential::CredentialRealizationReceipt::new(&awaken_runtime_contract::credential::AttemptCredentialBinding, awaken_credential_contract::realization_capabilities::CredentialRealizationKind) -> core::result::Result<Self, awaken_runtime_contract::credential::CredentialReceiptError>
 pub fn awaken_runtime_contract::credential::CredentialRealizationReceipt::verify(&self, &awaken_runtime_contract::credential::AttemptCredentialBinding) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialReceiptError>
 pub struct awaken_runtime_contract::credential::CredentialRealizationRecordError(pub alloc::string::String)
+pub trait awaken_runtime_contract::credential::AttemptCredentialDeliverySource: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::credential::AttemptCredentialDeliverySource::deliver<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::credential::AttemptCredentialDeliveryRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::credential::AttemptCredentialDelivery, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::credential::CredentialRealizationRecorder: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::credential::CredentialRealizationRecorder::record<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::credential::CredentialRealizationRecordError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::credential::candidate_credential_material_binding(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::option::Option<(&awaken_credential_contract::CredentialAccess, awaken_credential_contract::custody::CredentialMaterialBinding)>
 pub fn awaken_runtime_contract::credential::candidate_fingerprint(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<awaken_runtime_contract::credential::CandidateFingerprint, awaken_runtime_contract::credential::CredentialReceiptError>
 pub fn awaken_runtime_contract::credential::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
+pub fn awaken_runtime_contract::credential::credential_access_has_same_authority(&awaken_credential_contract::CredentialAccess, &awaken_credential_contract::CredentialAccess) -> bool
+pub fn awaken_runtime_contract::credential::credential_access_without_delivery(&awaken_credential_contract::CredentialAccess) -> awaken_credential_contract::CredentialAccess
 pub fn awaken_runtime_contract::credential::credential_realization_persistence_decision(core::option::Option<&awaken_runtime_contract::credential::CredentialRealizationReceipt>, &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision
+pub fn awaken_runtime_contract::credential::verify_attempt_credential_delivery(&awaken_runtime_contract::credential::AttemptCredentialBinding, &awaken_credential_contract::CredentialAccess, &awaken_runtime_contract::credential::AttemptCredentialDelivery) -> core::result::Result<(), awaken_runtime_contract::credential::AttemptCredentialDeliveryError>
 pub fn awaken_runtime_contract::credential::verify_credential_realization_receipt(&[awaken_runtime_contract::credential::AttemptCredentialBinding], &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialReceiptError>
 pub mod awaken_runtime_contract::data_subject
 pub enum awaken_runtime_contract::data_subject::CaptureError
@@ -1756,6 +1780,12 @@ pub awaken_runtime_contract::AttemptCredentialBindingError::MissingPlaintextHold
 pub awaken_runtime_contract::AttemptCredentialBindingError::UnsupportedRealization
 pub awaken_runtime_contract::AttemptCredentialBindingError::UnsupportedRealization::backend: alloc::string::String
 pub awaken_runtime_contract::AttemptCredentialBindingError::UnsupportedRealization::boundary: awaken_credential_contract::PlaintextBoundary
+pub enum awaken_runtime_contract::AttemptCredentialDeliveryError
+pub awaken_runtime_contract::AttemptCredentialDeliveryError::AuthorityMismatch
+pub awaken_runtime_contract::AttemptCredentialDeliveryError::BindingMismatch
+pub awaken_runtime_contract::AttemptCredentialDeliveryError::DuplicateCandidate
+pub awaken_runtime_contract::AttemptCredentialDeliveryError::EnvelopeMissing
+pub awaken_runtime_contract::AttemptCredentialDeliveryError::Fingerprint(alloc::string::String)
 pub enum awaken_runtime_contract::AttemptExecutorRegistryError
 pub awaken_runtime_contract::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
 pub awaken_runtime_contract::AttemptExecutorRegistryError::InvalidBackendRef(alloc::string::String)
@@ -1923,11 +1953,23 @@ pub awaken_runtime_contract::AttemptCredentialBinding::claim_epoch: u64
 pub awaken_runtime_contract::AttemptCredentialBinding::credential: awaken_credential_contract::CredentialRef
 pub awaken_runtime_contract::AttemptCredentialBinding::selected_plaintext_holder: awaken_credential_contract::PlaintextHolder
 pub awaken_runtime_contract::AttemptCredentialBinding::selected_realization_kind: awaken_credential_contract::realization_capabilities::CredentialRealizationKind
+pub struct awaken_runtime_contract::AttemptCredentialDelivery
+pub awaken_runtime_contract::AttemptCredentialDelivery::access: awaken_credential_contract::CredentialAccess
+pub awaken_runtime_contract::AttemptCredentialDelivery::candidate_fingerprint: awaken_runtime_contract::credential::CandidateFingerprint
+pub awaken_runtime_contract::AttemptCredentialDelivery::claim_epoch: u64
+pub struct awaken_runtime_contract::AttemptCredentialDeliveryRequest
+pub awaken_runtime_contract::AttemptCredentialDeliveryRequest::binding: awaken_credential_contract::custody::CredentialMaterialBinding
+pub awaken_runtime_contract::AttemptCredentialDeliveryRequest::candidate_fingerprint: awaken_runtime_contract::credential::CandidateFingerprint
+pub awaken_runtime_contract::AttemptCredentialDeliveryRequest::claim_epoch: u64
+pub awaken_runtime_contract::AttemptCredentialDeliveryRequest::published_access: awaken_credential_contract::CredentialAccess
+pub awaken_runtime_contract::AttemptCredentialDeliveryRequest::selected_plaintext_holder: awaken_credential_contract::PlaintextHolder
 pub struct awaken_runtime_contract::AttemptCredentialRealization
 impl awaken_runtime_contract::credential::AttemptCredentialRealization
 pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::binding_for(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<core::option::Option<&awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::CredentialReceiptError>
 pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::bindings(&self) -> &[awaken_runtime_contract::credential::AttemptCredentialBinding]
+pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::delivered_access_for(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_credential_contract::CredentialAccess) -> core::result::Result<core::option::Option<&awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::credential::AttemptCredentialDeliveryError>
 pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::new(alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, alloc::sync::Arc<dyn awaken_runtime_contract::credential::CredentialRealizationRecorder>) -> Self
+pub fn awaken_runtime_contract::credential::AttemptCredentialRealization::new_with_deliveries(alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialDelivery>, alloc::sync::Arc<dyn awaken_runtime_contract::credential::CredentialRealizationRecorder>) -> core::result::Result<Self, awaken_runtime_contract::credential::AttemptCredentialDeliveryError>
 pub async fn awaken_runtime_contract::credential::AttemptCredentialRealization::record(&self, &awaken_runtime_contract::credential::AttemptCredentialBinding) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialRealizationRecordError>
 pub struct awaken_runtime_contract::AttemptExecutorRegistry
 impl awaken_runtime_contract::execution::AttemptExecutorRegistry
@@ -2346,6 +2388,8 @@ pub const awaken_runtime_contract::DEFAULT_MAX_STEPS: core::option::Option<usize
 pub const awaken_runtime_contract::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub trait awaken_runtime_contract::AttemptCredentialDeliverySource: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::AttemptCredentialDeliverySource::deliver<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::credential::AttemptCredentialDeliveryRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::credential::AttemptCredentialDelivery, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::AttemptOwnershipVerifier: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::AttemptOwnershipVerifier::verify_current<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::runtime_context::AttemptOwnershipError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::CaptureSink: core::marker::Send + core::marker::Sync
@@ -2437,8 +2481,11 @@ pub trait awaken_runtime_contract::ToolPermissionPolicy: core::marker::Send + co
 pub fn awaken_runtime_contract::ToolPermissionPolicy::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_runtime_contract::permission::DenyAllTools
 pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionRuling> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::candidate_credential_material_binding(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::option::Option<(&awaken_credential_contract::CredentialAccess, awaken_credential_contract::custody::CredentialMaterialBinding)>
 pub fn awaken_runtime_contract::candidate_fingerprint(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<awaken_runtime_contract::credential::CandidateFingerprint, awaken_runtime_contract::credential::CredentialReceiptError>
 pub fn awaken_runtime_contract::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
+pub fn awaken_runtime_contract::credential_access_has_same_authority(&awaken_credential_contract::CredentialAccess, &awaken_credential_contract::CredentialAccess) -> bool
+pub fn awaken_runtime_contract::credential_access_without_delivery(&awaken_credential_contract::CredentialAccess) -> awaken_credential_contract::CredentialAccess
 pub fn awaken_runtime_contract::credential_realization_persistence_decision(core::option::Option<&awaken_runtime_contract::credential::CredentialRealizationReceipt>, &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision
 pub fn awaken_runtime_contract::deserialize_max_steps<'de, D>(D) -> core::result::Result<core::option::Option<usize>, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
@@ -2447,4 +2494,5 @@ pub fn awaken_runtime_contract::freeze_delegation_publications(&awaken_runtime_c
 pub fn awaken_runtime_contract::is_legacy_derived_session_context(&awaken_agent_contract::agent::message::Message) -> bool
 pub fn awaken_runtime_contract::resolve_delegate_snapshot(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &awaken_runtime_contract::agent_bindings::AgentDelegateBinding, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
 pub fn awaken_runtime_contract::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
+pub fn awaken_runtime_contract::verify_attempt_credential_delivery(&awaken_runtime_contract::credential::AttemptCredentialBinding, &awaken_credential_contract::CredentialAccess, &awaken_runtime_contract::credential::AttemptCredentialDelivery) -> core::result::Result<(), awaken_runtime_contract::credential::AttemptCredentialDeliveryError>
 pub fn awaken_runtime_contract::verify_credential_realization_receipt(&[awaken_runtime_contract::credential::AttemptCredentialBinding], &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialReceiptError>

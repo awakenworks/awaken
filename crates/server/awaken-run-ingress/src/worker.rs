@@ -28,8 +28,8 @@ use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
 };
 use awaken_runtime_contract::{
-    AttemptCredentialBinding, AttemptCredentialRealization, CredentialRealizationReceipt,
-    CredentialRealizationRecordError, CredentialRealizationRecorder,
+    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialRealization,
+    CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
 use awaken_session_contract::{SessionRunActivityAdmission, SessionRunActivityAdmissionMode};
 use tokio_util::sync::CancellationToken;
@@ -283,8 +283,9 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             claimed.request.execution_scope.as_ref(),
             &None,
             &[],
+            &[],
             None,
-        );
+        )?;
         let coordinator = context.commit.ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(
                 "recovered dispatch has no claim-fenced commit coordinator".to_string(),
@@ -554,8 +555,9 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         execution_scope: Option<&crate::ExecutionScopeRef>,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
+        credential_deliveries: &[AttemptCredentialDelivery],
         attempt_cancellation: Option<&CancellationToken>,
-    ) -> RuntimeRunContext {
+    ) -> Result<RuntimeRunContext, Error> {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
         // a superseded owner's per-step commits are rejected.
@@ -588,13 +590,20 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             ctx = ctx.with_execution_scope(scope.clone());
         }
         if !credential_bindings.is_empty() {
-            ctx = ctx.with_credential_realization(AttemptCredentialRealization::new(
+            let realization = AttemptCredentialRealization::new_with_deliveries(
                 credential_bindings.to_vec(),
+                credential_deliveries.to_vec(),
                 Arc::new(ClaimBoundCredentialRecorder {
                     dispatch: dispatch.clone(),
                     claim: claim.clone(),
                 }),
-            ));
+            )
+            .map_err(|error| {
+                Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                    format!("claimed credential delivery validation failed: {error}"),
+                ))
+            })?;
+            ctx = ctx.with_credential_realization(realization);
         }
         // Always install the claim-fenced adapter. A database-less Worker has no
         // local checkpoint authority (`inner=None`); the adapter then delegates
@@ -606,10 +615,10 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             dispatch,
             claim.clone(),
         )));
-        match model_executor {
+        Ok(match model_executor {
             Some(exec) => ctx.with_model_executor(exec.clone()),
             None => ctx,
-        }
+        })
     }
 
     /// Perform a committed ScheduledAction in-process (ADR-0020), routing any
@@ -983,8 +992,9 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                 claimed.request.execution_scope.as_ref(),
                 &None,
                 &claimed.credential_bindings,
+                &claimed.credential_deliveries,
                 Some(&attempt_cancellation),
-            );
+            )?;
             let cancel_executor = attempt_executor.clone();
             let cancel_activation = activation.clone();
             let recovery_mode = select_physical_attempt_recovery(
@@ -1144,8 +1154,9 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             claimed.request.execution_scope.as_ref(),
             &None,
             &claimed.credential_bindings,
+            &claimed.credential_deliveries,
             Some(&attempt_cancellation),
-        );
+        )?;
         let model_executor = self
             .exec
             .materialize_inference(&claimed.request.activation, &execution_context)?;

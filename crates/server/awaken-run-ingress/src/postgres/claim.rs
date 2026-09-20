@@ -322,6 +322,7 @@ async fn claim_exact_transaction_with_mode(
             epoch: claim.epoch,
         },
         credential_bindings,
+        credential_deliveries: Vec::new(),
         cancellation_requested: cancellation_requested != 0,
         pending,
         recovered: status == "running",

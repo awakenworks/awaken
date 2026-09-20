@@ -647,6 +647,7 @@ fn claim_exact_with_mode(
         request,
         lease: lease.clone(),
         credential_bindings,
+        credential_deliveries: Vec::new(),
         cancellation_requested,
         pending,
         recovered: was_execution_recovery,
