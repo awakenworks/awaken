@@ -1224,3 +1224,31 @@ async fn any_dispatch_store_exposes_the_control_rung_only_when_its_inner_handle_
     ));
     assert!(durable.control().is_some(), "R2 store keeps its rung");
 }
+
+#[test]
+fn any_dispatch_store_preserves_the_claimed_recovery_transport() {
+    /* Recovery-port cause/effect table. C1 a database-less Worker wraps its
+     * HttpDispatchQueue in the process-wide AnyDispatchStore; C2 that concrete
+     * client owns the claim-fenced checkpoint/recovery transport. E1 the erased
+     * store must expose the same port; E2 an ordinary local Memory store remains
+     * absent. Rules R1=C1+C2=>E1 and R2=!C2=>E2. Losing E1 lets the Worker claim
+     * a Run but fail before model/tool entry because it cannot load committed
+     * recovery truth from Control. */
+    let remote =
+        awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(HttpDispatchQueue::new(
+            "http://127.0.0.1:1",
+            WorkerIdentity::new("worker-local", "boot-local", 1),
+        )));
+    assert!(
+        remote.claimed_checkpoint_transport().is_some(),
+        "R1/E1 remote recovery survives type erasure"
+    );
+
+    let local = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(
+        MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock)),
+    ));
+    assert!(
+        local.claimed_checkpoint_transport().is_none(),
+        "R2/E2 no transport is invented for a local store"
+    );
+}
