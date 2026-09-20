@@ -1962,12 +1962,12 @@ mod verification {
         };
         let execution_terminal = kani::any::<bool>();
         let requested_at_unix_s = kani::any::<i64>();
-        let session_id = "session-1";
+        let session_id = crate::SessionId::from("session-1");
         let owner_scope = "workspace-1";
         let plan = session_delete_request_plan(
             disposition,
             execution_terminal,
-            session_id,
+            &session_id,
             owner_scope,
             requested_at_unix_s,
         );
@@ -1976,9 +1976,9 @@ mod verification {
         match plan.commit_parts() {
             Some((terminalize_execution, cleanup_identity)) => {
                 assert_eq!(terminalize_execution, !execution_terminal);
-                assert!(std::ptr::eq(cleanup_identity.session_id(), session_id));
+                assert!(std::ptr::eq(cleanup_identity.session_id(), &session_id));
                 let lifecycle_fact = plan.lifecycle_fact_plan().unwrap();
-                assert!(std::ptr::eq(lifecycle_fact.session_id, session_id));
+                assert!(std::ptr::eq(lifecycle_fact.session_id, &session_id));
                 assert!(std::ptr::eq(lifecycle_fact.owner_scope, owner_scope));
                 assert_eq!(lifecycle_fact.requested_at_unix_s, requested_at_unix_s);
             }
