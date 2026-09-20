@@ -34,6 +34,9 @@ const AGENT_PORT: u16 = 8080;
 /// every later signal resolves.
 const EXEC_ESTABLISHED_MARKER: &str = "/tmp/awaken-it-exec.established";
 
+/// The same evidence for the reaping test, in its own container.
+const REAP_ESTABLISHED_MARKER: &str = "/tmp/awaken-it-reap.established";
+
 fn plan(cmd: &[&str]) -> ContainerPlan {
     ContainerPlan {
         image: "busybox:latest".into(),
@@ -355,4 +358,67 @@ async fn container_holds(rt: &DockerRuntime, container_id: &str, path: &str) -> 
         .expect("await the establishment probe")
         .code
         == Some(0)
+}
+
+#[tokio::test]
+async fn reaping_stops_the_process_a_plain_spawn_started() {
+    // The physical half of the exec-responsibility table. The in-crate table
+    // uses a fake runtime, so it can only prove the reaper was *demanded*;
+    // this proves a real daemon's reaper actually stops a process started
+    // through the plain `spawn` edge — the edge whose attempts disposal used
+    // to miss entirely — before anything reads the workspace.
+    let Some(rt) = runtime().await else { return };
+    let scope = "it-reap";
+    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
+    let id = rt
+        .create(scope, &plan(&["sleep", "300"]))
+        .await
+        .expect("create Session container");
+
+    let command = pc::Command {
+        argv: vec![
+            "sh".into(),
+            "-c".into(),
+            format!("printf established > {REAP_ESTABLISHED_MARKER}; sleep 300"),
+        ],
+        cwd: "/tmp".into(),
+        env: Vec::new(),
+        stdio: pc::Stdio::Null,
+    };
+    let command = pc::materialize_process_command(&[], command, None)
+        .await
+        .expect("materialize the reaped command");
+    let process = rt.spawn(&id, command).await.expect("spawn detached exec");
+
+    // Same establishment precondition as the signal test: the wrapper records
+    // the pid before it execs this command, so the marker is proof the record
+    // the reaper enumerates already exists.
+    let mut established = false;
+    // awaken-wait: settles on the exec's own committed in-container marker.
+    for _ in 0..150 {
+        if container_holds(&rt, &id, REAP_ESTABLISHED_MARKER).await {
+            established = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(established, "the reaped exec never reached its command");
+    assert!(
+        process.poll().await.unwrap().is_none(),
+        "alive before reaping"
+    );
+
+    rt.reap_exec_orphans(&id)
+        .await
+        .expect("the container forgets the execs it started");
+
+    let stopped = tokio::time::timeout(Duration::from_secs(10), process.wait())
+        .await
+        .expect("reaping stops the process within its deadline")
+        .expect("terminal status");
+    assert!(
+        stopped.code.is_some() || stopped.signaled,
+        "the reaped process reached a terminal status: {stopped:?}"
+    );
+    let _ = rt.remove(&id).await;
 }
