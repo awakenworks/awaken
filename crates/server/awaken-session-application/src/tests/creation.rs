@@ -451,13 +451,15 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     // Cause/effect decision table:
     // C1 Worker placement + durable Preparing root; C2 initial Dispatch
     // projection fails after root commit; C3 recovery scans the same root.
-    // E1 create reports the effect failure without deleting truth; E2 recovery
-    // reinstalls exactly the same Dispatch projection; E3 no local realization
-    // lease/attempt is minted; E4 a second scan may idempotently reinstall while
-    // the Worker has not yet acknowledged realization. Rule R1=C1+C2=>E1;
-    // R2=C1+C3=>E2+E3; R3=R2 repeated=>E4. Terminal, local and already-resident
-    // rows retain their adjacent recovery behavior.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+    // C4 the first recovery projection also fails. E1 create reports the effect
+    // failure without deleting truth; E2 recovery reinstalls exactly the same
+    // Dispatch projection; E3 no local realization lease/attempt is minted; E4
+    // a recovery failure reports the exact string Session identity and settles
+    // nothing; E5 the next scan may idempotently reinstall while the Worker has
+    // not yet acknowledged realization. Rule R1=C1+C2=>E1; R2=C1+C3+C4=>E4;
+    // R3=C1+C3+!C4=>E2+E3; R4=R3 repeated=>E5. Terminal, local and
+    // already-resident rows retain their adjacent recovery behavior.
+    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("worker projection recovery repository"),
     );
@@ -479,31 +481,41 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     command.intent.control.environment.self_hosted = false;
 
     assert!(application.create_session(command).await.is_err(), "R1/E1");
+    let session_id = SessionId::from("worker-projection-recovery");
     let stranded = repository
-        .get("worker-projection-recovery")
+        .get(&session_id)
         .await
         .expect("R1 durable root remains");
     assert!(stranded.needs_initial_realization_recovery(), "R1/C1");
     assert!(stranded.realization.is_none(), "R1/E3");
     assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "R1/E1");
 
+    runtime.projection_failure.store(1, Ordering::SeqCst);
+    let failed_recovery = application.reconcile_session_realizations().await;
+    assert!(failed_recovery.settled.is_empty(), "R2/E4");
+    assert_eq!(failed_recovery.failures.len(), 1, "R2/E4");
+    assert_eq!(
+        failed_recovery.failures[0].session_id, "worker-projection-recovery",
+        "R2/E4"
+    );
+
     let first = application.reconcile_session_realizations().await;
-    assert!(first.failures.is_empty(), "R2/E2: {:#?}", first.failures);
-    assert_eq!(first.settled.len(), 1, "R2/E2");
-    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 2, "R2/E2");
+    assert!(first.failures.is_empty(), "R3/E2: {:#?}", first.failures);
+    assert_eq!(first.settled.len(), 1, "R3/E2");
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 3, "R3/E2");
     assert!(
         repository
-            .get("worker-projection-recovery")
+            .get(&session_id)
             .await
             .unwrap()
             .realization
             .is_none(),
-        "R2/E3"
+        "R3/E3"
     );
 
     let replay = application.reconcile_session_realizations().await;
-    assert!(replay.failures.is_empty(), "R3/E4");
-    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 3, "R3/E4");
+    assert!(replay.failures.is_empty(), "R4/E5");
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 4, "R4/E5");
 }
 
 #[tokio::test]

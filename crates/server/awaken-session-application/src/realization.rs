@@ -784,7 +784,7 @@ impl SessionApplication {
                     {
                         Ok(()) => report.settled.push(session.clone()),
                         Err(error) => report.failures.push(SessionReconciliationFailure {
-                            session_id: candidate.session_id.clone(),
+                            session_id: candidate.session_id.to_string(),
                             message: error.to_string(),
                         }),
                     }
