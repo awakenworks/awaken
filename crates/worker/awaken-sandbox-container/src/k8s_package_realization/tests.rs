@@ -130,7 +130,9 @@ fn apply_api_job_template_defaults(pod: &mut k8s_openapi::api::core::v1::PodSpec
     pod.service_account_name = Some("default".into());
     pod.termination_grace_period_seconds = Some(30);
     pod.preemption_policy = Some("PreemptLowerPriority".into());
-    pod.security_context = Some(PodSecurityContext::default());
+    if pod.security_context.is_none() {
+        pod.security_context = Some(PodSecurityContext::default());
+    }
 }
 
 fn apply_api_pod_defaults(pod: &mut k8s_openapi::api::core::v1::PodSpec) {
@@ -177,6 +179,8 @@ fn successful_job_pod(
     for key in ["controller-uid", "batch.kubernetes.io/controller-uid"] {
         labels.insert(key.into(), job_uid.into());
     }
+    labels.insert("topology.kubernetes.io/region".into(), "test-region".into());
+    labels.insert("topology.kubernetes.io/zone".into(), "test-zone-a".into());
     let mut spec = template.spec.expect("Job Pod spec");
     apply_api_pod_defaults(&mut spec);
     let container = spec.containers.first().expect("one Job container");
@@ -338,6 +342,25 @@ async fn package_job_pod_count_is_exact_to_one_job_incarnation() {
         2,
         "C4/E4"
     );
+}
+
+#[tokio::test]
+async fn observed_topology_labels_are_the_only_admission_label_exception() {
+    // Causes: L1 GKE adds standard region/zone labels only to the observed Job
+    // Pod; L2 an unrelated admission label is added. Effects: E1 L1 preserves
+    // exact realization proof; E2 L2 rejects. The canonical fixture already
+    // carries L1 on both build/check Pods, so every positive verifier test
+    // crosses the real GKE shape. Rule T1=L1=>E1; T2=L1+L2=>E2.
+    let fixture = canonical_fixture();
+    fixture.verify().expect("T1 standard topology observations");
+    let mut foreign = canonical_fixture();
+    let index = foreign.job_pod_index(PACKAGE_BUILD_JOB_KIND);
+    foreign.pods[index]
+        .metadata
+        .labels
+        .get_or_insert_with(Default::default)
+        .insert("foreign.example/injected".into(), "true".into());
+    assert_rejected(foreign, "T2 foreign admission label");
 }
 
 #[tokio::test]

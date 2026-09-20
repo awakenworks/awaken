@@ -241,9 +241,17 @@ struct WorkerFileConfig {
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
     k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
+    k8s_image_pull_secrets: Option<Vec<String>>,
     acp_clis: Option<Vec<String>>,
     container_image: Option<String>,
+    package_image_registry: Option<String>,
+    package_registry_auth_file: Option<PathBuf>,
+    package_registry_insecure: Option<bool>,
     package_build_host_network: Option<bool>,
+    k8s_buildkit_image: Option<String>,
+    package_image_builder: Option<String>,
+    package_local_cache_ttl_secs: Option<u64>,
+    sandbox_inherit_agent_stderr: Option<bool>,
 }
 
 /// Fully validated inputs for the standalone Worker process.
@@ -329,13 +337,23 @@ impl WorkerDaemonConfig {
             policy.validate().map_err(|error| error.to_string())?;
             runtime.sandbox.k8s_continuation_volume = Some(policy);
         }
+        awaken_session_executor::SandboxPackageSettingsInput {
+            k8s_image_pull_secrets: file.k8s_image_pull_secrets.unwrap_or_default(),
+            package_image_registry: file.package_image_registry,
+            package_registry_auth_file: file.package_registry_auth_file,
+            package_registry_insecure: file.package_registry_insecure.unwrap_or(false),
+            package_build_host_network: file.package_build_host_network.unwrap_or(false),
+            k8s_buildkit_image: file.k8s_buildkit_image,
+            package_image_builder: file.package_image_builder,
+            package_local_cache_ttl_secs: file.package_local_cache_ttl_secs,
+            inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
+        }
+        .apply(runtime.sandbox_tier, &mut runtime.sandbox)?;
         let acp_clis = file.acp_clis.unwrap_or_default();
         runtime.acp = (!acp_clis.is_empty())
             .then(|| awaken_session_executor::AcpWorkerProfile::new(acp_clis))
             .transpose()?;
         runtime.container_image = file.container_image;
-        runtime.sandbox.package_build_host_network =
-            file.package_build_host_network.unwrap_or(false);
         if let Some(path) = &file.worker_local_credential_bindings_file {
             if path.as_os_str().is_empty() {
                 return Err("worker_local_credential_bindings_file must not be empty".into());
@@ -1136,13 +1154,13 @@ mod tests {
         assert!(package_host.runtime.sandbox.package_build_host_network);
 
         // Sandbox configuration cause/effect decision table: S1 K8s tier plus
-        // non-empty namespace and image preserves configuration but makes no
+        // non-empty namespace, image and package policy preserves configuration but makes no
         // isolation claim before live provider attestation; S2 empty namespace
         // rejects; S3 the removed operator-evidence key rejects as unknown; S4
         // the trusted-host switch enters the typed Deployment value exactly.
         // The canonical K8s adapter is therefore the only evidence owner.
         write(&format!(
-            "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\ncontainer_image='awaken-sandbox:local'\n",
+            "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\nk8s_image_pull_secrets=['registry-auth']\ncontainer_image='awaken-sandbox:local'\npackage_image_registry='registry.example/team/'\npackage_image_builder='k8s'\nsandbox_inherit_agent_stderr=true\n",
             credential.display()
         ));
         let k8s = WorkerDaemonConfig::load(&path, None).expect("S1");
@@ -1153,6 +1171,22 @@ mod tests {
             "S1"
         );
         assert!(!k8s.runtime.sandbox_support().0.network_isolation, "S1");
+        assert_eq!(
+            k8s.runtime.sandbox.k8s_image_pull_secrets,
+            ["registry-auth"],
+            "S1"
+        );
+        assert_eq!(
+            k8s.runtime.sandbox.package_image_registry.as_deref(),
+            Some("registry.example/team"),
+            "S1"
+        );
+        assert_eq!(
+            k8s.runtime.sandbox.package_image_builder,
+            Some(awaken_session_executor::PackageImageBuilder::Kubernetes),
+            "S1"
+        );
+        assert!(k8s.runtime.sandbox.inherit_agent_stderr, "S1");
 
         // KP1 omitted volume policy remains None. KP2 authored retained policy
         // crosses the standalone Worker file boundary into the same Runtime

@@ -358,6 +358,18 @@ pub fn awaken_session_executor::RunApplicationHost::resume<'life0, 'life1, 'life
 pub fn awaken_session_executor::RunApplicationHost::run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_executor::RunApplicationHost::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_executor::RunApplicationHost::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(u64, u64), awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_session_executor::SandboxPackageSettingsInput
+pub awaken_session_executor::SandboxPackageSettingsInput::inherit_agent_stderr: bool
+pub awaken_session_executor::SandboxPackageSettingsInput::k8s_buildkit_image: core::option::Option<alloc::string::String>
+pub awaken_session_executor::SandboxPackageSettingsInput::k8s_image_pull_secrets: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_executor::SandboxPackageSettingsInput::package_build_host_network: bool
+pub awaken_session_executor::SandboxPackageSettingsInput::package_image_builder: core::option::Option<alloc::string::String>
+pub awaken_session_executor::SandboxPackageSettingsInput::package_image_registry: core::option::Option<alloc::string::String>
+pub awaken_session_executor::SandboxPackageSettingsInput::package_local_cache_ttl_secs: core::option::Option<u64>
+pub awaken_session_executor::SandboxPackageSettingsInput::package_registry_auth_file: core::option::Option<std::path::PathBuf>
+pub awaken_session_executor::SandboxPackageSettingsInput::package_registry_insecure: bool
+impl awaken_session_executor::SandboxPackageSettingsInput
+pub fn awaken_session_executor::SandboxPackageSettingsInput::apply(self, awaken_session_executor::SandboxTier, &mut awaken_session_executor::SandboxSettings) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_session_executor::SandboxSettings
 pub awaken_session_executor::SandboxSettings::allow_local_fallback: bool
 pub awaken_session_executor::SandboxSettings::container_allowlist_proxy: core::option::Option<awaken_sandbox_container::egress::AllowlistProxy>
