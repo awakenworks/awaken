@@ -13,6 +13,43 @@ use serde::{Deserialize, Serialize};
 
 use crate::resolved::{Backend, ModelProvisioning, ResolvedModelCandidate};
 
+/// Remove only the claim-scoped transport carrier. Credential selection,
+/// usage, target and plaintext policy remain immutable.
+#[must_use]
+pub fn credential_access_without_delivery(access: &CredentialAccess) -> CredentialAccess {
+    let mut authority = access.clone();
+    authority.envelope = None;
+    authority
+}
+
+/// Compare immutable credential authority while excluding its short-lived
+/// claim-scoped transport carrier.
+#[must_use]
+pub fn credential_access_has_same_authority(
+    left: &CredentialAccess,
+    right: &CredentialAccess,
+) -> bool {
+    credential_access_without_delivery(left) == credential_access_without_delivery(right)
+}
+
+/// Preserve every publication-time admission check while deferring only the
+/// liveness of the envelope that Control will replace after claim.
+#[must_use]
+fn credential_access_for_claim_admission(access: &CredentialAccess) -> CredentialAccess {
+    let mut admitted = access.clone();
+    if let Some(envelope) = admitted.envelope.as_mut() {
+        match envelope {
+            CredentialEnvelope::SealedForWorker {
+                expires_at_unix_ms, ..
+            }
+            | CredentialEnvelope::SealedForWorkload {
+                expires_at_unix_ms, ..
+            } => *expires_at_unix_ms = u64::MAX,
+        }
+    }
+    admitted
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AttemptCredentialBindingError {
     #[error("attempt claim epoch must be greater than zero")]
@@ -112,7 +149,12 @@ pub fn compile_candidate_credential_bindings(
                 });
             }
         };
-        access.admit(holder, realization, installed, now_unix_ms)?;
+        credential_access_for_claim_admission(access).admit(
+            holder,
+            realization,
+            installed,
+            now_unix_ms,
+        )?;
         let fingerprint = candidate_fingerprint(candidate)
             .map_err(|error| AttemptCredentialBindingError::Fingerprint(error.to_string()))?;
         if !seen.insert(fingerprint.clone()) {
@@ -143,6 +185,116 @@ pub struct AttemptCredentialBinding {
     pub selected_plaintext_holder: PlaintextHolder,
     pub selected_realization_kind: CredentialRealizationKind,
     pub claim_epoch: u64,
+}
+
+/// Claim-scoped transport for one already-frozen credential authority. Only
+/// the envelope may change; a successor claim receives its own epoch delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptCredentialDelivery {
+    pub candidate_fingerprint: CandidateFingerprint,
+    pub access: CredentialAccess,
+    pub claim_epoch: u64,
+}
+
+/// Exact request to the deployment-owned delivery authority. It contains no
+/// plaintext and cannot select another credential or execution mechanism.
+#[derive(Debug, Clone)]
+pub struct AttemptCredentialDeliveryRequest {
+    pub candidate_fingerprint: CandidateFingerprint,
+    pub published_access: CredentialAccess,
+    pub selected_plaintext_holder: PlaintextHolder,
+    pub binding: CredentialMaterialBinding,
+    pub claim_epoch: u64,
+}
+
+#[async_trait]
+pub trait AttemptCredentialDeliverySource: Send + Sync {
+    async fn deliver(
+        &self,
+        request: AttemptCredentialDeliveryRequest,
+    ) -> Result<AttemptCredentialDelivery, String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AttemptCredentialDeliveryError {
+    #[error("credential delivery targets another attempt binding")]
+    BindingMismatch,
+    #[error("credential delivery changes immutable publication authority")]
+    AuthorityMismatch,
+    #[error("credential delivery has no recipient envelope")]
+    EnvelopeMissing,
+    #[error("credential delivery is duplicated for one candidate")]
+    DuplicateCandidate,
+    #[error("credential delivery candidate fingerprint failed: {0}")]
+    Fingerprint(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttemptCredentialDeliveryAdmission {
+    Exact,
+    BindingMismatch,
+    AuthorityMismatch,
+    EnvelopeMissing,
+    DuplicateCandidate,
+}
+
+#[must_use]
+const fn attempt_credential_delivery_admission(
+    duplicate: bool,
+    binding_present: bool,
+    binding_coordinates_match: bool,
+    authority_matches: bool,
+    envelope_present: bool,
+) -> AttemptCredentialDeliveryAdmission {
+    if duplicate {
+        AttemptCredentialDeliveryAdmission::DuplicateCandidate
+    } else if !binding_present || !binding_coordinates_match {
+        AttemptCredentialDeliveryAdmission::BindingMismatch
+    } else if !authority_matches {
+        AttemptCredentialDeliveryAdmission::AuthorityMismatch
+    } else if !envelope_present {
+        AttemptCredentialDeliveryAdmission::EnvelopeMissing
+    } else {
+        AttemptCredentialDeliveryAdmission::Exact
+    }
+}
+
+fn map_attempt_credential_delivery_admission(
+    decision: AttemptCredentialDeliveryAdmission,
+) -> Result<(), AttemptCredentialDeliveryError> {
+    match decision {
+        AttemptCredentialDeliveryAdmission::Exact => Ok(()),
+        AttemptCredentialDeliveryAdmission::BindingMismatch => {
+            Err(AttemptCredentialDeliveryError::BindingMismatch)
+        }
+        AttemptCredentialDeliveryAdmission::AuthorityMismatch => {
+            Err(AttemptCredentialDeliveryError::AuthorityMismatch)
+        }
+        AttemptCredentialDeliveryAdmission::EnvelopeMissing => {
+            Err(AttemptCredentialDeliveryError::EnvelopeMissing)
+        }
+        AttemptCredentialDeliveryAdmission::DuplicateCandidate => {
+            Err(AttemptCredentialDeliveryError::DuplicateCandidate)
+        }
+    }
+}
+
+/// Verify one claim-scoped delivery against immutable publication authority and
+/// the exact binding selected by Dispatch.
+pub fn verify_attempt_credential_delivery(
+    binding: &AttemptCredentialBinding,
+    published_access: &CredentialAccess,
+    delivery: &AttemptCredentialDelivery,
+) -> Result<(), AttemptCredentialDeliveryError> {
+    map_attempt_credential_delivery_admission(attempt_credential_delivery_admission(
+        false,
+        true,
+        delivery.candidate_fingerprint == binding.candidate_fingerprint
+            && delivery.access.credential == binding.credential
+            && delivery.claim_epoch == binding.claim_epoch,
+        credential_access_has_same_authority(&delivery.access, published_access),
+        delivery.access.envelope.is_some(),
+    ))
 }
 
 /// Secret-free evidence that one exact attempt binding was realized.
@@ -364,6 +516,44 @@ pub fn candidate_fingerprint(
         .map_err(|error| CredentialReceiptError::Fingerprint(error.to_string()))
 }
 
+/// Derive the one authenticated material binding used by publication delivery,
+/// claim redelivery and last-mile resolution. Keeping this with the candidate
+/// contract prevents those three boundaries from hashing subtly different
+/// provider or remote coordinates.
+pub fn candidate_credential_material_binding(
+    candidate: &ResolvedModelCandidate,
+) -> Option<(&CredentialAccess, CredentialMaterialBinding)> {
+    match candidate.provisioning() {
+        ModelProvisioning::Provider {
+            provider_ref,
+            scope_id,
+            credential: Some(access),
+            endpoint,
+            ..
+        } => Some((
+            access,
+            CredentialMaterialBinding::for_target(
+                scope_id.as_str(),
+                &(provider_ref, endpoint),
+                &access.usage,
+            ),
+        )),
+        ModelProvisioning::Remote {
+            scope_id,
+            credential: Some(access),
+            security_fingerprint,
+        } => Some((
+            access,
+            CredentialMaterialBinding::for_target(
+                scope_id.as_str(),
+                &(&candidate.binding().backend_ref, security_fingerprint),
+                &access.usage,
+            ),
+        )),
+        _ => None,
+    }
+}
+
 /// Verify one effect against the unique binding frozen for that candidate.
 pub fn verify_credential_realization_receipt(
     bindings: &[AttemptCredentialBinding],
@@ -406,6 +596,7 @@ pub struct CredentialRealizationRecordError(pub String);
 #[derive(Clone)]
 pub struct AttemptCredentialRealization {
     bindings: std::sync::Arc<[AttemptCredentialBinding]>,
+    deliveries: std::sync::Arc<[AttemptCredentialDelivery]>,
     recorder: std::sync::Arc<dyn CredentialRealizationRecorder>,
 }
 
@@ -417,8 +608,39 @@ impl AttemptCredentialRealization {
     ) -> Self {
         Self {
             bindings: bindings.into(),
+            deliveries: std::sync::Arc::from([]),
             recorder,
         }
+    }
+
+    pub fn new_with_deliveries(
+        bindings: Vec<AttemptCredentialBinding>,
+        deliveries: Vec<AttemptCredentialDelivery>,
+        recorder: std::sync::Arc<dyn CredentialRealizationRecorder>,
+    ) -> Result<Self, AttemptCredentialDeliveryError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for delivery in &deliveries {
+            let duplicate = !seen.insert(delivery.candidate_fingerprint.clone());
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.candidate_fingerprint == delivery.candidate_fingerprint);
+            let coordinates_match = binding.is_some_and(|binding| {
+                binding.credential == delivery.access.credential
+                    && binding.claim_epoch == delivery.claim_epoch
+            });
+            map_attempt_credential_delivery_admission(attempt_credential_delivery_admission(
+                duplicate,
+                binding.is_some(),
+                coordinates_match,
+                true,
+                delivery.access.envelope.is_some(),
+            ))?;
+        }
+        Ok(Self {
+            bindings: bindings.into(),
+            deliveries: deliveries.into(),
+            recorder,
+        })
     }
 
     #[must_use]
@@ -437,6 +659,31 @@ impl AttemptCredentialRealization {
             .find(|binding| binding.candidate_fingerprint == fingerprint))
     }
 
+    /// Select the exact ephemeral delivery and prove it changes no publication
+    /// authority before any plaintext resolver sees it.
+    pub fn delivered_access_for(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        published_access: &CredentialAccess,
+    ) -> Result<Option<&CredentialAccess>, AttemptCredentialDeliveryError> {
+        let fingerprint = candidate_fingerprint(candidate)
+            .map_err(|error| AttemptCredentialDeliveryError::Fingerprint(error.to_string()))?;
+        let Some(delivery) = self
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.candidate_fingerprint == fingerprint)
+        else {
+            return Ok(None);
+        };
+        let binding = self
+            .bindings
+            .iter()
+            .find(|binding| binding.candidate_fingerprint == fingerprint)
+            .ok_or(AttemptCredentialDeliveryError::BindingMismatch)?;
+        verify_attempt_credential_delivery(binding, published_access, delivery)?;
+        Ok(Some(&delivery.access))
+    }
+
     pub async fn record(
         &self,
         binding: &AttemptCredentialBinding,
@@ -445,6 +692,37 @@ impl AttemptCredentialRealization {
             .map_err(|error| CredentialRealizationRecordError(error.to_string()))?;
         self.recorder.record(receipt).await
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn attempt_delivery_requires_unique_exact_binding_envelope_and_unchanged_authority() {
+    // Cause/effect proof input: symbolic candidate, binding coordinates,
+    // publication authority and envelope are converted by the same comparisons
+    // and presence checks used by production. Exact admission is equivalent to
+    // all five derived causes holding.
+    let seen_candidate: Option<u8> = kani::any();
+    let delivery_candidate: u8 = kani::any();
+    let binding: Option<(u8, u8, u8)> = kani::any();
+    let delivery_coordinates: (u8, u8, u8) = kani::any();
+    let published_authority: u8 = kani::any();
+    let delivered_authority: u8 = kani::any();
+    let envelope: Option<u8> = kani::any();
+    let decision = attempt_credential_delivery_admission(
+        seen_candidate == Some(delivery_candidate),
+        binding.is_some(),
+        binding.is_some_and(|coordinates| coordinates == delivery_coordinates),
+        published_authority == delivered_authority,
+        envelope.is_some(),
+    );
+    assert_eq!(
+        decision == AttemptCredentialDeliveryAdmission::Exact,
+        seen_candidate != Some(delivery_candidate)
+            && binding.is_some()
+            && binding.is_some_and(|coordinates| coordinates == delivery_coordinates)
+            && published_authority == delivered_authority
+            && envelope.is_some()
+    );
 }
 
 #[cfg(test)]
@@ -508,6 +786,150 @@ mod tests {
                 Vec::new()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn attempt_delivery_is_exact_epoch_bound_and_authority_preserving() {
+        // Delivery decision table: C1 candidate/binding/epoch exact; C2 access
+        // changes only envelope; C3 duplicate, foreign epoch or changed policy.
+        // R1 C1+C2 => select fresh access. R2 C3(any) => reject construction or
+        // lookup. This keeps ephemeral transport outside publication identity
+        // without allowing it to widen credential authority.
+        struct Recorder;
+        #[async_trait]
+        impl CredentialRealizationRecorder for Recorder {
+            async fn record(
+                &self,
+                _: CredentialRealizationReceipt,
+            ) -> Result<(), CredentialRealizationRecordError> {
+                Ok(())
+            }
+        }
+        let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
+        let published = CredentialAccess::new(
+            CredentialRef {
+                id: "credential-a".into(),
+                revision: 3,
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::ProviderAdapter,
+            CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+        )
+        .with_target(CredentialTarget::new(
+            CredentialPurpose::ProviderAdapter,
+            "deepseek",
+        ))
+        .with_envelope(CredentialEnvelope::SealedForWorker {
+            envelope_ref: SealedCredentialEnvelopeRef {
+                id: "old".into(),
+                payload_fingerprint: "old".into(),
+            },
+            recipient: holder.trust_domain.clone(),
+            expires_at_unix_ms: 1,
+        });
+        let candidate = ResolvedModelCandidate::try_provider(
+            fixture_binding("deepseek", "deepseek-v4-pro", "genai"),
+            "deepseek@1",
+            "deepseek.open_ai_chat@1",
+            "workspace-a",
+            Some(published.clone()),
+            crate::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "open_ai_chat".into(),
+                base_url: "https://api.deepseek.com".into(),
+                upstream_model: "deepseek-v4-pro".into(),
+                processing_placement: None,
+            },
+        )
+        .unwrap();
+        let capabilities = CredentialRealizationCapabilities {
+            holders: [holder.clone()].into_iter().collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::WorkerProviderAdapter]
+                .into_iter()
+                .collect(),
+            recipient_bound_envelopes: true,
+            envelope_required: true,
+            ..Default::default()
+        };
+        let bindings = compile_candidate_credential_bindings(
+            &[&candidate],
+            Some(&holder),
+            &capabilities,
+            7,
+            10,
+        )
+        .expect("claim identity accepts expired publication delivery");
+        let fresh = credential_access_without_delivery(&published).with_envelope(
+            CredentialEnvelope::SealedForWorker {
+                envelope_ref: SealedCredentialEnvelopeRef {
+                    id: "fresh".into(),
+                    payload_fingerprint: "fresh".into(),
+                },
+                recipient: holder.trust_domain.clone(),
+                expires_at_unix_ms: 20,
+            },
+        );
+        let delivery = AttemptCredentialDelivery {
+            candidate_fingerprint: bindings[0].candidate_fingerprint.clone(),
+            access: fresh.clone(),
+            claim_epoch: 7,
+        };
+        let realization = AttemptCredentialRealization::new_with_deliveries(
+            bindings.clone(),
+            vec![delivery.clone()],
+            std::sync::Arc::new(Recorder),
+        )
+        .expect("R1");
+        assert_eq!(
+            realization
+                .delivered_access_for(&candidate, &published)
+                .expect("R1")
+                .unwrap(),
+            &fresh
+        );
+        for invalid in [
+            AttemptCredentialDelivery {
+                claim_epoch: 8,
+                ..delivery.clone()
+            },
+            AttemptCredentialDelivery {
+                access: {
+                    let mut changed = fresh.clone();
+                    changed.policy = CredentialExecutionPolicy::exact(
+                        PlaintextHolder::new(PlaintextBoundary::Worker, "foreign"),
+                        ModelExposurePolicy::Forbidden,
+                    );
+                    changed
+                },
+                ..delivery.clone()
+            },
+        ] {
+            let result = AttemptCredentialRealization::new_with_deliveries(
+                bindings.clone(),
+                vec![invalid],
+                std::sync::Arc::new(Recorder),
+            );
+            if result.is_ok() {
+                assert!(
+                    result
+                        .unwrap()
+                        .delivered_access_for(&candidate, &published)
+                        .is_err(),
+                    "R2 changed authority rejects at lookup"
+                );
+            }
+        }
+        assert!(matches!(
+            AttemptCredentialRealization::new_with_deliveries(
+                bindings,
+                vec![delivery.clone(), delivery],
+                std::sync::Arc::new(Recorder),
+            ),
+            Err(AttemptCredentialDeliveryError::DuplicateCandidate)
+        ));
     }
 
     #[test]

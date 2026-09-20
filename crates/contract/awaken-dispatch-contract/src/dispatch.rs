@@ -20,9 +20,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::CredentialRealizationCapabilities;
 pub use awaken_runtime_contract::{
-    AttemptCredentialBinding, AttemptCredentialBindingError, CandidateFingerprint,
-    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, CredentialReceiptError,
-    credential_realization_persistence_decision, verify_credential_realization_receipt,
+    AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
+    CandidateFingerprint, CredentialRealizationPersistenceDecision, CredentialRealizationReceipt,
+    CredentialReceiptError, credential_realization_persistence_decision,
+    verify_credential_realization_receipt,
 };
 #[cfg(test)]
 use awaken_runtime_contract::{
@@ -1261,6 +1262,7 @@ mod tests {
             },
             session_work_authority: None,
             credential_bindings: Vec::new(),
+            credential_deliveries: Vec::new(),
             cancellation_requested: true,
             pending: vec![pending()],
             recovered: true,

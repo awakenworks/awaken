@@ -69,6 +69,10 @@ pub struct Claimed {
     /// transport binding; anonymous and non-remote cancellation remains empty.
     #[serde(default)]
     pub credential_bindings: Vec<AttemptCredentialBinding>,
+    /// Fresh recipient transports issued after this exact claim selected its
+    /// Worker. They are response-local and never replace the immutable request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_deliveries: Vec<AttemptCredentialDelivery>,
     /// A durable cancellation intent recorded before any live signal or terminal
     /// commit. The worker drives this through the same claim/epoch fence as normal
     /// execution, so a crash cannot lose a cancellation or resurrect the run.

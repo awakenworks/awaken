@@ -37,10 +37,14 @@ use std::sync::Mutex;
 
 mod admission;
 mod ambient_environment;
+#[cfg(feature = "authority")]
+mod attempt_delivery;
 mod claimed_materialization;
 mod material_capabilities;
 use admission::{ExpectedProviderTarget, admit_exact_adapter, unix_time_ms};
 pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
+#[cfg(feature = "authority")]
+pub use attempt_delivery::VaultAttemptCredentialDeliverySource;
 #[cfg(feature = "authority")]
 mod material_error;
 #[cfg(feature = "authority")]
@@ -59,6 +63,7 @@ use awaken_runtime_contract::{
     CredentialAccess, CredentialMaterialBinding, CredentialMaterialError,
     CredentialMaterialRequest, CredentialMaterialResolver, CredentialMaterialSource,
     CredentialRealizationKind, CredentialUsage, PlaintextHolder, ResolvedCredentialMaterial,
+    candidate_credential_material_binding, credential_access_has_same_authority,
 };
 
 #[derive(Clone)]
@@ -282,6 +287,7 @@ impl PinnedCredentialMaterializer {
     ) -> Result<RedactedString, String> {
         self.materialize_provider_for(
             candidate,
+            None,
             &PlaintextHolder::new(
                 awaken_runtime_contract::PlaintextBoundary::Worker,
                 awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
@@ -297,15 +303,13 @@ impl PinnedCredentialMaterializer {
     async fn materialize_provider_for(
         &self,
         candidate: &ResolvedModelCandidate,
+        delivered_access: Option<&CredentialAccess>,
         selected_holder: &PlaintextHolder,
         realization: CredentialRealizationKind,
     ) -> Result<awaken_runtime_contract::CredentialMaterial, String> {
         let ModelProvisioning::Provider {
             provider_ref,
             route_ref,
-            scope_id,
-            credential,
-            endpoint,
             ..
         } = candidate.provisioning()
         else {
@@ -319,9 +323,12 @@ impl PinnedCredentialMaterializer {
             .split_once('@')
             .map(|(endpoint, _)| endpoint)
             .ok_or_else(|| "published model candidate has no versioned route pin".to_string())?;
-        let credential = credential
-            .as_ref()
+        let (published, material_binding) = candidate_credential_material_binding(candidate)
             .ok_or_else(|| "published model candidate has no credential pin".to_string())?;
+        let credential = delivered_access.unwrap_or(published);
+        if !credential_access_has_same_authority(credential, published) {
+            return Err("claim delivery changes published credential authority".into());
+        }
         if !credential.usage.is_scalar_process_delivery() {
             return Err("published credential injection contract is invalid".to_string());
         }
@@ -336,11 +343,7 @@ impl PinnedCredentialMaterializer {
             .resolve_validated(
                 credential,
                 selected_holder,
-                CredentialMaterialBinding::for_target(
-                    scope_id.as_str(),
-                    &(provider_ref, endpoint),
-                    &credential.usage,
-                ),
+                material_binding,
                 Some(ExpectedProviderTarget {
                     provider_id: provider,
                     protocol_endpoint_id: Some(protocol_endpoint),
@@ -354,20 +357,19 @@ impl PinnedCredentialMaterializer {
     async fn materialize_remote_for(
         &self,
         candidate: &ResolvedModelCandidate,
+        delivered_access: Option<&CredentialAccess>,
         selected_holder: &PlaintextHolder,
         realization: CredentialRealizationKind,
     ) -> Result<awaken_runtime_contract::CredentialMaterial, String> {
-        let ModelProvisioning::Remote {
-            scope_id,
-            credential,
-            security_fingerprint,
-        } = candidate.provisioning()
-        else {
+        let ModelProvisioning::Remote { .. } = candidate.provisioning() else {
             return Err("model candidate does not require remote transport authentication".into());
         };
-        let credential = credential
-            .as_ref()
+        let (published, material_binding) = candidate_credential_material_binding(candidate)
             .ok_or_else(|| "remote candidate has no credential pin".to_string())?;
+        let credential = delivered_access.unwrap_or(published);
+        if !credential_access_has_same_authority(credential, published) {
+            return Err("claim delivery changes published credential authority".into());
+        }
         if !matches!(credential.usage, CredentialUsage::HttpHeader { .. }) {
             return Err("remote credential injection contract is not an HTTP header".into());
         }
@@ -379,16 +381,7 @@ impl PinnedCredentialMaterializer {
         )
         .map_err(|error| error.to_string())?;
         let resolved = self
-            .resolve_validated(
-                credential,
-                selected_holder,
-                CredentialMaterialBinding::for_target(
-                    scope_id.as_str(),
-                    &(&candidate.binding().backend_ref, security_fingerprint),
-                    &credential.usage,
-                ),
-                None,
-            )
+            .resolve_validated(credential, selected_holder, material_binding, None)
             .await
             .map_err(|error| error.to_string())?;
         Ok(resolved.material)
