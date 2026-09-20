@@ -72,10 +72,10 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7318,
+      "production_lines": 7321,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "runtime-contract gains the two capability supertraits (CancellableRunDelegationService, AttachedChannelToolExporter) that replaced its unsupported-style default methods. Advisor de-duplication: the binding-equality that decides whether an Advisor duplicates a published route is a named production kernel (advisor_binding_is_duplicate) so a proof can reach it -- the fact previously entered the Kani harness as a free bool"
+        "production_lines": "runtime-contract retains the capability supertraits and advisor_binding_is_duplicate production kernel recorded by the prior baseline. Model recovery additionally distinguishes a completely consumed HTTP error body from success-body and stream terminal receipts; three enum/mapping lines close unknown-outcome retry ambiguity."
       }
     },
     "awaken-sandbox-control": {

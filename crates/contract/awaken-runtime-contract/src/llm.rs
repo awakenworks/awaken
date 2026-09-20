@@ -6,11 +6,11 @@
 //! names a provider SDK type, so G2/G10 hold and G22 stays enforceable — the
 //! runtime validates the selected `ModelBinding` and never searches for another.
 
-use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde::{Deserialize, Serialize};
+use {async_trait::async_trait, std::time::Duration};
 
 pub use awaken_agent_contract::audit::model_request::{ModelRequestObservation, TokenUsage};
 use thiserror::Error;
@@ -22,15 +22,13 @@ use crate::resolved::{ModelBinding, ToolDescriptor};
 /// model response. Reasoning-capable models may spend minutes before their first
 /// public token or typed tool call, so this is deliberately independent from a
 /// transport-idle detector.
-pub const DEFAULT_MODEL_RESPONSE_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(20 * 60);
+pub const DEFAULT_MODEL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1_200);
 
 /// Runtime watchdog around the complete [`LlmExecutor`] attempt. It is a last
 /// resort for an executor that fails to enforce its own response deadline, and
 /// therefore must outlive [`DEFAULT_MODEL_RESPONSE_TIMEOUT`] so the provider's
 /// typed observation reaches Runtime first. Neither deadline proves remote termination.
-pub const DEFAULT_MODEL_ATTEMPT_WATCHDOG: std::time::Duration =
-    std::time::Duration::from_secs(20 * 60 + 30);
+pub const DEFAULT_MODEL_ATTEMPT_WATCHDOG: Duration = Duration::from_secs(1_230);
 
 const _: () =
     assert!(DEFAULT_MODEL_ATTEMPT_WATCHDOG.as_secs() > DEFAULT_MODEL_RESPONSE_TIMEOUT.as_secs());
@@ -487,14 +485,14 @@ pub enum Error {
     #[error("rate limited: {message}")]
     RateLimited {
         message: String,
-        retry_after: Option<std::time::Duration>,
+        retry_after: Option<Duration>,
     },
     /// The provider is overloaded (529/503). Retryable with a longer backoff
     /// base than a generic provider error.
     #[error("provider overloaded: {message}")]
     Overloaded {
         message: String,
-        retry_after: Option<std::time::Duration>,
+        retry_after: Option<Duration>,
     },
     /// The call or stream timed out (408/504, client-side timeout). Retryable.
     #[error("model call timed out: {0}")]
@@ -520,7 +518,7 @@ pub enum Error {
     #[error("usage limit exhausted: {message}")]
     UsageLimit {
         message: String,
-        reset_after: Option<std::time::Duration>,
+        reset_after: Option<Duration>,
     },
     /// The credential needs (re-)authentication — an expired grant / login
     /// required — distinct from a generic [`Unauthorized`](Self::Unauthorized).
@@ -589,7 +587,7 @@ impl Error {
     }
 
     /// The server's `Retry-After` hint, when the provider sent one.
-    pub fn retry_after(&self) -> Option<std::time::Duration> {
+    pub fn retry_after(&self) -> Option<Duration> {
         match self {
             Error::Observed { source, .. } => source.retry_after(),
             Error::RateLimited { retry_after, .. } | Error::Overloaded { retry_after, .. } => {
@@ -602,7 +600,7 @@ impl Error {
     /// The provider's reset window for a [`UsageLimit`](Self::UsageLimit), when one
     /// was sent. Purely informational — recognised and surfaced, never scheduled
     /// on. `None` for every other classification.
-    pub fn reset_hint(&self) -> Option<std::time::Duration> {
+    pub fn reset_hint(&self) -> Option<Duration> {
         match self {
             Error::Observed { source, .. } => source.reset_hint(),
             Error::UsageLimit { reset_after, .. } => *reset_after,
