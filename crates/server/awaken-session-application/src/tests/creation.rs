@@ -604,13 +604,14 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     // Cause/effect decision table:
     // C1 Worker placement + durable Preparing root; C2 initial Dispatch
     // projection fails after root commit; C3 recovery scans the same root.
-    // C4 the first recovery projection also fails. E1 create reports the effect
+    // C4 the first recovery projection also fails; C5 the frozen root carries a
+    // pending Skill-only Resource generation. E1 create reports the effect
     // failure without deleting truth; E2 recovery reinstalls exactly the same
     // Dispatch projection; E3 no local realization lease/attempt is minted; E4
     // a recovery failure reports the exact string Session identity and settles
     // nothing; E5 the next scan may idempotently reinstall while the Worker has
     // not yet acknowledged realization. Rule R1=C1+C2=>E1; R2=C1+C3+C4=>E4;
-    // R3=C1+C3+!C4=>E2+E3; R4=R3 repeated=>E5. Terminal, local and
+    // R3=C1+C3+!C4+C5=>E2+E3; R4=R3 repeated=>E5. Terminal, local and
     // already-resident rows retain their adjacent recovery behavior.
     let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -632,6 +633,7 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     command.intent.control.runtime_placement =
         awaken_session_contract::SessionRuntimePlacement::Worker;
     command.intent.control.environment.self_hosted = false;
+    command.intent.control.resources = skill_resources("pending-skill");
 
     assert!(application.create_session(command).await.is_err(), "R1/E1");
     let session_id = SessionId::from("worker-projection-recovery");
@@ -640,6 +642,7 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
         .await
         .expect("R1 durable root remains");
     assert!(stranded.needs_initial_realization_recovery(), "R1/C1");
+    assert!(stranded.resources.pending.is_some(), "R1/C5");
     assert!(stranded.realization.is_none(), "R1/E3");
     assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "R1/E1");
 

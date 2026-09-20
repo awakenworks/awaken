@@ -111,6 +111,31 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
         !terminal_interests.resource_activation,
         "R4 background only"
     );
+    let mut preparing = persisted("resource-preparing-skill", true, "preparing");
+    preparing
+        .resources
+        .prepare(
+            &awaken_session_contract::SessionId::from("resource-preparing-skill"),
+            skill_resources("pending-skill"),
+        )
+        .unwrap();
+    let preparing_interests = SessionRecoveryInterests::from_session(&preparing, false);
+    assert!(
+        preparing.needs_initial_realization_recovery(),
+        "R5 precondition"
+    );
+    assert!(
+        preparing_interests.resources,
+        "R5 pending Skill remains scheduled"
+    );
+    assert!(
+        preparing_interests.resource_activation,
+        "R5 startup priority"
+    );
+    assert!(
+        preparing_interests.dispatch_projection,
+        "R5 Worker projection recovery"
+    );
 }
 
 #[test]
