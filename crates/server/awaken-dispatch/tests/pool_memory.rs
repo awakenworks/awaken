@@ -608,6 +608,196 @@ impl WorkerResolver<MemoryDispatchStore> for MapResolver {
     }
 }
 
+struct GatedResolver {
+    worker: Arc<MemWorker>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for GatedResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        self.entered.notify_one();
+        self.release
+            .acquire()
+            .await
+            .expect("capacity test resolver gate")
+            .forget();
+        Ok(self.worker.clone())
+    }
+}
+
+#[tokio::test]
+async fn worker_capacity_starts_at_physical_admission_not_claim_resolution() {
+    // Cause/effect decision table WC1-WC3. C1 a mutation claim is resolving but
+    // has not crossed physical Attempt admission; C2 physical admission succeeds
+    // and Runtime remains active; C3 Runtime returns. Effects: E1 heartbeat
+    // capacity stays zero for C1; E2 it is exactly one for C2; E3 it returns to
+    // zero for C3. Rules: WC1=C1=>E1, WC2=C2=>E2, WC3=C3=>E3. This prevents
+    // blocked predecessor observation or slow resolution from consuming the
+    // Worker placement slots reserved for model/tool/Sandbox execution.
+    let resolver_release = Arc::new(tokio::sync::Semaphore::new(0));
+    let resolver_entered = Arc::new(tokio::sync::Notify::new());
+    let runtime_release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(runtime_release.clone());
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(runtime, store.clone(), commit.clone());
+    let pool = DispatchPool::spawn(
+        store,
+        Arc::new(SystemClock),
+        "physical-capacity",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        Arc::new(GatedResolver {
+            worker,
+            entered: resolver_entered.clone(),
+            release: resolver_release.clone(),
+        }),
+        1,
+    );
+    pool.submit(activation_on("capacity-run", "capacity-thread"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), resolver_entered.notified())
+        .await
+        .expect("WC1 claim entered resolution");
+    assert_eq!(pool.in_flight(), 0, "WC1/E1");
+
+    resolver_release.add_permits(1);
+    assert!(
+        wait_for(|| ran.load(std::sync::atomic::Ordering::SeqCst) == 1).await,
+        "WC2 Runtime did not enter"
+    );
+    assert_eq!(pool.in_flight(), 1, "WC2/E2");
+
+    runtime_release.add_permits(1);
+    assert!(
+        wait_for(|| commit.run_state(&RunId("capacity-run".into())).is_some()).await,
+        "WC3 Runtime did not settle"
+    );
+    assert!(wait_for(|| pool.in_flight() == 0).await, "WC3/E3");
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
+    // Cause/effect decision table BP1. C1 an old physical Attempt remains
+    // occupied without complete stop evidence; C2 its mutation claim is
+    // reclaimable; C3 an unrelated Thread is pending; C4 Pool concurrency is
+    // one. Effects: E1 retain the old physical slot; E2 defer only its mutation
+    // claim; E3 release the Pool permit; E4 execute and settle the unrelated
+    // Thread exactly once. Rule BP1=C1+C2+C3+C4=>E1+E2+E3+E4. This distinguishes
+    // safe fail-closed occupancy from a process-wide capacity leak.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let (runtime, infers) = counting_text_runtime();
+    let worker = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "pool").with_lease_ms(90),
+    );
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            "blocked-old",
+            "thread-blocked",
+        )))
+        .await
+        .unwrap();
+    let old = store
+        .claim("old-owner", 90, &Default::default())
+        .await
+        .unwrap()
+        .expect("BP1 old claim");
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&old.lease), None)
+            .await
+            .unwrap(),
+        awaken_dispatch::AttemptAdmission::Applied,
+        "BP1/C1"
+    );
+    clock.set(91);
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        clock,
+        "pool",
+        90,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..Default::default()
+        },
+        Arc::new(MapResolver {
+            workers: HashMap::from([
+                ("thread-blocked".into(), worker.clone()),
+                ("thread-unrelated".into(), worker),
+            ]),
+        }),
+        1,
+        Arc::new(LocalWakeSignal::new()),
+    );
+    pool.notify().await;
+
+    assert!(
+        wait_for_async(|| {
+            let store = store.clone();
+            async move {
+                store.list_dispatches().await.unwrap().iter().any(|row| {
+                    row.run_id == RunId("blocked-old".into())
+                        && row.attempt_count == 1
+                        && row.physical_attempt_active
+                })
+            }
+        })
+        .await,
+        "BP1/C2 replacement claim did not reach physical admission"
+    );
+    assert_eq!(pool.in_flight(), 0, "BP1/E3 heartbeat capacity is free");
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            "unrelated",
+            "thread-unrelated",
+        )))
+        .await
+        .unwrap();
+    pool.notify().await;
+
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while CommittedThreadView::run(commit.as_ref(), &RunId("unrelated".into())).is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok(),
+        "BP1/E3+E4 unrelated Thread was starved"
+    );
+    assert_eq!(
+        infers.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "BP1/E4"
+    );
+    let blocked = store
+        .list_dispatches()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.run_id == RunId("blocked-old".into()))
+        .expect("BP1 retained blocked dispatch");
+    assert!(blocked.physical_attempt_active, "BP1/E1");
+    assert!(
+        matches!(
+            blocked.state,
+            awaken_dispatch::DispatchState::Pending | awaken_dispatch::DispatchState::Leased
+        ),
+        "BP1/E2"
+    );
+    pool.shutdown().await;
+}
+
 struct RejectingResolver {
     calls: Arc<std::sync::atomic::AtomicUsize>,
 }

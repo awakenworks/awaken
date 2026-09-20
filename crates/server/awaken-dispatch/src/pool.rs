@@ -35,13 +35,13 @@ use awaken_runtime_contract::activation::RunActivation;
 use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{Claimed, PendingInput};
+use crate::execution_capacity::ExecutionCapacity;
 use crate::service::{
     DispatchServiceConfig, LocalMaintenanceSchedule, wait_for_terminal_reconciliation,
 };
 use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::{DispatchWorker, renew_claim_while_active};
 use awaken_dispatch_contract::RunDispatch;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
 /// shared queue, then asks the resolver for the session worker carrying the
@@ -271,7 +271,7 @@ impl AdmissionState {
 struct PoolAdmission {
     gate: tokio::sync::RwLock<AdmissionState>,
     error_gate: DrainErrorGate,
-    in_flight: Arc<AtomicU32>,
+    execution_capacity: ExecutionCapacity,
     wake: Notify,
     max_attempts: u64,
 }
@@ -429,7 +429,7 @@ impl PoolAdmission {
         Self {
             gate: tokio::sync::RwLock::new(AdmissionState::Open),
             error_gate: DrainErrorGate::default(),
-            in_flight: Arc::new(AtomicU32::new(0)),
+            execution_capacity: ExecutionCapacity::default(),
             wake: Notify::new(),
             max_attempts,
         }
@@ -724,11 +724,11 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
         self.drains.len()
     }
 
-    /// Exact process-local number of claims currently being driven. The worker
+    /// Exact process-local number of physically admitted executions. The worker
     /// heartbeat reports this value; capacity enforcement remains server-side.
     #[must_use]
     pub fn in_flight(&self) -> u32 {
-        self.admission.in_flight.load(Ordering::SeqCst)
+        self.admission.execution_capacity.in_flight()
     }
 
     /// Stop every task and wait for the in-flight drains to finish.
@@ -1080,11 +1080,6 @@ async fn claim_and_drive<S: ControlDispatch + 'static>(
     let Some(claimed) = claimed else {
         return Ok(false);
     };
-    let _in_flight = counts_toward_execution_capacity(
-        retry_exhausted,
-        claimed.session_activity_admission_required,
-    )
-    .then(|| InFlightGuard::new(admission.in_flight.clone()));
     // Session resolution can create/adopt a sandbox and materialize credentials
     // before `drive_claimed` installs its guard. Renew from queue exit onward.
     let claim = crate::RunClaim::from(&claimed.lease);
@@ -1113,7 +1108,12 @@ async fn claim_and_drive<S: ControlDispatch + 'static>(
                 admission.error_gate.release_probe(cycle).await;
                 admission.wake.notify_one();
                 worker
-                    .drive_claimed_with_renewal(claimed, clock.clone(), claim_renewal)
+                    .drive_claimed_with_renewal(
+                        claimed,
+                        clock.clone(),
+                        claim_renewal,
+                        Some(admission.execution_capacity.clone()),
+                    )
                     .await
             }
             Err(error) if error.is_terminal_resolution() => {
@@ -1228,32 +1228,6 @@ async fn relinquish_after_claim_failure<S: ControlDispatch + 'static>(
     }
 }
 
-struct InFlightGuard(Arc<AtomicU32>);
-
-/// Pool heartbeat capacity measures executable Run claims, not admission repair
-/// or retry-exhaustion terminalization. Both maintenance claims still occupy a
-/// drain task and retain lease renewal, but neither consumes model/tool/runtime
-/// execution capacity.
-const fn counts_toward_execution_capacity(
-    retry_exhausted: bool,
-    session_activity_admission_required: bool,
-) -> bool {
-    !retry_exhausted && !session_activity_admission_required
-}
-
-impl InFlightGuard {
-    fn new(counter: Arc<AtomicU32>) -> Self {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Self(counter)
-    }
-}
-
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
 /// GC aged manual quarantines, relay the cross-thread outbox, and repair
 /// already-committed terminals. Retry exhaustion belongs to the actual drainer,
 /// so coordinator-only maintenance never competes with a remote Worker.
@@ -1359,7 +1333,7 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
 mod in_flight_tests {
     use super::*;
     use std::sync::Mutex;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::{ManualClock, MemoryDispatchStore};
     use awaken_agent_contract::agent::run::EndCause;
@@ -1617,43 +1591,6 @@ mod in_flight_tests {
                 .push((run_id.clone(), state.clone()));
             self.notified.notify_one();
         }
-    }
-
-    #[test]
-    fn guard_tracks_and_releases_exactly_once() {
-        let counter = Arc::new(AtomicU32::new(0));
-        {
-            let _first = InFlightGuard::new(counter.clone());
-            assert_eq!(counter.load(Ordering::SeqCst), 1);
-            {
-                let _second = InFlightGuard::new(counter.clone());
-                assert_eq!(counter.load(Ordering::SeqCst), 2);
-            }
-            assert_eq!(counter.load(Ordering::SeqCst), 1);
-        }
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn only_executable_claims_count_toward_worker_capacity() {
-        // Cause/effect graph: C1 ordinary executable claim; C2 Session activity
-        // repair claim; C3 retry-exhaustion terminal claim. Effects: E1 consumes
-        // one Worker execution slot; E2/E3 keep capacity unchanged while their
-        // existing drain task and lease renewal remain active.
-        //
-        // | Rule | Retry exhausted | Admission repair | Capacity effect |
-        // |---|---|---|---|
-        // | PC1 | false | false | E1 counted |
-        // | PC2 | false | true | E2 not counted |
-        // | PC3 | true | false | E3 not counted |
-        // | PC4 | true | true | E2+E3 not counted (defensive overlap) |
-        // Constraint/Invariant: only a claim that can enter the Run executor
-        // consumes execution capacity. Decision rule: PC1-PC4 exhaust the two
-        // boolean causes, including their defensive overlap.
-        assert!(counts_toward_execution_capacity(false, false), "PC1/E1");
-        assert!(!counts_toward_execution_capacity(false, true), "PC2/E2");
-        assert!(!counts_toward_execution_capacity(true, false), "PC3/E3");
-        assert!(!counts_toward_execution_capacity(true, true), "PC4/E2+E3");
     }
 
     /// Terminal observation has its own cadence, independent of queue polling.

@@ -30,8 +30,11 @@ if [ "${1:-}" = "--session-observations" ]; then
   # before fourteen minutes of Rust tests, not as `Command "tsx" not found`.
   python3 scripts/ci/check_node_dependencies.py
   {
+  # SessionEventBatch owns processed-first/replay/terminal timestamps. Run its
+  # package directly: compiling it only as a dependency cannot execute the
+  # observation test required by the same fresh evidence manifest.
   cargo test --locked --features awaken-store-sqlite/test-support \
-    -p awaken-session-contract -p awaken-session-application \
+    -p awaken-session-event-contract -p awaken-session-contract -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
   cargo test --locked -p awaken-session-executor --lib projection_convergence::
   cargo test --locked -p awaken-session-executor --lib scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation

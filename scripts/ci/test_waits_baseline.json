@@ -11,7 +11,6 @@
       "crates/server/awaken-dispatch-http/tests/active_active_postgres.rs": 1,
       "crates/server/awaken-dispatch/src/pool.rs": 1,
       "crates/server/awaken-dispatch/tests/crash_before_settle.rs": 1,
-      "crates/server/awaken-dispatch/tests/lease_semantics.rs": 2,
       "crates/server/awaken-dispatch/tests/nats.rs": 1,
       "crates/server/awaken-dispatch/tests/pool_memory.rs": 8,
       "crates/server/awaken-dispatch/tests/service_memory.rs": 1,

@@ -576,11 +576,13 @@ async fn live_lease_fences_a_claim_memory() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replacement_claim_waits_for_predecessor_quiescence_before_model_entry() {
+async fn replacement_claim_defers_until_predecessor_quiescence_before_model_entry() {
     // Cause/effect decision table:
     // W1 expired A claim + A physical slot + replacement B -> B may own the
-    // mutation fence but model calls remain zero; W2 exact A finish ACK -> B
-    // enters once and completes; W3 no A ACK -> B remains blocked indefinitely.
+    // mutation fence but model calls remain zero and the claim is durably
+    // deferred; W2 exact A finish ACK + fresh due claim -> B enters once and
+    // completes; W3 no A ACK -> the physical slot remains occupied while no
+    // Worker task is retained.
     // This test owns W1/W2 at the Worker->model boundary. The shared store spec
     // owns W3 as a durable state transition, avoiding a hanging test while still
     // proving lease expiry alone never clears the slot.
@@ -616,16 +618,14 @@ async fn replacement_claim_waits_for_predecessor_quiescence_before_model_entry()
     let worker_b = Arc::new(
         DispatchWorker::new(runtime, store.clone(), commit, "owner-b").with_lease_ms(LEASE),
     );
-    let driving = tokio::spawn({
-        let worker_b = worker_b.clone();
-        async move {
-            worker_b
-                .drive_claimed(replacement, harness::at(&clock, LEASE + 1))
-                .await
-        }
-    });
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    let processed = tokio::time::timeout(
+        Duration::from_secs(5),
+        worker_b.drive_claimed(replacement, harness::at(&clock, LEASE + 1)),
+    )
+    .await
+    .expect("W1 blocked replacement releases its task")
+    .expect("W1 deferral succeeds");
+    assert_eq!(processed, None, "W1 mutation claim was deferred");
     assert_eq!(
         model_calls.load(Ordering::SeqCst),
         0,
@@ -635,11 +635,19 @@ async fn replacement_claim_waits_for_predecessor_quiescence_before_model_entry()
         store.finish_attempt(&claim_a).await.expect("W2 A ACK"),
         awaken_dispatch::SettleOutcome::Applied
     );
-    let processed = tokio::time::timeout(Duration::from_secs(5), driving)
+    clock.set(LEASE * 2 + 1);
+    let replacement = store
+        .claim("owner-b", LEASE, &Default::default())
         .await
-        .expect("W2 replacement unblocks")
-        .expect("W2 task joins")
-        .expect("W2 drive succeeds");
+        .expect("W2 B query")
+        .expect("W2 fresh replacement claim");
+    let processed = tokio::time::timeout(
+        Duration::from_secs(5),
+        worker_b.drive_claimed(replacement, harness::at(&clock, LEASE * 2 + 1)),
+    )
+    .await
+    .expect("W2 replacement unblocks")
+    .expect("W2 drive succeeds");
     assert_eq!(
         processed,
         Some((
@@ -1503,16 +1511,15 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
     let (runtime, model_calls) = counting_text_runtime();
     let worker = DispatchWorker::new(runtime, dispatch.clone(), commit.clone(), "process-b")
         .with_lease_ms(LEASE);
-    let driving = tokio::spawn(async move {
-        worker
-            .drive_claimed(replacement, harness::at(&clock, LEASE + 1))
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    let driven = tokio::time::timeout(
+        Duration::from_secs(5),
+        worker.drive_claimed(replacement, harness::at(&clock, LEASE + 1)),
+    )
+    .await
+    .expect("W5 blocked recovery releases its task")
+    .expect("W5 deferral succeeds");
+    assert_eq!(driven, None, "W5 blocked mutation claim is deferred");
     assert_eq!(model_calls.load(Ordering::SeqCst), 0, "W5");
-    assert!(!driving.is_finished());
-    driving.abort();
-    assert!(driving.await.unwrap_err().is_cancelled());
     assert!(
         dispatch.list_dispatches().await.unwrap()[0].physical_attempt_active,
         "W6"
