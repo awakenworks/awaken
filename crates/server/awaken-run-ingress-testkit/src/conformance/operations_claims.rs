@@ -7,7 +7,7 @@
 /// initial cursor.
 pub async fn assert_dispatch_operational_feed_conformance<S>(store: &S, namespace: &str)
 where
-    S: DispatchQueue + DispatchOperationalFeed + ?Sized,
+    S: ControlDispatchQueue + DispatchOperationalFeed + ?Sized,
 {
     assert_dispatch_operational_feed_conformance_with_clock(
         store,
@@ -23,7 +23,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
     namespace: &str,
     clock: &dyn ConformanceClock,
 ) where
-    S: DispatchQueue + DispatchOperationalFeed + ?Sized,
+    S: ControlDispatchQueue + DispatchOperationalFeed + ?Sized,
 {
     let baseline = store
         .events_after(DispatchCursor(0), usize::MAX)
@@ -246,7 +246,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
 }
 
 async fn local_claims_skip_remote_only_work(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -342,7 +342,7 @@ async fn local_claims_skip_remote_only_work(
 }
 
 async fn exact_claim_recovery_and_fencing(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -512,7 +512,7 @@ async fn exact_claim_recovery_and_fencing(
 }
 
 async fn parent_mediated_commands_are_atomic(
-    store: &dyn DispatchQueue,
+    store: &dyn ControlDispatchQueue,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {

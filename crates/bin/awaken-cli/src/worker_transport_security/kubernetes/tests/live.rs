@@ -3,6 +3,7 @@
 use super::*;
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_agent_contract::agent::state::StateKey;
+use awaken_run_ingress::ControlDispatchQueue;
 use awaken_run_ingress::{
     AttemptAdmission, DispatchQueue, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
     WorkerHeartbeat, WorkerManifest,

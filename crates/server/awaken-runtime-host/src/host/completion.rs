@@ -10,6 +10,7 @@ use super::placement::{
 use super::*;
 #[cfg(test)]
 use awaken_run_ingress::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
+use awaken_run_ingress_contract::ControlDispatchQueue;
 use std::collections::HashMap;
 
 impl SharedHost {

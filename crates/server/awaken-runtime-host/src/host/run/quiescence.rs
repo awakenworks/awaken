@@ -1,6 +1,7 @@
 //! Terminal delegation quiescence over durable dispatch authority.
 
 use super::*;
+use awaken_run_ingress_contract::ControlDispatchQueue;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalDispatchAction {

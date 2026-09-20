@@ -19,6 +19,8 @@
 
 mod harness;
 
+use awaken_run_ingress_contract::ControlDispatch;
+use awaken_run_ingress_contract::ControlDispatchQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -404,7 +406,7 @@ async fn assert_native_cancel_observes_history_before_physical_ack<S>(
     unknown: bool,
     clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
 ) where
-    S: awaken_run_ingress::Dispatch + 'static,
+    S: awaken_run_ingress::ControlDispatch + 'static,
 {
     use awaken_agent_contract::agent::state::StateKey;
     use awaken_runtime_contract::model_operation::{
@@ -524,7 +526,7 @@ async fn native_cancel_evidence_precedes_physical_ack_sqlite() {
 /// Store-level spec: while owner A holds a live lease on the only runnable
 /// dispatch, a second owner B claiming the same runnable set is handed nothing —
 /// the run is not double-owned. Every backend must match, so the body lives once.
-async fn assert_live_lease_fences_a_claim<S: DispatchQueue>(
+async fn assert_live_lease_fences_a_claim<S: ControlDispatch>(
     store: &S,
     clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
 ) {
@@ -802,8 +804,8 @@ struct RecoverySettlementObserver<S> {
 }
 
 #[async_trait::async_trait]
-impl<S: awaken_run_ingress::Dispatch + 'static> awaken_run_ingress::DispatchSettlementObserver
-    for RecoverySettlementObserver<S>
+impl<S: awaken_run_ingress::ControlDispatch + 'static>
+    awaken_run_ingress::DispatchSettlementObserver for RecoverySettlementObserver<S>
 {
     async fn before_settle(
         &self,
@@ -827,7 +829,9 @@ impl<S: awaken_run_ingress::Dispatch + 'static> awaken_run_ingress::DispatchSett
 // result must not clear the physical slot or consume the dispatch; only the
 // exact predecessor ACK permits a later terminal reconciliation. Native ordinary
 // recovery remains the adjacent wait-for-quiescence test's responsibility.
-async fn assert_occupied_attempt_terminal_recovery<S: awaken_run_ingress::Dispatch + 'static>(
+async fn assert_occupied_attempt_terminal_recovery<
+    S: awaken_run_ingress::ControlDispatch + 'static,
+>(
     store: Arc<S>,
     acp_backend: bool,
     cancel: bool,

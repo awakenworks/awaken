@@ -134,6 +134,7 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
     }
 }
 
+use awaken_run_ingress_contract::ControlDispatchQueue;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

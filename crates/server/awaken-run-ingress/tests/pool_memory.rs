@@ -10,6 +10,7 @@
 
 mod harness;
 
+use awaken_run_ingress_contract::ControlDispatchQueue;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

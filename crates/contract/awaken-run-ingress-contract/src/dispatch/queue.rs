@@ -9,42 +9,6 @@ pub trait DispatchQueue: Send + Sync {
         true
     }
 
-    /// Persist one complete self-affine Session Run intent without making it
-    /// claimable. The store applies this TTL using its own clock, granting an
-    /// exclusive window to commit the Session activity and activate this row.
-    /// Exact Run-id replay is idempotent; another payload is rejected.
-    async fn reserve_session_run(
-        &self,
-        _request: RunDispatch,
-        _reservation_ttl_ms: u64,
-    ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support Session Run reservations".to_string(),
-        ))
-    }
-
-    /// Publish one still-unleased reservation after the Session root committed
-    /// its exact nonzero activity epoch. The request and state update are one
-    /// dispatch transaction; exact replay after activation is a no-op.
-    async fn activate_session_run_reservation(
-        &self,
-        _run_id: &RunId,
-        _session_thread_id: &ThreadId,
-        _session_activity_epoch: u64,
-    ) -> Result<SessionRunReservationActivation, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support Session Run reservation activation".to_string(),
-        ))
-    }
-
-    /// Remove one unleased reservation after deterministic Session rejection.
-    /// A row that already activated or acquired a recovery claim is fenced.
-    async fn reject_session_run_reservation(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support Session Run reservation rejection".to_string(),
-        ))
-    }
-
     /// Resolve one exact recovery claim before executor entry. Admitted binds
     /// the activity epoch and publishes Pending, Rejected removes the unstarted
     /// row, and Retry returns it to Reserved. Stale claims are fenced in all
@@ -76,25 +40,6 @@ pub trait DispatchQueue: Send + Sync {
         request: RunDispatch,
         options: SubmitOptions,
     ) -> Result<(), DispatchError>;
-
-    /// Admit one ordinary child Run while atomically enforcing a parent-Session
-    /// bound over distinct, unarchived child Threads.
-    ///
-    /// The dispatch's own Thread remains its lifecycle identity; the required
-    /// `session_thread_id` is only its parent affinity. Exact canonical Run-id
-    /// replays are no-ops and consume no new slot. Both live rows and completion
-    /// tombstones count; only the trusted committed archive evidence releases a
-    /// Thread slot. Implementations serialize the capacity decision with
-    /// insertion so concurrent first admissions cannot exceed the policy bound.
-    async fn enqueue_session_child(
-        &self,
-        _request: RunDispatch,
-        _admission: SessionChildAdmission,
-    ) -> Result<(), DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support bounded Session-child admission".to_string(),
-        ))
-    }
 
     /// Atomically record and claim one newly admitted Run.
     ///
@@ -182,23 +127,6 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
-    /// Claim according to a replaceable preference policy while preserving the
-    /// same atomic eligibility, recovery and assignment transition. Preference
-    /// may use a liveness snapshot, while the backend's final claim transition
-    /// rechecks immutable eligibility and fencing; a stale preference can delay
-    /// work but cannot widen execution authority or create two owners.
-    async fn claim_placed(
-        &self,
-        _requester: &WorkerSnapshot,
-        _workers: Vec<WorkerSnapshot>,
-        _policy: std::sync::Arc<dyn PlacementPolicy>,
-        _lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support policy-based registered-worker claims".to_string(),
-        ))
-    }
-
     /// Claim one specific runnable Run without consuming unrelated queue work.
     ///
     /// Parent-mediated child Runs use this operation after durably scheduling a
@@ -213,31 +141,6 @@ pub trait DispatchQueue: Send + Sync {
         lease_ms: u64,
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
-
-    /// Claim one quiescent unleased `pending`/`awaiting` row or expired `running`
-    /// lease after the committed Run authority has already proved that the same
-    /// `run_id` is terminal. A `pending` row is the canonical immediate-retry
-    /// shape after a post-commit settlement failure released its mutation claim.
-    ///
-    /// This is the repair-side entry into the ordinary fenced settlement path:
-    /// it never reads or accepts Run outcome truth, never executes the Run, and
-    /// skips execution placement/credential admission because the caller will
-    /// only redeliver terminal observers and call [`settle`](Self::settle) with
-    /// `Done`. Implementations must claim only an unleased `pending`/`awaiting`
-    /// row whose Thread has no running dispatch, or a `running` row whose lease
-    /// is strictly expired. Every state requires an empty physical slot: this
-    /// maintenance entry cannot execute or observe an occupied predecessor.
-    /// A live lease, occupied, missing, superseded, or dead-lettered row returns `None`.
-    async fn claim_for_terminal_recovery(
-        &self,
-        _run_id: &RunId,
-        _owner: &str,
-        _lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support committed-terminal dispatch recovery".to_string(),
-        ))
-    }
 
     /// Claim one strictly expired `running` dispatch at/above `max_attempts`.
     /// This is delivery authority, not Run truth: route the ordinary [`Claimed`]
@@ -332,19 +235,6 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
-    /// Read the existing occupied physical identity, independently of the newer
-    /// mutation claim/Worker assignment. No transport authority or stop evidence
-    /// is minted by this read. Unsupported adapters must error, never return a
-    /// misleading empty slot.
-    async fn load_physical_attempt(
-        &self,
-        _run_id: &RunId,
-    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "dispatch backend does not expose physical attempt bindings".into(),
-        ))
-    }
-
     /// Return an exact, still-current claim to `pending` without consuming its
     /// crash retry budget.
     ///
@@ -391,17 +281,6 @@ pub trait DispatchQueue: Send + Sync {
     /// A default would have to invent one or take it from the caller, and a
     /// caller's clock cannot decide liveness for rows other nodes also claim.
     async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError>;
-
-    /// Acquire the narrow authority for one live `ReservationLeased` repair.
-    /// This guard may authorize only Session activity admission; commit, stream,
-    /// sandbox, credential, and settle operations continue to require an
-    /// ordinary `Leased` claim through [`Self::lock_commit_epoch`].
-    async fn lock_session_run_reservation_epoch(
-        &self,
-        _claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        Ok(None)
-    }
 
     /// Persist secret-free proof that the exact claim-epoch credential binding
     /// was realized. Implementations fence on the complete claim, verify through
@@ -453,23 +332,6 @@ pub trait DispatchQueue: Send + Sync {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError>;
-
-    /// Return durable applied-`Done` facts after `after_sequence`, in ascending
-    /// sequence order, capped at `limit`.
-    ///
-    /// Native durable stores retain these rows as permanent run-id tombstones;
-    /// completed ids therefore cannot be re-enqueued after their live dispatch
-    /// row is removed (ADR-0060). A transport that does not expose this
-    /// server-local projection query fails explicitly.
-    async fn completion_events_after(
-        &self,
-        _after_sequence: u64,
-        _limit: usize,
-    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not expose durable dispatch completion events".to_string(),
-        ))
-    }
 
     /// Hold a claim's exact epoch stable across a `ThreadCommit`.
     ///
@@ -559,14 +421,6 @@ pub trait DispatchQueue: Send + Sync {
         Ok(SettleOutcome::Fenced)
     }
 
-    /// Current number of dispatches that are claimable at `now_ms`. Native stores
-    /// return an exact value; composed/remote backends may return `None` until they
-    /// expose an efficient server-side count. This is an operations query only and
-    /// never participates in scheduling correctness.
-    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
-        Ok(None)
-    }
-
     /// The run ids currently dead-lettered, for operations.
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError>;
 
@@ -604,6 +458,135 @@ pub trait DispatchQueue: Send + Sync {
     /// surface for monitoring and maintenance (ADR-0025).
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError>;
 
+    /// The Control-side surface of this queue: Session Run reservations,
+    /// child admission, placement claims, terminal recovery, physical attempt
+    /// readback, the completion feed, and operational scans. `None` means this
+    /// handle is a Worker-side projection that must never perform them
+    /// (ADR-0081 capability ladder); a composition root selects a
+    /// [`ControlDispatchQueue`] instead of discovering the gap at the effect.
+    fn control(&self) -> Option<&dyn ControlDispatchQueue> {
+        None
+    }
+}
+
+/// Control-side dispatch operations that only the Coordinator's own store
+/// performs: Session Run reservations and their epoch lock, Session child
+/// admission, placement-aware and terminal-recovery claims, physical attempt
+/// readback, the completion feed, and operational scans. Every durable store
+/// implements this; a Worker-side transport projection does not, and says so
+/// through [`DispatchQueue::control`] rather than a failing default.
+#[async_trait]
+pub trait ControlDispatchQueue: DispatchQueue {
+    /// Persist one complete self-affine Session Run intent without making it
+    /// claimable. The store applies this TTL using its own clock, granting an
+    /// exclusive window to commit the Session activity and activate this row.
+    /// Exact Run-id replay is idempotent; another payload is rejected.
+    async fn reserve_session_run(
+        &self,
+        request: RunDispatch,
+        reservation_ttl_ms: u64,
+    ) -> Result<SessionRunReservationOutcome, DispatchError>;
+
+    /// Publish one still-unleased reservation after the Session root committed
+    /// its exact nonzero activity epoch. The request and state update are one
+    /// dispatch transaction; exact replay after activation is a no-op.
+    async fn activate_session_run_reservation(
+        &self,
+        run_id: &RunId,
+        session_thread_id: &ThreadId,
+        session_activity_epoch: u64,
+    ) -> Result<SessionRunReservationActivation, DispatchError>;
+
+    /// Remove one unleased reservation after deterministic Session rejection.
+    /// A row that already activated or acquired a recovery claim is fenced.
+    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError>;
+
+    /// Admit one ordinary child Run while atomically enforcing a parent-Session
+    /// bound over distinct, unarchived child Threads.
+    ///
+    /// The dispatch's own Thread remains its lifecycle identity; the required
+    /// `session_thread_id` is only its parent affinity. Exact canonical Run-id
+    /// replays are no-ops and consume no new slot. Both live rows and completion
+    /// tombstones count; only the trusted committed archive evidence releases a
+    /// Thread slot. Implementations serialize the capacity decision with
+    /// insertion so concurrent first admissions cannot exceed the policy bound.
+    async fn enqueue_session_child(
+        &self,
+        request: RunDispatch,
+        admission: SessionChildAdmission,
+    ) -> Result<(), DispatchError>;
+
+    /// Claim according to a replaceable preference policy while preserving the
+    /// same atomic eligibility, recovery and assignment transition. Preference
+    /// may use a liveness snapshot, while the backend's final claim transition
+    /// rechecks immutable eligibility and fencing; a stale preference can delay
+    /// work but cannot widen execution authority or create two owners.
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: std::sync::Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError>;
+
+    /// Claim one quiescent unleased `pending`/`awaiting` row or expired `running`
+    /// lease after the committed Run authority has already proved that the same
+    /// `run_id` is terminal. A `pending` row is the canonical immediate-retry
+    /// shape after a post-commit settlement failure released its mutation claim.
+    ///
+    /// This is the repair-side entry into the ordinary fenced settlement path:
+    /// it never reads or accepts Run outcome truth, never executes the Run, and
+    /// skips execution placement/credential admission because the caller will
+    /// only redeliver terminal observers and call [`settle`](Self::settle) with
+    /// `Done`. Implementations must claim only an unleased `pending`/`awaiting`
+    /// row whose Thread has no running dispatch, or a `running` row whose lease
+    /// is strictly expired. Every state requires an empty physical slot: this
+    /// maintenance entry cannot execute or observe an occupied predecessor.
+    /// A live lease, occupied, missing, superseded, or dead-lettered row returns `None`.
+    async fn claim_for_terminal_recovery(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError>;
+
+    /// Read the existing occupied physical identity, independently of the newer
+    /// mutation claim/Worker assignment. No transport authority or stop evidence
+    /// is minted by this read. Unsupported adapters must error, never return a
+    /// misleading empty slot.
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError>;
+
+    /// Acquire the narrow authority for one live `ReservationLeased` repair.
+    /// This guard may authorize only Session activity admission; commit, stream,
+    /// sandbox, credential, and settle operations continue to require an
+    /// ordinary `Leased` claim through [`Self::lock_commit_epoch`].
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError>;
+
+    /// Return durable applied-`Done` facts after `after_sequence`, in ascending
+    /// sequence order, capped at `limit`.
+    ///
+    /// Native durable stores retain these rows as permanent run-id tombstones;
+    /// completed ids therefore cannot be re-enqueued after their live dispatch
+    /// row is removed (ADR-0060). A transport that does not expose this
+    /// server-local projection query fails explicitly.
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError>;
+
+    /// Current number of dispatches that are claimable at `now_ms`. Native stores
+    /// return an exact value; composed/remote backends may return `None` until they
+    /// expose an efficient server-side count. This is an operations query only and
+    /// never participates in scheduling correctness.
+    async fn runnable_depth(&self) -> Result<Option<u64>, DispatchError>;
+
     /// Bounded keyset read of current Dispatch identities, in ascending Run-id
     /// order strictly after `after`. A zero limit reads nothing. No lifecycle
     /// filtering or request decoding occurs here: each returned identity spends
@@ -614,23 +597,15 @@ pub trait DispatchQueue: Send + Sync {
     /// Backends must not implement this by materializing `list_dispatches`.
     async fn scan_dispatch_ids(
         &self,
-        _after: Option<&RunId>,
-        _limit: usize,
-    ) -> Result<Vec<RunId>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "bounded dispatch reads are unsupported".into(),
-        ))
-    }
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError>;
 
     /// Read one current operational projection without scanning its peers.
     /// Missing means this row is absent, not that its external effects stopped.
     /// Invalid durable data returns an error rather than an absent summary.
     async fn dispatch_summary(
         &self,
-        _run_id: &RunId,
-    ) -> Result<Option<DispatchSummary>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "exact dispatch reads are unsupported".into(),
-        ))
-    }
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError>;
 }
