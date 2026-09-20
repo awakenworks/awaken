@@ -23,6 +23,7 @@ if [ "${1:-}" = "--self-test" ] && [ "$#" -ne 1 ]; then
 fi
 
 release_image_labels=()
+build_provenance_args=()
 
 configure_release_image_labels() {
   release_image_labels=()
@@ -41,6 +42,17 @@ configure_release_image_labels() {
     --label "org.opencontainers.image.revision=$revision"
     --label "org.opencontainers.image.version=$version"
   )
+}
+
+configure_build_provenance() {
+  build_provenance_args=()
+  local value=${AWAKEN_SANDBOX_BUILD_PROVENANCE:-}
+  [[ -z $value ]] && return 0
+  if [[ ${engine##*/} != docker || $value != true && $value != false ]]; then
+    echo "AWAKEN_SANDBOX_BUILD_PROVENANCE requires Docker and true or false" >&2
+    return 2
+  fi
+  build_provenance_args=("--provenance=$value")
 }
 
 make_public_build_input() {
@@ -64,8 +76,10 @@ file_mode() {
 # image's non-root user; E4=project the complete label set or reject a partial
 # set.
 # H1 C1,!C2=>E1; H2 !C1,C2=>E2; H3 C3=>E3; H4 absent=>no labels;
-# H5 complete=>three labels; H6 partial=>refuse. These self-tests own every rule
-# without invoking Cargo, Docker, or a package mirror.
+# H5 complete=>three labels; H6 partial=>refuse. H7 absent provenance=>engine
+# default; H8 Docker + false=>one deterministic local-build flag; H9 invalid
+# value or unsupported engine=>refuse. These self-tests own every rule without
+# invoking Cargo, Docker, or a package mirror.
 if [[ ${1:-} == --self-test ]]; then
   run_with_deadline 2 bash -c 'exit 0'
   timeout_status=0
@@ -121,6 +135,18 @@ if [[ ${1:-} == --self-test ]]; then
     echo "sandbox image label self-test: partial labels must be refused" >&2
     exit 1
   fi
+  engine=docker
+  unset AWAKEN_SANDBOX_BUILD_PROVENANCE
+  configure_build_provenance
+  [[ ${#build_provenance_args[@]} -eq 0 ]] || exit 1
+  AWAKEN_SANDBOX_BUILD_PROVENANCE=false
+  configure_build_provenance
+  [[ ${build_provenance_args[*]} == --provenance=false ]] || exit 1
+  AWAKEN_SANDBOX_BUILD_PROVENANCE=invalid
+  ! configure_build_provenance || exit 1
+  engine=podman
+  AWAKEN_SANDBOX_BUILD_PROVENANCE=false
+  ! configure_build_provenance || exit 1
   echo "sandbox image build deadline self-test passed"
   exit 0
 fi
@@ -152,6 +178,7 @@ rust_toolchain_image=${AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:-docker.io/library/ru
   exit 2
 }
 configure_release_image_labels
+configure_build_provenance
 
 # A caller may supply an already accepted Sandbox image as the Rust-toolchain
 # build input when the external component mirror is unavailable. This reuses
@@ -165,7 +192,8 @@ configure_release_image_labels
 # never a stale local tag or an unavailable BuildKit-only result.
 build_image() {
   if [[ "${engine##*/}" == "docker" ]]; then
-    run_with_deadline "$build_timeout_seconds" "$engine" build --load --platform linux/amd64 "$@"
+    run_with_deadline "$build_timeout_seconds" "$engine" build --load --platform linux/amd64 \
+      "${build_provenance_args[@]}" "$@"
   else
     run_with_deadline "$build_timeout_seconds" "$engine" build --platform linux/amd64 "$@"
   fi
