@@ -21,6 +21,21 @@ export const CURRENT_WORKER_ROWS_QUERY = `SELECT worker_id, incarnation_id, gene
   WHERE generation = (SELECT MAX(generation) FROM worker_registry_worker AS history
     WHERE history.worker_id = current.worker_id) ORDER BY worker_id`;
 
+export function standaloneWorkerSandboxConfig(providerCredentials, runtime) {
+  if (providerCredentials?.sandboxFields) {
+    return Object.entries(providerCredentials.sandboxFields)
+      .filter(([, value]) => value !== undefined)
+      .map(([field, value]) => `${field} = ${JSON.stringify(value)}`);
+  }
+  return [
+    `sandbox_tier = ${JSON.stringify(providerCredentials?.sandboxTier ?? 'local')}`,
+    ...(providerCredentials?.image
+      ? [`container_image = ${JSON.stringify(providerCredentials.image)}`]
+      : providerCredentials ? [] : ['sandbox_trusted_host_enabled = true']),
+    `acp_clis = ${JSON.stringify(runtime === 'native' ? [] : [runtime])}`,
+  ];
+}
+
 // This fixture owns only the split-process deployment of the EXISTING resource
 // oracle. Control creates the WorkerLocal source through normal startup, then
 // runs with acp_clis=[]; the production Worker artifact is the only ACP claimer.
@@ -79,11 +94,8 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     // the Coordinator-owned heartbeat publication budget and is now rejected
     // during startup rather than creating intermittent eligibility gaps.
     'worker_credential_observation_ttl_secs = 30',
-    `sandbox_tier = ${JSON.stringify(providerCredentials?.sandboxTier ?? 'local')}`,
-    ...(providerCredentials ? (providerCredentials.image ? [`container_image = ${JSON.stringify(providerCredentials.image)}`] : [])
-      : ['sandbox_trusted_host_enabled = true']),
+    ...standaloneWorkerSandboxConfig(providerCredentials, runtime),
     `sandbox_trusted_host_scoped_execution = ${scopedHost}`,
-    `acp_clis = ${JSON.stringify(runtime === "native" ? [] : [runtime])}`,
   ].join('\n'));
   const environment = providerCredentials
     ? {...providerCredentials.environment, HOME:workerData, AWAKEN_DATA_DIR:workerData}

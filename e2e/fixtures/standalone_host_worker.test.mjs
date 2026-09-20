@@ -1,7 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {CURRENT_WORKER_ROWS_QUERY} from './standalone_host_worker.mjs';
+import {CURRENT_WORKER_ROWS_QUERY, standaloneWorkerSandboxConfig} from './standalone_host_worker.mjs';
+
+test('standalone Worker reuses one sandbox field projection', () => {
+  // Causes: S1 caller supplies the canonical sandbox field object; S2 a value
+  // is absent; S3 an older caller supplies only tier/image/runtime; S4 trusted
+  // host caller has no Provider bundle. Effects: E1 encode every supplied field
+  // exactly once; E2 omit absent values; E3 preserve the legacy container
+  // projection; E4 preserve trusted-host admission. Rules W1=S1, W2=S1+S2,
+  // W3=S3, W4=S4. The real GKE journey proves these bytes are accepted by the
+  // production Worker; this unit test prevents Control/Worker config drift.
+  const fields={sandbox_tier:'k8s',container_image:'registry/image:tag',
+    k8s_namespace:'cowork-test',k8s_image_pull_secrets:['registry-auth'],
+    'k8s_continuation_volume.size':'1Gi',unused:undefined};
+  assert.deepEqual(standaloneWorkerSandboxConfig({sandboxFields:fields},'native'),[
+    'sandbox_tier = "k8s"','container_image = "registry/image:tag"',
+    'k8s_namespace = "cowork-test"','k8s_image_pull_secrets = ["registry-auth"]',
+    'k8s_continuation_volume.size = "1Gi"',
+  ]);
+  assert.deepEqual(standaloneWorkerSandboxConfig({sandboxTier:'docker',image:'image'},'claude'),[
+    'sandbox_tier = "docker"','container_image = "image"','acp_clis = ["claude"]',
+  ]);
+  assert.deepEqual(standaloneWorkerSandboxConfig(undefined,'native'),[
+    'sandbox_tier = "local"','sandbox_trusted_host_enabled = true','acp_clis = []',
+  ]);
+});
 
 test('registration observation selects current generations without erasing history', () => {
   // R1 old Ready + newer Starting/Ready/Dead => only newer state, never fallback.

@@ -7,8 +7,8 @@ use awaken_provisioning_contract as pc;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, ConfigMap, ConfigMapVolumeSource, Container, EnvVar, KeyToPath,
-    LocalObjectReference, Pod, PodSpec, PodTemplateSpec, SecretVolumeSource, SecurityContext,
-    Volume, VolumeMount,
+    LocalObjectReference, Pod, PodSecurityContext, PodSpec, PodTemplateSpec, SecretVolumeSource,
+    SecurityContext, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, ListParams, Preconditions};
@@ -412,7 +412,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                     items: Some(vec![KeyToPath {
                         key: ".dockerconfigjson".into(),
                         path: "config.json".into(),
-                        mode: Some(0o400),
+                        mode: Some(0o440),
                     }]),
                     ..Default::default()
                 }),
@@ -516,6 +516,15 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                                 .collect(),
                         ),
                         restart_policy: Some("Never".into()),
+                        security_context: Some(PodSecurityContext {
+                            // Secret volumes are root-owned. Give only the
+                            // rootless BuildKit primary group read access; no
+                            // service-account token or world-readable copy is
+                            // introduced.
+                            fs_group: Some(1000),
+                            fs_group_change_policy: Some("OnRootMismatch".into()),
+                            ..Default::default()
+                        }),
                         volumes: Some(volumes),
                         ..Default::default()
                     }),
@@ -1087,10 +1096,12 @@ mod tests {
          * C1 one deterministic recipe is pushed to one generated destination;
          * C2 the same Job carries private recipe, proxy, Registry auth, and base
          * image inputs; C3 package realization has already admitted only an
-         * unrestricted build. Effects: E1 Job and Pod template expose the exact
+         * unrestricted build; C4 rootless BuildKit must read the projected
+         * Registry config without running as root. Effects: E1 Job and Pod template expose the exact
          * recipe fingerprint and destination; E2 no C2 material enters
          * annotations; E3 both objects select the canonical sandbox default-deny
-         * plus open-egress policies. Rule R1=C1+C2+C3=>E1+E2+E3. The termination
+         * plus open-egress policies; E4 the Pod gives GID 1000 read-only access
+         * to the 0440 Secret file. Rule R1=C1+C2+C3+C4=>E1+E2+E3+E4. The termination
          * message remains the immutable
          * build result; these two fields are correlation only, not another build
          * record or completion authority.
@@ -1134,6 +1145,25 @@ mod tests {
             "R1/E3 Job"
         );
         assert_eq!(pod_labels, Some(&expected_labels), "R1/E3 Pod");
+        let pod_spec = job.spec.as_ref().unwrap().template.spec.as_ref().unwrap();
+        let pod_security = pod_spec.security_context.as_ref().unwrap();
+        assert_eq!(pod_security.fs_group, Some(1000), "R1/E4");
+        assert_eq!(
+            pod_security.fs_group_change_policy.as_deref(),
+            Some("OnRootMismatch"),
+            "R1/E4"
+        );
+        let credential_mode = pod_spec
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|volume| volume.name == "registry-auth")
+            .and_then(|volume| volume.secret.as_ref())
+            .and_then(|secret| secret.items.as_ref())
+            .and_then(|items| items.first())
+            .and_then(|item| item.mode);
+        assert_eq!(credential_mode, Some(0o440), "R1/E4");
 
         for annotations in [job_annotations, pod_annotations] {
             assert_eq!(

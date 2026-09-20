@@ -122,7 +122,7 @@ fn normalized_template(
         .as_ref()
         .and_then(|spec| spec.template.metadata.as_ref())
         .and_then(|metadata| metadata.labels.clone());
-    normalize_controller_labels(&mut labels);
+    normalize_job_pod_labels(&mut labels, false);
     Ok((labels, template))
 }
 
@@ -158,7 +158,7 @@ fn verify_job_pod(
     }
     let (expected_labels, expected_spec) = normalized_template(job_object)?;
     let mut actual_labels = pod.metadata.labels.clone();
-    normalize_controller_labels(&mut actual_labels);
+    normalize_job_pod_labels(&mut actual_labels, true);
     let mut actual_spec = pod
         .spec
         .clone()
@@ -1192,7 +1192,7 @@ pub(crate) fn stamp_package_config_map(config: &mut ConfigMap) -> Result<(), Run
     Ok(())
 }
 
-fn normalize_controller_labels(labels: &mut Option<BTreeMap<String, String>>) {
+fn normalize_job_pod_labels(labels: &mut Option<BTreeMap<String, String>>, observed_pod: bool) {
     if let Some(labels) = labels {
         for key in [
             "batch.kubernetes.io/controller-uid",
@@ -1201,6 +1201,14 @@ fn normalize_controller_labels(labels: &mut Option<BTreeMap<String, String>>) {
             "job-name",
         ] {
             labels.remove(key);
+        }
+        if observed_pod {
+            // GKE admission projects the selected node's standard topology
+            // coordinates onto the created Pod, not its immutable Job template.
+            // Only these scheduling observations are normalized; every other
+            // injected label remains part of the exact evidence comparison.
+            labels.remove("topology.kubernetes.io/region");
+            labels.remove("topology.kubernetes.io/zone");
         }
     }
 }
@@ -1235,12 +1243,13 @@ fn normalized_job_spec(job: &Job) -> Result<JobSpec, RuntimeError> {
     {
         spec.pod_replacement_policy = None;
     }
-    normalize_controller_labels(
+    normalize_job_pod_labels(
         &mut spec
             .template
             .metadata
             .get_or_insert_with(Default::default)
             .labels,
+        false,
     );
     if let Some(pod) = spec.template.spec.as_mut() {
         normalize_pod_spec(pod, false);
