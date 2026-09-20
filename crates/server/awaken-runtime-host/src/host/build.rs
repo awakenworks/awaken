@@ -3,6 +3,7 @@
 
 use super::*;
 
+#[path = "session_control.rs"]
 mod session_control;
 
 /// Worker-side Resource content ports that must be installed as one unit.
