@@ -310,7 +310,7 @@ async fn package_job_pod_count_is_exact_to_one_job_incarnation() {
     let job = &fixture.jobs[fixture.job_index(PACKAGE_IMAGE_CHECK_JOB_KIND)];
     let pod = fixture.pods[fixture.job_pod_index(PACKAGE_IMAGE_CHECK_JOB_KIND)].clone();
     assert_eq!(
-        exact_package_job_pods(job, &[pod.clone()], NAMESPACE)
+        exact_package_job_pods(job, std::slice::from_ref(&pod), NAMESPACE)
             .unwrap()
             .len(),
         1,
