@@ -576,7 +576,7 @@ pub(crate) async fn publish(
     };
     let result = match publication_workspace(&scope, execution.as_ref()) {
         Some(workspace) => {
-            plane
+            let published = plane
                 .publish_for_execution_workspace_at_revisions(
                     &scope,
                     workspace,
@@ -584,7 +584,29 @@ pub(crate) async fn publish(
                     request.source_revision,
                     request.resource_revision,
                 )
-                .await
+                .await;
+            if publish_conflict_requires_dependency_reconciliation(
+                published.as_ref().err(),
+                request.source_revision,
+                request.resource_revision,
+            ) {
+                match plane
+                    .reconcile_for_execution_workspace(&scope, workspace, &id)
+                    .await
+                {
+                    Ok(true) => match plane.latest_publication(&scope, &id).await {
+                        Ok(Some(publication)) => Ok(publication),
+                        Ok(None) => Err(PublishError::Store(
+                            "Agent reconciliation produced no durable publication".into(),
+                        )),
+                        Err(error) => Err(PublishError::Store(error)),
+                    },
+                    Ok(false) => published,
+                    Err(error) => Err(PublishError::Store(error)),
+                }
+            } else {
+                published
+            }
         }
         None => Err(PublishError::ExecutionWorkspaceRequired),
     };
@@ -601,6 +623,45 @@ pub(crate) async fn publish(
         ),
         Err(error) => publish_error_response(error),
     }
+}
+
+fn publish_conflict_requires_dependency_reconciliation(
+    error: Option<&PublishError>,
+    requested_source_revision: Option<u64>,
+    requested_resource_revision: Option<i64>,
+) -> bool {
+    matches!(
+        (error, requested_source_revision, requested_resource_revision),
+        (Some(PublishError::StaleRevision(Some(current))), Some(requested), None)
+            if current == &requested
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn only_same_source_dependency_drift_enters_reconciliation() {
+    // Causes: D1 publish reports current source revision; D2 request names the
+    // same, a stale, or no source revision; D3 reviewed Resource fence is absent
+    // or present. Effect E1 only D1+same(D2)+absent(D3) may invoke the existing
+    // policy-bound reconciler; every true stale/reviewed request retains 409.
+    let same = PublishError::StaleRevision(Some(7));
+    assert!(publish_conflict_requires_dependency_reconciliation(
+        Some(&same),
+        Some(7),
+        None
+    ));
+    for (source, resource) in [(Some(6), None), (None, None), (Some(7), Some(3))] {
+        assert!(!publish_conflict_requires_dependency_reconciliation(
+            Some(&same),
+            source,
+            resource
+        ));
+    }
+    assert!(!publish_conflict_requires_dependency_reconciliation(
+        Some(&PublishError::Unresolvable("missing".into())),
+        Some(7),
+        None
+    ));
 }
 
 fn publish_error_response(error: PublishError) -> (StatusCode, Json<Value>) {
