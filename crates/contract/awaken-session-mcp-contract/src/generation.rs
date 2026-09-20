@@ -40,7 +40,7 @@ impl McpAttachmentContentDigest {
         credential: Option<&CredentialAccess>,
         origin: McpAttachmentOrigin,
     ) -> Self {
-        Self(crate::stable_fingerprint(&(
+        Self(awaken_agent_contract::stable_fingerprint(&(
             "mcp-attachment-content-v1",
             target,
             prompts_as_skills,

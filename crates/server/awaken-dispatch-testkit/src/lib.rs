@@ -11,9 +11,10 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::dispatch::{
     AttemptAdmission, CasOutcome, ContinuationAdmission, ControlDispatch,
-    CredentialRealizationReceipt, DispatchError, DispatchOutcome, DispatchState, PendingInput,
-    RunClaim, SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    CredentialRealizationReceipt, DispatchError, DispatchOutcome, DispatchState,
+    DurableControlDispatch, PendingInput, RunClaim, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, SubmitOptions,
 };
 use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,

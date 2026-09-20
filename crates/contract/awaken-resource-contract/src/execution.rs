@@ -4,7 +4,10 @@
 //! whether it is a durable Run claim, an embedded marker, or another transport
 //! capability; remote adapters interpret it and local adapters may ignore it.
 
-use crate::{ConfigVersion, FileRecord, ResourceAccess, content_id, harvest_idempotency_key};
+use crate::{
+    ConfigVersion, FileRecord, ResourceAccess, ResourceErrorDetail, content_id,
+    harvest_idempotency_key,
+};
 use async_trait::async_trait;
 
 /// Why immutable File bytes are being opened. A remote Resources adapter uses
@@ -30,12 +33,12 @@ pub struct ResolvedFileContent {
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("file content source: {0}")]
-pub struct FileContentSourceError(String);
+pub struct FileContentSourceError(ResourceErrorDetail);
 
 impl FileContentSourceError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(ResourceErrorDetail::new(message))
     }
 }
 
@@ -69,12 +72,12 @@ impl<C: Sync> FileContentSource<C> for UnavailableFileContentSource {
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("Repository binding verifier: {0}")]
-pub struct RepositoryBindingVerifierError(String);
+pub struct RepositoryBindingVerifierError(ResourceErrorDetail);
 
 impl RepositoryBindingVerifierError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(ResourceErrorDetail::new(message))
     }
 }
 
@@ -484,12 +487,12 @@ impl ArtifactPublicationReceipt {
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("artifact publication error: {0}")]
-pub struct ArtifactPublicationError(String);
+pub struct ArtifactPublicationError(ResourceErrorDetail);
 
 impl ArtifactPublicationError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(ResourceErrorDetail::new(message))
     }
 }
 
@@ -497,6 +500,34 @@ impl ArtifactPublicationError {
 pub trait ArtifactPublisher<C: Send + Sync + 'static = ()>: Send + Sync {
     /// Read before scanning outputs. The same execution fence protects reads,
     /// per-File publication, and complete-set replacement across all topologies.
+    async fn capture(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        fence: Option<&C>,
+    ) -> Result<Option<crate::ArtifactCapture>, ArtifactPublicationError>;
+
+    async fn replace_capture(
+        &self,
+        request: crate::ReplaceArtifactCapture,
+        fence: Option<&C>,
+    ) -> Result<crate::ReplaceArtifactCaptureOutcome, ArtifactPublicationError>;
+
+    async fn publish(
+        &self,
+        publication: ArtifactPublication<C>,
+    ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError>;
+
+    async fn recover(
+        &self,
+        recovery: ArtifactRecovery<C>,
+    ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError>;
+}
+
+pub struct UnavailableArtifactPublisher;
+
+#[async_trait]
+impl<C: Send + Sync + 'static> ArtifactPublisher<C> for UnavailableArtifactPublisher {
     async fn capture(
         &self,
         _workspace_id: &str,
@@ -520,8 +551,12 @@ pub trait ArtifactPublisher<C: Send + Sync + 'static = ()>: Send + Sync {
 
     async fn publish(
         &self,
-        publication: ArtifactPublication<C>,
-    ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError>;
+        _publication: ArtifactPublication<C>,
+    ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
+        Err(ArtifactPublicationError::new(
+            "artifact publisher is not configured by the composition root",
+        ))
+    }
 
     async fn recover(
         &self,
@@ -533,28 +568,14 @@ pub trait ArtifactPublisher<C: Send + Sync + 'static = ()>: Send + Sync {
     }
 }
 
-pub struct UnavailableArtifactPublisher;
-
-#[async_trait]
-impl<C: Send + Sync + 'static> ArtifactPublisher<C> for UnavailableArtifactPublisher {
-    async fn publish(
-        &self,
-        _publication: ArtifactPublication<C>,
-    ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
-        Err(ArtifactPublicationError::new(
-            "artifact publisher is not configured by the composition root",
-        ))
-    }
-}
-
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("Memory materialization reference: {0}")]
-pub struct MemoryMaterializationReferenceError(String);
+pub struct MemoryMaterializationReferenceError(ResourceErrorDetail);
 
 impl MemoryMaterializationReferenceError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(ResourceErrorDetail::new(message))
     }
 }
 

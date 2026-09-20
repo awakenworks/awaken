@@ -1,0 +1,147 @@
+pub mod awaken_session_dream_contract
+pub enum awaken_session_dream_contract::DreamCleanupAdmission
+pub awaken_session_dream_contract::DreamCleanupAdmission::Invalid
+pub awaken_session_dream_contract::DreamCleanupAdmission::Retry
+pub awaken_session_dream_contract::DreamCleanupAdmission::Settled
+pub enum awaken_session_dream_contract::DreamInput
+pub awaken_session_dream_contract::DreamInput::MemoryStore
+pub awaken_session_dream_contract::DreamInput::MemoryStore::memory_store_id: alloc::string::String
+pub awaken_session_dream_contract::DreamInput::Sessions
+pub awaken_session_dream_contract::DreamInput::Sessions::session_ids: alloc::vec::Vec<awaken_session_types::SessionId>
+pub enum awaken_session_dream_contract::DreamModelInput
+pub awaken_session_dream_contract::DreamModelInput::Config(awaken_session_dream_contract::DreamModelConfig)
+pub awaken_session_dream_contract::DreamModelInput::Id(alloc::string::String)
+impl awaken_session_dream_contract::DreamModelInput
+pub fn awaken_session_dream_contract::DreamModelInput::into_config(self) -> awaken_session_dream_contract::DreamModelConfig
+pub enum awaken_session_dream_contract::DreamModelSpeed
+pub awaken_session_dream_contract::DreamModelSpeed::Fast
+pub awaken_session_dream_contract::DreamModelSpeed::Standard
+pub enum awaken_session_dream_contract::DreamOutputBehavior
+pub awaken_session_dream_contract::DreamOutputBehavior::CreateNew
+pub awaken_session_dream_contract::DreamOutputBehavior::UpdateExisting
+pub awaken_session_dream_contract::DreamOutputBehavior::UpdateExisting::memory_store_id: alloc::string::String
+pub enum awaken_session_dream_contract::DreamPolicyApplicationError
+pub awaken_session_dream_contract::DreamPolicyApplicationError::BadRequest(alloc::string::String)
+pub awaken_session_dream_contract::DreamPolicyApplicationError::Conflict(alloc::string::String)
+pub awaken_session_dream_contract::DreamPolicyApplicationError::NotFound
+pub awaken_session_dream_contract::DreamPolicyApplicationError::Unavailable(awaken_session_types::SessionContractErrorDetail)
+pub enum awaken_session_dream_contract::DreamProcessStoreError
+pub awaken_session_dream_contract::DreamProcessStoreError::Storage(awaken_session_types::SessionContractErrorDetail)
+pub enum awaken_session_dream_contract::DreamStatus
+pub awaken_session_dream_contract::DreamStatus::Canceled
+pub awaken_session_dream_contract::DreamStatus::Completed
+pub awaken_session_dream_contract::DreamStatus::Failed
+pub awaken_session_dream_contract::DreamStatus::Pending
+pub awaken_session_dream_contract::DreamStatus::Running
+impl awaken_session_dream_contract::DreamStatus
+pub const fn awaken_session_dream_contract::DreamStatus::cleanup_admission(self, bool) -> awaken_session_dream_contract::DreamCleanupAdmission
+pub const fn awaken_session_dream_contract::DreamStatus::is_terminal(&self) -> bool
+pub const fn awaken_session_dream_contract::DreamStatus::public_projection(self, bool) -> Self
+pub const fn awaken_session_dream_contract::DreamStatus::transition(self, awaken_session_dream_contract::DreamStatusEvent) -> core::option::Option<Self>
+pub enum awaken_session_dream_contract::DreamStatusEvent
+pub awaken_session_dream_contract::DreamStatusEvent::Cancel
+pub awaken_session_dream_contract::DreamStatusEvent::Complete
+pub awaken_session_dream_contract::DreamStatusEvent::Fail
+pub awaken_session_dream_contract::DreamStatusEvent::Recover
+pub awaken_session_dream_contract::DreamStatusEvent::Start
+pub struct awaken_session_dream_contract::Dream
+pub awaken_session_dream_contract::Dream::archived_at: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::Dream::created_at: alloc::string::String
+pub awaken_session_dream_contract::Dream::ended_at: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::Dream::error: core::option::Option<awaken_session_dream_contract::DreamError>
+pub awaken_session_dream_contract::Dream::id: alloc::string::String
+pub awaken_session_dream_contract::Dream::inputs: alloc::vec::Vec<awaken_session_dream_contract::DreamInput>
+pub awaken_session_dream_contract::Dream::instructions: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::Dream::kind: &'static str
+pub awaken_session_dream_contract::Dream::model: awaken_session_dream_contract::DreamModelConfig
+pub awaken_session_dream_contract::Dream::output_behavior: awaken_session_dream_contract::DreamOutputBehavior
+pub awaken_session_dream_contract::Dream::outputs: alloc::vec::Vec<awaken_session_dream_contract::DreamOutput>
+pub awaken_session_dream_contract::Dream::session_id: core::option::Option<awaken_session_types::SessionId>
+pub awaken_session_dream_contract::Dream::status: awaken_session_dream_contract::DreamStatus
+pub awaken_session_dream_contract::Dream::usage: awaken_session_dream_contract::DreamUsage
+pub struct awaken_session_dream_contract::DreamCreateParams
+pub awaken_session_dream_contract::DreamCreateParams::inputs: alloc::vec::Vec<awaken_session_dream_contract::DreamInput>
+pub awaken_session_dream_contract::DreamCreateParams::instructions: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamCreateParams::model: awaken_session_dream_contract::DreamModelInput
+pub awaken_session_dream_contract::DreamCreateParams::output_behavior: awaken_session_dream_contract::DreamOutputBehavior
+pub struct awaken_session_dream_contract::DreamError
+pub awaken_session_dream_contract::DreamError::kind: alloc::string::String
+pub awaken_session_dream_contract::DreamError::message: alloc::string::String
+pub struct awaken_session_dream_contract::DreamListParams
+pub awaken_session_dream_contract::DreamListParams::created_after: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamListParams::created_before: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamListParams::include_archived: bool
+pub awaken_session_dream_contract::DreamListParams::limit: core::option::Option<usize>
+pub awaken_session_dream_contract::DreamListParams::page: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamListParams::statuses: alloc::vec::Vec<awaken_session_dream_contract::DreamStatus>
+pub struct awaken_session_dream_contract::DreamModelConfig
+pub awaken_session_dream_contract::DreamModelConfig::id: alloc::string::String
+pub awaken_session_dream_contract::DreamModelConfig::speed: core::option::Option<awaken_session_dream_contract::DreamModelSpeed>
+pub struct awaken_session_dream_contract::DreamOutput
+pub awaken_session_dream_contract::DreamOutput::kind: &'static str
+pub awaken_session_dream_contract::DreamOutput::memory_store_id: alloc::string::String
+pub struct awaken_session_dream_contract::DreamPage
+pub awaken_session_dream_contract::DreamPage::data: alloc::vec::Vec<awaken_session_dream_contract::Dream>
+pub awaken_session_dream_contract::DreamPage::next_page: core::option::Option<alloc::string::String>
+pub struct awaken_session_dream_contract::DreamPolicy
+pub awaken_session_dream_contract::DreamPolicy::config: awaken_session_dream_contract::DreamPolicyConfig
+pub awaken_session_dream_contract::DreamPolicy::last_completed_cutoff_at: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamPolicy::memory_store_id: alloc::string::String
+pub awaken_session_dream_contract::DreamPolicy::next_due_at: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamPolicy::object_type: &'static str
+pub struct awaken_session_dream_contract::DreamPolicyConfig
+pub awaken_session_dream_contract::DreamPolicyConfig::enabled: bool
+pub awaken_session_dream_contract::DreamPolicyConfig::instructions: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamPolicyConfig::interval_seconds: u64
+pub awaken_session_dream_contract::DreamPolicyConfig::max_sessions: usize
+pub awaken_session_dream_contract::DreamPolicyConfig::min_new_sessions: usize
+pub awaken_session_dream_contract::DreamPolicyConfig::model: awaken_session_dream_contract::DreamModelConfig
+impl core::default::Default for awaken_session_dream_contract::DreamPolicyConfig
+pub fn awaken_session_dream_contract::DreamPolicyConfig::default() -> Self
+pub struct awaken_session_dream_contract::DreamPolicyRecord
+pub awaken_session_dream_contract::DreamPolicyRecord::config: awaken_session_dream_contract::DreamPolicyConfig
+pub awaken_session_dream_contract::DreamPolicyRecord::last_completed_cutoff_ms: u64
+pub awaken_session_dream_contract::DreamPolicyRecord::memory_store_id: alloc::string::String
+pub awaken_session_dream_contract::DreamPolicyRecord::next_due_ms: u64
+pub awaken_session_dream_contract::DreamPolicyRecord::workspace_id: alloc::string::String
+pub struct awaken_session_dream_contract::DreamProcessFailure
+pub awaken_session_dream_contract::DreamProcessFailure::kind: alloc::string::String
+pub awaken_session_dream_contract::DreamProcessFailure::message: alloc::string::String
+pub struct awaken_session_dream_contract::DreamProcessRecord
+pub awaken_session_dream_contract::DreamProcessRecord::agent_id: alloc::string::String
+pub awaken_session_dream_contract::DreamProcessRecord::archived_at: core::option::Option<u64>
+pub awaken_session_dream_contract::DreamProcessRecord::cleanup_pending: bool
+pub awaken_session_dream_contract::DreamProcessRecord::created_at: u64
+pub awaken_session_dream_contract::DreamProcessRecord::ended_at: core::option::Option<u64>
+pub awaken_session_dream_contract::DreamProcessRecord::error: core::option::Option<awaken_session_dream_contract::DreamProcessFailure>
+pub awaken_session_dream_contract::DreamProcessRecord::model: awaken_session_dream_contract::DreamModelConfig
+pub awaken_session_dream_contract::DreamProcessRecord::output_behavior: awaken_session_dream_contract::DreamOutputBehavior
+pub awaken_session_dream_contract::DreamProcessRecord::policy_key: core::option::Option<(alloc::string::String, alloc::string::String)>
+pub awaken_session_dream_contract::DreamProcessRecord::process_id: alloc::string::String
+pub awaken_session_dream_contract::DreamProcessRecord::request_guidance: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamProcessRecord::result_memory_store_id: core::option::Option<alloc::string::String>
+pub awaken_session_dream_contract::DreamProcessRecord::session_id: core::option::Option<awaken_session_types::SessionId>
+pub awaken_session_dream_contract::DreamProcessRecord::session_ids: alloc::vec::Vec<awaken_session_types::SessionId>
+pub awaken_session_dream_contract::DreamProcessRecord::source_memory_store_id: alloc::string::String
+pub awaken_session_dream_contract::DreamProcessRecord::status: awaken_session_dream_contract::DreamStatus
+pub awaken_session_dream_contract::DreamProcessRecord::transcript_file_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_dream_contract::DreamProcessRecord::workspace_id: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_session_dream_contract::DreamProcessRecord
+pub fn awaken_session_dream_contract::DreamProcessRecord::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct awaken_session_dream_contract::DreamUsage
+pub awaken_session_dream_contract::DreamUsage::cache_creation_input_tokens: u64
+pub awaken_session_dream_contract::DreamUsage::cache_read_input_tokens: u64
+pub awaken_session_dream_contract::DreamUsage::input_tokens: u64
+pub awaken_session_dream_contract::DreamUsage::output_tokens: u64
+pub const awaken_session_dream_contract::DREAM_MAX_INSTRUCTIONS_CHARS: usize
+pub const awaken_session_dream_contract::DREAM_MAX_SESSIONS: usize
+pub const awaken_session_dream_contract::DREAM_SUPPORTED_MODELS: &[&str]
+pub trait awaken_session_dream_contract::DreamPolicyApplication: core::marker::Send + core::marker::Sync
+pub fn awaken_session_dream_contract::DreamPolicyApplication::policy(&self, &str, &str) -> core::result::Result<awaken_session_dream_contract::DreamPolicy, awaken_session_dream_contract::DreamPolicyApplicationError>
+pub fn awaken_session_dream_contract::DreamPolicyApplication::set_policy(&self, &str, &str, awaken_session_dream_contract::DreamPolicyConfig) -> core::result::Result<(), awaken_session_dream_contract::DreamPolicyApplicationError>
+pub trait awaken_session_dream_contract::DreamProcessStore: core::marker::Send + core::marker::Sync
+pub fn awaken_session_dream_contract::DreamProcessStore::claim_dream_policy(&self, &awaken_session_dream_contract::DreamPolicyRecord, awaken_session_dream_contract::DreamPolicyRecord, awaken_session_dream_contract::DreamProcessRecord) -> core::result::Result<bool, awaken_session_dream_contract::DreamProcessStoreError>
+pub fn awaken_session_dream_contract::DreamProcessStore::compare_and_swap_dream_policy(&self, core::option::Option<&awaken_session_dream_contract::DreamPolicyRecord>, awaken_session_dream_contract::DreamPolicyRecord) -> core::result::Result<bool, awaken_session_dream_contract::DreamProcessStoreError>
+pub fn awaken_session_dream_contract::DreamProcessStore::compare_and_swap_dream_process(&self, core::option::Option<&awaken_session_dream_contract::DreamProcessRecord>, awaken_session_dream_contract::DreamProcessRecord) -> core::result::Result<bool, awaken_session_dream_contract::DreamProcessStoreError>
+pub fn awaken_session_dream_contract::DreamProcessStore::dream_policies(&self) -> core::result::Result<alloc::vec::Vec<awaken_session_dream_contract::DreamPolicyRecord>, awaken_session_dream_contract::DreamProcessStoreError>
+pub fn awaken_session_dream_contract::DreamProcessStore::dream_processes(&self) -> core::result::Result<alloc::vec::Vec<awaken_session_dream_contract::DreamProcessRecord>, awaken_session_dream_contract::DreamProcessStoreError>

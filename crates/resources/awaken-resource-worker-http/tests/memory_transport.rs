@@ -19,10 +19,8 @@ use awaken_resource_worker_http::{
 };
 use awaken_dispatch::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_session_contract::{
-    AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-    FailSessionRealization, SessionRealizationControl, SessionRealizationControlFailure,
-    SessionRealizationDirective, SessionResourceMaterializationIntent, SessionTerminalMemoryIntent,
-    SessionTerminalMemoryTarget,
+    SessionRealizationControlFailure, SessionResourceMaterializationIntent,
+    SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
 };
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
@@ -265,43 +263,7 @@ struct ExactResourceControl {
 }
 
 #[async_trait::async_trait]
-impl SessionRealizationControl for ExactResourceControl {
-    async fn begin_session_realization(
-        &self,
-        _command: BeginSessionRealization,
-    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "test control has no realization driver".into(),
-        ))
-    }
-
-    async fn activate_session_realization(
-        &self,
-        _command: ActivateSessionRealization,
-    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "test control has no realization driver".into(),
-        ))
-    }
-
-    async fn acknowledge_session_realization(
-        &self,
-        _command: AcknowledgeSessionRealization,
-    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "test control has no realization driver".into(),
-        ))
-    }
-
-    async fn fail_session_realization(
-        &self,
-        _command: FailSessionRealization,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "test control has no realization driver".into(),
-        ))
-    }
-
+impl awaken_session_contract::SessionResourceMaterializationControl for ExactResourceControl {
     async fn authorize_resource_materialization_intent(
         &self,
         intent: &SessionResourceMaterializationIntent,
@@ -322,43 +284,7 @@ impl SessionRealizationControl for ExactResourceControl {
 }
 
 #[async_trait::async_trait]
-impl SessionRealizationControl for ExactTerminalMemoryControl {
-    async fn begin_session_realization(
-        &self,
-        _command: BeginSessionRealization,
-    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "test control has no realization driver".into(),
-        ))
-    }
-
-    async fn activate_session_realization(
-        &self,
-        _command: ActivateSessionRealization,
-    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "test control has no realization driver".into(),
-        ))
-    }
-
-    async fn acknowledge_session_realization(
-        &self,
-        _command: AcknowledgeSessionRealization,
-    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "test control has no realization driver".into(),
-        ))
-    }
-
-    async fn fail_session_realization(
-        &self,
-        _command: FailSessionRealization,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        Err(SessionRealizationControlFailure::Invalid(
-            "test control has no realization driver".into(),
-        ))
-    }
-
+impl awaken_session_contract::SessionTerminalMemoryControl for ExactTerminalMemoryControl {
     async fn authorize_terminal_memory_intent(
         &self,
         intent: &SessionTerminalMemoryIntent,
@@ -693,7 +619,7 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
             Arc::new(HeaderWorkerAuthenticator),
             directory,
         )
-        .with_session_control(Arc::new(ExactResourceControl {
+        .with_materialization_control(Arc::new(ExactResourceControl {
             workspace_id: "workspace-memory".into(),
             intent: intent.clone(),
             current_lease: awaken_session_contract::SessionRealizationLease {
@@ -907,7 +833,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
         )
-        .with_session_control(Arc::new(ExactTerminalMemoryControl {
+        .with_terminal_memory_control(Arc::new(ExactTerminalMemoryControl {
             workspace_id: "workspace-memory".into(),
             intent: intent.clone(),
             current_effect: effect.clone(),
@@ -1008,6 +934,19 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             .await
             .unwrap(),
         vec![proposed.clone()]
+    );
+    // RC-W3/R5 transport row. Cause: the exact terminal reference is accepted
+    // and one candidate is durably retained. Effect: the remote repository
+    // returns that typed candidate exactly; it must not substitute an empty
+    // list or surface a missing-capability error. The denied RW/realization
+    // rows above cover the two non-terminal authority partitions.
+    assert_eq!(
+        client
+            .list_copy_conflicts(&reference)
+            .await
+            .expect("R5 typed copy-conflict list crosses the HTTP adapter"),
+        vec![proposed.clone()],
+        "R5 the HTTP projection preserves every candidate field"
     );
     for axis in ["path", "id", "sha", "base"] {
         let mut bad = proposed.clone();
@@ -1129,7 +1068,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
         )
-        .with_session_control(Arc::new(ExactTerminalMemoryControl {
+        .with_terminal_memory_control(Arc::new(ExactTerminalMemoryControl {
             workspace_id: "workspace-memory".into(),
             intent: expired_intent.clone(),
             current_effect: renewed_effect.clone(),
@@ -1166,7 +1105,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
         )
-        .with_session_control(Arc::new(ExactTerminalMemoryControl {
+        .with_terminal_memory_control(Arc::new(ExactTerminalMemoryControl {
             workspace_id: "workspace-memory".into(),
             intent: expired_intent.clone(),
             current_effect: expired_effect.clone(),
@@ -1210,7 +1149,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
         )
-        .with_session_control(Arc::new(ExactTerminalMemoryControl {
+        .with_terminal_memory_control(Arc::new(ExactTerminalMemoryControl {
             workspace_id: "workspace-memory".into(),
             intent: successor_intent,
             current_effect: renewed_effect,

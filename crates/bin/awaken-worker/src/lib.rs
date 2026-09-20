@@ -1266,6 +1266,7 @@ impl WorkerNode {
         ));
         host = host
             .with_session_control(session_control.clone())
+            .with_terminal_cleanup_control(session_control.clone())
             .with_environment_binding_sink(session_control);
         if let Some(gate) = self.tool_gate {
             host = host.with_gate_override(gate);

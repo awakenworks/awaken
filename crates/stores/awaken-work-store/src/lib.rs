@@ -25,7 +25,7 @@ use awaken_session_contract::work_queue::{
     WorkQueue, WorkQueueError, WorkSessionAccess, session_work_release_admission,
 };
 fn storage(error: impl std::fmt::Display) -> WorkQueueError {
-    WorkQueueError::Storage(error.to_string())
+    WorkQueueError::Storage(error.to_string().into())
 }
 
 use awaken_sqlite_pool::SharedSqliteConnection;

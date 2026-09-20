@@ -17,7 +17,7 @@ use awaken_dispatch::WorkerIdentity;
 use awaken_worker_transport_security::VerifiedWorkerContext;
 
 use super::session_realization::{
-    SessionCleanupPollReq, session_control, verify_terminal_cleanup_authority,
+    SessionCleanupPollReq, terminal_cleanup_control, verify_terminal_cleanup_authority,
 };
 use super::{RealizationHttpError, WorkerDispatchService, respond_realization};
 
@@ -45,7 +45,7 @@ pub(super) async fn session_repository_publication_poll(
     let result: Result<Value, RealizationHttpError> = async {
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
-        let projection = session_control(&service)
+        let projection = terminal_cleanup_control(&service)
             .map_err(RealizationHttpError::from)?
             .terminal_repository_publication_command(
                 &awaken_session_contract::SessionId::from(request.session_id),
@@ -67,7 +67,7 @@ pub(super) async fn session_repository_publication_complete(
     let result: Result<Value, RealizationHttpError> = async {
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
-        session_control(&service)
+        terminal_cleanup_control(&service)
             .map_err(RealizationHttpError::from)?
             .record_terminal_repository_publication_receipt(
                 &awaken_session_contract::SessionId::from(request.session_id),
@@ -90,7 +90,7 @@ pub(super) async fn session_repository_publication_reject(
     let result: Result<Value, RealizationHttpError> = async {
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
-        session_control(&service)
+        terminal_cleanup_control(&service)
             .map_err(RealizationHttpError::from)?
             .record_terminal_repository_publication_rejection(
                 &awaken_session_contract::SessionId::from(request.session_id),

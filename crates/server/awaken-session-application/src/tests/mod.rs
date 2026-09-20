@@ -662,6 +662,27 @@ struct UnusedFileCatalog;
 
 #[async_trait::async_trait]
 impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
+    async fn artifact_capture(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+    ) -> Result<
+        Option<awaken_resource_contract::ArtifactCapture>,
+        awaken_resource_contract::FileCatalogError,
+    > {
+        unreachable!("Skill-only projection never captures Files")
+    }
+
+    async fn replace_artifact_capture(
+        &self,
+        _request: awaken_resource_contract::ReplaceArtifactCapture,
+    ) -> Result<
+        awaken_resource_contract::ReplaceArtifactCaptureOutcome,
+        awaken_resource_contract::FileCatalogError,
+    > {
+        unreachable!("Skill-only projection never replaces File captures")
+    }
+
     async fn create_file(
         &self,
         _record: awaken_resource_contract::FileRecord,
@@ -685,6 +706,15 @@ impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
     }
 
     async fn list_files(
+        &self,
+        _workspace_id: &str,
+        _scope_id: Option<&str>,
+    ) -> Result<Vec<awaken_resource_contract::FileRecord>, awaken_resource_contract::FileCatalogError>
+    {
+        Ok(Vec::new())
+    }
+
+    async fn list_files_including_deleted(
         &self,
         _workspace_id: &str,
         _scope_id: Option<&str>,
@@ -4821,9 +4851,9 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
     ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError> {
         if self.failures.lock().unwrap().contains(session_id) {
             return Err(
-                awaken_session_contract::work_queue::WorkQueueError::Storage(format!(
-                    "injected failure for {session_id}"
-                )),
+                awaken_session_contract::work_queue::WorkQueueError::Storage(
+                    format!("injected failure for {session_id}").into(),
+                ),
             );
         }
         self.dispatched
@@ -4971,7 +5001,7 @@ fn application(
 }
 
 fn application_with_runtime(
-    runtime: Arc<dyn SessionRuntime>,
+    runtime: Arc<dyn awaken_session_contract::CompleteSessionRuntime>,
     repo: Arc<dyn awaken_session_contract::SessionStore>,
     environments: Arc<dyn SessionEnvironmentSource>,
 ) -> SessionApplication {

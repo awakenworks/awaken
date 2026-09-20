@@ -6,6 +6,7 @@ mod pending;
 mod roles;
 mod run_coordination;
 
+pub use awaken_session_budget_contract::SessionUsage;
 pub use neutral::NeutralRuntime;
 pub use pending::Pending;
 pub use roles::*;
@@ -184,57 +185,42 @@ pub trait McpAttachmentRealizer: Send + Sync {
     /// Stage one exact generation without making it tool-visible.
     async fn stage_mcp_attachment(
         &self,
-        _request: crate::StageMcpAttachment,
-    ) -> Result<crate::McpRealizationReceipt, RunError> {
-        Err(RunError::classified(
-            "mcp_runtime_unsupported",
-            "runtime does not support generation-fenced MCP realization",
-        ))
-    }
+        request: crate::StageMcpAttachment,
+    ) -> Result<crate::McpRealizationReceipt, RunError>;
 
     /// Publish one durably active exact generation at a safe boundary.
     async fn publish_mcp_generation(
         &self,
-        _generation: crate::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        Err(RunError::classified(
-            "mcp_runtime_unsupported",
-            "runtime does not support generation-fenced MCP publication",
-        ))
-    }
-
-    async fn publish_mcp_generation_receipt(
-        &self,
         generation: crate::McpGenerationRef,
-    ) -> Result<crate::McpProjectionReceipt, RunError> {
-        self.publish_mcp_generation(generation.clone()).await?;
-        Ok(crate::McpProjectionReceipt::new(
-            generation,
-            crate::McpProjectionEffectKind::Publish,
-        ))
-    }
+    ) -> Result<(), RunError>;
 
     /// Hide and dispose one exact generation idempotently.
     async fn drain_mcp_generation(
         &self,
-        _generation: crate::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        Err(RunError::classified(
-            "mcp_runtime_unsupported",
-            "runtime does not support generation-fenced MCP drain",
-        ))
-    }
-
-    async fn drain_mcp_generation_receipt(
-        &self,
         generation: crate::McpGenerationRef,
-    ) -> Result<crate::McpProjectionReceipt, RunError> {
-        self.drain_mcp_generation(generation.clone()).await?;
-        Ok(crate::McpProjectionReceipt::new(
-            generation,
-            crate::McpProjectionEffectKind::Drain,
-        ))
-    }
+    ) -> Result<(), RunError>;
+}
+
+pub async fn publish_mcp_generation_receipt(
+    mcp: &dyn McpAttachmentRealizer,
+    generation: crate::McpGenerationRef,
+) -> Result<crate::McpProjectionReceipt, RunError> {
+    mcp.publish_mcp_generation(generation.clone()).await?;
+    Ok(crate::McpProjectionReceipt::new(
+        generation,
+        crate::McpProjectionEffectKind::Publish,
+    ))
+}
+
+pub async fn drain_mcp_generation_receipt(
+    mcp: &dyn McpAttachmentRealizer,
+    generation: crate::McpGenerationRef,
+) -> Result<crate::McpProjectionReceipt, RunError> {
+    mcp.drain_mcp_generation(generation.clone()).await?;
+    Ok(crate::McpProjectionReceipt::new(
+        generation,
+        crate::McpProjectionEffectKind::Drain,
+    ))
 }
 
 /// One best-effort subscription to a logical Session Thread's neutral live
@@ -358,6 +344,41 @@ pub trait SessionRuntime: Send + Sync {
         None
     }
 }
+
+/// Complete runtime required by the canonical Session application. Partial
+/// runtimes remain valid for lower-level adapters and focused tests, but they
+/// cannot be installed as the application executor merely because their base
+/// methods compile. The marker carries no behavior or parallel state.
+pub trait CompleteSessionRuntime:
+    SessionRuntime
+    + RealizationRuntime
+    + CoordinationRuntime
+    + BudgetRuntime
+    + StreamingRunRuntime
+    + EnvironmentRuntime
+    + ThreadReadRuntime
+    + TerminalCleanupRuntime
+    + OutcomeRuntime
+    + LiveInboxRuntime
+    + CapabilityRuntime
+{
+}
+
+impl<T> CompleteSessionRuntime for T where
+    T: SessionRuntime
+        + RealizationRuntime
+        + CoordinationRuntime
+        + BudgetRuntime
+        + StreamingRunRuntime
+        + EnvironmentRuntime
+        + ThreadReadRuntime
+        + TerminalCleanupRuntime
+        + OutcomeRuntime
+        + LiveInboxRuntime
+        + CapabilityRuntime
+        + ?Sized
+{
+}
 /// Immediate durability boundary for a newly materialized Session environment.
 /// The binding must commit before the runtime exposes that environment to work.
 #[async_trait]
@@ -368,13 +389,8 @@ pub trait SessionEnvironmentBindingSink: Send + Sync {
     /// separate existence read and a later authorization decision.
     async fn authorize(
         &self,
-        _intent: &crate::SessionEnvironmentEffectIntent,
-    ) -> Result<crate::SessionEnvironmentEffectAuthorization, RunError> {
-        Err(RunError::classified(
-            "session_environment_effect_authorization_unsupported",
-            "Session Environment effects require an explicit durable authorization implementation",
-        ))
-    }
+        intent: &crate::SessionEnvironmentEffectIntent,
+    ) -> Result<crate::SessionEnvironmentEffectAuthorization, RunError>;
 
     /// Commit one authorized receipt and return the exact Store-read
     /// Environment authority. Runtime owner installation must consume this
@@ -458,57 +474,35 @@ impl RunError {
     }
 }
 
-/// The session-level token usage the managed wire reports (the port's neutral shape).
-/// Cumulative across all Runs and models.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SessionUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
-    /// Exact per-model attribution used by list-cost accounting. Protocol
-    /// projections continue to expose the cumulative totals above.
-    pub by_model: std::collections::BTreeMap<String, SessionModelUsage>,
-    pub active_seconds: u64,
-    pub web_fetch_requests: u64,
-    pub web_search_requests: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SessionModelUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
-}
-
-impl From<awaken_runtime_contract::llm::ThreadUsage> for SessionUsage {
-    fn from(attributed: awaken_runtime_contract::llm::ThreadUsage) -> Self {
-        let total = attributed.total();
-        Self {
-            input_tokens: total.prompt_tokens,
-            output_tokens: total.completion_tokens,
-            cache_read_tokens: total.cache_read_tokens,
-            cache_creation_tokens: total.cache_creation_tokens,
-            by_model: attributed
-                .by_model
-                .into_iter()
-                .map(|(model, usage)| {
-                    (
-                        model,
-                        SessionModelUsage {
-                            input_tokens: usage.prompt_tokens,
-                            output_tokens: usage.completion_tokens,
-                            cache_read_tokens: usage.cache_read_tokens,
-                            cache_creation_tokens: usage.cache_creation_tokens,
-                        },
-                    )
-                })
-                .collect(),
-            active_seconds: 0,
-            web_fetch_requests: 0,
-            web_search_requests: 0,
-        }
+/// Project runtime-owned attributed token facts into Session budget vocabulary.
+#[must_use]
+pub fn session_usage_from_thread_usage(
+    attributed: awaken_runtime_contract::llm::ThreadUsage,
+) -> SessionUsage {
+    let total = attributed.total();
+    SessionUsage {
+        input_tokens: total.prompt_tokens,
+        output_tokens: total.completion_tokens,
+        cache_read_tokens: total.cache_read_tokens,
+        cache_creation_tokens: total.cache_creation_tokens,
+        by_model: attributed
+            .by_model
+            .into_iter()
+            .map(|(model, usage)| {
+                (
+                    model,
+                    awaken_session_budget_contract::SessionModelUsage {
+                        input_tokens: usage.prompt_tokens,
+                        output_tokens: usage.completion_tokens,
+                        cache_read_tokens: usage.cache_read_tokens,
+                        cache_creation_tokens: usage.cache_creation_tokens,
+                    },
+                )
+            })
+            .collect(),
+        active_seconds: 0,
+        web_fetch_requests: 0,
+        web_search_requests: 0,
     }
 }
 
@@ -526,7 +520,7 @@ mod tests {
         // totals are the saturating sum; E4 non-token counters remain zero
         // because ThreadUsage does not own them. Decision rules:
         // R1=C1=>E1,E4; R2=C2=>E2,E3,E4; R3=C3=>E2,E3,E4.
-        let empty = SessionUsage::from(awaken_runtime_contract::llm::ThreadUsage::default());
+        let empty = session_usage_from_thread_usage(Default::default());
         assert_eq!(empty, SessionUsage::default(), "R1/E1,E4");
 
         let attributed = awaken_runtime_contract::llm::ThreadUsage {
@@ -552,22 +546,23 @@ mod tests {
             ]),
         };
 
-        let one_model = SessionUsage::from(awaken_runtime_contract::llm::ThreadUsage {
-            by_model: std::collections::BTreeMap::from([(
-                "model-a".into(),
-                awaken_runtime_contract::llm::TokenUsage {
-                    prompt_tokens: 3,
-                    completion_tokens: 5,
-                    cache_read_tokens: 7,
-                    cache_creation_tokens: 11,
-                },
-            )]),
-        });
+        let one_model =
+            session_usage_from_thread_usage(awaken_runtime_contract::llm::ThreadUsage {
+                by_model: std::collections::BTreeMap::from([(
+                    "model-a".into(),
+                    awaken_runtime_contract::llm::TokenUsage {
+                        prompt_tokens: 3,
+                        completion_tokens: 5,
+                        cache_read_tokens: 7,
+                        cache_creation_tokens: 11,
+                    },
+                )]),
+            });
         assert_eq!(one_model.input_tokens, 3, "R2/E3");
         assert_eq!(one_model.by_model["model-a"].output_tokens, 5, "R2/E2");
         assert_eq!(one_model.active_seconds, 0, "R2/E4");
 
-        let projected = SessionUsage::from(attributed);
+        let projected = session_usage_from_thread_usage(attributed);
         assert_eq!(projected.input_tokens, 16, "R3/E3");
         assert_eq!(projected.output_tokens, 22, "R3/E3");
         assert_eq!(projected.cache_read_tokens, 26, "R3/E3");
@@ -797,12 +792,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_mcp_generation_port_fails_closed_from_decision_table() {
+    async fn explicit_unsupported_mcp_fixture_fails_closed_from_decision_table() {
         use crate::{McpGenerationRef, McpTarget, StageMcpAttachment};
 
         struct UnsupportedRealizer;
         #[async_trait]
-        impl McpAttachmentRealizer for UnsupportedRealizer {}
+        impl McpAttachmentRealizer for UnsupportedRealizer {
+            async fn stage_mcp_attachment(
+                &self,
+                _request: crate::StageMcpAttachment,
+            ) -> Result<crate::McpRealizationReceipt, RunError> {
+                Err(RunError::classified(
+                    "mcp_runtime_unsupported",
+                    "fixture does not support generation-fenced MCP realization",
+                ))
+            }
+
+            async fn publish_mcp_generation(
+                &self,
+                _generation: crate::McpGenerationRef,
+            ) -> Result<(), RunError> {
+                Err(RunError::classified(
+                    "mcp_runtime_unsupported",
+                    "fixture does not support generation-fenced MCP publication",
+                ))
+            }
+
+            async fn drain_mcp_generation(
+                &self,
+                _generation: crate::McpGenerationRef,
+            ) -> Result<(), RunError> {
+                Err(RunError::classified(
+                    "mcp_runtime_unsupported",
+                    "fixture does not support generation-fenced MCP drain",
+                ))
+            }
+        }
         let runtime = UnsupportedRealizer;
         let generation = McpGenerationRef {
             session_id: "session-1".into(),

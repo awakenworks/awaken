@@ -268,7 +268,7 @@ impl SessionCreationIntent {
             resources,
             initial_mcp,
         } = self.control;
-        let initial_mcp = crate::mcp_attachment::resolve_mcp_draft_precedence(initial_mcp)
+        let initial_mcp = awaken_session_mcp_contract::resolve_mcp_draft_precedence(initial_mcp)
             .map_err(|error| SessionCreationFinalizeError::McpConflict(error.to_string()))?;
         let baseline = SessionBaseline::compile_with_policy_system_and_execution_model_ref(
             SessionBaselineInputs {

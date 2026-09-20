@@ -164,7 +164,111 @@ The gate runs in `lefthook` pre-commit and in the static group of
   They are named combinations of role traits used as `dyn` objects in about thirty
   places, and a blanket `impl<T>` adds no behaviour a caller could miss.
 
-### 9. Out of scope
+### 9. September 2026 consolidation closure
+
+The follow-up audit is closed as one end-to-end correction, not as a collection
+of compatibility patches. The objective is that composition selects an exact
+role before an effect, one aggregate remains authoritative for every durable
+fact, and a retry carries the same identity to an exact receipt or an explicitly
+indeterminate result.
+
+#### Static structure
+
+| Classification | Authoritative owner | Resolution |
+|---|---|---|
+| Reused unchanged | Session aggregate/repository and realization state machine; Dispatch row, Inbox and ordinary Outbox; Resource repositories; provisioning `SandboxProvider`; existing backend conformance entrypoints | They remain the only durable fact/effect owners. No second registry, queue, lifecycle, or provider was introduced. |
+| Modified | Session realization, Agent coordination, MCP realization and Environment binding ports; Run-ingress queue/checkpoint/control/outbox/settlement ports; Resource port requirements and error payloads; application and Worker composition roots | Missing capabilities are required methods or exact role traits. Composition stores only the roles a caller needs; no call catches an "unsupported" error to discover topology. Resource category variants remain stable but their opaque detail is a named type. |
+| New | `awaken-session-types`, `awaken-session-budget-contract`, `awaken-session-dream-contract`, `awaken-session-event-contract`, `awaken-session-mcp-contract`, and `awaken-session-work-contract`; the HTTP copy-conflict read operation | These are cohesive owners extracted behind the existing `awaken-session-contract` facade. They add no V2 API or parallel state. The HTTP operation exposes the already-authoritative `MemoryRepository::list_copy_conflicts` capability instead of manufacturing an unsupported implementation. |
+
+The facade still preserves the old public paths. Its production surface falls
+from about 17,000 to 13,245 lines while the contract dependency depth remains
+three; Run-ingress remains at depth four. All three audited contracts now have
+zero missing-capability defaults: Session, Run-ingress and Resource. The shape
+baseline records the six structural lines needed to split the Dispatch value
+model and aggregate-role modules; no behavior was added to evade the source-file
+limit.
+
+The terminal and resource realization surface is deliberately a capability
+ladder:
+
+- `SessionRealizationControl` owns only begin/renew/activate/acknowledge/fail.
+- Resource materialization, checkpoint Artifact publication and terminal Memory
+  authorization are independent roles, combined only by
+  `SessionResourceEffectControl`.
+- Cleanup discovery, preparation, disposal and root Repository publication are
+  independent roles, combined only by `SessionTerminalCleanupControl`.
+- `ClaimedSessionRealizationControl` and
+  `ClaimedSessionCoordinationControl` are separate authenticated remote roles.
+- `DispatchQueue` owns ordinary Worker delivery. Remote checkpoint/recovery is
+  selected through `ClaimedCheckpointTransport`; atomic Session continuation
+  belongs to `SessionContinuationOutbox`; Session admission is separate from
+  ordinary settlement observation.
+
+The conformance audit does not justify a single twenty-port registry. The
+authoritative suites follow the owner and lifecycle they exercise:
+
+| Port family | Canonical suite owner | Why it is not duplicated |
+|---|---|---|
+| Thread commit/read, Work, Environment registry, Session/Deployment persistence, Worker directory, Resource registry | `awaken-store-conformance` | These backends share the same store-level lifecycle and trait-generic fixtures. Session and Deployment already share `session_store`; adding another Session suite would be a competing authority. |
+| Dispatch/Inbox/Outbox | `awaken-dispatch-testkit` | Its claim clock, lease, reservation and continuation rules are Run-ingress behavior, not generic storage behavior. |
+| Memory repository | `awaken-memory-store` shared conformance module | It owns path/generation/CAS/copy-conflict semantics and is already reused by its in-memory, filesystem, SQLite and Postgres adapters. |
+| Skill repository | `awaken-skill-store` shared conformance function | Its binary bundle/version/tombstone lifecycle is crate-local and shared by its implementations. |
+
+Therefore "five of twenty ports" was a location count, not evidence of missing
+coverage. Moving all suites into `awaken-store-conformance` would create a new
+parallel catalogue and invert ownership. A future port needs a suite when it has
+multiple implementations or a duplicated behavioral test; the suite belongs to
+the narrowest existing owner above.
+
+`ContainerEnvironmentProvider` is also not a deprecated competitor to
+`SandboxProvider`. `ContainerProvider<R>` already implements the neutral
+`SandboxProvider` and its restore-target rung. The container projection exists
+for values the Runtime Host genuinely needs but the neutral contract must not
+name: shared `Arc<dyn ContainerEnvironment>` participants, retained create or
+checkpoint-upload attempts, warm capacity, and post-composition Memory/Secret
+installation. Both projections delegate to the same `ContainerProvider` kernels
+for plan derivation, observation, adoption, restore-target acquisition and
+disposal. Deleting either projection would either leak container vocabulary into
+the neutral contract or force the Host to reconstruct participant state on a
+second path.
+
+#### Dynamic behavior
+
+1. A composition root constructs a concrete implementation and installs each
+   exact role required by that topology. A complete local Session runtime is
+   checked for all roles at construction; a remote Worker receives only its
+   claimed realization, coordination and terminal roles.
+2. The ingress adapter authenticates the Worker/claim and selects the exact
+   capability. Absence is rejected before the effect; it is never converted to
+   an empty read, successful no-op, or generic backend failure.
+3. The owning aggregate re-derives the current lease/fence and immutable intent.
+   A stale owner receives the typed fenced/conflict outcome without mutation.
+4. The adapter performs the physical effect and returns the exact typed receipt.
+   The aggregate alone admits that receipt and advances durable state.
+5. A response-loss retry presents the same operation identity. Existing CAS,
+   Inbox/Outbox idempotency and receipt rules return the same committed result;
+   an unavailable observation remains unknown and is not blindly replayed.
+
+The test design for this closure is the following cause/effect table. The rows
+are attached to the corresponding Rust and checker tests so this ADR is context,
+not a second executable specification.
+
+| Rule | Exact role | Current authority | Backend observation | Effect |
+|---|---|---|---|---|
+| C1 | present | current | success | one effect, exact receipt, one aggregate transition |
+| C2 | absent | n/a | n/a | composition/adapter refusal before any write |
+| C3 | present | stale or mismatched | any | fenced/conflict result, no write |
+| C4 | present | current | unavailable/timeout | typed indeterminate failure; no false absence or success |
+| C5 | present | current | exact replay | idempotent prior result; no duplicate effect |
+| C6 | present | current | malformed or wrong response kind | typed rejection; no substituted default |
+
+The pre-push hook now invokes the existing fail-closed public-API snapshot gate
+exactly once. `check-rust.sh --push` already owned maximal all-feature clippy, so
+no duplicate lint lane was added; the orchestration self-test locks both facts.
+ADR-0082 remains Deferred and none of this closure changes the open-product
+placement in §10.
+
+### 10. Out of scope
 
 Moving the Postgres implementations or multi-node capability into the closed-source
 repository is **not** part of this decision. It would contradict ADR-0008, ADR-0012

@@ -48,7 +48,7 @@ impl From<awaken_session_contract::SessionRealizationControlFailure>
 
 /// Worker-side outbound port over the authenticated Coordinator transport.
 #[async_trait::async_trait]
-pub trait ClaimedSessionControl: SessionRealizationControl + Send + Sync {
+pub trait ClaimedSessionRealizationControl: SessionRealizationControl + Send + Sync {
     /// Resume committed projection state. `continuation` is an assertion of
     /// this same Run's still-live local realization, never authority by itself.
     /// The authenticated adapter must renew its exact fence and reject a
@@ -62,59 +62,55 @@ pub trait ClaimedSessionControl: SessionRealizationControl + Send + Sync {
         >,
         continuation: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<Option<SessionRealizationDirective>, ClaimedSessionControlError>;
+}
 
+/// Claim-fenced Session Agent coordination over the authenticated Worker
+/// transport. It is independent from realization resume so a topology that
+/// only recovers projections cannot inherit runtime failures for coordination.
+#[async_trait::async_trait]
+pub trait ClaimedSessionCoordinationControl: Send + Sync {
     async fn list_session_agents(
         &self,
-        _claim: &RunClaim,
-        _session_id: &str,
-    ) -> Result<Vec<SessionAgentRosterEntry>, ClaimedSessionControlError> {
-        Err(ClaimedSessionControlError::new(
-            "claimed Session Agent coordination is unsupported",
-        ))
-    }
+        claim: &RunClaim,
+        session_id: &str,
+    ) -> Result<Vec<SessionAgentRosterEntry>, ClaimedSessionControlError>;
 
     async fn admit_session_model_request(
         &self,
-        _claim: &RunClaim,
-        _session_id: &str,
-        _thread_id: &awaken_agent_contract::agent::thread::Id,
-        _run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<bool, ClaimedSessionControlError> {
-        Err(ClaimedSessionControlError::new(
-            "claimed Session model-request admission is unsupported",
-        ))
-    }
+        claim: &RunClaim,
+        session_id: &str,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<bool, ClaimedSessionControlError>;
 
     async fn admit_session_run_activity(
         &self,
-        _claim: &RunClaim,
-        _session_id: &str,
-        _agent_id: &str,
-        _run_id: &awaken_agent_contract::agent::run::Id,
-        _mode: SessionRunActivityAdmissionMode,
-    ) -> Result<SessionRunActivityAdmission, ClaimedSessionControlError> {
-        Err(ClaimedSessionControlError::new(
-            "claimed Session Run activity admission is unsupported",
-        ))
-    }
+        claim: &RunClaim,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        mode: SessionRunActivityAdmissionMode,
+    ) -> Result<SessionRunActivityAdmission, ClaimedSessionControlError>;
 
     async fn send_session_agent_message(
         &self,
-        _claim: &RunClaim,
-        _command: SessionAgentMessageCommand,
-    ) -> Result<SessionAgentMessageReceipt, ClaimedSessionControlError> {
-        Err(ClaimedSessionControlError::new(
-            "claimed Session Agent coordination is unsupported",
-        ))
-    }
+        claim: &RunClaim,
+        command: SessionAgentMessageCommand,
+    ) -> Result<SessionAgentMessageReceipt, ClaimedSessionControlError>;
 
     async fn settle_session_agent_boundary(
         &self,
-        _claim: &RunClaim,
-        _command: SessionAgentBoundaryCommand,
-    ) -> Result<(), ClaimedSessionControlError> {
-        Err(ClaimedSessionControlError::new(
-            "claimed Session Agent settlement is unsupported",
-        ))
-    }
+        claim: &RunClaim,
+        command: SessionAgentBoundaryCommand,
+    ) -> Result<(), ClaimedSessionControlError>;
+}
+
+pub trait ClaimedSessionControl:
+    ClaimedSessionRealizationControl + ClaimedSessionCoordinationControl
+{
+}
+
+impl<T> ClaimedSessionControl for T where
+    T: ClaimedSessionRealizationControl + ClaimedSessionCoordinationControl + ?Sized
+{
 }

@@ -51,20 +51,17 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 2988,
-      "catch_all_errors": 15,
-      "capability_defaults": 12,
+      "production_lines": 2998,
       "growth_reasons": {
-        "production_lines": "async_trait attributes on the five Resource Registry ports (+7 lines, no new surface)"
+        "production_lines": "extract Session identity, Budget, Dream, Event, MCP, and Work owners behind the existing facade; replace unsupported capability defaults with required or exact role ports; type Resource error detail while preserving category variants"
       }
     },
     "awaken-dispatch-contract": {
       "depth": 4,
-      "production_lines": 2413,
+      "production_lines": 2349,
       "catch_all_errors": 3,
-      "capability_defaults": 25,
       "growth_reasons": {
-        "production_lines": "deadline_has_passed: the one rule deciding whether a durable deadline has passed, which was previously four separate Rust spellings (two normalizing now, two not) plus one hand-written predicate per SQL query. It is contract vocabulary because the transition rules and every backend must answer that question identically, and it carries the Kani proof none of the scattered spellings could"
+        "production_lines": "split Dispatch value-model and aggregate roles into cohesive modules to satisfy the source-file hard limit without moving or weakening tests; the six structural lines are module declarations and imports"
       }
     },
     "awaken-runtime-contract": {
@@ -82,14 +79,31 @@
       "depth": 0,
       "catch_all_errors": 1
     },
+    "awaken-session-budget-contract": {
+      "depth": 1
+    },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 17008,
-      "catch_all_errors": 11,
-      "capability_defaults": 17,
+      "production_lines": 13245,
+      "catch_all_errors": 7,
       "growth_reasons": {
         "production_lines": "session.rs split into session/{roles,neutral}.rs for the 2000-line file limit; +6 lines are the mod/use declarations of the split"
       }
+    },
+    "awaken-session-dream-contract": {
+      "depth": 1
+    },
+    "awaken-session-event-contract": {
+      "depth": 1
+    },
+    "awaken-session-mcp-contract": {
+      "depth": 2
+    },
+    "awaken-session-types": {
+      "depth": 0
+    },
+    "awaken-session-work-contract": {
+      "depth": 1
     },
     "awaken-tenancy": {
       "depth": 0

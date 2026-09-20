@@ -21,7 +21,10 @@ fn artifact_now_ms() -> u64 {
 pub struct ClaimFencedArtifactPublisher {
     inner: Arc<dyn ArtifactPublisher<ArtifactPublicationFence>>,
     dispatch: Arc<AnyDispatchStore>,
-    session_control: OnceLock<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
+    terminal_preparation_control:
+        OnceLock<Arc<dyn awaken_session_contract::SessionTerminalPreparationControl>>,
+    checkpoint_artifact_control:
+        OnceLock<Arc<dyn awaken_session_contract::SessionCheckpointArtifactControl>>,
 }
 
 impl ClaimFencedArtifactPublisher {
@@ -33,7 +36,8 @@ impl ClaimFencedArtifactPublisher {
         Self {
             inner,
             dispatch,
-            session_control: OnceLock::new(),
+            terminal_preparation_control: OnceLock::new(),
+            checkpoint_artifact_control: OnceLock::new(),
         }
     }
 
@@ -41,13 +45,18 @@ impl ClaimFencedArtifactPublisher {
     /// has been constructed around the Runtime Host. The cell is write-once;
     /// it is only a reference to the existing aggregate authority, never a
     /// second cleanup state or cache.
-    pub fn install_session_control(
-        &self,
-        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
-    ) -> Result<(), &'static str> {
-        self.session_control
+    pub fn install_session_control<T>(&self, control: Arc<T>) -> Result<(), &'static str>
+    where
+        T: awaken_session_contract::SessionTerminalPreparationControl
+            + awaken_session_contract::SessionCheckpointArtifactControl
+            + 'static,
+    {
+        self.terminal_preparation_control
+            .set(control.clone())
+            .map_err(|_| "Session terminal Artifact authority is already installed")?;
+        self.checkpoint_artifact_control
             .set(control)
-            .map_err(|_| "Session Artifact authority is already installed")
+            .map_err(|_| "Session checkpoint Artifact authority is already installed")
     }
 
     async fn authorize_effect(
@@ -114,26 +123,26 @@ impl ClaimFencedArtifactPublisher {
         Ok(guard)
     }
 
-    fn control(
+    fn terminal_control(
         &self,
         effect_kind: &str,
     ) -> Result<
-        &Arc<dyn awaken_session_contract::SessionRealizationControl>,
+        &Arc<dyn awaken_session_contract::SessionTerminalPreparationControl>,
         ArtifactPublicationError,
     > {
-        self.session_control.get().ok_or_else(|| {
+        self.terminal_preparation_control.get().ok_or_else(|| {
             ArtifactPublicationError::new(format!(
                 "{effect_kind} Artifact effect has no Session authority"
             ))
         })
     }
 
-    fn control_for_live_lease(
+    fn checkpoint_control_for_live_lease(
         &self,
         lease: &awaken_session_contract::SessionRealizationLease,
         effect_kind: &str,
     ) -> Result<
-        &Arc<dyn awaken_session_contract::SessionRealizationControl>,
+        &Arc<dyn awaken_session_contract::SessionCheckpointArtifactControl>,
         ArtifactPublicationError,
     > {
         let now_unix_ms = artifact_now_ms();
@@ -145,7 +154,11 @@ impl ClaimFencedArtifactPublisher {
                 "{effect_kind} Artifact effect is expired"
             )));
         }
-        self.control(effect_kind)
+        self.checkpoint_artifact_control.get().ok_or_else(|| {
+            ArtifactPublicationError::new(format!(
+                "{effect_kind} Artifact effect has no Session authority"
+            ))
+        })
     }
 
     async fn authorize_terminal_artifact(
@@ -160,7 +173,7 @@ impl ClaimFencedArtifactPublisher {
                 "terminal Artifact scope does not match its cleanup operation",
             ));
         }
-        let control = self.control("terminal")?;
+        let control = self.terminal_control("terminal")?;
         let authorization = control
             .authorize_terminal_cleanup_effect(effect)
             .await
@@ -193,7 +206,7 @@ impl ClaimFencedArtifactPublisher {
                 "checkpoint source-release Artifact has no realization lease",
             )
         })?;
-        let control = self.control_for_live_lease(lease, "checkpoint source-release")?;
+        let control = self.checkpoint_control_for_live_lease(lease, "checkpoint source-release")?;
         let authorized_workspace = control
             .authorize_checkpoint_release_artifact_effect(session_id, operation)
             .await
@@ -282,7 +295,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_dispatch::{Dispatch, MemoryDispatchStore};
-    use awaken_session_contract::{SessionRealizationControlFailure, SessionRealizationDirective};
+    use awaken_session_contract::SessionRealizationControlFailure;
 
     use super::*;
 
@@ -345,35 +358,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::SessionRealizationControl for ExactResourceControl {
-        async fn begin_session_realization(
-            &self,
-            _command: awaken_session_contract::BeginSessionRealization,
-        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-            Err(SessionRealizationControlFailure::Invalid("unused".into()))
-        }
-
-        async fn activate_session_realization(
-            &self,
-            _command: awaken_session_contract::ActivateSessionRealization,
-        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-            Err(SessionRealizationControlFailure::Invalid("unused".into()))
-        }
-
-        async fn acknowledge_session_realization(
-            &self,
-            _command: awaken_session_contract::AcknowledgeSessionRealization,
-        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-            Err(SessionRealizationControlFailure::Invalid("unused".into()))
-        }
-
-        async fn fail_session_realization(
-            &self,
-            _command: awaken_session_contract::FailSessionRealization,
-        ) -> Result<(), SessionRealizationControlFailure> {
-            Err(SessionRealizationControlFailure::Invalid("unused".into()))
-        }
-
+    impl awaken_session_contract::SessionCheckpointArtifactControl for ExactResourceControl {
         async fn authorize_checkpoint_release_artifact_effect(
             &self,
             session: &awaken_session_contract::SessionId,
@@ -386,7 +371,10 @@ mod tests {
             }
             Ok(self.workspace_id.clone())
         }
+    }
 
+    #[async_trait::async_trait]
+    impl awaken_session_contract::SessionTerminalPreparationControl for ExactResourceControl {
         async fn authorize_terminal_cleanup_effect(
             &self,
             effect: &awaken_session_contract::SessionTerminalCleanupEffect,
@@ -415,6 +403,16 @@ mod tests {
                 self.workspace_id.clone(),
                 None,
             )
+        }
+
+        async fn record_terminal_cleanup_preparation(
+            &self,
+            _lease: &awaken_session_contract::SessionRealizationLease,
+            _preparation: awaken_session_contract::SessionCleanupPreparation,
+        ) -> Result<(), SessionRealizationControlFailure> {
+            Err(SessionRealizationControlFailure::Invalid(
+                "Artifact authorization fixture does not admit cleanup receipts".into(),
+            ))
         }
     }
 

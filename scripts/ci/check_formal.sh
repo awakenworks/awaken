@@ -542,11 +542,38 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deleted_admission_one_retained_conflict_two_25 \
     --harness deleted_admission_one_retained_conflict_two_29 \
     --cbmc-args --unwindset memcmp.0:65
-  run_kani awaken-session-contract \
+  # Session Event vocabulary now has one cohesive contract owner behind the
+  # Session facade. Select its production kernels from that package so moving
+  # the source cannot leave a green but vacuous old-package invocation.
+  run_kani awaken-session-event-contract \
     --harness session_event_batch_admission_resolution_is_total_closed_and_append_once \
-    --harness session_agent_boundary_requires_a_visible_committed_target \
     --harness user_event_processing_requires_exact_applied_dispatch_and_activity_settlement \
     --harness retained_input_idling_is_exactly_settled_or_only_blocked_users \
+    --harness processed_event_time_is_first_observation_or_atomic_rejection \
+    --harness terminal_batch_resolution_empty
+  run_kani awaken-session-budget-contract \
+    --harness accepted_managed_budget_cost_never_wraps
+  run_kani awaken-session-dream-contract \
+    --harness terminal_dream_statuses_are_absorbing \
+    --harness dream_public_terminal_requires_committed_cleanup \
+    --harness dream_cleanup_admission_is_total_and_retries_every_pending_terminal \
+    --harness dream_success_and_failure_require_a_running_process \
+    --harness dream_recovery_and_cancel_never_widen_terminal_authority \
+    --harness dream_transition_table_is_total_exact_and_closed
+  run_kani awaken-session-work-contract \
+    --harness session_utc_projection_domain_is_total_exact_and_idempotent \
+    --harness only_queued_work_is_claimable \
+    --harness only_active_work_accepts_lease_extension \
+    --harness stop_is_absorbing_for_every_work_state \
+    --harness work_lease_mutation_requires_present_exact_authority_and_matching_condition \
+    --harness session_work_effect_requires_not_required_scope_or_exact_owner \
+    --harness exact_session_work_receipt_rejects_every_changed_coordinate \
+    --harness session_work_release_requires_exact_owner_and_epoch \
+    --harness first_heartbeat_is_authorized_exactly_once \
+    --harness matching_heartbeat_rejects_every_other_receipt \
+    --harness stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run
+  run_kani awaken-session-contract \
+    --harness session_agent_boundary_requires_a_visible_committed_target \
     --harness terminal_resource_projection_retains_the_exact_desired_generation \
     --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \
     --harness session_run_reservation_binds_exactly_one_nonzero_activity_receipt \
@@ -582,27 +609,14 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_network_normalization_two_ascii_hosts_partition \
     --harness session_root_replacement_preserves_creation_and_monotonic_update_observations \
     --harness public_millisecond_projection_is_exact_bounded_and_nonwrapping \
-    --harness session_utc_projection_domain_is_total_exact_and_idempotent \
     --harness realization_generation_authority_requires_every_axis \
-    --harness processed_event_time_is_first_observation_or_atomic_rejection \
     --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
     --harness realization_ownership_loss_proof_is_total_and_exact \
     --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
     --harness settled_step_has_no_parallel_observation_authority \
-    --harness only_queued_work_is_claimable \
-    --harness only_active_work_accepts_lease_extension \
-    --harness stop_is_absorbing_for_every_work_state \
-    --harness work_lease_mutation_requires_present_exact_authority_and_matching_condition \
-    --harness session_work_effect_requires_not_required_scope_or_exact_owner \
-    --harness exact_session_work_receipt_rejects_every_changed_coordinate \
-    --harness session_work_release_requires_exact_owner_and_epoch \
-    --harness first_heartbeat_is_authorized_exactly_once \
-    --harness matching_heartbeat_rejects_every_other_receipt \
     --harness resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision \
-    --harness stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run \
-    --harness accepted_managed_budget_cost_never_wraps \
     --harness source_preparation_and_disposal_require_distinct_durable_phases \
     --harness resource_materialization_selects_only_active_or_pending_root_generation \
     --harness failed_resource_replacement_never_promotes_the_pending_manifest \
@@ -619,12 +633,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
     --harness every_skill_execution_pin_axis_is_binding \
     --harness frozen_worker_agent_publication_is_exact_or_fails_closed \
-    --harness terminal_dream_statuses_are_absorbing \
-    --harness dream_public_terminal_requires_committed_cleanup \
-    --harness dream_cleanup_admission_is_total_and_retries_every_pending_terminal \
-    --harness dream_success_and_failure_require_a_running_process \
-    --harness dream_recovery_and_cancel_never_widen_terminal_authority \
-    --harness dream_transition_table_is_total_exact_and_closed \
     --harness quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effects \
     --harness checkpoint_receipt_requires_every_immutable_generation_axis \
     --harness source_disposal_receipt_requires_exact_binding_and_termination \
@@ -632,8 +640,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_cleanup_completion_requires_every_identity_axis \
     --harness session_cleanup_phase_advances_only_not_requested_fenced_requested_completed \
     --harness session_delete_request_plan_is_exact_hidden_terminal_and_idempotent \
-    --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup \
-    --harness terminal_batch_resolution_empty
+    --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup
   run_kani awaken-session-contract --checked-loop-profile activity-admission-height-v1 \
     --harness activity_next_epoch_inserts_exact_checked_successor \
     --harness activity_exact_epoch_inserts_only_fresh_positive_member

@@ -14,7 +14,7 @@ use awaken_ext_builtin_tools::{
 use awaken_dispatch::{
     DispatchSettlementError, DispatchSettlementObserver, RunClaim, RunDispatch,
 };
-use awaken_dispatch_contract::ClaimedSessionControl;
+use awaken_dispatch_contract::ClaimedSessionCoordinationControl;
 use awaken_runtime_contract::llm::{
     ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
 };
@@ -29,7 +29,7 @@ use awaken_session_contract::{
 pub(crate) enum CoordinationEndpoint {
     Local(Weak<dyn SessionAgentCoordination>),
     Remote {
-        control: Arc<dyn ClaimedSessionControl>,
+        control: Arc<dyn ClaimedSessionCoordinationControl>,
         slots: crate::session_slot::SessionRuntimeSlots,
     },
 }
@@ -46,7 +46,7 @@ impl crate::SharedHost {
             .clone()
             .filter(|application| application.strong_count() > 0);
         local.map(CoordinationEndpoint::Local).or_else(|| {
-            self.session_control
+            self.session_coordination_control
                 .as_ref()
                 .map(|control| CoordinationEndpoint::Remote {
                     control: control.clone(),
@@ -61,6 +61,15 @@ impl crate::SharedHost {
         self.coordination_endpoint().map(|endpoint| {
             Arc::new(HostDispatchSettlementObserver::new(endpoint))
                 as Arc<dyn awaken_dispatch::DispatchSettlementObserver>
+        })
+    }
+
+    pub(crate) fn session_run_admission_observer(
+        &self,
+    ) -> Option<Arc<dyn awaken_dispatch::SessionRunAdmissionObserver>> {
+        self.coordination_endpoint().map(|endpoint| {
+            Arc::new(HostDispatchSettlementObserver::new(endpoint))
+                as Arc<dyn awaken_dispatch::SessionRunAdmissionObserver>
         })
     }
 }
@@ -428,11 +437,7 @@ impl HostDispatchSettlementObserver {
 }
 
 #[async_trait::async_trait]
-impl DispatchSettlementObserver for HostDispatchSettlementObserver {
-    fn owns_dispatch_fence(&self) -> bool {
-        matches!(&self.endpoint, CoordinationEndpoint::Remote { .. })
-    }
-
+impl awaken_dispatch::SessionRunAdmissionObserver for HostDispatchSettlementObserver {
     async fn admit_session_run_activity(
         &self,
         dispatch: &RunDispatch,
@@ -457,6 +462,13 @@ impl DispatchSettlementObserver for HostDispatchSettlementObserver {
                 mode,
             )
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl DispatchSettlementObserver for HostDispatchSettlementObserver {
+    fn owns_dispatch_fence(&self) -> bool {
+        matches!(&self.endpoint, CoordinationEndpoint::Remote { .. })
     }
 
     async fn before_settle(
@@ -523,6 +535,32 @@ impl Drop for AdmissionDropReceipt {
 #[cfg(test)]
 #[async_trait::async_trait]
 impl SessionAgentCoordination for RecordingSessionAgentCoordination {
+    async fn admit_session_run_activity(
+        &self,
+        _session_id: &awaken_session_contract::SessionId,
+        _agent_id: &str,
+        _run_id: &awaken_agent_contract::agent::run::Id,
+        _mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<
+        awaken_session_contract::SessionRunActivityAdmission,
+        awaken_session_contract::RunError,
+    > {
+        Err(awaken_session_contract::RunError::bad_request(
+            "recording coordination fixture does not admit Session activity",
+        ))
+    }
+
+    async fn admit_session_model_request(
+        &self,
+        _session_id: &awaken_session_contract::SessionId,
+        _thread_id: &awaken_agent_contract::agent::thread::Id,
+        _run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<bool, awaken_session_contract::RunError> {
+        Err(awaken_session_contract::RunError::bad_request(
+            "recording coordination fixture does not admit model requests",
+        ))
+    }
+
     async fn list_session_agents(
         &self,
         _session_id: &awaken_session_contract::SessionId,
@@ -639,10 +677,20 @@ mod tests {
         ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
             Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
         }
+
+        async fn renew_session_realization(
+            &self,
+            _command: awaken_session_contract::RenewSessionRealization,
+        ) -> Result<
+            awaken_session_contract::SessionRealizationLeaseReceipt,
+            awaken_session_contract::SessionRealizationControlFailure,
+        > {
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+        }
     }
 
     #[async_trait::async_trait]
-    impl ClaimedSessionControl for RemoteControl {
+    impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RemoteControl {
         async fn resume_frozen(
             &self,
             _claim: &RunClaim,
@@ -656,6 +704,83 @@ mod tests {
             awaken_dispatch_contract::ClaimedSessionControlError,
         > {
             Ok(None)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_dispatch_contract::ClaimedSessionCoordinationControl for RemoteControl {
+        async fn list_session_agents(
+            &self,
+            _claim: &RunClaim,
+            _session_id: &str,
+        ) -> Result<
+            Vec<awaken_session_contract::SessionAgentRosterEntry>,
+            awaken_dispatch_contract::ClaimedSessionControlError,
+        > {
+            Err(
+                awaken_dispatch_contract::ClaimedSessionControlError::new(
+                    "remote coordination fixture does not list Agents",
+                ),
+            )
+        }
+
+        async fn admit_session_model_request(
+            &self,
+            _claim: &RunClaim,
+            _session_id: &str,
+            _thread_id: &awaken_agent_contract::agent::thread::Id,
+            _run_id: &awaken_agent_contract::agent::run::Id,
+        ) -> Result<bool, awaken_dispatch_contract::ClaimedSessionControlError> {
+            Err(
+                awaken_dispatch_contract::ClaimedSessionControlError::new(
+                    "remote coordination fixture does not admit model requests",
+                ),
+            )
+        }
+
+        async fn admit_session_run_activity(
+            &self,
+            _claim: &RunClaim,
+            _session_id: &str,
+            _agent_id: &str,
+            _run_id: &awaken_agent_contract::agent::run::Id,
+            _mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+        ) -> Result<
+            awaken_session_contract::SessionRunActivityAdmission,
+            awaken_dispatch_contract::ClaimedSessionControlError,
+        > {
+            Err(
+                awaken_dispatch_contract::ClaimedSessionControlError::new(
+                    "remote coordination fixture does not admit Session activity",
+                ),
+            )
+        }
+
+        async fn send_session_agent_message(
+            &self,
+            _claim: &RunClaim,
+            _command: awaken_session_contract::SessionAgentMessageCommand,
+        ) -> Result<
+            awaken_session_contract::SessionAgentMessageReceipt,
+            awaken_dispatch_contract::ClaimedSessionControlError,
+        > {
+            Err(
+                awaken_dispatch_contract::ClaimedSessionControlError::new(
+                    "remote coordination fixture does not send Agent messages",
+                ),
+            )
+        }
+
+        async fn settle_session_agent_boundary(
+            &self,
+            _claim: &RunClaim,
+            _command: awaken_session_contract::SessionAgentBoundaryCommand,
+        ) -> Result<(), awaken_dispatch_contract::ClaimedSessionControlError> {
+            Err(
+                awaken_dispatch_contract::ClaimedSessionControlError::new(
+                    "remote coordination fixture does not settle Agent boundaries",
+                ),
+            )
         }
     }
 

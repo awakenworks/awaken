@@ -14,11 +14,11 @@ use crate::{
 };
 
 fn e(x: impl ToString) -> FileStoreError {
-    FileStoreError(x.to_string())
+    FileStoreError(x.to_string().into())
 }
 
 fn ce(x: impl ToString) -> FileCatalogError {
-    FileCatalogError::Storage(x.to_string())
+    FileCatalogError::Storage(x.to_string().into())
 }
 
 fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
@@ -368,10 +368,9 @@ impl FileCatalog for PgFileStore {
             }
             existing
         } else {
-            return Err(FileCatalogError::Invalid(format!(
-                "file id `{}` already exists",
-                record.id
-            )));
+            return Err(FileCatalogError::Invalid(
+                format!("file id `{}` already exists", record.id).into(),
+            ));
         };
         transaction.commit().await.map_err(ce)?;
         Ok(CreateFileRecordOutcome::Existing(existing))

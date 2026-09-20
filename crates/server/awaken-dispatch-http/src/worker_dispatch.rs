@@ -166,6 +166,8 @@ pub struct WorkerDispatchService {
     terminal_observer: Option<Arc<dyn DispatchSettlementObserver>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
     session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
+    terminal_cleanup_control:
+        Option<Arc<dyn awaken_session_contract::SessionTerminalCleanupControl>>,
     session_environment_bindings:
         Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>,
     session_coordination: Option<Arc<dyn awaken_session_contract::SessionAgentCoordination>>,
@@ -198,6 +200,7 @@ impl WorkerDispatchService {
             terminal_observer: None,
             stream_sink: None,
             session_control: None,
+            terminal_cleanup_control: None,
             session_environment_bindings: None,
             session_coordination: None,
             session_work: None,
@@ -271,6 +274,16 @@ impl WorkerDispatchService {
         control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
     ) -> Self {
         self.session_control = Some(control);
+        self
+    }
+
+    /// Install the independent terminal-cleanup projection and receipt role.
+    #[must_use]
+    pub fn with_terminal_cleanup_control(
+        mut self,
+        control: Arc<dyn awaken_session_contract::SessionTerminalCleanupControl>,
+    ) -> Self {
+        self.terminal_cleanup_control = Some(control);
         self
     }
 
@@ -447,7 +460,7 @@ pub struct RegisteredDispatchDependencies {
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
-    pub sessions: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+    pub sessions: Arc<dyn awaken_session_contract::WorkerSessionRealizationControl>,
     pub session_environment_bindings:
         Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
     pub coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination>,
@@ -490,7 +503,8 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
     .with_completion_sink(completion)
     .with_terminal_observer(terminal_observer)
     .with_stream_sink(stream_sink)
-    .with_session_control(sessions)
+    .with_session_control(sessions.clone())
+    .with_terminal_cleanup_control(sessions)
     .with_session_environment_bindings(session_environment_bindings)
     .with_session_coordination(coordination)
     .with_session_work_authority(session_work);

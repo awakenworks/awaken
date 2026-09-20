@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_dispatch::{AnyDispatchStore, Dispatch, DispatchQueue, MemoryDispatchStore};
+use awaken_dispatch::{AnyDispatchStore, DispatchQueue, MemoryDispatchStore};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
@@ -110,9 +110,7 @@ async fn durable_child_run_scenario() {
     let memory = Arc::new(MemoryDispatchStore::new(Arc::new(
         awaken_dispatch::SystemClock,
     )));
-    let dispatch = Arc::new(AnyDispatchStore::from_dispatch(
-        memory.clone() as Arc<dyn Dispatch>
-    ));
+    let dispatch = Arc::new(AnyDispatchStore::from_durable_dispatch(memory.clone()));
 
     let assistant = test_snapshot("assistant", vec![AgentId("researcher".into())]);
     let mut researcher = test_snapshot("researcher", Vec::new());

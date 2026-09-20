@@ -1,5 +1,5 @@
 use super::*;
-use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_dispatch_contract::{ControlDispatchQueue, SessionContinuationOutbox as _};
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_contract::SessionId;
 use awaken_session_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
@@ -292,6 +292,19 @@ fn reject_environment_test_coordination<T>() -> Result<T, awaken_session_contrac
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionAgentCoordination for RejectingSessionAgentCoordination {
+    async fn admit_session_run_activity(
+        &self,
+        _session_id: &SessionId,
+        _agent_id: &str,
+        _run_id: &awaken_agent_contract::agent::run::Id,
+        _mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<
+        awaken_session_contract::SessionRunActivityAdmission,
+        awaken_session_contract::RunError,
+    > {
+        reject_environment_test_coordination()
+    }
+
     async fn admit_session_model_request(
         &self,
         _session_id: &SessionId,
@@ -322,6 +335,13 @@ impl awaken_session_contract::SessionAgentCoordination for RejectingSessionAgent
     }
 
     async fn settle_session_agent_boundary(
+        &self,
+        _command: awaken_session_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        reject_environment_test_coordination()
+    }
+
+    async fn finalize_session_agent_boundary(
         &self,
         _command: awaken_session_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), awaken_session_contract::RunError> {
@@ -9905,7 +9925,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
 
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let mut raw_host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
     raw_host.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.clone(),
@@ -10307,7 +10327,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     drop(host);
 
     let mut raw_replacement = SharedHost::new(Arc::new(OkModel), "stub")
-        .with_session_control(control.clone())
+        .with_session_recovery_control(control.clone())
         .with_local_workspace(workspace_id);
     raw_replacement.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
@@ -19380,6 +19400,33 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
         self.events.lock().unwrap().push("recover-artifacts");
         Ok(vec![self.receipt.clone()])
     }
+
+    async fn capture(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+    ) -> Result<
+        Option<awaken_resource_contract::ArtifactCapture>,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        Err(awaken_resource_contract::ArtifactPublicationError::new(
+            "fixture does not capture Artifacts",
+        ))
+    }
+
+    async fn replace_capture(
+        &self,
+        _request: awaken_resource_contract::ReplaceArtifactCapture,
+        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+    ) -> Result<
+        awaken_resource_contract::ReplaceArtifactCaptureOutcome,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        Err(awaken_resource_contract::ArtifactPublicationError::new(
+            "fixture does not replace Artifact captures",
+        ))
+    }
 }
 
 struct RecordingScopedArtifactAuthority {
@@ -19416,6 +19463,33 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
     > {
         self.events.lock().unwrap().push("recover-terminal-scope");
         recovery.receipts_from_records(self.records.lock().unwrap().clone())
+    }
+
+    async fn capture(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+    ) -> Result<
+        Option<awaken_resource_contract::ArtifactCapture>,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        Err(awaken_resource_contract::ArtifactPublicationError::new(
+            "fixture does not capture Artifacts",
+        ))
+    }
+
+    async fn replace_capture(
+        &self,
+        _request: awaken_resource_contract::ReplaceArtifactCapture,
+        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+    ) -> Result<
+        awaken_resource_contract::ReplaceArtifactCaptureOutcome,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        Err(awaken_resource_contract::ArtifactPublicationError::new(
+            "fixture does not replace Artifact captures",
+        ))
     }
 }
 
@@ -22353,7 +22427,10 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
         Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalCleanupQueue for RemoteTerminalCleanupControl {
     async fn claim_next_terminal_cleanup(
         &self,
         target: awaken_session_contract::SessionRealizationTarget,
@@ -22370,81 +22447,6 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             ));
         }
         Ok(assignment)
-    }
-
-    async fn authorize_terminal_cleanup_effect(
-        &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
-    ) -> Result<
-        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        let authority = self
-            .authority
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
-        if !awaken_session_contract::realization_lease_generation_authorizes(
-            &authority.1,
-            &effect.lease,
-        ) {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
-        }
-        let inherited_provider_disposal = self
-            .session
-            .lock()
-            .unwrap()
-            .as_ref()
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?
-            .authorize_terminal_cleanup_effect(effect)
-            .map_err(|error| {
-                awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                    error.to_string(),
-                )
-            })?;
-        let authorization =
-            awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
-                effect.clone(),
-                authority.0.workspace_id,
-                inherited_provider_disposal,
-            )?;
-        let barrier = self.authorization_barrier.lock().unwrap().clone();
-        if let Some((started, proceed)) = barrier {
-            started.notify_one();
-            proceed.notified().await;
-        }
-        Ok(authorization)
-    }
-
-    async fn authorize_terminal_cleanup_disposal(
-        &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
-        let authority = self
-            .authority
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
-        let exact = self
-            .session
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|session| {
-                session
-                    .authorize_terminal_cleanup_disposal_effect(&authority.0.workspace_id, effect)
-                    .is_ok()
-            });
-        if !awaken_session_contract::realization_lease_generation_authorizes(
-            &authority.1,
-            &effect.lease,
-        ) || !exact
-        {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
-        }
-        Ok(authority.0.workspace_id)
     }
 
     async fn terminal_cleanup_work(
@@ -22494,7 +22496,214 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             action,
         }))
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalPreparationControl for RemoteTerminalCleanupControl {
+    async fn authorize_terminal_cleanup_effect(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) -> Result<
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        let authority = self
+            .authority
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        if !awaken_session_contract::realization_lease_generation_authorizes(
+            &authority.1,
+            &effect.lease,
+        ) {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        let inherited_provider_disposal = self
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?
+            .authorize_terminal_cleanup_effect(effect)
+            .map_err(|error| {
+                awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                    error.to_string(),
+                )
+            })?;
+        let authorization =
+            awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+                effect.clone(),
+                authority.0.workspace_id,
+                inherited_provider_disposal,
+            )?;
+        let barrier = self.authorization_barrier.lock().unwrap().clone();
+        if let Some((started, proceed)) = barrier {
+            started.notify_one();
+            proceed.notified().await;
+        }
+        Ok(authorization)
+    }
+
+    async fn record_terminal_cleanup_preparation(
+        &self,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        let (projection, current) = self
+            .authority
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        if !awaken_session_contract::realization_lease_generation_authorizes(&current, lease) {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        let thread_id = preparation.effect.command.thread_id.clone();
+        let mut session = self.session.lock().unwrap();
+        let session = session
+            .as_mut()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        let mut candidate = session.clone();
+        let admitted = match candidate.record_terminal_cleanup_preparation(
+            &projection.workspace_id,
+            lease,
+            preparation.clone(),
+            None,
+        ) {
+            Ok(_) => Ok(candidate),
+            Err(
+                awaken_session_contract::SessionCleanupError::RepositoryPreparationReceiptMismatch,
+            ) => {
+                let repository_preparation =
+                    awaken_session_contract::SessionCleanupRepositoryPreparation::new(
+                        &preparation.effect.command.session_id,
+                        &projection.workspace_id,
+                        &session.resources,
+                    )
+                    .map_err(|error| {
+                        awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                            error.to_string(),
+                        )
+                    })?;
+                let mut candidate = session.clone();
+                candidate
+                    .record_terminal_cleanup_preparation(
+                        &projection.workspace_id,
+                        lease,
+                        preparation.clone(),
+                        Some(repository_preparation),
+                    )
+                    .map(|_| candidate)
+            }
+            Err(error) => Err(error),
+        }
+        .map_err(|error| {
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(error.to_string())
+        })?;
+        *session = admitted;
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("cleanup:prepared:{thread_id}"));
+        self.preparations.lock().unwrap().push(preparation);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalDisposalControl for RemoteTerminalCleanupControl {
+    async fn authorize_terminal_cleanup_disposal(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        let authority = self
+            .authority
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        let exact = self
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|session| {
+                session
+                    .authorize_terminal_cleanup_disposal_effect(&authority.0.workspace_id, effect)
+                    .is_ok()
+            });
+        if !awaken_session_contract::realization_lease_generation_authorizes(
+            &authority.1,
+            &effect.lease,
+        ) || !exact
+        {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        Ok(authority.0.workspace_id)
+    }
+
+    async fn record_terminal_cleanup_disposal(
+        &self,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        let current = self
+            .authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, lease)| lease.clone())
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        if !awaken_session_contract::realization_lease_generation_authorizes(&current, lease) {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        let workspace_id = self
+            .authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(projection, _)| projection.workspace_id.clone())
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        self.session
+            .lock()
+            .unwrap()
+            .as_mut()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?
+            .record_terminal_cleanup_disposal(
+                &workspace_id,
+                lease,
+                receipt.clone(),
+                "remote-terminal-test",
+            )
+            .map_err(|error| {
+                awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                    error.to_string(),
+                )
+            })?;
+        self.events.lock().unwrap().push("cleanup:disposed".into());
+        self.disposals.lock().unwrap().push(receipt);
+        if self
+            .disposal_response_loss_once
+            .swap(false, Ordering::SeqCst)
+        {
+            // Model an aggregate disposal CAS whose transport response is lost.
+            // The next canonical poll returns Completed (`None`); no Worker-local
+            // receipt cache is involved.
+            return Err(
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                    "injected disposal response loss".into(),
+                ),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionTerminalRepositoryPublicationControl
+    for RemoteTerminalCleanupControl
+{
     async fn terminal_repository_publication_command(
         &self,
         session_id: &SessionId,
@@ -22612,127 +22821,6 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         self.publication_rejections.lock().unwrap().push(rejection);
         Ok(())
     }
-
-    async fn record_terminal_cleanup_preparation(
-        &self,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        preparation: awaken_session_contract::SessionCleanupPreparation,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        let (projection, current) = self
-            .authority
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
-        if !awaken_session_contract::realization_lease_generation_authorizes(&current, lease) {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
-        }
-        let thread_id = preparation.effect.command.thread_id.clone();
-        let mut session = self.session.lock().unwrap();
-        let session = session
-            .as_mut()
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
-        let mut candidate = session.clone();
-        let admitted = match candidate.record_terminal_cleanup_preparation(
-            &projection.workspace_id,
-            lease,
-            preparation.clone(),
-            None,
-        ) {
-            Ok(_) => Ok(candidate),
-            Err(
-                awaken_session_contract::SessionCleanupError::RepositoryPreparationReceiptMismatch,
-            ) => {
-                let repository_preparation =
-                    awaken_session_contract::SessionCleanupRepositoryPreparation::new(
-                        &preparation.effect.command.session_id,
-                        &projection.workspace_id,
-                        &session.resources,
-                    )
-                    .map_err(|error| {
-                        awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                            error.to_string(),
-                        )
-                    })?;
-                let mut candidate = session.clone();
-                candidate
-                    .record_terminal_cleanup_preparation(
-                        &projection.workspace_id,
-                        lease,
-                        preparation.clone(),
-                        Some(repository_preparation),
-                    )
-                    .map(|_| candidate)
-            }
-            Err(error) => Err(error),
-        }
-        .map_err(|error| {
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(error.to_string())
-        })?;
-        *session = admitted;
-        self.events
-            .lock()
-            .unwrap()
-            .push(format!("cleanup:prepared:{thread_id}"));
-        self.preparations.lock().unwrap().push(preparation);
-        Ok(())
-    }
-
-    async fn record_terminal_cleanup_disposal(
-        &self,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        let current = self
-            .authority
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|(_, lease)| lease.clone())
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
-        if !awaken_session_contract::realization_lease_generation_authorizes(&current, lease) {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
-        }
-        let workspace_id = self
-            .authority
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|(projection, _)| projection.workspace_id.clone())
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
-        self.session
-            .lock()
-            .unwrap()
-            .as_mut()
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?
-            .record_terminal_cleanup_disposal(
-                &workspace_id,
-                lease,
-                receipt.clone(),
-                "remote-terminal-test",
-            )
-            .map_err(|error| {
-                awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                    error.to_string(),
-                )
-            })?;
-        self.events.lock().unwrap().push("cleanup:disposed".into());
-        self.disposals.lock().unwrap().push(receipt);
-        if self
-            .disposal_response_loss_once
-            .swap(false, Ordering::SeqCst)
-        {
-            // Model an aggregate disposal CAS whose transport response is lost.
-            // The next canonical poll returns Completed (`None`); no Worker-local
-            // receipt cache is involved.
-            return Err(
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
-                    "injected disposal response loss".into(),
-                ),
-            );
-        }
-        Ok(())
-    }
 }
 
 fn remote_terminal_cleanup_projection() -> awaken_session_contract::FrozenSessionProjection {
@@ -22799,7 +22887,9 @@ fn install_test_renewal_authority(
 }
 
 #[async_trait::async_trait]
-impl awaken_dispatch_contract::ClaimedSessionControl for RemoteTerminalCleanupControl {
+impl awaken_dispatch_contract::ClaimedSessionRealizationControl
+    for RemoteTerminalCleanupControl
+{
     async fn resume_frozen(
         &self,
         _claim: &awaken_dispatch::RunClaim,
@@ -22840,8 +22930,9 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     *control.renewal_gate.lock().unwrap() = Some(gate.clone());
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+    );
     for index in 0..SESSION_COUNT {
         let session_id = format!("mass-session-{index:03}");
         install_test_renewal_authority(
@@ -22954,7 +23045,8 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
     const SESSION_COUNT: usize = 512;
     let authority_now = crate::terminal_repository_publication::runtime_unix_now_ms();
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
     for index in 0..SESSION_COUNT {
         let session_id = format!("scale-session-{index:04}");
         install_test_renewal_authority(
@@ -23078,7 +23170,8 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
             let gate = Arc::new(tokio::sync::Semaphore::new(0));
             *control.renewal_gate.lock().unwrap() = Some(gate.clone());
             let host = Arc::new(
-                SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()),
+                SharedHost::new(Arc::new(OkModel), "stub")
+                    .with_session_recovery_control(control.clone()),
             );
             let now = crate::terminal_repository_publication::runtime_unix_now_ms();
             let old = awaken_session_contract::SessionRealizationLease {
@@ -23174,7 +23267,8 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         *control.renewal_failure.lock().unwrap() =
             Some(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
         let host = Arc::new(
-            SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()),
+            SharedHost::new(Arc::new(OkModel), "stub")
+                .with_session_recovery_control(control.clone()),
         );
         let now = crate::terminal_repository_publication::runtime_unix_now_ms();
         let lease = awaken_session_contract::SessionRealizationLease {
@@ -23261,7 +23355,8 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
      */
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     for (session_id, expired) in [("renewal-live", false), ("renewal-expired", true)] {
         let lease = awaken_session_contract::SessionRealizationLease {
@@ -23306,7 +23401,7 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_failure.lock().unwrap() =
         Some(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control);
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control);
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     host.install_session_realization_lease(
         "renewal-stale",
@@ -23355,7 +23450,8 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     const SESSION_COUNT: usize = 16;
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     for index in 0..SESSION_COUNT {
         host.install_session_realization_lease(
@@ -23432,7 +23528,8 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         let control = Arc::new(RemoteTerminalCleanupControl::default());
         *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
         let host = Arc::new(
-            SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()),
+            SharedHost::new(Arc::new(OkModel), "stub")
+                .with_session_recovery_control(control.clone()),
         );
         let now = crate::terminal_repository_publication::runtime_unix_now_ms();
         let mut held = Vec::new();
@@ -23645,7 +23742,8 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         *control.renewal_gate.lock().unwrap() = Some(gate.clone());
         *control.renewal_failure.lock().unwrap() = failure;
         let host = Arc::new(
-            SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()),
+            SharedHost::new(Arc::new(OkModel), "stub")
+                .with_session_recovery_control(control.clone()),
         );
         let now = crate::terminal_repository_publication::runtime_unix_now_ms();
         let old = awaken_session_contract::SessionRealizationLease {
@@ -23781,8 +23879,9 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     use awaken_provisioning_contract::SandboxStatus;
 
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+    );
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let mut projection = remote_terminal_cleanup_projection();
     awaken_session_contract::RealizationRuntime::install_session_projection(
@@ -23950,8 +24049,9 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     // | R1 | yes | yes | yes | no | E1 + E2 + E3 |
     // | R2 | yes | renewed | renewed | yes | E4 |
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+    );
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
     let expiring_unix_ms = now_unix_ms.saturating_add(5_000);
@@ -24122,8 +24222,9 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     let authorization_proceed = Arc::new(tokio::sync::Notify::new());
     *control.authorization_barrier.lock().unwrap() =
         Some((authorization_started.clone(), authorization_proceed.clone()));
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+    );
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let session_id = "cold-terminal-worker";
     let lease = awaken_session_contract::SessionRealizationLease {

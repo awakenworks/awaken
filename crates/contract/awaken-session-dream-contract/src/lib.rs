@@ -1,5 +1,6 @@
 //! Neutral Coordinator Dream request and projection vocabulary.
 
+use awaken_session_types::{SessionContractErrorDetail, SessionId};
 use serde::{Deserialize, Serialize};
 
 /// Public authoring limits for the research-preview Dream API. The Managed
@@ -29,12 +30,12 @@ pub struct DreamProcessRecord {
     pub source_memory_store_id: String,
     #[serde(default)]
     pub output_behavior: DreamOutputBehavior,
-    pub session_ids: Vec<crate::SessionId>,
+    pub session_ids: Vec<SessionId>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
     pub agent_id: String,
     pub result_memory_store_id: Option<String>,
-    pub session_id: Option<crate::SessionId>,
+    pub session_id: Option<SessionId>,
     #[serde(default)]
     pub transcript_file_ids: Vec<String>,
     #[serde(default)]
@@ -56,7 +57,7 @@ struct StoredDreamProcessRecord {
     source_memory_store_id: String,
     #[serde(default)]
     output_behavior: DreamOutputBehavior,
-    session_ids: Vec<crate::SessionId>,
+    session_ids: Vec<SessionId>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
     #[serde(default)]
@@ -64,7 +65,7 @@ struct StoredDreamProcessRecord {
     #[serde(default)]
     agent_selection: Option<LegacyDreamAgentSelection>,
     result_memory_store_id: Option<String>,
-    session_id: Option<crate::SessionId>,
+    session_id: Option<SessionId>,
     #[serde(default)]
     transcript_file_ids: Vec<String>,
     #[serde(default)]
@@ -134,7 +135,7 @@ pub struct DreamPolicyRecord {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DreamProcessStoreError {
     #[error("Dream process store failure: {0}")]
-    Storage(String),
+    Storage(SessionContractErrorDetail),
 }
 
 /// Coordinator persistence port for cross-Session Dream processes and the
@@ -164,7 +165,7 @@ pub trait DreamProcessStore: Send + Sync {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DreamInput {
     MemoryStore { memory_store_id: String },
-    Sessions { session_ids: Vec<crate::SessionId> },
+    Sessions { session_ids: Vec<SessionId> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -235,7 +236,7 @@ pub enum DreamPolicyApplicationError {
     #[error("{0}")]
     Conflict(String),
     #[error("{0}")]
-    Unavailable(String),
+    Unavailable(SessionContractErrorDetail),
 }
 
 /// Application port driven by the Awaken policy protocol adapter.
@@ -552,7 +553,7 @@ pub struct Dream {
     pub model: DreamModelConfig,
     pub output_behavior: DreamOutputBehavior,
     pub outputs: Vec<DreamOutput>,
-    pub session_id: Option<crate::SessionId>,
+    pub session_id: Option<SessionId>,
     pub status: DreamStatus,
     pub usage: DreamUsage,
 }

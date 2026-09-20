@@ -14,8 +14,8 @@ pub awaken_dispatch_http::RegisteredDispatchDependencies::execution_stops: core:
 pub awaken_dispatch_http::RegisteredDispatchDependencies::policy: alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::recovery: alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::session_environment_bindings: alloc::sync::Arc<dyn awaken_session_contract::session::SessionEnvironmentBindingSink>
-pub awaken_dispatch_http::RegisteredDispatchDependencies::session_work: alloc::sync::Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>
-pub awaken_dispatch_http::RegisteredDispatchDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_realization::SessionRealizationControl>
+pub awaken_dispatch_http::RegisteredDispatchDependencies::session_work: alloc::sync::Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>
+pub awaken_dispatch_http::RegisteredDispatchDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_realization::WorkerSessionRealizationControl>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::stream_sink: alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::terminal_observer: alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchSettlementObserver>
 pub struct awaken_dispatch_http::WorkerDispatchService
@@ -33,8 +33,9 @@ pub fn awaken_dispatch_http::WorkerDispatchService::with_recovery_source(self, a
 pub fn awaken_dispatch_http::WorkerDispatchService::with_session_control(self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::SessionRealizationControl>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_session_coordination(self, alloc::sync::Arc<dyn awaken_session_contract::coordination::SessionAgentCoordination>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_session_environment_bindings(self, alloc::sync::Arc<dyn awaken_session_contract::session::SessionEnvironmentBindingSink>) -> Self
-pub fn awaken_dispatch_http::WorkerDispatchService::with_session_work_authority(self, alloc::sync::Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>) -> Self
+pub fn awaken_dispatch_http::WorkerDispatchService::with_session_work_authority(self, alloc::sync::Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
+pub fn awaken_dispatch_http::WorkerDispatchService::with_terminal_cleanup_control(self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::SessionTerminalCleanupControl>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchSettlementObserver>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>, u64) -> Self
 pub fn awaken_dispatch_http::claimed_commit_router(alloc::sync::Arc<awaken_dispatch_http::ClaimedCommitHttpService>) -> axum::routing::Router

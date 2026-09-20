@@ -55,7 +55,7 @@ pub awaken_protocol_awaken::ProfiledSessionCreated::id: alloc::string::String
 pub awaken_protocol_awaken::ProfiledSessionCreated::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub struct awaken_protocol_awaken::ProfiledSessionMcpAttachment
 pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::name: alloc::string::String
-pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::origin: awaken_session_contract::mcp_attachment::McpAttachmentOrigin
+pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::origin: awaken_session_mcp_contract::McpAttachmentOrigin
 pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::prompts_as_skills: bool
 pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::published_credential: core::option::Option<awaken_credential_contract::CredentialRef>
 pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::target: awaken_agent_contract::mcp_target::McpTarget
@@ -109,7 +109,7 @@ pub awaken_protocol_awaken::SessionRunExecutionEvidence::model_requests: alloc::
 pub awaken_protocol_awaken::SessionRunExecutionEvidence::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_protocol_awaken::SessionRunExecutionEvidence::state: awaken_agent_contract::agent::run::RunState
 pub awaken_protocol_awaken::SessionRunExecutionEvidence::tool_use_ids: alloc::vec::Vec<alloc::string::String>
-pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_contract::dream::DreamPolicyApplication>) -> axum::routing::Router
+pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_dream_contract::DreamPolicyApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::file_output_capture_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::live_inbox_router(alloc::sync::Arc<dyn awaken_session_contract::session::LiveInboxApplication>) -> axum::routing::Router

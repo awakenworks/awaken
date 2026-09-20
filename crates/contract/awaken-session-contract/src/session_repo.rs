@@ -13,6 +13,7 @@
 //! realization consumes that pin through the common exact resolver without
 //! selecting another source or revision.
 
+use crate::SessionRevision;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod activity_state;
@@ -36,7 +37,7 @@ pub use repository_port::{
     IdempotencyRecord, ScopedPersistedSession, SessionCreateResult, SessionIdempotencyReceipt,
     SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
     SessionRealizationLease, SessionRepository, SessionRepositoryConflict, SessionRepositoryError,
-    SessionRevision, SessionTombstone, session_tombstone_is_admitted,
+    SessionTombstone, session_tombstone_is_admitted,
 };
 pub use repository_publication::SessionArchiveWithRepositoryPublicationError;
 

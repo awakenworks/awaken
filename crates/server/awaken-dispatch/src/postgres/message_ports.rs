@@ -207,6 +207,37 @@ impl Outbox for PostgresDispatchStore {
         }
     }
 
+    async fn relay(&self) -> Result<usize, DispatchError> {
+        let p = NS;
+        let staged = sqlx::query(&format!("SELECT message_id, payload FROM {p}_outbox"))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_error)?;
+
+        let mut relayed = 0;
+        for row in staged {
+            let message_id: String = row.try_get("message_id").map_err(store_error)?;
+            let Json(input): Json<PendingInput> = row.try_get("payload").map_err(store_error)?;
+            let input = normalize_pending_millis(input);
+
+            // One transaction per message: idempotent target append, then drop
+            // the outbox row. A crash before the delete re-appends (a no-op).
+            let mut tx = self.pool.begin().await.map_err(store_error)?;
+            append_pending_transaction(&mut tx, NS, &input).await?;
+            sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = $1"))
+                .bind(&message_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            tx.commit().await.map_err(store_error)?;
+            relayed += 1;
+        }
+        Ok(relayed)
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::SessionContinuationOutbox for PostgresDispatchStore {
     async fn stage_session_resume(
         &self,
         input: PendingInput,
@@ -318,34 +349,6 @@ impl Outbox for PostgresDispatchStore {
         .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
         Ok(true)
-    }
-
-    async fn relay(&self) -> Result<usize, DispatchError> {
-        let p = NS;
-        let staged = sqlx::query(&format!("SELECT message_id, payload FROM {p}_outbox"))
-            .fetch_all(&self.pool)
-            .await
-            .map_err(store_error)?;
-
-        let mut relayed = 0;
-        for row in staged {
-            let message_id: String = row.try_get("message_id").map_err(store_error)?;
-            let Json(input): Json<PendingInput> = row.try_get("payload").map_err(store_error)?;
-            let input = normalize_pending_millis(input);
-
-            // One transaction per message: idempotent target append, then drop
-            // the outbox row. A crash before the delete re-appends (a no-op).
-            let mut tx = self.pool.begin().await.map_err(store_error)?;
-            append_pending_transaction(&mut tx, NS, &input).await?;
-            sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = $1"))
-                .bind(&message_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?;
-            tx.commit().await.map_err(store_error)?;
-            relayed += 1;
-        }
-        Ok(relayed)
     }
 
     async fn relay_and_enqueue(

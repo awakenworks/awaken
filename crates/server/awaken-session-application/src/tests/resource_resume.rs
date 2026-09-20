@@ -3,7 +3,7 @@ use awaken_session_contract::SessionId;
 use awaken_session_contract::{
     ActivateSessionRealization, BeginSessionRealization, FrozenResourceTransitionUse,
     SessionRealizationControl, SessionRealizationLease, SessionRealizationTarget,
-    SessionResourceManifest, SessionResourceState,
+    SessionResourceManifest, SessionResourceMaterializationControl, SessionResourceState,
 };
 
 /// Cause/effect design: C1 retained claim pins A; C2 replacement B is pending;

@@ -175,9 +175,43 @@ mod content_id_tests {
 }
 
 /// A blob store failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceErrorDetail(String);
+
+impl ResourceErrorDetail {
+    #[must_use]
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self(detail.into())
+    }
+}
+
+impl std::fmt::Display for ResourceErrorDetail {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl From<String> for ResourceErrorDetail {
+    fn from(detail: String) -> Self {
+        Self(detail)
+    }
+}
+
+impl From<&str> for ResourceErrorDetail {
+    fn from(detail: &str) -> Self {
+        Self(detail.to_string())
+    }
+}
+
+impl From<ResourceErrorDetail> for String {
+    fn from(detail: ResourceErrorDetail) -> Self {
+        detail.0
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("file store error: {0}")]
-pub struct FileStoreError(pub String);
+pub struct FileStoreError(pub ResourceErrorDetail);
 
 /// A logical Files-API record. `id` is the public opaque `file_...` identity;
 /// `blob_id` is the private content-addressed identity in [`FileStore`]. Keeping
@@ -236,9 +270,9 @@ impl CreateFileRecordOutcome {
 #[derive(Debug, thiserror::Error)]
 pub enum FileCatalogError {
     #[error("invalid file record: {0}")]
-    Invalid(String),
+    Invalid(ResourceErrorDetail),
     #[error("file catalog storage error: {0}")]
-    Storage(String),
+    Storage(ResourceErrorDetail),
 }
 
 /// Durable logical Files-API catalog. It owns metadata, Workspace visibility,
@@ -250,21 +284,13 @@ pub trait FileCatalog: Send + Sync {
     /// Some with no ids is a positively observed empty output directory.
     async fn artifact_capture(
         &self,
-        _workspace_id: &str,
-        _session_id: &str,
-    ) -> Result<Option<ArtifactCapture>, FileCatalogError> {
-        Err(FileCatalogError::Storage(
-            "File catalog output capture is unavailable".into(),
-        ))
-    }
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Option<ArtifactCapture>, FileCatalogError>;
     async fn replace_artifact_capture(
         &self,
-        _request: ReplaceArtifactCapture,
-    ) -> Result<ReplaceArtifactCaptureOutcome, FileCatalogError> {
-        Err(FileCatalogError::Storage(
-            "File catalog output capture is unavailable".into(),
-        ))
-    }
+        request: ReplaceArtifactCapture,
+    ) -> Result<ReplaceArtifactCaptureOutcome, FileCatalogError>;
     async fn create_file(
         &self,
         record: FileRecord,
@@ -285,13 +311,9 @@ pub trait FileCatalog: Send + Sync {
     /// prove deleted rows must fail closed instead of silently dropping them.
     async fn list_files_including_deleted(
         &self,
-        _workspace_id: &str,
-        _scope_id: Option<&str>,
-    ) -> Result<Vec<FileRecord>, FileCatalogError> {
-        Err(FileCatalogError::Storage(
-            "File catalog does not support durable deleted-record readback".into(),
-        ))
-    }
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError>;
     /// Mark one logical File deleted and return its retained cleanup metadata.
     async fn mark_file_deleted(
         &self,
@@ -326,21 +348,13 @@ pub trait FileStore: Send + Sync {
 pub trait FileApplicationService: Send + Sync {
     async fn artifact_capture(
         &self,
-        _workspace_id: &str,
-        _session_id: &str,
-    ) -> Result<Option<ArtifactCapture>, ResourcePurgeError> {
-        Err(ResourcePurgeError::Storage(
-            "File application output capture is unavailable".into(),
-        ))
-    }
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Option<ArtifactCapture>, ResourcePurgeError>;
     async fn replace_artifact_capture(
         &self,
-        _request: ReplaceArtifactCapture,
-    ) -> Result<ReplaceArtifactCaptureOutcome, ResourcePurgeError> {
-        Err(ResourcePurgeError::Storage(
-            "File application output capture is unavailable".into(),
-        ))
-    }
+        request: ReplaceArtifactCapture,
+    ) -> Result<ReplaceArtifactCaptureOutcome, ResourcePurgeError>;
     async fn get(
         &self,
         workspace_id: &str,
@@ -358,13 +372,9 @@ pub trait FileApplicationService: Send + Sync {
     /// previously committed publication.
     async fn list_including_deleted(
         &self,
-        _workspace_id: &str,
-        _scope_id: Option<&str>,
-    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
-        Err(ResourcePurgeError::Storage(
-            "File application does not support durable deleted-record readback".into(),
-        ))
-    }
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError>;
 
     async fn create_uploaded_file_with_expiry_and_idempotency(
         &self,
@@ -454,11 +464,11 @@ pub enum SkillStoreError {
     #[error("skill version `{0}` already exists")]
     VersionConflict(String),
     #[error("invalid skill resource: {0}")]
-    Invalid(String),
+    Invalid(ResourceErrorDetail),
     #[error("io: {0}")]
-    Io(String),
+    Io(ResourceErrorDetail),
     #[error("storage: {0}")]
-    Storage(String),
+    Storage(ResourceErrorDetail),
 }
 
 /// One binary-safe file in an immutable Skill version.
@@ -894,19 +904,9 @@ pub trait MemoryRepository: Send + Sync {
         &self,
         store: &str,
         candidate: &MemoryCopyConflict,
-    ) -> Result<(), MemErr> {
-        let _ = (store, candidate);
-        Err(MemErr::Storage(
-            "Memory copy conflict retention is unsupported".into(),
-        ))
-    }
+    ) -> Result<(), MemErr>;
     /// Read retained proposals under the store's ordinary read authorization.
-    async fn list_copy_conflicts(&self, store: &str) -> Result<Vec<MemoryCopyConflict>, MemErr> {
-        let _ = store;
-        Err(MemErr::Storage(
-            "Memory copy conflict listing is unsupported".into(),
-        ))
-    }
+    async fn list_copy_conflicts(&self, store: &str) -> Result<Vec<MemoryCopyConflict>, MemErr>;
     /// Atomically read every current file head, including content, from one
     /// store. The returned vector is path-ordered. This is the canonical frozen
     /// input primitive for operations such as Dream; callers must
@@ -986,12 +986,7 @@ pub trait MemoryRepository: Send + Sync {
         path: &str,
         base: &MemoryGeneration,
         content: &str,
-    ) -> Result<Memory, MemErr> {
-        let _ = (store, path, base, content);
-        Err(MemErr::Storage(
-            "atomic materialized Memory update is unsupported".into(),
-        ))
-    }
+    ) -> Result<Memory, MemErr>;
     /// Move `from` → `to` atomically, **replacing** `to` if it exists (POSIX rename
     /// semantics). The memory keeps its id (so an open FUSE fd stays valid) and bumps
     /// its version.

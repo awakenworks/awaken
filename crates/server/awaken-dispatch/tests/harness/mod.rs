@@ -941,6 +941,34 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         self.local_maintenance
     }
 
+    async fn resolve_claimed_session_run_reservation(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+        resolution: awaken_dispatch::SessionRunReservationResolution,
+    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
+        self.inner
+            .resolve_claimed_session_run_reservation(claim, resolution)
+            .await
+    }
+
+    async fn worker_owns_run(
+        &self,
+        identity: &awaken_dispatch::WorkerIdentity,
+        run_id: &RunId,
+    ) -> Result<Option<awaken_dispatch::RunClaim>, awaken_dispatch::DispatchError> {
+        self.inner.worker_owns_run(identity, run_id).await
+    }
+
+    async fn record_credential_realization(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+        receipt: awaken_dispatch::CredentialRealizationReceipt,
+    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
+        self.inner
+            .record_credential_realization(claim, receipt)
+            .await
+    }
+
     async fn lock_commit_epoch(
         &self,
         claim: &awaken_dispatch::RunClaim,
@@ -974,6 +1002,17 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
             .claim_new_run(request, owner, lease_ms, capabilities)
             .await
     }
+
+    async fn claim_new_run_compatible(
+        &self,
+        request: awaken_dispatch::RunDispatch,
+        worker: &awaken_dispatch::WorkerSnapshot,
+        lease_ms: u64,
+    ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
+        self.inner
+            .claim_new_run_compatible(request, worker, lease_ms)
+            .await
+    }
     async fn deliver_and_claim(
         &self,
         input: awaken_dispatch::PendingInput,
@@ -983,6 +1022,17 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
     ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
         self.inner
             .deliver_and_claim(input, owner, lease_ms, capabilities)
+            .await
+    }
+
+    async fn deliver_and_claim_compatible(
+        &self,
+        input: awaken_dispatch::PendingInput,
+        worker: &awaken_dispatch::WorkerSnapshot,
+        lease_ms: u64,
+    ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
+        self.inner
+            .deliver_and_claim_compatible(input, worker, lease_ms)
             .await
     }
     async fn claim(
@@ -1002,6 +1052,14 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
             ));
         }
         self.inner.claim(owner, lease_ms, capabilities).await
+    }
+
+    async fn claim_compatible(
+        &self,
+        worker: &awaken_dispatch::WorkerSnapshot,
+        lease_ms: u64,
+    ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
+        self.inner.claim_compatible(worker, lease_ms).await
     }
     async fn claim_retry_exhausted(
         &self,
@@ -1035,6 +1093,17 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
     ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
         self.inner
             .claim_run(run_id, owner, lease_ms, capabilities)
+            .await
+    }
+
+    async fn claim_run_compatible(
+        &self,
+        run_id: &RunId,
+        worker: &awaken_dispatch::WorkerSnapshot,
+        lease_ms: u64,
+    ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
+        self.inner
+            .claim_run_compatible(run_id, worker, lease_ms)
             .await
     }
     async fn renew_lease(

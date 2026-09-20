@@ -199,6 +199,9 @@ impl HostWorkerResolver {
         if let Some(observer) = host.dispatch_settlement_observer() {
             worker = worker.with_settlement_observer(observer);
         }
+        if let Some(observer) = host.session_run_admission_observer() {
+            worker = worker.with_session_run_admission_observer(observer);
+        }
         if host.upstream.is_none()
             && let Some(observer) = host
                 .dispatched_memory_terminal_observer(&claimed.request, commit.clone())

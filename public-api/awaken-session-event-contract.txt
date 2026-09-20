@@ -1,0 +1,229 @@
+pub mod awaken_session_event_contract
+pub enum awaken_session_event_contract::SessionAgentRunBoundary
+pub awaken_session_event_contract::SessionAgentRunBoundary::Awaiting
+pub awaken_session_event_contract::SessionAgentRunBoundary::Cancelled
+pub awaken_session_event_contract::SessionAgentRunBoundary::Completed
+pub awaken_session_event_contract::SessionAgentRunBoundary::Failed
+pub enum awaken_session_event_contract::SessionEventBatchAdmissionAction
+pub awaken_session_event_contract::SessionEventBatchAdmissionAction::Accept
+pub awaken_session_event_contract::SessionEventBatchAdmissionAction::Close
+pub enum awaken_session_event_contract::SessionEventBatchAdmissionClass
+pub awaken_session_event_contract::SessionEventBatchAdmissionClass::Absent
+pub awaken_session_event_contract::SessionEventBatchAdmissionClass::Accepted
+pub awaken_session_event_contract::SessionEventBatchAdmissionClass::Closed
+pub awaken_session_event_contract::SessionEventBatchAdmissionClass::Conflict
+pub enum awaken_session_event_contract::SessionEventBatchAdmissionPlan
+pub awaken_session_event_contract::SessionEventBatchAdmissionPlan::AppendAccepted
+pub awaken_session_event_contract::SessionEventBatchAdmissionPlan::AppendClosed
+pub awaken_session_event_contract::SessionEventBatchAdmissionPlan::Conflict
+pub awaken_session_event_contract::SessionEventBatchAdmissionPlan::RejectClosed
+pub awaken_session_event_contract::SessionEventBatchAdmissionPlan::ReplayAccepted
+pub awaken_session_event_contract::SessionEventBatchAdmissionPlan::ReplayClosed
+impl awaken_session_event_contract::SessionEventBatchAdmissionPlan
+pub const fn awaken_session_event_contract::SessionEventBatchAdmissionPlan::appends(self) -> bool
+pub enum awaken_session_event_contract::SessionEventBatchError
+pub awaken_session_event_contract::SessionEventBatchError::AdmissionClosed
+pub awaken_session_event_contract::SessionEventBatchError::DuplicateToolReply
+pub awaken_session_event_contract::SessionEventBatchError::EmptyBatch
+pub awaken_session_event_contract::SessionEventBatchError::EmptyBatchId
+pub awaken_session_event_contract::SessionEventBatchError::EmptyMessageContent
+pub awaken_session_event_contract::SessionEventBatchError::EmptyOutcomeDescription
+pub awaken_session_event_contract::SessionEventBatchError::EmptyOutcomeRubric
+pub awaken_session_event_contract::SessionEventBatchError::EmptySessionId
+pub awaken_session_event_contract::SessionEventBatchError::InvalidAcceptedAdmission
+pub awaken_session_event_contract::SessionEventBatchError::InvalidBatchRevision
+pub awaken_session_event_contract::SessionEventBatchError::InvalidClosedAdmission
+pub awaken_session_event_contract::SessionEventBatchError::InvalidIdempotencyCoordinate
+pub awaken_session_event_contract::SessionEventBatchError::InvalidInterruptTargets
+pub awaken_session_event_contract::SessionEventBatchError::InvalidOutcomeIterations
+pub awaken_session_event_contract::SessionEventBatchError::InvalidToolReplyCoordinate
+pub awaken_session_event_contract::SessionEventBatchError::MultipleSystemMessages
+pub awaken_session_event_contract::SessionEventBatchError::ProgressMismatch
+pub awaken_session_event_contract::SessionEventBatchError::SystemMessagePlacement
+pub awaken_session_event_contract::SessionEventBatchError::TooManyEvents
+pub awaken_session_event_contract::SessionEventBatchError::UnsupportedInitialEvent
+pub enum awaken_session_event_contract::SessionEventCommand
+pub awaken_session_event_contract::SessionEventCommand::DefineOutcome
+pub awaken_session_event_contract::SessionEventCommand::DefineOutcome::description: alloc::string::String
+pub awaken_session_event_contract::SessionEventCommand::DefineOutcome::max_iterations: core::option::Option<u32>
+pub awaken_session_event_contract::SessionEventCommand::DefineOutcome::operation_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventCommand::DefineOutcome::outcome_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventCommand::DefineOutcome::rubric: awaken_session_event_contract::SessionOutcomeRubric
+pub awaken_session_event_contract::SessionEventCommand::Interrupt
+pub awaken_session_event_contract::SessionEventCommand::Interrupt::interrupt: awaken_session_event_contract::SessionEventInterrupt
+pub awaken_session_event_contract::SessionEventCommand::Interrupt::operation_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventCommand::SystemMessage
+pub awaken_session_event_contract::SessionEventCommand::SystemMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_session_event_contract::SessionEventCommand::SystemMessage::operation_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventCommand::ToolReply
+pub awaken_session_event_contract::SessionEventCommand::ToolReply::operation_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventCommand::ToolReply::reply: awaken_session_event_contract::SessionEventToolReply
+pub awaken_session_event_contract::SessionEventCommand::UserMessage
+pub awaken_session_event_contract::SessionEventCommand::UserMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_session_event_contract::SessionEventCommand::UserMessage::data_subject_id: core::option::Option<alloc::string::String>
+pub awaken_session_event_contract::SessionEventCommand::UserMessage::operation_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventCommand::UserMessage::run_id: awaken_agent_contract::agent::run::Id
+impl awaken_session_event_contract::SessionEventCommand
+pub fn awaken_session_event_contract::SessionEventCommand::operation_id(&self) -> &str
+impl awaken_session_event_contract::SessionEventCommand
+pub const fn awaken_session_event_contract::SessionEventCommand::retained_input_class(&self) -> awaken_session_event_contract::dispatch_settlement::RetainedInputClass
+pub enum awaken_session_event_contract::SessionEventDispatchSettlementPlan
+pub awaken_session_event_contract::SessionEventDispatchSettlementPlan::Apply
+pub awaken_session_event_contract::SessionEventDispatchSettlementPlan::Reject
+pub awaken_session_event_contract::SessionEventDispatchSettlementPlan::Replay
+pub enum awaken_session_event_contract::SessionEventInput
+pub awaken_session_event_contract::SessionEventInput::DefineOutcome
+pub awaken_session_event_contract::SessionEventInput::DefineOutcome::description: alloc::string::String
+pub awaken_session_event_contract::SessionEventInput::DefineOutcome::max_iterations: core::option::Option<u32>
+pub awaken_session_event_contract::SessionEventInput::DefineOutcome::rubric: awaken_session_event_contract::SessionOutcomeRubric
+pub awaken_session_event_contract::SessionEventInput::Interrupt(awaken_session_event_contract::SessionEventInterrupt)
+pub awaken_session_event_contract::SessionEventInput::SystemMessage
+pub awaken_session_event_contract::SessionEventInput::SystemMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_session_event_contract::SessionEventInput::ToolReply(awaken_session_event_contract::SessionEventToolReply)
+pub awaken_session_event_contract::SessionEventInput::UserMessage
+pub awaken_session_event_contract::SessionEventInput::UserMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub enum awaken_session_event_contract::SessionEventToolReplyKind
+pub awaken_session_event_contract::SessionEventToolReplyKind::Confirmation
+pub awaken_session_event_contract::SessionEventToolReplyKind::Confirmation::allow: bool
+pub awaken_session_event_contract::SessionEventToolReplyKind::Confirmation::deny_message: core::option::Option<alloc::string::String>
+pub awaken_session_event_contract::SessionEventToolReplyKind::CustomToolResult
+pub awaken_session_event_contract::SessionEventToolReplyKind::CustomToolResult::content: core::option::Option<alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>>
+pub awaken_session_event_contract::SessionEventToolReplyKind::CustomToolResult::is_error: bool
+pub awaken_session_event_contract::SessionEventToolReplyKind::ToolResult
+pub awaken_session_event_contract::SessionEventToolReplyKind::ToolResult::content: core::option::Option<alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>>
+pub awaken_session_event_contract::SessionEventToolReplyKind::ToolResult::is_error: bool
+pub enum awaken_session_event_contract::SessionOutcomeRubric
+pub awaken_session_event_contract::SessionOutcomeRubric::File
+pub awaken_session_event_contract::SessionOutcomeRubric::File::file_id: alloc::string::String
+pub awaken_session_event_contract::SessionOutcomeRubric::Text
+pub awaken_session_event_contract::SessionOutcomeRubric::Text::content: alloc::string::String
+impl awaken_session_event_contract::SessionOutcomeRubric
+pub fn awaken_session_event_contract::SessionOutcomeRubric::execution_reference(&self) -> &str
+pub enum awaken_session_event_contract::SessionThreadTarget
+pub awaken_session_event_contract::SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id)
+pub awaken_session_event_contract::SessionThreadTarget::Primary
+impl awaken_session_event_contract::SessionThreadTarget
+pub fn awaken_session_event_contract::SessionThreadTarget::child_thread_id(&self) -> core::option::Option<&awaken_agent_contract::agent::thread::Id>
+pub fn awaken_session_event_contract::SessionThreadTarget::thread_id(&self, &awaken_session_types::SessionId) -> awaken_agent_contract::agent::thread::Id
+pub enum awaken_session_event_contract::SessionThreadToolReply
+pub awaken_session_event_contract::SessionThreadToolReply::Confirm(awaken_agent_contract::agent::awaiting::PermissionDecision)
+pub awaken_session_event_contract::SessionThreadToolReply::Custom
+pub awaken_session_event_contract::SessionThreadToolReply::Custom::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_session_event_contract::SessionThreadToolReply::Custom::is_error: bool
+pub awaken_session_event_contract::SessionThreadToolReply::Result
+pub awaken_session_event_contract::SessionThreadToolReply::Result::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_session_event_contract::SessionThreadToolReply::Result::is_error: bool
+impl awaken_session_event_contract::SessionThreadToolReply
+pub fn awaken_session_event_contract::SessionThreadToolReply::client_executed(&self) -> bool
+pub enum awaken_session_event_contract::SessionThreadToolReplyActivity
+pub awaken_session_event_contract::SessionThreadToolReplyActivity::Session
+pub awaken_session_event_contract::SessionThreadToolReplyActivity::Session::prior_epoch: core::option::Option<u64>
+pub awaken_session_event_contract::SessionThreadToolReplyActivity::ThreadExtension
+impl awaken_session_event_contract::SessionThreadToolReplyActivity
+pub fn awaken_session_event_contract::SessionThreadToolReplyActivity::from_dispatch(&awaken_agent_contract::agent::thread::Id, core::option::Option<&awaken_agent_contract::agent::thread::Id>, core::option::Option<u64>, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<Self>
+pub fn awaken_session_event_contract::SessionThreadToolReplyActivity::prior_epoch(&self) -> core::option::Option<u64>
+pub struct awaken_session_event_contract::SessionEventBatch
+pub awaken_session_event_contract::SessionEventBatch::admission_closed: bool
+pub awaken_session_event_contract::SessionEventBatch::admission_projection_anchor: core::option::Option<awaken_session_event_contract::SessionEventProjectionAnchor>
+pub awaken_session_event_contract::SessionEventBatch::admitted_revision: awaken_session_types::SessionRevision
+pub awaken_session_event_contract::SessionEventBatch::batch_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventBatch::events: alloc::vec::Vec<awaken_session_event_contract::SessionEventEntry>
+pub awaken_session_event_contract::SessionEventBatch::idempotency_key: core::option::Option<alloc::string::String>
+pub awaken_session_event_contract::SessionEventBatch::request_fingerprint: core::option::Option<alloc::string::String>
+pub awaken_session_event_contract::SessionEventBatch::traceparent: core::option::Option<alloc::string::String>
+pub awaken_session_event_contract::SessionEventBatch::wake_activity_epoch: core::option::Option<u64>
+impl awaken_session_event_contract::SessionEventBatch
+pub fn awaken_session_event_contract::SessionEventBatch::anchor_admission_projection(&mut self, awaken_session_event_contract::SessionEventProjectionAnchor) -> core::result::Result<bool, awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::anchor_committed_input(&mut self, &str, awaken_session_event_contract::SessionEventProjectionAnchor) -> core::result::Result<bool, awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::bind_idempotency(&mut self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::closed_admission(alloc::string::String, awaken_session_types::SessionRevision, alloc::string::String, alloc::string::String) -> core::result::Result<Self, awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::compile(&awaken_session_types::SessionId, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_session_event_contract::SessionEventInput>) -> core::result::Result<Self, awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::compile_attributed(&awaken_session_types::SessionId, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_session_event_contract::SessionEventInput>, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::is_complete(&self) -> bool
+pub fn awaken_session_event_contract::SessionEventBatch::mark_processed(&mut self, &str, awaken_session_event_contract::SessionEventProjectionAnchor, u64) -> core::result::Result<bool, awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::operation_ids(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_session_event_contract::SessionEventBatch::require_accepted(&self) -> core::result::Result<(), awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::resolve_terminally(&mut self, core::option::Option<awaken_session_event_contract::SessionEventProjectionAnchor>, u64) -> usize
+pub fn awaken_session_event_contract::SessionEventBatch::user_run_operation_id(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<core::option::Option<&str>, awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::validate_tool_reply_occupancy(&self, &[Self]) -> core::result::Result<(), awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::SessionEventBatch::verify_admission(&self) -> core::result::Result<(), awaken_session_event_contract::SessionEventBatchError>
+impl awaken_session_event_contract::SessionEventBatch
+pub fn awaken_session_event_contract::SessionEventBatch::record_user_run_dispatch_settlement(&mut self, &str, &awaken_agent_contract::agent::run::Id, bool, awaken_session_event_contract::SessionEventDispatchSettlementReceipt, u64) -> core::result::Result<awaken_session_event_contract::SessionEventDispatchSettlementPlan, awaken_session_event_contract::SessionEventBatchError>
+pub struct awaken_session_event_contract::SessionEventBatchOperation<'a>
+pub awaken_session_event_contract::SessionEventBatchOperation::batch_id: &'a str
+pub awaken_session_event_contract::SessionEventBatchOperation::ordinal: usize
+pub struct awaken_session_event_contract::SessionEventDispatchSettlementReceipt
+pub awaken_session_event_contract::SessionEventDispatchSettlementReceipt::commit_observation_anchor: awaken_session_event_contract::SessionEventProjectionAnchor
+pub awaken_session_event_contract::SessionEventDispatchSettlementReceipt::session_activity_epoch: u64
+pub struct awaken_session_event_contract::SessionEventEntry
+pub awaken_session_event_contract::SessionEventEntry::dispatch_settlement: core::option::Option<awaken_session_event_contract::SessionEventDispatchSettlementReceipt>
+pub awaken_session_event_contract::SessionEventEntry::event: awaken_session_event_contract::SessionEventCommand
+pub awaken_session_event_contract::SessionEventEntry::processed: bool
+pub awaken_session_event_contract::SessionEventEntry::processed_at_unix_ms: core::option::Option<u64>
+pub awaken_session_event_contract::SessionEventEntry::projection_anchor: core::option::Option<awaken_session_event_contract::SessionEventProjectionAnchor>
+pub struct awaken_session_event_contract::SessionEventInterrupt
+pub awaken_session_event_contract::SessionEventInterrupt::requested_target: core::option::Option<awaken_session_event_contract::SessionThreadTarget>
+pub awaken_session_event_contract::SessionEventInterrupt::targets: alloc::vec::Vec<awaken_session_event_contract::SessionThreadTarget>
+pub struct awaken_session_event_contract::SessionEventProjectionAnchor
+pub awaken_session_event_contract::SessionEventProjectionAnchor::source_commit_cursor: u64
+pub struct awaken_session_event_contract::SessionEventToolReply
+pub awaken_session_event_contract::SessionEventToolReply::answered_pending_commit_cursor: core::option::Option<u64>
+pub awaken_session_event_contract::SessionEventToolReply::expected_correlation_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventToolReply::expected_run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_event_contract::SessionEventToolReply::expected_thread_version: core::option::Option<u64>
+pub awaken_session_event_contract::SessionEventToolReply::reply: awaken_session_event_contract::SessionEventToolReplyKind
+pub awaken_session_event_contract::SessionEventToolReply::runtime_tool_use_id: alloc::string::String
+pub awaken_session_event_contract::SessionEventToolReply::target: awaken_session_event_contract::SessionThreadTarget
+pub awaken_session_event_contract::SessionEventToolReply::tool_request_event_id: alloc::string::String
+impl awaken_session_event_contract::SessionEventToolReply
+pub fn awaken_session_event_contract::SessionEventToolReply::answers_same_pending_call(&self, &Self) -> bool
+pub fn awaken_session_event_contract::SessionEventToolReply::delivery_command(&self, &awaken_session_types::SessionId, core::option::Option<awaken_session_event_contract::SessionUserRunSystemInput>) -> awaken_session_event_contract::SessionThreadToolReplyCommand
+pub struct awaken_session_event_contract::SessionInitialEventPlan
+pub awaken_session_event_contract::SessionInitialEventPlan::batch: awaken_session_event_contract::SessionEventBatch
+impl awaken_session_event_contract::SessionInitialEventPlan
+pub fn awaken_session_event_contract::SessionInitialEventPlan::compile(&awaken_session_types::SessionId, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_session_event_contract::SessionEventInput>) -> core::result::Result<Self, awaken_session_event_contract::SessionEventBatchError>
+pub struct awaken_session_event_contract::SessionThreadToolReplyCommand
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::accompanying_system: core::option::Option<awaken_session_event_contract::SessionUserRunSystemInput>
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::expected_correlation_id: alloc::string::String
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::expected_run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::expected_thread_version: core::option::Option<u64>
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::reply: awaken_session_event_contract::SessionThreadToolReply
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::session_id: awaken_session_types::SessionId
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::target: awaken_session_event_contract::SessionThreadTarget
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::tool_request_event_id: core::option::Option<alloc::string::String>
+pub awaken_session_event_contract::SessionThreadToolReplyCommand::tool_use_id: alloc::string::String
+impl awaken_session_event_contract::SessionThreadToolReplyCommand
+pub fn awaken_session_event_contract::SessionThreadToolReplyCommand::activity_operation_id(&self) -> alloc::string::String
+pub fn awaken_session_event_contract::SessionThreadToolReplyCommand::delivery_operation_id(&self) -> alloc::string::String
+pub struct awaken_session_event_contract::SessionThreadToolReplyDelivery
+pub awaken_session_event_contract::SessionThreadToolReplyDelivery::command: awaken_session_event_contract::SessionThreadToolReplyCommand
+pub awaken_session_event_contract::SessionThreadToolReplyDelivery::fence: awaken_session_event_contract::SessionThreadToolReplyFence
+pub awaken_session_event_contract::SessionThreadToolReplyDelivery::session_activity_epoch: core::option::Option<u64>
+pub struct awaken_session_event_contract::SessionThreadToolReplyFence
+pub awaken_session_event_contract::SessionThreadToolReplyFence::activity: awaken_session_event_contract::SessionThreadToolReplyActivity
+pub awaken_session_event_contract::SessionThreadToolReplyFence::already_applied: bool
+pub struct awaken_session_event_contract::SessionUserRunCommand
+pub awaken_session_event_contract::SessionUserRunCommand::accompanying_system: core::option::Option<awaken_session_event_contract::SessionUserRunSystemInput>
+pub awaken_session_event_contract::SessionUserRunCommand::agent_id: alloc::string::String
+pub awaken_session_event_contract::SessionUserRunCommand::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_session_event_contract::SessionUserRunCommand::data_subject_id: core::option::Option<alloc::string::String>
+pub awaken_session_event_contract::SessionUserRunCommand::operation_id: alloc::string::String
+pub awaken_session_event_contract::SessionUserRunCommand::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_event_contract::SessionUserRunCommand::session_id: awaken_session_types::SessionId
+pub awaken_session_event_contract::SessionUserRunCommand::traceparent: core::option::Option<alloc::string::String>
+pub struct awaken_session_event_contract::SessionUserRunSystemInput
+pub awaken_session_event_contract::SessionUserRunSystemInput::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_session_event_contract::SessionUserRunSystemInput::operation_id: alloc::string::String
+pub const awaken_session_event_contract::MAX_SESSION_INITIAL_EVENTS: usize
+pub const awaken_session_event_contract::OUTCOME_BUSY_CODE: &str
+pub const fn awaken_session_event_contract::classify_session_event_batch_admission(bool, bool, bool) -> awaken_session_event_contract::SessionEventBatchAdmissionClass
+pub fn awaken_session_event_contract::decode_session_event_batch_operation(&str) -> core::option::Option<awaken_session_event_contract::SessionEventBatchOperation<'_>>
+pub const fn awaken_session_event_contract::resolve_session_event_batch_admission(bool, bool, bool, awaken_session_event_contract::SessionEventBatchAdmissionAction) -> awaken_session_event_contract::SessionEventBatchAdmissionPlan
+pub fn awaken_session_event_contract::session_event_batch_id(&awaken_session_types::SessionId, awaken_session_types::SessionRevision) -> core::result::Result<alloc::string::String, awaken_session_event_contract::SessionEventBatchError>
+pub fn awaken_session_event_contract::session_event_batch_operation(&str, usize) -> core::result::Result<alloc::string::String, awaken_session_event_contract::SessionEventBatchError>
+pub const fn awaken_session_event_contract::session_event_dispatch_settlement_plan(bool, bool, bool, core::option::Option<awaken_session_event_contract::SessionEventDispatchSettlementReceipt>, awaken_session_event_contract::SessionEventDispatchSettlementReceipt) -> awaken_session_event_contract::SessionEventDispatchSettlementPlan
+pub const fn awaken_session_event_contract::session_event_execution_may_close(awaken_session_event_contract::SessionEventDispatchSettlementPlan, bool, bool, bool) -> bool
+pub fn awaken_session_event_contract::session_event_outcome_id(&awaken_session_types::SessionId, &str) -> alloc::string::String
+pub fn awaken_session_event_contract::session_event_user_run_id(&awaken_session_types::SessionId, &str) -> awaken_agent_contract::agent::run::Id
+pub fn awaken_session_event_contract::session_inputs_allow_idle(&[awaken_session_event_contract::SessionEventBatch], awaken_session_event_contract::SessionAgentRunBoundary) -> bool
+pub fn awaken_session_event_contract::session_outcome_convenience_id(&str, &str, &str, u32) -> alloc::string::String

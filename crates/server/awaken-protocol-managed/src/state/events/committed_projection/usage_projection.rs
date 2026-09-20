@@ -10,7 +10,9 @@ pub(super) fn project_committed_thread_usage(
     price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
 ) -> Result<Option<crate::types::SessionThreadUsage>, StateError> {
     let usage = snapshot.map_or_else(SessionUsage::default, |snapshot| {
-        awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&snapshot.state).into()
+        awaken_session_contract::session_usage_from_thread_usage(
+            awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&snapshot.state),
+        )
     });
     session_thread_usage_value(usage, price_snapshot).map_err(StateError::Run)
 }

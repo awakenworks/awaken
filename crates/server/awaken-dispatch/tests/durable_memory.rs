@@ -20,9 +20,10 @@ use awaken_dispatch::PlacementRequirements;
 use awaken_dispatch::{
     ContinuationAdmission, DEFAULT_LEASE_MS, DispatchOutcome, DispatchQueue,
     DispatchSettlementError, DispatchSettlementObserver, DispatchTestHarness, DispatchWorker,
-    Inbox, ManualClock, MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch,
+    Inbox, ManualClock, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
     SessionChildAdmission,
 };
+use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{

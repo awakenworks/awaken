@@ -1,0 +1,25 @@
+[package]
+name = "awaken-session-mcp-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "contract"
+kinds = ["types"]
+authority = "session-mcp"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-session-types.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1772,6 +1772,33 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Vec::new())
     }
+
+    async fn capture(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+    ) -> Result<
+        Option<awaken_resource_contract::ArtifactCapture>,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        Err(awaken_resource_contract::ArtifactPublicationError::new(
+            "fixture does not capture Artifacts",
+        ))
+    }
+
+    async fn replace_capture(
+        &self,
+        _request: awaken_resource_contract::ReplaceArtifactCapture,
+        _fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+    ) -> Result<
+        awaken_resource_contract::ReplaceArtifactCaptureOutcome,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        Err(awaken_resource_contract::ArtifactPublicationError::new(
+            "fixture does not replace Artifact captures",
+        ))
+    }
 }
 
 #[tokio::test]
@@ -2064,6 +2091,15 @@ impl FileCatalog for FailingFileCatalog {
     ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, FileCatalogError> {
         // This fixture fails the later File write, not the pre-scan read.
         Ok(None)
+    }
+
+    async fn replace_artifact_capture(
+        &self,
+        _request: awaken_resource_contract::ReplaceArtifactCapture,
+    ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, FileCatalogError> {
+        Err(FileCatalogError::Storage(
+            "injected catalog replacement failure".into(),
+        ))
     }
 
     async fn create_file(
@@ -2425,6 +2461,20 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
             self.inner.replace_capture(request.clone(), fence).await?;
         }
         self.inner.replace_capture(request, fence).await
+    }
+
+    async fn recover(
+        &self,
+        _recovery: awaken_resource_contract::ArtifactRecovery<
+            awaken_dispatch::ArtifactPublicationFence,
+        >,
+    ) -> Result<
+        Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        Err(awaken_resource_contract::ArtifactPublicationError::new(
+            "fixture does not recover Artifacts",
+        ))
     }
 }
 

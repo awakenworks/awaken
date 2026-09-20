@@ -889,6 +889,20 @@ mod tests {
             let _guard = self.record_claim(publication.fence.as_ref()).await?;
             self.inner.publish(publication).await
         }
+
+        async fn recover(
+            &self,
+            _recovery: awaken_resource_contract::ArtifactRecovery<
+                awaken_dispatch::ArtifactPublicationFence,
+            >,
+        ) -> Result<
+            Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
+            awaken_resource_contract::ArtifactPublicationError,
+        > {
+            Err(awaken_resource_contract::ArtifactPublicationError::new(
+                "fixture does not recover Artifacts",
+            ))
+        }
     }
 
     #[async_trait::async_trait]

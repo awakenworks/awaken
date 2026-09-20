@@ -119,10 +119,6 @@ TRANSLATED_TRANSPORT = {
         "Err is 'the transport failed', which is ignorance, and the translation below "
         "is the only place that decides what that means"
     ),
-    "crates/server/awaken-dispatch/src/any.rs": (
-        "the enum dispatcher forwards the transport declaration verbatim to whichever "
-        "backend is configured; changing the shape here would fork the transport port"
-    ),
     "crates/server/awaken-coordinator-client/src/dispatch_client.rs": (
         "the HTTP client implements that same transport declaration; its Err is an "
         "HTTP failure, which the single translation turns into Unknown(Storage)"

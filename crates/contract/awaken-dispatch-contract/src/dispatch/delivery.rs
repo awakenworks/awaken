@@ -104,61 +104,33 @@ pub trait Outbox: Send + Sync {
     /// row and the eventual pending append.
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError>;
 
-    /// Atomically stage one bound resume input to a committed-Awaiting,
-    /// Session-affine Run and rotate that dispatch's Session activity
-    /// settlement coordinate.
-    ///
-    /// The existing dispatch row remains the execution and routing authority:
-    /// implementations validate its exact Run/Thread/Session affinity and the
-    /// caller's expected prior activity coordinate, reject a competing resume
-    /// for the same awaiting correlation, then update `session_activity_epoch`
-    /// and insert the Outbox payload in one backend transaction. A `None` prior
-    /// coordinate may adopt an epochless exact Session-affine row. When the new
-    /// epoch is also `None`, only an ordinary primary Run with no Session affinity
-    /// or epoch is accepted: its extension keeps ownership and canonical identity,
-    /// while the same transaction stages the exact input without creating activity. The queue row may still be
-    /// Leased after the Worker committed its Awaiting ticket but before it
-    /// settles; accepting that phase closes the commit/settle discovery race.
-    /// An exact replay returns `false`; it never rewrites the row or creates
-    /// another delivery.
-    async fn stage_session_resume(
-        &self,
-        _input: PendingInput,
-        _session_thread_id: &ThreadId,
-        _prior_session_activity_epoch: Option<u64>,
-        _session_activity_epoch: Option<u64>,
-    ) -> Result<bool, DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support Session resume staging".to_string(),
-        ))
-    }
-
     /// Relay every staged delivery to its target thread's pending input, one
     /// store transaction per message. Returns how many were relayed.
     async fn relay(&self) -> Result<usize, DispatchError>;
+}
 
-    /// Atomically deliver one immediate cross-Thread input bound to the exact
-    /// fresh Run that will consume it, and enqueue that Run under explicit
-    /// root/Session-child admission authority.
-    ///
-    /// This is the idle-target continuation twin of [`relay`](Self::relay): the
-    /// outbox still owns cross-Thread delivery and the ordinary dispatch row
-    /// still owns activation. The single transaction closes the otherwise fatal
-    /// window where a separately staged input can be relayed without its Run (or
-    /// vice versa). The caller submits the one canonical `PendingInput` value,
-    /// whose `run_id` must equal the dispatch Run; this command performs the
-    /// target append and dispatch insertion in the same backend transaction.
-    /// Exact canonical Run replay is a no-op and never resurrects consumed input.
+/// Atomic Session continuation operations over the canonical Outbox and
+/// Dispatch row. Database-less Worker transports do not implement this role.
+#[async_trait]
+pub trait SessionContinuationOutbox: Send + Sync {
+    /// Atomically stage one bound resume input and rotate the Dispatch row's
+    /// Session activity coordinate. Exact replay is inert.
+    async fn stage_session_resume(
+        &self,
+        input: PendingInput,
+        session_thread_id: &ThreadId,
+        prior_session_activity_epoch: Option<u64>,
+        session_activity_epoch: Option<u64>,
+    ) -> Result<bool, DispatchError>;
+
+    /// Atomically append one immediate cross-Thread input and enqueue the exact
+    /// Run under its root/Session-child admission authority.
     async fn relay_and_enqueue(
         &self,
-        _input: PendingInput,
-        _request: RunDispatch,
-        _admission: ContinuationAdmission,
-    ) -> Result<(), DispatchError> {
-        Err(DispatchError::Rejected(
-            "backend does not support atomic outbox continuation admission".to_string(),
-        ))
-    }
+        input: PendingInput,
+        request: RunDispatch,
+        admission: ContinuationAdmission,
+    ) -> Result<(), DispatchError>;
 }
 
 #[cfg(test)]

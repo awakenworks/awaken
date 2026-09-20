@@ -3,6 +3,8 @@
 
 use super::*;
 
+mod session_control;
+
 /// Worker-side Resource content ports that must be installed as one unit.
 /// Keeping the pair named prevents a partially remote Host startup from
 /// silently opening a local content authority for the missing half.
@@ -501,6 +503,8 @@ impl SharedHost {
             remote_credential_realization: Default::default(),
             attempt_decorator: None,
             session_control: None,
+            session_coordination_control: None,
+            terminal_cleanup_control: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
@@ -673,17 +677,6 @@ impl SharedHost {
     #[must_use]
     pub fn with_attempt_decorator(mut self, decorator: super::AttemptExecutorDecorator) -> Self {
         self.attempt_decorator = Some(decorator);
-        self
-    }
-
-    /// Install the sole outbound claim-fenced client for frozen Session
-    /// realization on a Worker.
-    #[must_use]
-    pub fn with_session_control(
-        mut self,
-        control: Arc<dyn awaken_dispatch_contract::ClaimedSessionControl>,
-    ) -> Self {
-        self.session_control = Some(control);
         self
     }
 

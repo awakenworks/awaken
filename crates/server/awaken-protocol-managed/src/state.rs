@@ -81,7 +81,7 @@ pub(crate) use resource::{
 use session_record::{ProjectionPublishDecision, SessionRecord, decide_projection_publish};
 #[cfg(test)]
 pub(crate) use types::DelegatedRun;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) use types::SessionRuntime;
 pub(crate) use types::{
     AgentCapabilities, CommittedOutcomeProjection, CustomTool, OutcomeIteration, RunError,
