@@ -168,8 +168,9 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             claimed.request.execution_scope.as_ref(),
             &None,
             &[],
+            &[],
             None,
-        );
+        )?;
         let coordinator = context.commit.ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(
                 "claimed pre-execution terminal has no commit coordinator".to_string(),

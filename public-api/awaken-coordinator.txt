@@ -176,6 +176,7 @@ pub awaken_coordinator::CoordinatorComponent::work_session_access: alloc::sync::
 pub struct awaken_coordinator::CoordinatorDependencies
 pub awaken_coordinator::CoordinatorDependencies::ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors
 pub awaken_coordinator::CoordinatorDependencies::application_access: alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>
+pub awaken_coordinator::CoordinatorDependencies::credential_deliveries: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::credential::AttemptCredentialDeliverySource>>
 pub awaken_coordinator::CoordinatorDependencies::default_workspace: alloc::string::String
 pub awaken_coordinator::CoordinatorDependencies::deployment_application: alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>
 pub awaken_coordinator::CoordinatorDependencies::deployment_session_launcher: alloc::sync::Arc<dyn awaken_deployment_application::DeploymentSessionLauncher>
@@ -216,6 +217,7 @@ pub awaken_coordinator::ManagedApplicationServices::resource_registry: alloc::sy
 pub awaken_coordinator::ManagedApplicationServices::session_application: alloc::sync::Arc<awaken_session_application::SessionApplication>
 pub struct awaken_coordinator::ManagedRoutingExtensions
 pub awaken_coordinator::ManagedRoutingExtensions::ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors
+pub awaken_coordinator::ManagedRoutingExtensions::credential_deliveries: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::credential::AttemptCredentialDeliverySource>>
 pub awaken_coordinator::ManagedRoutingExtensions::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub awaken_coordinator::ManagedRoutingExtensions::repository_transport_authorizer: core::option::Option<alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>>
 pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: axum::routing::Router

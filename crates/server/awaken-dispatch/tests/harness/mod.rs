@@ -1251,6 +1251,7 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
     }
 }
 
+#[cfg(feature = "test-support")]
 #[async_trait::async_trait]
 impl awaken_dispatch::ControlDispatchQueue for FlakyDispatchStore {
     async fn reserve_session_run(

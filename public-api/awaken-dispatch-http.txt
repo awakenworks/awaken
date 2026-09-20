@@ -7,6 +7,7 @@ pub awaken_dispatch_http::RegisteredDispatchDependencies::authenticator: alloc::
 pub awaken_dispatch_http::RegisteredDispatchDependencies::checkpoint: alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::completion: alloc::sync::Arc<dyn awaken_dispatch::pool::CompletionSink>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::coordination: alloc::sync::Arc<dyn awaken_session_contract::coordination::SessionAgentCoordination>
+pub awaken_dispatch_http::RegisteredDispatchDependencies::credential_deliveries: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::credential::AttemptCredentialDeliverySource>>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::directory: alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::dispatch: alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::ControlDispatchQueue>
 pub awaken_dispatch_http::RegisteredDispatchDependencies::execution_bindings: core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::application::WorkerExecutionBindingSource>>
@@ -24,6 +25,7 @@ pub fn awaken_dispatch_http::WorkerDispatchService::local(alloc::sync::Arc<dyn a
 pub fn awaken_dispatch_http::WorkerDispatchService::new(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::ControlDispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerClock>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerLeasePolicy>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_checkpoint_store(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_completion_sink(self, alloc::sync::Arc<dyn awaken_dispatch::pool::CompletionSink>) -> Self
+pub fn awaken_dispatch_http::WorkerDispatchService::with_credential_delivery_source(self, alloc::sync::Arc<dyn awaken_runtime_contract::credential::AttemptCredentialDeliverySource>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_execution_binding_source(self, alloc::sync::Arc<dyn awaken_dispatch::application::WorkerExecutionBindingSource>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_execution_stop_source(self, alloc::sync::Arc<dyn awaken_dispatch::application::WorkerExecutionStopSource>) -> Self
 pub fn awaken_dispatch_http::WorkerDispatchService::with_local_credential_capabilities(self, awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> Self

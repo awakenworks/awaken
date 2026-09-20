@@ -52,6 +52,7 @@ pub use awaken_dispatch_contract::verify_credential_realization_receipt
 pub mod awaken_dispatch_contract::dispatch
 pub use awaken_dispatch_contract::dispatch::AttemptCredentialBinding
 pub use awaken_dispatch_contract::dispatch::AttemptCredentialBindingError
+pub use awaken_dispatch_contract::dispatch::AttemptCredentialDelivery
 pub use awaken_dispatch_contract::dispatch::CandidateFingerprint
 pub use awaken_dispatch_contract::dispatch::CredentialRealizationPersistenceDecision
 pub use awaken_dispatch_contract::dispatch::CredentialRealizationReceipt
@@ -163,6 +164,7 @@ pub struct awaken_dispatch_contract::dispatch::Claimed
 pub awaken_dispatch_contract::dispatch::Claimed::assignment: core::option::Option<awaken_worker_contract::registry::WorkerAssignment>
 pub awaken_dispatch_contract::dispatch::Claimed::cancellation_requested: bool
 pub awaken_dispatch_contract::dispatch::Claimed::credential_bindings: alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>
+pub awaken_dispatch_contract::dispatch::Claimed::credential_deliveries: alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialDelivery>
 pub awaken_dispatch_contract::dispatch::Claimed::lease: awaken_dispatch_contract::dispatch::Lease
 pub awaken_dispatch_contract::dispatch::Claimed::pending: alloc::vec::Vec<awaken_dispatch_contract::dispatch::PendingInput>
 pub awaken_dispatch_contract::dispatch::Claimed::recovered: bool
@@ -635,6 +637,7 @@ pub struct awaken_dispatch_contract::Claimed
 pub awaken_dispatch_contract::Claimed::assignment: core::option::Option<awaken_worker_contract::registry::WorkerAssignment>
 pub awaken_dispatch_contract::Claimed::cancellation_requested: bool
 pub awaken_dispatch_contract::Claimed::credential_bindings: alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>
+pub awaken_dispatch_contract::Claimed::credential_deliveries: alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialDelivery>
 pub awaken_dispatch_contract::Claimed::lease: awaken_dispatch_contract::dispatch::Lease
 pub awaken_dispatch_contract::Claimed::pending: alloc::vec::Vec<awaken_dispatch_contract::dispatch::PendingInput>
 pub awaken_dispatch_contract::Claimed::recovered: bool

@@ -173,6 +173,8 @@ pub struct WorkerDispatchService {
     session_coordination: Option<Arc<dyn awaken_session_contract::SessionAgentCoordination>>,
     session_work: Option<Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    credential_deliveries:
+        Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
     max_attempts: u64,
     execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
@@ -205,6 +207,7 @@ impl WorkerDispatchService {
             session_coordination: None,
             session_work: None,
             local_credential_capabilities: Default::default(),
+            credential_deliveries: None,
             max_attempts: 5,
             execution_bindings: None,
             execution_stops: None,
@@ -348,6 +351,18 @@ impl WorkerDispatchService {
         self
     }
 
+    /// Install the one Control-owned, claim-scoped credential transport source.
+    /// It issues no authority: the durable binding, holder and epoch are already
+    /// fixed before this port is called.
+    #[must_use]
+    pub fn with_credential_delivery_source(
+        mut self,
+        source: Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>,
+    ) -> Self {
+        self.credential_deliveries = Some(source);
+        self
+    }
+
     /// Set the control-side crash-retry budget used by the dedicated terminal
     /// claim. The control plane, not the remote worker, owns this policy.
     #[must_use]
@@ -470,6 +485,8 @@ pub struct RegisteredDispatchDependencies {
     pub completion: Arc<dyn CompletionSink>,
     pub terminal_observer: Arc<dyn DispatchSettlementObserver>,
     pub stream_sink: Arc<dyn StreamSink>,
+    pub credential_deliveries:
+        Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
 }
 
 pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) -> Router {
@@ -489,6 +506,7 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         completion,
         terminal_observer,
         stream_sink,
+        credential_deliveries,
     } = dependencies;
     let service = WorkerDispatchService::new(
         dispatch,
@@ -508,6 +526,10 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
     .with_session_environment_bindings(session_environment_bindings)
     .with_session_coordination(coordination)
     .with_session_work_authority(session_work);
+    let service = match credential_deliveries {
+        Some(source) => service.with_credential_delivery_source(source),
+        None => service,
+    };
     let service = match execution_bindings {
         Some(source) => service.with_execution_binding_source(source),
         None => service,

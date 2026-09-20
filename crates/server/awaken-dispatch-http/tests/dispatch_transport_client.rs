@@ -27,9 +27,11 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
+    AttemptCredentialDelivery, AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
+    CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
     CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
     InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    SealedCredentialEnvelopeRef,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_coordinator_client::HttpDispatchQueue;
@@ -70,35 +72,49 @@ fn credential_dispatch(
     run: &str,
     thread: &str,
 ) -> (RunDispatch, CredentialRealizationCapabilities) {
+    credential_dispatch_with_expiry(run, thread, None)
+}
+
+fn credential_dispatch_with_expiry(
+    run: &str,
+    thread: &str,
+    envelope_expiry: Option<u64>,
+) -> (RunDispatch, CredentialRealizationCapabilities) {
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Worker,
         awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
     );
     let mut activation = activation(run, thread);
+    let mut access = CredentialAccess::new(
+        CredentialRef {
+            id: "credential".into(),
+            revision: 7,
+        },
+        CredentialMaterialSource::ControlPlaneReference,
+        CredentialUsage::ProviderAdapter,
+        CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+    )
+    .with_target(awaken_runtime_contract::CredentialTarget::new(
+        awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+        "provider",
+    ));
+    if let Some(expires_at_unix_ms) = envelope_expiry {
+        access = access.with_envelope(CredentialEnvelope::SealedForWorker {
+            envelope_ref: SealedCredentialEnvelopeRef {
+                id: "publication-expired".into(),
+                payload_fingerprint: "publication-expired".into(),
+            },
+            recipient: holder.trust_domain.clone(),
+            expires_at_unix_ms,
+        });
+    }
     activation.snapshot.resolved_spec.model_binding =
         awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
             ModelBinding::new("provider", "model", "native"),
             "provider@1",
             "route@1",
             "workspace",
-            Some(
-                CredentialAccess::new(
-                    CredentialRef {
-                        id: "credential".into(),
-                        revision: 7,
-                    },
-                    CredentialMaterialSource::ControlPlaneReference,
-                    CredentialUsage::ProviderAdapter,
-                    CredentialExecutionPolicy::exact(
-                        holder.clone(),
-                        ModelExposurePolicy::Forbidden,
-                    ),
-                )
-                .with_target(awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
-                    "provider",
-                )),
-            ),
+            Some(access),
             InferenceEndpoint {
                 adapter_kind: "openai".into(),
                 api_dialect: "open_ai_chat".into(),
@@ -120,12 +136,135 @@ fn credential_dispatch(
             realization_kinds: [CredentialRealizationKind::WorkerProviderAdapter]
                 .into_iter()
                 .collect(),
-            recipient_bound_envelopes: false,
-            envelope_required: false,
+            recipient_bound_envelopes: envelope_expiry.is_some(),
+            envelope_required: envelope_expiry.is_some(),
             extension_consumers: Default::default(),
             alternatives: Vec::new(),
         },
     )
+}
+
+fn expired_credential_dispatch(
+    run: &str,
+    thread: &str,
+) -> (RunDispatch, CredentialRealizationCapabilities) {
+    credential_dispatch_with_expiry(run, thread, Some(1))
+}
+
+struct FreshClaimDelivery {
+    fail: bool,
+}
+
+#[async_trait::async_trait]
+impl AttemptCredentialDeliverySource for FreshClaimDelivery {
+    async fn deliver(
+        &self,
+        request: AttemptCredentialDeliveryRequest,
+    ) -> Result<AttemptCredentialDelivery, String> {
+        if self.fail {
+            return Err("injected claim delivery failure".into());
+        }
+        let access =
+            awaken_runtime_contract::credential_access_without_delivery(&request.published_access)
+                .with_envelope(CredentialEnvelope::SealedForWorker {
+                    envelope_ref: SealedCredentialEnvelopeRef {
+                        id: format!("claim-{}", request.claim_epoch),
+                        payload_fingerprint: "fresh-payload".into(),
+                    },
+                    recipient: request.selected_plaintext_holder.trust_domain,
+                    expires_at_unix_ms: u64::MAX,
+                });
+        Ok(AttemptCredentialDelivery {
+            candidate_fingerprint: request.candidate_fingerprint,
+            access,
+            claim_epoch: request.claim_epoch,
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_http_claim() {
+    // Claim redelivery cause/effect table: C1 immutable publication envelope is
+    // expired; C2 exact claim selects holder/credential/epoch; C3 trusted source
+    // returns the same authority with a fresh envelope. R1 C1+C2+C3 => claim is
+    // returned with one response-local delivery and the stored request remains
+    // expired. R2 C1+C2+!C3 => HTTP fails and the exact mutation claim is
+    // relinquished to Pending. Foreign epoch/authority is covered by the shared
+    // Runtime-contract table.
+    for fail in [false, true] {
+        let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10));
+        let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock));
+        let clock = Arc::new(ManualWorkerClock::new(10));
+        let run_id = if fail {
+            "delivery-fail"
+        } else {
+            "delivery-run"
+        };
+        let (dispatch, capabilities) = expired_credential_dispatch(run_id, "delivery-thread");
+        let service = Arc::new(
+            WorkerDispatchService::new(
+                mem.clone(),
+                Arc::new(HeaderWorkerAuthenticator),
+                clock,
+                Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+            )
+            .with_local_credential_capabilities(capabilities)
+            .with_credential_delivery_source(Arc::new(FreshClaimDelivery { fail })),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, dispatch_transport_router_with_service(service))
+                .await
+                .unwrap();
+        });
+        let queue = HttpDispatchQueue::new(
+            format!("http://{addr}"),
+            WorkerIdentity::new("worker-1", "boot-1", 1),
+        );
+        queue.enqueue(dispatch).await.unwrap();
+        let result = queue.claim("ignored", 30_000, &Default::default()).await;
+        if fail {
+            assert!(result.is_err(), "R2");
+            assert_eq!(
+                mem.dispatch_summary(&RunId(run_id.into()))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                DispatchState::Pending,
+                "R2 exact claim relinquished"
+            );
+            continue;
+        }
+        let claimed = result.unwrap().expect("R1 claim");
+        assert_eq!(claimed.credential_bindings.len(), 1, "R1");
+        assert_eq!(claimed.credential_deliveries.len(), 1, "R1");
+        assert_eq!(
+            claimed.credential_deliveries[0].claim_epoch, claimed.lease.epoch,
+            "R1 exact epoch"
+        );
+        let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            credential: Some(published_access),
+            ..
+        } = claimed
+            .request
+            .activation
+            .snapshot
+            .resolved_spec
+            .model_binding
+            .provisioning()
+        else {
+            unreachable!()
+        };
+        assert!(
+            awaken_runtime_contract::credential_access_has_same_authority(
+                &claimed.credential_deliveries[0].access,
+                published_access,
+            ),
+            "R1 immutable authority"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

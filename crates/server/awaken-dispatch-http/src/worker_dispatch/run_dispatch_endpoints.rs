@@ -5,6 +5,99 @@
 
 use super::*;
 
+async fn attach_claim_credential_deliveries(
+    service: &WorkerDispatchService,
+    claimed: Option<awaken_dispatch::Claimed>,
+) -> Result<Option<awaken_dispatch::Claimed>, HostError> {
+    let Some(mut claimed) = claimed else {
+        return Ok(None);
+    };
+    if claimed.credential_bindings.is_empty() {
+        return Ok(Some(claimed));
+    }
+    let source = service.credential_deliveries.as_deref();
+    let candidates = claimed
+        .request
+        .activation
+        .snapshot
+        .resolved_spec
+        .attempt_candidates(claimed.request.activation.model_ref_override.as_deref());
+    let mut deliveries = Vec::new();
+    for candidate in candidates {
+        let fingerprint = awaken_runtime_contract::candidate_fingerprint(candidate)
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let Some(binding) = claimed
+            .credential_bindings
+            .iter()
+            .find(|binding| binding.candidate_fingerprint == fingerprint)
+        else {
+            continue;
+        };
+        let Some((published_access, material_binding)) =
+            awaken_runtime_contract::candidate_credential_material_binding(candidate)
+        else {
+            continue;
+        };
+        if let Some(source) = source {
+            let delivery = source
+                .deliver(awaken_runtime_contract::AttemptCredentialDeliveryRequest {
+                    candidate_fingerprint: fingerprint,
+                    published_access: published_access.clone(),
+                    selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
+                    binding: material_binding,
+                    claim_epoch: claimed.lease.epoch,
+                })
+                .await
+                .map_err(HostError::unavailable)?;
+            awaken_runtime_contract::verify_attempt_credential_delivery(
+                binding,
+                published_access,
+                &delivery,
+            )
+            .map_err(|error| HostError::internal(error.to_string()))?;
+            deliveries.push(delivery);
+        } else if let Some(envelope) = &published_access.envelope {
+            envelope
+                .validate_for_holder(&binding.selected_plaintext_holder, service.clock.now_ms())
+                .map_err(|_| {
+                    HostError::unavailable(
+                        "claim credential delivery expired and no delivery source is installed",
+                    )
+                })?;
+        }
+    }
+    if source.is_some() && deliveries.len() != claimed.credential_bindings.len() {
+        return Err(HostError::internal(
+            "claim credential delivery did not cover every frozen binding",
+        ));
+    }
+    claimed.credential_deliveries = deliveries;
+    Ok(Some(claimed))
+}
+
+async fn finalize_claim(
+    service: &WorkerDispatchService,
+    authority: &ClaimAuthority,
+    claimed: Option<awaken_dispatch::Claimed>,
+) -> Result<Option<awaken_dispatch::Claimed>, HostError> {
+    let claim = claimed
+        .as_ref()
+        .map(|claimed| awaken_dispatch::RunClaim::from(&claimed.lease));
+    match attach_claim_credential_deliveries(service, claimed).await {
+        Ok(claimed) => bind_claimed_session_work_authority(service, authority, claimed).await,
+        Err(error) => {
+            if let Some(claim) = claim {
+                service
+                    .dispatch
+                    .relinquish_claim(&claim)
+                    .await
+                    .map_err(|release| HostError::unavailable(release.to_string()))?;
+            }
+            Err(error)
+        }
+    }
+}
+
 pub(super) async fn enqueue(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(_worker): Extension<VerifiedWorkerContext>,
@@ -46,7 +139,7 @@ pub(super) async fn claim_new_run(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
-        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
+        let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -77,7 +170,7 @@ pub(super) async fn deliver_and_claim(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
-        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
+        let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -121,7 +214,7 @@ pub(super) async fn claim(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
-        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
+        let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -140,7 +233,7 @@ pub(super) async fn claim_retry_exhausted(
             .claim_retry_exhausted(&authority.owner, authority.lease_ms, service.max_attempts)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
+        let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -172,7 +265,7 @@ pub(super) async fn claim_run(
                 .await
         }
         .map_err(|error| HostError::internal(error.to_string()))?;
-        let claimed = bind_claimed_session_work_authority(&service, &authority, claimed).await?;
+        let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;

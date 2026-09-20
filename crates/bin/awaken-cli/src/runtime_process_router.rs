@@ -184,6 +184,27 @@ pub(super) async fn prepare_runtime_routers(
             })
         })
         .flatten();
+    let attempt_credential_deliveries = match (
+        credential_materializer.clone(),
+        process
+            .managed_services
+            .credential_material_delivery
+            .clone(),
+    ) {
+        (
+            Some(materializer),
+            Some(awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(issuer)),
+        ) => Some(Arc::new(
+            awaken_credential_materializer::VaultAttemptCredentialDeliverySource::new(
+                materializer,
+                issuer,
+            ),
+        )
+            as Arc<
+                dyn awaken_runtime_contract::AttemptCredentialDeliverySource,
+            >),
+        _ => None,
+    };
     let mut web_search_providers = process
         .web_search_providers
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
@@ -784,6 +805,7 @@ pub(super) async fn prepare_runtime_routers(
             worker_placement_policy,
             worker_execution_bindings,
             worker_execution_stops,
+            credential_deliveries: attempt_credential_deliveries,
             repository_transport_authorizer: process.repository_transport_authorizer,
             worker_directory: worker_directory.clone(),
             deployment_application,

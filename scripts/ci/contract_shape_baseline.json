@@ -58,18 +58,18 @@
     },
     "awaken-dispatch-contract": {
       "depth": 4,
-      "production_lines": 2349,
+      "production_lines": 2352,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "split Dispatch value-model and aggregate roles into cohesive modules to satisfy the source-file hard limit without moving or weakening tests; the six structural lines are module declarations and imports"
+        "production_lines": "split Dispatch value-model and aggregate roles into cohesive modules to satisfy the source-file hard limit without moving or weakening tests; claim-scoped recipient delivery adds one response-local field so an exact claim can receive a fresh envelope without persisting transport material"
       }
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7321,
+      "production_lines": 7539,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "runtime-contract gains the two capability supertraits (CancellableRunDelegationService, AttachedChannelToolExporter) that replaced its unsupported-style default methods. Advisor de-duplication: the binding-equality that decides whether an Advisor duplicates a published route is a named production kernel (advisor_binding_is_duplicate) so a proof can reach it -- the fact previously entered the Kani harness as a free bool"
+        "production_lines": "runtime-contract retains the cancellation and attached-channel capability supertraits plus the advisor de-duplication kernel; claim-scoped recipient delivery adds the minimum neutral Runtime types and validation kernel so expired publication envelopes can be reissued without another contract dependency layer"
       }
     },
     "awaken-sandbox-control": {

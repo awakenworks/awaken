@@ -109,7 +109,7 @@ impl PinnedCredentialMaterializer {
         candidate: &ResolvedModelCandidate,
         context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<Option<RedactedString>, String> {
-        let Some((_access, binding)) = Self::claimed_remote_binding(candidate, context)? else {
+        let Some((access, binding)) = Self::claimed_remote_binding(candidate, context)? else {
             return Ok(None);
         };
         let realization = Self::admit_claimed_materialization(
@@ -119,9 +119,13 @@ impl PinnedCredentialMaterializer {
             "remote",
         )
         .await?;
+        let delivered = realization
+            .delivered_access_for(candidate, access)
+            .map_err(|error| error.to_string())?;
         let secret = self
             .materialize_remote_for(
                 candidate,
+                delivered,
                 &binding.selected_plaintext_holder,
                 binding.selected_realization_kind,
             )
@@ -142,15 +146,19 @@ impl PinnedCredentialMaterializer {
         context: &awaken_runtime_contract::RuntimeRunContext,
         expected_kind: CredentialRealizationKind,
     ) -> Result<Option<awaken_runtime_contract::CredentialMaterial>, String> {
-        let Some((_access, binding)) = Self::claimed_provider_binding(candidate, context)? else {
+        let Some((access, binding)) = Self::claimed_provider_binding(candidate, context)? else {
             return Ok(None);
         };
         let realization =
             Self::admit_claimed_materialization(binding, context, expected_kind, "provider")
                 .await?;
+        let delivered = realization
+            .delivered_access_for(candidate, access)
+            .map_err(|error| error.to_string())?;
         let secret = self
             .materialize_provider_for(
                 candidate,
+                delivered,
                 &binding.selected_plaintext_holder,
                 binding.selected_realization_kind,
             )

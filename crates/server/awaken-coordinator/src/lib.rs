@@ -705,6 +705,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             worker_placement_policy: None,
             worker_execution_bindings: None,
             worker_execution_stops: None,
+            credential_deliveries: None,
             repository_transport_authorizer: None,
             worker_directory: test_worker_directory(),
             ai_sdk_browser_cors: AiSdkBrowserCors::default(),
@@ -731,6 +732,8 @@ pub struct ManagedRoutingExtensions {
     pub worker_execution_bindings:
         Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
+    pub credential_deliveries:
+        Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
@@ -1108,6 +1111,7 @@ fn mount_with_managed_over(
                 worker_placement_policy: None,
                 worker_execution_bindings: None,
                 worker_execution_stops: None,
+                credential_deliveries: None,
                 repository_transport_authorizer: None,
                 worker_directory: test_worker_directory(),
                 ai_sdk_browser_cors: AiSdkBrowserCors::default(),
@@ -1157,6 +1161,7 @@ fn mount_with_managed_over_and_models(
         worker_placement_policy,
         worker_execution_bindings,
         worker_execution_stops,
+        credential_deliveries,
         repository_transport_authorizer,
         worker_directory,
         ai_sdk_browser_cors,
@@ -1393,6 +1398,7 @@ fn mount_with_managed_over_and_models(
             completion: host.worker_completion_sink(),
             terminal_observer: host.worker_memory_settlement_observer(),
             stream_sink: host.worker_stream_sink(),
+            credential_deliveries,
         },
     );
     let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(
