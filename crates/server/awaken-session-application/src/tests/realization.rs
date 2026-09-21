@@ -60,6 +60,51 @@ fn lifecycle_cancellation_interrupts_a_held_recovery_scan() {
     });
 }
 
+#[tokio::test(start_paused = true)]
+async fn lifecycle_maintenance_is_not_starved_by_a_held_recovery_scan() {
+    // Lifecycle-supervisor cause/effect decision table. C1 the initial dispatch
+    // scan completes; C2 the following full recovery scan remains blocked past
+    // the 30-second maintenance cadence; C3 cancellation arrives while that
+    // recovery is still blocked. E1 lease renewal and Work dispatch still enter
+    // their one existing maintenance path at the cadence; E2 no second recovery
+    // cycle starts concurrently; E3 cancellation drops the owned recovery task
+    // and exits. Rules LM1=C1+C2=>E1+E2; LM2=C3=>E3. The repository scan count
+    // is the observable dispatch boundary: call 1 is startup dispatch, call 2
+    // is the held recovery, and call 3 can only be cadence maintenance.
+    let durable: Arc<dyn awaken_session_contract::SessionStore> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let observed = Arc::new(FaultingSessionRepository::new(durable));
+    observed
+        .hold_recovery_scan_on_call
+        .store(2, Ordering::SeqCst);
+    let application = Arc::new(application(
+        observed.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let cancellation = awaken_runtime_contract::CancellationToken::new();
+    let task = tokio::spawn(application.run_lifecycle_supervisor(cancellation.clone()));
+
+    observed.recovery_scan_entered.notified().await;
+    assert_eq!(observed.recovery_scan_count(), 2, "LM1 precondition");
+    tokio::time::advance(std::time::Duration::from_secs(31)).await;
+    for _ in 0..8 {
+        if observed.recovery_scan_count() >= 3 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        observed.recovery_scan_count(),
+        3,
+        "LM1/E1 cadence maintenance must not wait for full recovery"
+    );
+
+    cancellation.cancel();
+    task.await
+        .expect("supervisor did not panic")
+        .expect("LM2/E3 cancelled cleanly");
+}
+
 #[test]
 fn terminal_cleanup_retains_exact_process_owner_requirements_through_dispose() {
     // TC1 trust x supervision x {Prepare,Dispose} is exhaustive. Every phase

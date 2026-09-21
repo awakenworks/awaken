@@ -481,6 +481,24 @@ impl SessionApplication {
         }
     }
 
+    async fn run_lifecycle_maintenance(&self) {
+        if let Err(error) = self.renew_due_session_realizations().await {
+            tracing::warn!(
+                error = ?error,
+                "Session realization lease renewal remains pending"
+            );
+        }
+        let dispatch = self.reconcile_work_dispatches().await;
+        for failure in dispatch.failures {
+            tracing::warn!(
+                session = %failure.session_id,
+                environment = %failure.environment_id,
+                error = %failure.message,
+                "Session WorkQueue dispatch remains pending"
+            );
+        }
+    }
+
     async fn run_lifecycle_loop(
         self: std::sync::Arc<Self>,
         cancellation: awaken_runtime_contract::CancellationToken,
@@ -518,24 +536,7 @@ impl SessionApplication {
                 },
                 _ = tokio::time::sleep_until(next_recovery) => Some(SessionRecoveryTrigger::Scheduled),
                 _ = interval.tick() => {
-                    if let Err(error) = self
-                        .renew_due_session_realizations()
-                        .await
-                    {
-                        tracing::warn!(
-                            error = ?error,
-                            "Session realization lease renewal remains pending"
-                        );
-                    }
-                    let dispatch = self.reconcile_work_dispatches().await;
-                    for failure in dispatch.failures {
-                        tracing::warn!(
-                            session = %failure.session_id,
-                            environment = %failure.environment_id,
-                            error = %failure.message,
-                            "Session WorkQueue dispatch remains pending"
-                        );
-                    }
+                    self.run_lifecycle_maintenance().await;
                     None
                 }
             };
@@ -554,11 +555,17 @@ impl SessionApplication {
                     .reconcile_pending_session_state_for(recovery_trigger)
                     .await
             });
-            let cycle = recovery_task
-                .join_next()
-                .await
-                .ok_or_else(|| "Session recovery task disappeared".to_string())?
-                .map_err(|error| format!("Session recovery task failed: {error}"))?;
+            let cycle = loop {
+                tokio::select! {
+                    biased;
+                    result = recovery_task.join_next() => {
+                        break result
+                            .ok_or_else(|| "Session recovery task disappeared".to_string())?
+                            .map_err(|error| format!("Session recovery task failed: {error}"))?;
+                    }
+                    _ = interval.tick() => self.run_lifecycle_maintenance().await,
+                }
+            };
             recovery_failure_streak = if cycle.retryable_failures == 0 {
                 0
             } else {
