@@ -765,6 +765,112 @@ mod tests {
 
     #[cfg(feature = "brokered")]
     #[tokio::test]
+    async fn published_reasoning_policy_survives_candidate_materialization() {
+        use crate::brokered_inference::{
+            BrokeredInferenceClient, BrokeredInferenceError, BrokeredInferenceLease,
+            BrokeredInferenceRequest,
+        };
+        use awaken_runtime_contract::model_operation::{
+            ModelExecutionEvidence, ModelOperation, ModelOperationContext, NoDispatchProof,
+            PreDispatchStage, with_model_operation_context,
+        };
+
+        // C1 the immutable brokered candidate freezes Disabled; C2 its
+        // Responses dialect cannot project that policy; C3 a grant succeeds.
+        // E1 the same policy reaches the provider factory and fails before
+        // Provider I/O; E2 the grant is closed. Rule P1=C1+C2+C3=>E1+E2.
+        // This seam catches policy loss in materialization; the genai HTTP
+        // compatibility test covers the supported Chat policy on the wire.
+        #[derive(Default)]
+        struct Grant(std::sync::Mutex<usize>);
+        #[async_trait]
+        impl BrokeredInferenceClient for Grant {
+            async fn create_grant(
+                &self,
+                _: BrokeredInferenceRequest,
+            ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
+                Ok(BrokeredInferenceLease {
+                    grant_id: "grant-policy".into(),
+                    gateway_base_url: "https://gateway.invalid".into(),
+                    capability: RedactedString::new("fixture-capability"),
+                    grant_expires_at: 1_800_000_000,
+                })
+            }
+
+            async fn close_grant(&self, _: &str) -> Result<(), BrokeredInferenceError> {
+                *self.0.lock().unwrap() += 1;
+                Ok(())
+            }
+
+            async fn renew_grant(
+                &self,
+                _: &str,
+            ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
+                panic!("one request never renews its grant")
+            }
+        }
+
+        let binding = ModelBinding::parse("deepseek", "deepseek-v4-pro", "genai").unwrap();
+        let candidate = ResolvedModelCandidate::try_brokered_provider_with_reasoning(
+            binding.clone(),
+            "deepseek",
+            "deepseek:open_ai_responses@1",
+            "workspace-a",
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "open_ai_responses".into(),
+                base_url: "https://gateway.invalid".into(),
+                upstream_model: "deepseek-v4-pro".into(),
+                processing_placement: None,
+            },
+            UnspecifiedReasoning::Disabled,
+        )
+        .unwrap();
+        let grant = Arc::new(Grant::default());
+        let executor = neutral_materializer()
+            .with_brokered_client(grant.clone())
+            .materialize_exact(
+                &candidate,
+                &RuntimeRunContext::new().with_ownership(Arc::new(CurrentOwnership)),
+                Some("run-policy".into()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let operation = ModelOperationContext::from_operation(
+            &awaken_agent_contract::agent::thread::Id("thread-policy".into()),
+            &awaken_agent_contract::agent::run::Id("run-policy".into()),
+            &ModelOperation::next(None, binding.clone()).unwrap(),
+        );
+        let error = with_model_operation_context(
+            Some(operation),
+            executor.infer(ChatRequest {
+                model_binding: binding,
+                inference: Default::default(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot enforce the frozen reasoning policy"),
+            "P1/E1: {error}"
+        );
+        assert_eq!(
+            error.execution_evidence(),
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::before_dispatch(
+                PreDispatchStage::ExecutorResolution
+            )),
+            "P1/E1"
+        );
+        assert_eq!(*grant.0.lock().unwrap(), 1, "P1/E2");
+    }
+
+    #[cfg(feature = "brokered")]
+    #[tokio::test]
     async fn pinned_materialization_preserves_journal_identity_in_both_model_modes() {
         use crate::brokered_inference::{
             BrokeredInferenceClient, BrokeredInferenceError, BrokeredInferenceLease,
