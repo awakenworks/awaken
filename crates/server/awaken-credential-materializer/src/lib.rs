@@ -1547,6 +1547,39 @@ mod tests {
         }
     }
 
+    struct MutableAttempt(std::sync::atomic::AtomicBool);
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::AttemptOwnershipVerifier for MutableAttempt {
+        async fn verify_current(
+            &self,
+        ) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+            if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(awaken_runtime_contract::AttemptOwnershipError::Lost)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct LoseDuringRefresh {
+        ownership: Arc<MutableAttempt>,
+        delivery: awaken_runtime_contract::AttemptCredentialDelivery,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::AttemptCredentialDeliverySource for LoseDuringRefresh {
+        async fn deliver(
+            &self,
+            _: awaken_runtime_contract::AttemptCredentialDeliveryRequest,
+        ) -> Result<awaken_runtime_contract::AttemptCredentialDelivery, String> {
+            self.ownership
+                .0
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.delivery.clone())
+        }
+    }
+
     #[tokio::test]
     async fn claimed_remote_materialization_is_fenced_before_secret_read() {
         // Test design — Causes: C1 Remote publication and attempt binding are
@@ -1557,7 +1590,8 @@ mod tests {
         // materializer requires a bound ownership even though the shared
         // external-effect gate permits unbound embedded/direct callers.
         // Decision rules: M1 C1+C2+current -> E1; M2 absent -> E2; M3 lost ->
-        // E2; M4 unavailable -> E2. Exact binding/mechanism negative rules are
+        // E2; M4 unavailable -> E2; M5 ownership lost while a new carrier is
+        // being issued -> recheck and E2. Exact binding/mechanism negative rules are
         // independently exhaustive in the shared compiler and receipt suites.
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let secrets = Arc::new(CountingSecrets::new());
@@ -1659,7 +1693,10 @@ mod tests {
         let context = awaken_runtime_contract::RuntimeRunContext::new()
             .with_ownership(authority.clone())
             .with_credential_realization(
-                awaken_runtime_contract::AttemptCredentialRealization::new(bindings, authority),
+                awaken_runtime_contract::AttemptCredentialRealization::new(
+                    bindings.clone(),
+                    authority,
+                ),
             );
         assert_eq!(
             materializer
@@ -1672,6 +1709,46 @@ mod tests {
             "M1/E1"
         );
         assert_eq!(secrets.reads(), reads_before_materialization + 1, "M1/E1");
+
+        let ownership = Arc::new(MutableAttempt(std::sync::atomic::AtomicBool::new(false)));
+        let (published, _) =
+            awaken_runtime_contract::candidate_credential_material_binding(&candidate).unwrap();
+        let delivery = awaken_runtime_contract::AttemptCredentialDelivery {
+            candidate_fingerprint: bindings[0].candidate_fingerprint.clone(),
+            access: awaken_runtime_contract::credential_access_without_delivery(published)
+                .with_envelope(
+                    awaken_runtime_contract::CredentialEnvelope::SealedForWorker {
+                        envelope_ref: awaken_runtime_contract::SealedCredentialEnvelopeRef {
+                            id: "refresh".into(),
+                            payload_fingerprint: "refresh".into(),
+                        },
+                        recipient: holder.trust_domain.clone(),
+                        expires_at_unix_ms: u64::MAX,
+                    },
+                ),
+            claim_epoch: bindings[0].claim_epoch,
+        };
+        let realization =
+            awaken_runtime_contract::AttemptCredentialRealization::new_with_deliveries(
+                bindings.clone(),
+                Vec::new(),
+                Arc::new(FixedAttempt(Ok(()))),
+            )
+            .unwrap()
+            .with_delivery_refresh(Arc::new(LoseDuringRefresh {
+                ownership: ownership.clone(),
+                delivery,
+            }));
+        let context = awaken_runtime_contract::RuntimeRunContext::new()
+            .with_ownership(ownership)
+            .with_credential_realization(realization);
+        let reads_before_loss = secrets.reads();
+        let error = materializer
+            .materialize_claimed_remote(&candidate, &context)
+            .await
+            .expect_err("M5 ownership must be rechecked after refresh");
+        assert!(error.contains("attempt ownership was lost"), "M5: {error}");
+        assert_eq!(secrets.reads(), reads_before_loss, "M5/E2");
     }
 
     struct SshExtensionConsumer {

@@ -121,11 +121,15 @@ impl PinnedCredentialMaterializer {
         .await?;
         let delivered = realization
             .delivered_access_for(candidate, access)
+            .await
+            .map_err(|error| error.to_string())?;
+        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
+            .await
             .map_err(|error| error.to_string())?;
         let secret = self
             .materialize_remote_for(
                 candidate,
-                delivered,
+                delivered.as_ref(),
                 &binding.selected_plaintext_holder,
                 binding.selected_realization_kind,
             )
@@ -154,11 +158,15 @@ impl PinnedCredentialMaterializer {
                 .await?;
         let delivered = realization
             .delivered_access_for(candidate, access)
+            .await
+            .map_err(|error| error.to_string())?;
+        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
+            .await
             .map_err(|error| error.to_string())?;
         let secret = self
             .materialize_provider_for(
                 candidate,
-                delivered,
+                delivered.as_ref(),
                 &binding.selected_plaintext_holder,
                 binding.selected_realization_kind,
             )

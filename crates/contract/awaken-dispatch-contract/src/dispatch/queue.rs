@@ -366,6 +366,12 @@ pub trait DispatchQueue: Send + Sync {
         None
     }
 
+    fn claimed_credential_delivery_transport(
+        &self,
+    ) -> Option<&dyn ClaimedCredentialDeliveryTransport> {
+        None
+    }
+
     /// The Control-side surface of this queue: Session Run reservations,
     /// child admission, placement claims, terminal recovery, physical attempt
     /// readback, the completion feed, and operational scans. `None` means this
@@ -407,6 +413,15 @@ pub trait ClaimedCheckpointTransport: Send + Sync {
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>;
 }
 
+#[async_trait]
+pub trait ClaimedCredentialDeliveryTransport: Send + Sync {
+    async fn refresh_credential_delivery(
+        &self,
+        claim: &RunClaim,
+        request: awaken_runtime_contract::AttemptCredentialDeliveryRequest,
+    ) -> Result<Option<awaken_runtime_contract::AttemptCredentialDelivery>, DispatchError>;
+}
+
 /// Control-side dispatch operations that only the Coordinator's own store
 /// performs: Session Run reservations and their epoch lock, Session child
 /// admission, placement-aware and terminal-recovery claims, physical attempt
@@ -415,6 +430,14 @@ pub trait ClaimedCheckpointTransport: Send + Sync {
 /// through [`DispatchQueue::control`] rather than a failing default.
 #[async_trait]
 pub trait ControlDispatchQueue: DispatchQueue {
+    /// Read one exact persisted binding only while `claim` remains the current
+    /// owner. This query grants no material and changes no delivery state.
+    async fn current_credential_binding(
+        &self,
+        claim: &RunClaim,
+        candidate: &awaken_runtime_contract::CandidateFingerprint,
+    ) -> Result<Option<AttemptCredentialBinding>, DispatchError>;
+
     /// Persist one complete self-affine Session Run intent without making it
     /// claimable. The store applies this TTL using its own clock, granting an
     /// exclusive window to commit the Session activity and activate this row.

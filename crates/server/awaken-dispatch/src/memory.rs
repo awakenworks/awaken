@@ -50,6 +50,7 @@ use awaken_dispatch_contract::{
     RunDispatch, classify_commit_epoch_admission,
 };
 
+mod credential_binding;
 mod outbox;
 mod physical_attempt;
 mod settlement;
@@ -1602,6 +1603,18 @@ impl DispatchQueue for MemoryDispatchStore {
 
 #[async_trait]
 impl ControlDispatchQueue for MemoryDispatchStore {
+    async fn current_credential_binding(
+        &self,
+        claim: &RunClaim,
+        candidate: &awaken_runtime_contract::CandidateFingerprint,
+    ) -> Result<Option<AttemptCredentialBinding>, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        let state = lock(&self.state)?;
+        Ok(credential_binding::current(
+            &state, claim, candidate, now_ms,
+        ))
+    }
+
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,

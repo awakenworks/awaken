@@ -1254,6 +1254,19 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
 impl awaken_dispatch::ControlDispatchQueue for FlakyDispatchStore {
+    async fn current_credential_binding(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+        candidate: &awaken_runtime_contract::CandidateFingerprint,
+    ) -> Result<
+        Option<awaken_dispatch::AttemptCredentialBinding>,
+        awaken_dispatch::DispatchError,
+    > {
+        self.inner
+            .current_credential_binding(claim, candidate)
+            .await
+    }
+
     async fn reserve_session_run(
         &self,
         request: awaken_dispatch::RunDispatch,

@@ -26,7 +26,8 @@ use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::Error as StreamError;
 use awaken_dispatch_contract::{
     AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CasOutcome, CheckpointRequest,
-    ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed, CommitEpochGuard,
+    ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed,
+    ClaimedCredentialDeliveryTransport, CommitEpochGuard, CredentialDeliveryRefreshRequest,
     CredentialRealizationReceipt, CredentialRealizationRequest, DeliverAndClaimRequest,
     DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, EnqueueRequest, Inbox,
     LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RecoveryRequest, RenewRequest,
@@ -316,9 +317,39 @@ impl ClaimedStreamPublisher for HttpDispatchQueue {
 }
 
 #[async_trait]
+impl ClaimedCredentialDeliveryTransport for HttpDispatchQueue {
+    async fn refresh_credential_delivery(
+        &self,
+        claim: &RunClaim,
+        delivery_request: awaken_runtime_contract::AttemptCredentialDeliveryRequest,
+    ) -> Result<Option<awaken_runtime_contract::AttemptCredentialDelivery>, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/credential_delivery/refresh",
+                &CredentialDeliveryRefreshRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    delivery_request,
+                },
+                self.worker_id(),
+            )
+            .await?;
+        serde_json::from_value(value.get("delivery").cloned().unwrap_or_default()).map_err(
+            |error| DispatchError::Rejected(format!("decode credential delivery: {error}")),
+        )
+    }
+}
+
+#[async_trait]
 impl DispatchQueue for HttpDispatchQueue {
     fn owns_local_maintenance(&self) -> bool {
         false
+    }
+
+    fn claimed_credential_delivery_transport(
+        &self,
+    ) -> Option<&dyn ClaimedCredentialDeliveryTransport> {
+        Some(self)
     }
 
     async fn resolve_claimed_session_run_reservation(
