@@ -229,6 +229,26 @@ Stream checkpoint register laws have one owner in store-conformance and bindings
 for memory, filesystem and PostgreSQL, alongside their existing crash/corruption
 and dispatch-fence tests.
 
+Skill adapters now share their encoding boundary as well as aggregate decoding.
+Persisted corruption, pre-write encoding failure, typed IO causes, absent
+composition authority and unknown operation outcomes remain distinct. Runtime
+and Managed Skill boundaries classify availability failures consistently across
+filesystem and SQL substrates; reference-index failures retain their original
+Resource error. SQLite uniqueness is selected by the native constraint code,
+never diagnostic text. Initial-frame validation has one owner on
+SkillDefinition, shared by every backend and the reference-index decorator.
+Invalid identity, head/history coordinates or bundle content are rejected before
+both reference and Skill writes; a rejected request cannot leave a retention
+reference behind. Durable corruption tests require failed reads and writes
+to retain the original damaged frame on filesystem, SQLite and PostgreSQL.
+
+The existing reliability testkit owns optional PostgreSQL fixture admission for
+the touched suites. It adds no database driver or conformance registry: each
+suite still owns its schema and behavioral rules. Absent configuration is an
+explicit local skip; invalid configuration cannot become absence, and a
+configured connection or schema setup must succeed. The Skill fixture's former
+`.ok()?` paths are removed under this same policy.
+
 SessionRealizationLease and its authorization laws now share a domain module in
 the existing Session contract. Repository ports store that value; they no longer
 define it. Root mutation values and their observation-preservation kernel now

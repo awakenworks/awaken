@@ -267,11 +267,34 @@ fn error_display_prefixes_are_stable() {
         .to_string(),
         "file store error: boom"
     );
-    assert_eq!(SkillStoreError::Io("io".into()).to_string(), "io: io");
     assert_eq!(
-        SkillStoreError::Storage("s".into()).to_string(),
-        "storage: s"
+        SkillStoreError::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "io"
+        ))
+        .to_string(),
+        "io: io"
     );
+    assert_eq!(
+        SkillStoreError::Indeterminate { detail: "s".into() }.to_string(),
+        "Skill outcome is indeterminate: s"
+    );
+}
+
+#[test]
+fn skill_io_preserves_the_os_cause_independently_of_its_message() {
+    // R1-R4 identical diagnostics with different OS causes retain their exact
+    // kind. Logical NotFound remains a store observation, never inferred by
+    // this conversion from an arbitrary missing filesystem dependency.
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::InvalidData,
+        std::io::ErrorKind::ConnectionReset,
+    ] {
+        let error = SkillStoreError::from(std::io::Error::new(kind, "same diagnostic"));
+        assert!(matches!(error, SkillStoreError::Io { kind: actual, .. } if actual == kind));
+    }
 }
 
 // The two hard caps are part of the wire contract (Anthropic parity, ADR-0057);

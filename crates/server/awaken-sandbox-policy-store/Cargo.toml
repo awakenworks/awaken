@@ -20,6 +20,7 @@ rusqlite.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = "3"
 

@@ -496,10 +496,30 @@ pub enum SkillStoreError {
     VersionConflict(String),
     #[error("invalid skill resource: {0}")]
     Invalid(ResourceErrorDetail),
-    #[error("io: {0}")]
-    Io(ResourceErrorDetail),
-    #[error("storage: {0}")]
-    Storage(ResourceErrorDetail),
+    #[error("io: {detail}")]
+    Io {
+        kind: std::io::ErrorKind,
+        detail: String,
+    },
+    #[error("corrupt Skill data: {detail}")]
+    CorruptData { detail: String },
+    #[error("Skill outcome is indeterminate: {detail}")]
+    Indeterminate { detail: String },
+    #[error("Skill authority unavailable: {detail}")]
+    AuthorityUnavailable { detail: String },
+    #[error("Skill encoding failed before publication: {detail}")]
+    EncodingFailure { detail: String },
+    #[error(transparent)]
+    Reference(#[from] ResourcePurgeError),
+}
+
+impl From<std::io::Error> for SkillStoreError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io {
+            kind: error.kind(),
+            detail: error.to_string(),
+        }
+    }
 }
 
 /// One binary-safe file in an immutable Skill version.
@@ -619,6 +639,36 @@ pub struct SkillDefinition {
     pub last_version: u64,
     #[serde(default)]
     pub timestamps: ResourceTimestamps,
+}
+
+impl SkillDefinition {
+    /// Validate the complete initial frame before any reference-index or
+    /// repository write. Adapters and the application reuse this one law;
+    /// direct backend callers cannot bypass it by omitting the decorator.
+    pub fn validate_initial_version(&self, version: &SkillVersion) -> Result<(), SkillStoreError> {
+        if self.id.as_str().trim().is_empty() || self.workspace_id.as_str().trim().is_empty() {
+            return Err(SkillStoreError::Invalid(
+                "skill and Workspace ids must be non-empty".into(),
+            ));
+        }
+        if self.latest_version != version.version
+            || self.last_version != version.version
+            || version.skill_id != self.id
+            || version.version == 0
+            || version.files.is_empty()
+            || version.skill_md().is_none()
+        {
+            return Err(SkillStoreError::Invalid(
+                "definition and initial Skill version are inconsistent".into(),
+            ));
+        }
+        if version.bundle_sha256 != skill_bundle_sha256(&version.files) {
+            return Err(SkillStoreError::Invalid(
+                "Skill bundle SHA-256 does not match its files".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// A durable, workspace-scoped repository for the complete Skill aggregate.

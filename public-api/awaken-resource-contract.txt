@@ -203,11 +203,23 @@ pub awaken_resource_contract::ResourceState::Deleted
 pub awaken_resource_contract::ResourceState::Suspended
 pub enum awaken_resource_contract::SkillStoreError
 pub awaken_resource_contract::SkillStoreError::AlreadyExists(alloc::string::String)
+pub awaken_resource_contract::SkillStoreError::AuthorityUnavailable
+pub awaken_resource_contract::SkillStoreError::AuthorityUnavailable::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::CorruptData
+pub awaken_resource_contract::SkillStoreError::CorruptData::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::EncodingFailure
+pub awaken_resource_contract::SkillStoreError::EncodingFailure::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::Indeterminate
+pub awaken_resource_contract::SkillStoreError::Indeterminate::detail: alloc::string::String
 pub awaken_resource_contract::SkillStoreError::Invalid(awaken_resource_contract::ResourceErrorDetail)
-pub awaken_resource_contract::SkillStoreError::Io(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::SkillStoreError::Io
+pub awaken_resource_contract::SkillStoreError::Io::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::Io::kind: core::io::error::ErrorKind
 pub awaken_resource_contract::SkillStoreError::NotFound(alloc::string::String)
-pub awaken_resource_contract::SkillStoreError::Storage(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::SkillStoreError::Reference(awaken_resource_contract::ResourcePurgeError)
 pub awaken_resource_contract::SkillStoreError::VersionConflict(alloc::string::String)
+impl core::convert::From<core::io::error::Error> for awaken_resource_contract::SkillStoreError
+pub fn awaken_resource_contract::SkillStoreError::from(core::io::error::Error) -> Self
 pub struct awaken_resource_contract::AggregateRevision(_)
 impl awaken_resource_contract::AggregateRevision
 pub const awaken_resource_contract::AggregateRevision::INITIAL: Self
@@ -593,6 +605,8 @@ pub awaken_resource_contract::SkillDefinition::last_version: u64
 pub awaken_resource_contract::SkillDefinition::latest_version: u64
 pub awaken_resource_contract::SkillDefinition::timestamps: awaken_resource_contract::ResourceTimestamps
 pub awaken_resource_contract::SkillDefinition::workspace_id: alloc::string::String
+impl awaken_resource_contract::SkillDefinition
+pub fn awaken_resource_contract::SkillDefinition::validate_initial_version(&self, &awaken_resource_contract::SkillVersion) -> core::result::Result<(), awaken_resource_contract::SkillStoreError>
 pub struct awaken_resource_contract::SkillId(_)
 impl awaken_resource_contract::SkillId
 pub fn awaken_resource_contract::SkillId::as_str(&self) -> &str
