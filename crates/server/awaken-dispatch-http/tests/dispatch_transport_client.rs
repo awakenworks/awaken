@@ -243,10 +243,11 @@ impl AttemptCredentialDeliverySource for FreshClaimDelivery {
 async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
     /* Mid-issuance race table. C1 the exact claim is live at the first binding
      * read; C2 the independent signer is still producing the carrier; C3 the
-     * Dispatch lease expires before the second binding read. E1 return no
-     * delivery to the old Worker, while preserving the row for ordinary
-     * recovery. Rule R5=C1+C2+C3=>E1. This is the response-loss/late-response
-     * window that a single pre-sign ownership check cannot close. */
+     * Dispatch lease expires before the second binding read; C4 either test
+     * barrier fails to settle. E1 return no delivery to the old Worker, while
+     * preserving the row for ordinary recovery; E2 fail the test within its
+     * named deadline. Rules R5=C1+C2+C3=>E1; R6=C4=>E2. This is the
+     * response-loss/late-response window a single pre-sign check cannot close. */
     let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let source = Arc::new(BlockingSecondDelivery {
@@ -300,10 +301,17 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
             .refresh_credential_delivery(&claim, delivery_request)
             .await
     });
-    source.entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), source.entered.notified())
+        .await
+        .expect("R5 signer must reach its deterministic barrier");
     dispatch_clock.set(claimed.lease.expires_ms);
     source.release.notify_one();
-    assert!(refresh.await.unwrap().unwrap().is_none(), "R5/E1");
+    let refreshed = tokio::time::timeout(std::time::Duration::from_secs(2), refresh)
+        .await
+        .expect("R5 refresh must settle after signer release")
+        .unwrap()
+        .unwrap();
+    assert!(refreshed.is_none(), "R5/E1");
 }
 
 #[tokio::test(flavor = "multi_thread")]
