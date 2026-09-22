@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_ext_builtin_tools::builtin_tools;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
+use awaken_runtime_contract::UnspecifiedReasoning;
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use serde_json::Value;
@@ -115,6 +116,60 @@ async fn provider_payload(adapter: AdapterKind) -> Value {
         .expect("capture task returned a payload")
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frozen_deepseek_chat_reasoning_policy_reaches_the_streaming_wire() {
+    // Publication-to-provider decision table. C1 an exact DeepSeek Chat
+    // candidate freezes Disabled; C2 it freezes ProviderDefault instead; C3
+    // streaming and tool schemas remain the same independent of that policy.
+    // C4 the caller uses buffered or streaming inference. E1 C1 sends
+    // `thinking.type=disabled` in the actual HTTP JSON; E2 C2 omits the
+    // override; E3 both retain the same typed Read schema. Rules
+    // P1=C1+C3+C4=>E1+E3; P2=C2+C3+C4=>E2+E3. The local peer captures SDK bytes,
+    // not only ChatOptions, and cannot claim a live provider quality result.
+    for streaming in [false, true] {
+        for (policy, expected) in [
+            (UnspecifiedReasoning::Disabled, Some("disabled")),
+            (UnspecifiedReasoning::ProviderDefault, None),
+        ] {
+            let (base_url, payload) = capture_one_request().await;
+            let executor = GenaiExecutor::from_materialized_provider_endpoint(
+                "deepseek",
+                AdapterKind::OpenAI,
+                base_url,
+                "fixture-secret",
+                policy,
+            )
+            .expect("explicit client construction")
+            .with_timeout(Duration::from_secs(5));
+            let request = request("deepseek-v4-pro", generated_read_descriptor());
+            if streaming {
+                let _ = executor.infer_streaming(request, &NoopSink).await;
+            } else {
+                let _ = executor.infer(request).await;
+            }
+            let body = tokio::time::timeout(Duration::from_secs(5), payload)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                body.get("thinking")
+                    .and_then(|thinking| thinking.get("type"))
+                    .and_then(Value::as_str),
+                expected,
+                "P1/P2 {policy:?} streaming={streaming}"
+            );
+            assert_generated_read_schema(&body["tools"][0]["function"]["parameters"], "P1/P2/E3");
+        }
+    }
+}
+
+struct NoopSink;
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::llm::DeltaSink for NoopSink {
+    async fn on_text(&self, _: &str) {}
+}
+
 fn assert_generated_read_schema(schema: &Value, rule: &str) {
     assert_eq!(schema["type"], "object", "{rule}: object root");
     assert_eq!(
@@ -154,6 +209,7 @@ async fn deepseek_tool_history_serializes_empty_reasoning_on_the_actual_wire() {
                 AdapterKind::OpenAI,
                 base_url,
                 "fixture-secret",
+                UnspecifiedReasoning::ProviderDefault,
             )
             .unwrap()
             .with_timeout(Duration::from_secs(5));
