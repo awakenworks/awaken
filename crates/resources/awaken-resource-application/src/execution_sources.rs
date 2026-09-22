@@ -161,10 +161,24 @@ impl<C: Sync> RepositoryBindingVerifier<C> for RegistryRepositoryBindingVerifier
             .verify_repository_binding(workspace_id, repository_id, config_version)
             .await
             .map_err(|error| match error {
-                awaken_resource_contract::ResourceRegistryError::Invalid(detail) => {
+                awaken_resource_contract::ResourceRegistryError::IdentityRejected { detail }
+                | awaken_resource_contract::ResourceRegistryError::ConfigurationRejected {
+                    detail,
+                } => {
                     RepositoryBindingVerifierError::InvalidRequest {
-                        detail: detail.to_string(),
+                        detail,
                     }
+                }
+                awaken_resource_contract::ResourceRegistryError::AdmissionRejected { detail } => {
+                    RepositoryBindingVerifierError::Denied { detail }
+                }
+                awaken_resource_contract::ResourceRegistryError::VersionExhausted { id } => {
+                    RepositoryBindingVerifierError::Conflict {
+                        detail: format!("resource config version space is exhausted for `{id}`"),
+                    }
+                }
+                awaken_resource_contract::ResourceRegistryError::EncodingFailure { detail } => {
+                    RepositoryBindingVerifierError::CorruptAuthority { detail }
                 }
                 awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(detail)
                 | awaken_resource_contract::ResourceRegistryError::NotFound(detail)
@@ -238,9 +252,9 @@ impl SkillCatalogApplication for StoreSkillCatalogApplication {
                 .latest_version
         } else {
             selector.parse::<u64>().map_err(|_| {
-                awaken_resource_contract::SkillStoreError::Invalid(
-                    "invalid Skill version selector".into(),
-                )
+                awaken_resource_contract::SkillStoreError::InvalidSelection {
+                    detail: "invalid Skill version selector".into(),
+                }
             })?
         };
         let version = self
@@ -405,7 +419,31 @@ mod tests {
             ResourceRegistryError as R, ResourceState,
         };
         let cases = [
-            (R::Invalid("bad".into()), "invalid"),
+            (
+                R::IdentityRejected {
+                    detail: "bad".into(),
+                },
+                "invalid",
+            ),
+            (
+                R::ConfigurationRejected {
+                    detail: "bad".into(),
+                },
+                "invalid",
+            ),
+            (
+                R::AdmissionRejected {
+                    detail: "denied".into(),
+                },
+                "denied",
+            ),
+            (R::VersionExhausted { id: "id".into() }, "conflict"),
+            (
+                R::EncodingFailure {
+                    detail: "encode".into(),
+                },
+                "corrupt",
+            ),
             (R::AlreadyRegistered("id".into()), "conflict"),
             (R::NotFound("id".into()), "conflict"),
             (

@@ -174,41 +174,6 @@ mod content_id_tests {
     }
 }
 
-/// A blob store failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceErrorDetail(String);
-
-impl ResourceErrorDetail {
-    #[must_use]
-    pub fn new(detail: impl Into<String>) -> Self {
-        Self(detail.into())
-    }
-}
-
-impl std::fmt::Display for ResourceErrorDetail {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl From<String> for ResourceErrorDetail {
-    fn from(detail: String) -> Self {
-        Self(detail)
-    }
-}
-
-impl From<&str> for ResourceErrorDetail {
-    fn from(detail: &str) -> Self {
-        Self(detail.to_string())
-    }
-}
-
-impl From<ResourceErrorDetail> for String {
-    fn from(detail: ResourceErrorDetail) -> Self {
-        detail.0
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FileStoreError {
     #[error("file store error: invalid configuration: {detail}")]
@@ -294,8 +259,14 @@ impl CreateFileRecordOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FileCatalogError {
-    #[error("invalid file record: {0}")]
-    Invalid(ResourceErrorDetail),
+    #[error("invalid file record: {detail}")]
+    InvalidRecord { detail: String },
+    #[error("invalid artifact capture: {detail}")]
+    InvalidCapture { detail: String },
+    #[error("file identity conflict: {detail}")]
+    IdentityConflict { detail: String },
+    #[error("artifact association conflict: {detail}")]
+    AssociationConflict { detail: String },
     #[error("file catalog contains corrupt data: {detail}")]
     CorruptData { detail: String },
     #[error("file catalog authority unavailable: {detail}")]
@@ -494,8 +465,16 @@ pub enum SkillStoreError {
     NotFound(String),
     #[error("skill version `{0}` already exists")]
     VersionConflict(String),
-    #[error("invalid skill resource: {0}")]
-    Invalid(ResourceErrorDetail),
+    #[error("invalid Skill definition: {detail}")]
+    InvalidDefinition { detail: String },
+    #[error("invalid Skill version: {detail}")]
+    InvalidVersion { detail: String },
+    #[error("Skill bundle does not match its frozen digest: {detail}")]
+    BundleMismatch { detail: String },
+    #[error("Skill lifecycle transition was rejected: {detail}")]
+    LifecycleConflict { detail: String },
+    #[error("invalid Skill selection: {detail}")]
+    InvalidSelection { detail: String },
     #[error("io: {detail}")]
     Io {
         kind: std::io::ErrorKind,
@@ -647,9 +626,9 @@ impl SkillDefinition {
     /// direct backend callers cannot bypass it by omitting the decorator.
     pub fn validate_initial_version(&self, version: &SkillVersion) -> Result<(), SkillStoreError> {
         if self.id.as_str().trim().is_empty() || self.workspace_id.as_str().trim().is_empty() {
-            return Err(SkillStoreError::Invalid(
-                "skill and Workspace ids must be non-empty".into(),
-            ));
+            return Err(SkillStoreError::InvalidDefinition {
+                detail: "skill and Workspace ids must be non-empty".into(),
+            });
         }
         if self.latest_version != version.version
             || self.last_version != version.version
@@ -658,14 +637,14 @@ impl SkillDefinition {
             || version.files.is_empty()
             || version.skill_md().is_none()
         {
-            return Err(SkillStoreError::Invalid(
-                "definition and initial Skill version are inconsistent".into(),
-            ));
+            return Err(SkillStoreError::InvalidVersion {
+                detail: "definition and initial Skill version are inconsistent".into(),
+            });
         }
         if version.bundle_sha256 != skill_bundle_sha256(&version.files) {
-            return Err(SkillStoreError::Invalid(
-                "Skill bundle SHA-256 does not match its files".into(),
-            ));
+            return Err(SkillStoreError::BundleMismatch {
+                detail: "Skill bundle SHA-256 does not match its files".into(),
+            });
         }
         Ok(())
     }

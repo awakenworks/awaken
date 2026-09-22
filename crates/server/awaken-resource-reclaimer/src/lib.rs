@@ -58,9 +58,9 @@ impl ResourceReclaimer {
     ) -> Result<Self, ResourcePurgeError> {
         let owner = owner.into();
         if owner.trim().is_empty() || lease_ms == 0 {
-            return Err(ResourcePurgeError::Invalid(
-                "reclaimer owner and positive lease are required".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidClaim {
+                detail: "reclaimer owner and positive lease are required".into(),
+            });
         }
         Ok(Self {
             owner,
@@ -271,9 +271,9 @@ impl ResourceReclaimer {
                         generation,
                         now_unix_ms,
                         combine_errors(
-                            ResourcePurgeError::Invalid(
-                                "physical purge admission facts are incomplete".into(),
-                            ),
+                            ResourcePurgeError::AdmissionIncomplete {
+                                detail: "physical purge admission facts are incomplete".into(),
+                            },
                             release_error,
                         ),
                     )?;

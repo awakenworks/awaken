@@ -75,7 +75,7 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
         store
             .create(invalid, version("invalid-frame", 1, b"v1"))
             .await,
-        Err(SkillStoreError::Invalid(_))
+        Err(SkillStoreError::InvalidVersion { .. })
     ));
     assert!(
         store
@@ -197,7 +197,7 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
     let pinned_v3 = store.version("ws-a", "skill-a", 3).await.unwrap().unwrap();
     assert!(matches!(
         store.delete_version("ws-a", "skill-a", 3).await,
-        Err(SkillStoreError::Invalid(_))
+        Err(SkillStoreError::LifecycleConflict { .. })
     ));
     assert_eq!(
         store.version("ws-a", "skill-a", 3).await.unwrap(),

@@ -136,9 +136,9 @@ pub(crate) fn append_to(
         || version.bundle_sha256 != bundle_sha256(&version.files)
         || version.skill_md().is_none()
     {
-        return Err(SkillStoreError::Invalid(
-            "Skill version must be the next valid immutable bundle".into(),
-        ));
+        return Err(SkillStoreError::InvalidVersion {
+            detail: "Skill version must be the next valid immutable bundle".into(),
+        });
     }
     if aggregate.versions.contains_key(&version.version) {
         return Err(SkillStoreError::VersionConflict(
@@ -199,9 +199,9 @@ pub(crate) fn remove_version_from(
     ) {
         SkillVersionRetirementDecision::Unchanged => return Ok(false),
         SkillVersionRetirementDecision::RejectOnlyVisible => {
-            return Err(SkillStoreError::Invalid(
-                "the only Skill version cannot be deleted; delete the Skill instead".into(),
-            ));
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "the only Skill version cannot be deleted; delete the Skill instead".into(),
+            });
         }
         SkillVersionRetirementDecision::RetireVisibility => {}
     }
@@ -466,9 +466,9 @@ impl SkillStore for InMemorySkillStore {
             return Ok(0);
         };
         if !aggregate.deleted {
-            return Err(SkillStoreError::Invalid(
-                "an active Skill cannot be physically reclaimed".into(),
-            ));
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "an active Skill cannot be physically reclaimed".into(),
+            });
         }
         let versions = aggregate.versions.len() as u64;
         workspace.remove(&skill_id);
@@ -816,9 +816,9 @@ impl SkillStore for FsSkillStore {
             return Ok(0);
         };
         if !aggregate.deleted {
-            return Err(SkillStoreError::Invalid(
-                "an active Skill cannot be physically reclaimed".into(),
-            ));
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "an active Skill cannot be physically reclaimed".into(),
+            });
         }
         match std::fs::remove_file(self.aggregate_path(workspace_id, skill_id)) {
             Ok(()) => {
@@ -972,7 +972,7 @@ mod tests {
         store.create(definition, version.clone()).await.unwrap();
         assert!(matches!(
             store.purge_skill("workspace", "retained").await,
-            Err(SkillStoreError::Invalid(_))
+            Err(SkillStoreError::LifecycleConflict { .. })
         ));
         assert!(store.delete_skill("workspace", "retained").await.unwrap());
         assert!(

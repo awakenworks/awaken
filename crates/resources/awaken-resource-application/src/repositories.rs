@@ -49,7 +49,9 @@ impl RepositoryApplication {
 }
 
 fn invalid(message: &str) -> ResourceRegistryError {
-    ResourceRegistryError::Invalid(message.into())
+    ResourceRegistryError::ConfigurationRejected {
+        detail: message.into(),
+    }
 }
 
 fn validate(command: &CreateRepositoryCommand, key: &str) -> Result<(), ResourceRegistryError> {

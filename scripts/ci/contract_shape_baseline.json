@@ -50,11 +50,9 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 3154,
-      "catch_all_errors": 4,
+      "production_lines": 3171,
       "growth_reasons": {
-        "production_lines": "Replace opaque Repository and Memory reference errors with recovery-oriented causes",
-        "catch_all_errors": "September 22: 13 pre-existing opaque Resource wrappers are newly visible to the strengthened scanner, not resolved debt (ADR-0081 section 9); 33 production lines add typed FileStore and FileContentSource failure categories with preserved error provenance."
+        "production_lines": "Replace the last generic Resource Invalid payloads with domain causes and remove ResourceErrorDetail"
       }
     },
     "awaken-run-ingress-contract": {

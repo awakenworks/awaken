@@ -486,7 +486,11 @@ fn registry_error(error: ResourceRegistryError) -> axum::response::Response {
             StatusCode::NOT_FOUND
         }
         ResourceRegistryError::NotActive { .. } => StatusCode::CONFLICT,
-        ResourceRegistryError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ResourceRegistryError::IdentityRejected { .. }
+        | ResourceRegistryError::ConfigurationRejected { .. }
+        | ResourceRegistryError::AdmissionRejected { .. } => StatusCode::BAD_REQUEST,
+        ResourceRegistryError::VersionExhausted { .. } => StatusCode::CONFLICT,
+        ResourceRegistryError::EncodingFailure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ResourceRegistryError::CorruptData(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ResourceRegistryError::AuthorityUnavailable { .. }
         | ResourceRegistryError::Indeterminate { .. } => StatusCode::SERVICE_UNAVAILABLE,
@@ -1218,17 +1222,36 @@ mod tests {
 
     #[test]
     fn registry_outages_are_not_invalid_input_or_missing_memory() {
-        // M1 positive missing => 404; M2 malformed caller input => 400;
-        // M3 unavailable/unknown dependency => 503; M4 corrupt observation
-        // => 500. One diagnostic string cannot collapse these distinct facts.
+        // M1 positive missing => 404; M2 identity/config/admission failures =>
+        // 400; M3 version exhaustion/concurrent state => 409; M4 unavailable
+        // or unknown dependency => 503; M5 corrupt observation or encoding =>
+        // 500. One diagnostic string cannot collapse these distinct facts.
         for (error, status) in [
             (
                 ResourceRegistryError::NotFound("same".into()),
                 StatusCode::NOT_FOUND,
             ),
             (
-                ResourceRegistryError::Invalid("same".into()),
+                ResourceRegistryError::ConfigurationRejected {
+                    detail: "same".into(),
+                },
                 StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::IdentityRejected {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::AdmissionRejected {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::VersionExhausted { id: "same".into() },
+                StatusCode::CONFLICT,
             ),
             (
                 ResourceRegistryError::AuthorityUnavailable {
@@ -1244,6 +1267,12 @@ mod tests {
             ),
             (
                 ResourceRegistryError::CorruptData("same".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ResourceRegistryError::EncodingFailure {
+                    detail: "same".into(),
+                },
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ] {

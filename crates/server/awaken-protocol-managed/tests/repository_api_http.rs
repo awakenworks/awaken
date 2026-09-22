@@ -28,9 +28,9 @@ impl RepositoryCredentialValidator for Admission {
             (_, "outage") => Err(ResourceRegistryError::AuthorityUnavailable {
                 detail: "private database location".into(),
             }),
-            _ => Err(ResourceRegistryError::Invalid(
-                "Repository authorization is unavailable".into(),
-            )),
+            _ => Err(ResourceRegistryError::AdmissionRejected {
+                detail: "Repository authorization is unavailable".into(),
+            }),
         }
     }
 }

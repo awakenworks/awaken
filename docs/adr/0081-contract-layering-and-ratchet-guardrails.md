@@ -268,6 +268,15 @@ encoder inputs, frozen-authority mismatch, encoding failure and corrupt wire
 values. Both changes extend the existing ports and adapters; they introduce no
 second binding or materialization authority.
 
+The remaining Resource `Invalid(ResourceErrorDetail)` payloads are removed.
+File Catalog, Skill, Registry and Purge failures now expose stable domain causes
+for malformed records, identity/association conflicts, definition/version/bundle
+failures, admission/configuration failures, claim/reference/receipt failures and
+exhausted arithmetic. Protocol and Runtime adapters select recovery and status
+from those variants; diagnostic text is no longer a decision input. The now
+unused `ResourceErrorDetail` wrapper was deleted rather than retained as a
+parallel compatibility vocabulary.
+
 SessionRealizationLease and its authorization laws now share a domain module in
 the existing Session contract. Repository ports store that value; they no longer
 define it. Root mutation values and their observation-preservation kernel now

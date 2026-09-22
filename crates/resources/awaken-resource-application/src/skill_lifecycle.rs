@@ -196,8 +196,9 @@ mod tests {
     #[tokio::test]
     async fn invalid_initial_frames_write_neither_references_nor_skills() {
         // C1 head/last ordinal differs from the sole initial version; C2 foreign
-        // version identity; C3 no bundle; C4 changed digest. R1 any C1-C4 =>
-        // Invalid before either effect. The valid S1 path is covered below.
+        // version identity; C3 no bundle; C4 changed digest. R1 C1-C3 =>
+        // InvalidVersion; R2 C4 => BundleMismatch. Both reject before either
+        // effect. The valid S1 path is covered below.
         for fault in 0..5 {
             let inner = Arc::new(awaken_skill_store::InMemorySkillStore::new());
             let references =
@@ -211,11 +212,13 @@ mod tests {
                 3 => version.files.clear(),
                 _ => version.bundle_sha256 = "wrong".into(),
             }
+            let result = store.create(definition, version).await;
             assert!(
-                matches!(
-                    store.create(definition, version).await,
-                    Err(SkillStoreError::Invalid(_))
-                ),
+                if fault == 4 {
+                    matches!(result, Err(SkillStoreError::BundleMismatch { .. }))
+                } else {
+                    matches!(result, Err(SkillStoreError::InvalidVersion { .. }))
+                },
                 "R1 fault={fault}"
             );
             assert!(

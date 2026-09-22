@@ -47,9 +47,9 @@ impl ResourceTarget {
             ("resource_id", self.resource_id.as_str()),
         ] {
             if value.trim().is_empty() {
-                return Err(ResourcePurgeError::Invalid(
-                    format!("target {name} must not be empty").into(),
-                ));
+                return Err(ResourcePurgeError::InvalidIntent {
+                    detail: format!("target {name} must not be empty"),
+                });
             }
         }
         Ok(())
@@ -214,8 +214,20 @@ pub enum ResourcePurgeError {
     Catalog(#[from] crate::FileCatalogError),
     #[error(transparent)]
     Blob(#[from] crate::FileStoreError),
-    #[error("invalid resource purge intent: {0}")]
-    Invalid(crate::ResourceErrorDetail),
+    #[error("invalid resource purge intent: {detail}")]
+    InvalidIntent { detail: String },
+    #[error("invalid resource purge claim: {detail}")]
+    InvalidClaim { detail: String },
+    #[error("invalid resource reference: {detail}")]
+    InvalidReference { detail: String },
+    #[error("resource purge arithmetic exhausted: {detail}")]
+    ArithmeticExhausted { detail: String },
+    #[error("resource purge receipt does not match its intent: {detail}")]
+    ReceiptMismatch { detail: String },
+    #[error("resource operation exceeds its configured limit: {detail}")]
+    LimitExceeded { detail: String },
+    #[error("resource purge admission facts are incomplete: {detail}")]
+    AdmissionIncomplete { detail: String },
     #[error("resource purge intent `{0}` was not found")]
     NotFound(String),
     #[error("resource purge idempotency key `{0}` has different content")]
@@ -290,32 +302,32 @@ impl ResourcePurgeIntent {
             ("idempotency_key", self.idempotency_key.as_str()),
         ] {
             if value.trim().is_empty() {
-                return Err(ResourcePurgeError::Invalid(
-                    format!("{name} must not be empty").into(),
-                ));
+                return Err(ResourcePurgeError::InvalidIntent {
+                    detail: format!("{name} must not be empty"),
+                });
             }
         }
         if self
             .config_version
             .is_some_and(|config_version| config_version == 0)
         {
-            return Err(ResourcePurgeError::Invalid(
-                "config_version must be positive when present".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidIntent {
+                detail: "config_version must be positive when present".into(),
+            });
         }
         if self.not_before_unix_ms < self.requested_at_unix_ms {
-            return Err(ResourcePurgeError::Invalid(
-                "not_before_unix_ms precedes requested_at_unix_ms".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidIntent {
+                detail: "not_before_unix_ms precedes requested_at_unix_ms".into(),
+            });
         }
         if self
             .blockers
             .iter()
             .any(|reference| reference.reference_id.trim().is_empty())
         {
-            return Err(ResourcePurgeError::Invalid(
-                "reference_id must not be empty".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidReference {
+                detail: "reference_id must not be empty".into(),
+            });
         }
         let claim_absent = self.claim_owner.is_none() && self.lease_expires_at_unix_ms.is_none();
         let progressed = self.claim_generation > 0 && self.revision > 0;
@@ -340,9 +352,9 @@ impl ResourcePurgeIntent {
             }
         };
         if !phase_matches {
-            return Err(ResourcePurgeError::Invalid(
-                "purge phase, claim and receipt do not describe one complete frame".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidIntent {
+                detail: "purge phase, claim and receipt do not describe one complete frame".into(),
+            });
         }
         Ok(())
     }
@@ -363,9 +375,9 @@ impl ResourcePurgeIntent {
         lease_ms: u64,
     ) -> Result<u64, ResourcePurgeError> {
         if owner.trim().is_empty() || lease_ms == 0 {
-            return Err(ResourcePurgeError::Invalid(
-                "claim owner and positive lease are required".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidClaim {
+                detail: "claim owner and positive lease are required".into(),
+            });
         }
         if self.status.is_terminal() {
             return Err(ResourcePurgeError::InvalidTransition {
@@ -386,13 +398,16 @@ impl ResourcePurgeIntent {
                 lease_expires_at_unix_ms: self.lease_expires_at_unix_ms.unwrap_or_default(),
             });
         }
-        let generation = self
-            .claim_generation
-            .checked_add(1)
-            .ok_or_else(|| ResourcePurgeError::Invalid("claim generation exhausted".into()))?;
-        let expiry = now_unix_ms
-            .checked_add(lease_ms)
-            .ok_or_else(|| ResourcePurgeError::Invalid("claim lease overflow".into()))?;
+        let generation = self.claim_generation.checked_add(1).ok_or_else(|| {
+            ResourcePurgeError::ArithmeticExhausted {
+                detail: "claim generation exhausted".into(),
+            }
+        })?;
+        let expiry = now_unix_ms.checked_add(lease_ms).ok_or_else(|| {
+            ResourcePurgeError::ArithmeticExhausted {
+                detail: "claim lease overflow".into(),
+            }
+        })?;
         let revision = self.next_revision()?;
         self.claim_generation = generation;
         self.attempts = self.attempts.saturating_add(1);
@@ -416,9 +431,9 @@ impl ResourcePurgeIntent {
     ) -> Result<(), ResourcePurgeError> {
         self.require_claim(owner, generation, now_unix_ms)?;
         if blockers.is_empty() {
-            return Err(ResourcePurgeError::Invalid(
-                "defer requires at least one blocker".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidReference {
+                detail: "defer requires at least one blocker".into(),
+            });
         }
         let revision = self.next_revision()?;
         blockers.sort();
@@ -455,9 +470,9 @@ impl ResourcePurgeIntent {
     ) -> Result<(), ResourcePurgeError> {
         self.require_claim(owner, generation, now_unix_ms)?;
         if receipt.evidence.kind() != self.target.kind {
-            return Err(ResourcePurgeError::Invalid(
-                "receipt evidence kind does not match target".into(),
-            ));
+            return Err(ResourcePurgeError::ReceiptMismatch {
+                detail: "receipt evidence kind does not match target".into(),
+            });
         }
         let revision = self.next_revision()?;
         self.receipt = Some(receipt);
@@ -495,7 +510,9 @@ impl ResourcePurgeIntent {
     fn next_revision(&self) -> Result<u64, ResourcePurgeError> {
         self.revision
             .checked_add(1)
-            .ok_or_else(|| ResourcePurgeError::Invalid("revision exhausted".into()))
+            .ok_or_else(|| ResourcePurgeError::ArithmeticExhausted {
+                detail: "revision exhausted".into(),
+            })
     }
 }
 
@@ -705,7 +722,10 @@ mod tests {
         }
         for (case, value) in invalid.into_iter().enumerate() {
             assert!(
-                matches!(value.validate(), Err(ResourcePurgeError::Invalid(_))),
+                matches!(
+                    value.validate(),
+                    Err(ResourcePurgeError::InvalidIntent { .. })
+                ),
                 "invalid authority frame {case}"
             );
         }
@@ -759,7 +779,7 @@ mod tests {
                 _ => value.claim("worker", 20, 100).map(|_| ()),
             };
             assert!(
-                matches!(result, Err(ResourcePurgeError::Invalid(_))),
+                matches!(result, Err(ResourcePurgeError::ArithmeticExhausted { .. })),
                 "{mode}"
             );
             assert_eq!(value, before, "{mode} must not partially transition");
@@ -920,7 +940,7 @@ mod tests {
                     },
                 }
             ),
-            Err(ResourcePurgeError::Invalid(_))
+            Err(ResourcePurgeError::ReceiptMismatch { .. })
         ));
     }
 

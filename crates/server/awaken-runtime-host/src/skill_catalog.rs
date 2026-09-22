@@ -23,14 +23,17 @@ use awaken_session_contract::{SkillBundleSource, SkillCatalogApplication};
 pub(crate) fn skill_store_run_error(error: SkillStoreError) -> RunError {
     let message = error.to_string();
     match error {
-        SkillStoreError::NotFound(_) | SkillStoreError::Invalid(_) => {
-            RunError::bad_request(message)
-        }
+        SkillStoreError::NotFound(_)
+        | SkillStoreError::InvalidDefinition { .. }
+        | SkillStoreError::InvalidVersion { .. }
+        | SkillStoreError::BundleMismatch { .. }
+        | SkillStoreError::InvalidSelection { .. } => RunError::bad_request(message),
         SkillStoreError::Io { .. }
         | SkillStoreError::Indeterminate { .. }
         | SkillStoreError::AuthorityUnavailable { .. } => RunError::unavailable(message),
         SkillStoreError::AlreadyExists(_)
         | SkillStoreError::VersionConflict(_)
+        | SkillStoreError::LifecycleConflict { .. }
         | SkillStoreError::CorruptData { .. }
         | SkillStoreError::EncodingFailure { .. }
         | SkillStoreError::Reference(_) => RunError::internal(message),
@@ -229,7 +232,7 @@ impl SkillCatalog {
         selections: &[AgentSkillBinding],
     ) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
         awaken_agent_contract::validate_agent_skills(selections)
-            .map_err(|error| SkillStoreError::Invalid(error.into()))?;
+            .map_err(|error| SkillStoreError::InvalidSelection { detail: error })?;
         let mut bindings = Vec::with_capacity(selections.len());
         for selection in selections {
             let version = match selection.kind {
@@ -284,7 +287,9 @@ impl SkillCatalog {
                                     binding.clone(),
                                     lease.clone(),
                                 )
-                                .map_err(|error| SkillStoreError::Invalid(error.into()))?,
+                                .map_err(|error| SkillStoreError::InvalidSelection {
+                                    detail: error,
+                                })?,
                             ),
                         ),
                         (Some(claim), None) => {
@@ -306,13 +311,12 @@ impl SkillCatalog {
                 }
             };
             if version.bundle_sha256 != binding.bundle_sha256 {
-                return Err(SkillStoreError::Invalid(
-                    format!(
+                return Err(SkillStoreError::CorruptData {
+                    detail: format!(
                         "Skill {} version {} hash changed",
                         binding.skill_id, binding.version
-                    )
-                    .into(),
-                ));
+                    ),
+                });
             }
             versions.push(version);
         }
@@ -460,7 +464,19 @@ mod tests {
                 RunErrorKind::BadRequest,
             ),
             (
-                SkillStoreError::Invalid("x".into()),
+                SkillStoreError::InvalidSelection { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::InvalidDefinition { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::InvalidVersion { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::BundleMismatch { detail: "x".into() },
                 RunErrorKind::BadRequest,
             ),
             (
@@ -476,6 +492,10 @@ mod tests {
             ),
             (
                 SkillStoreError::VersionConflict("x".into()),
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::LifecycleConflict { detail: "x".into() },
                 RunErrorKind::Internal,
             ),
             (

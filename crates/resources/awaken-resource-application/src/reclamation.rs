@@ -160,7 +160,15 @@ fn skill_cleanup_error(error: SkillStoreError) -> ResourcePurgeError {
         SkillStoreError::EncodingFailure { detail } => {
             ResourcePurgeError::EncodingFailure { detail }
         }
-        SkillStoreError::Invalid(detail) => ResourcePurgeError::Invalid(detail),
+        SkillStoreError::InvalidDefinition { detail }
+        | SkillStoreError::InvalidVersion { detail }
+        | SkillStoreError::InvalidSelection { detail } => {
+            ResourcePurgeError::InvalidIntent { detail }
+        }
+        SkillStoreError::BundleMismatch { detail } => ResourcePurgeError::CorruptData { detail },
+        SkillStoreError::LifecycleConflict { detail } => {
+            ResourcePurgeError::AdmissionIncomplete { detail }
+        }
         other => indeterminate(other),
     }
 }

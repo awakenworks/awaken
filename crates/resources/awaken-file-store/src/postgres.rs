@@ -74,10 +74,8 @@ async fn persist_artifact_association(
     let requested_scope = candidate
         .artifact_idempotency_scope
         .as_deref()
-        .ok_or_else(|| {
-            FileCatalogError::Invalid(
-                "artifact association requires a terminal idempotency scope".into(),
-            )
+        .ok_or_else(|| FileCatalogError::InvalidRecord {
+            detail: "artifact association requires a terminal idempotency scope".into(),
         })?;
     match artifact_association_decision(records, candidate)? {
         Some(ArtifactAssociationDecision::Existing(existing)) => {
@@ -94,10 +92,8 @@ async fn persist_artifact_association(
             .fetch_optional(&mut **transaction)
             .await
             .map_err(ce)?
-            .ok_or_else(|| {
-                FileCatalogError::Invalid(
-                    "artifact File association raced another terminal operation".into(),
-                )
+            .ok_or_else(|| FileCatalogError::AssociationConflict {
+                detail: "artifact File association raced another terminal operation".into(),
             })?;
             Ok(Some(CreateFileRecordOutcome::Existing(row_record(
                 &updated,
@@ -314,15 +310,15 @@ impl FileCatalog for PgFileStore {
                     return Ok(outcome);
                 }
                 if record.deleted {
-                    return Err(FileCatalogError::Invalid(
-                        "terminal association cannot recreate a missing tombstone".into(),
-                    ));
+                    return Err(FileCatalogError::AssociationConflict {
+                        detail: "terminal association cannot recreate a missing tombstone".into(),
+                    });
                 }
             } else if let Some(existing) = matching.into_iter().find(|row| !row.deleted) {
                 if !same_harvest_identity(&existing, &record) {
-                    return Err(FileCatalogError::Invalid(
-                        "artifact harvest key is bound to different File identity".into(),
-                    ));
+                    return Err(FileCatalogError::IdentityConflict {
+                        detail: "artifact harvest key is bound to different File identity".into(),
+                    });
                 }
                 transaction.commit().await.map_err(ce)?;
                 return Ok(CreateFileRecordOutcome::Existing(existing));
@@ -369,21 +365,19 @@ impl FileCatalog for PgFileStore {
             let existing = matching
                 .into_iter()
                 .find(|row| !row.deleted)
-                .ok_or_else(|| {
-                    FileCatalogError::Invalid(
-                        "artifact File conflict has no canonical active record".into(),
-                    )
+                .ok_or_else(|| FileCatalogError::AssociationConflict {
+                    detail: "artifact File conflict has no canonical active record".into(),
                 })?;
             if !same_harvest_identity(&existing, &record) {
-                return Err(FileCatalogError::Invalid(
-                    "artifact harvest key is bound to different File identity".into(),
-                ));
+                return Err(FileCatalogError::IdentityConflict {
+                    detail: "artifact harvest key is bound to different File identity".into(),
+                });
             }
             existing
         } else {
-            return Err(FileCatalogError::Invalid(
-                format!("file id `{}` already exists", record.id).into(),
-            ));
+            return Err(FileCatalogError::IdentityConflict {
+                detail: format!("file id `{}` already exists", record.id),
+            });
         };
         transaction.commit().await.map_err(ce)?;
         Ok(CreateFileRecordOutcome::Existing(existing))

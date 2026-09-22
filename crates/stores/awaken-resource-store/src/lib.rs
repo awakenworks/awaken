@@ -103,9 +103,9 @@ pub(crate) fn validate_fence_request(
         || target.workspace_id.trim().is_empty()
         || target.resource_id.trim().is_empty()
     {
-        Err(ResourcePurgeError::Invalid(
-            "reclamation fence fields must not be empty".into(),
-        ))
+        Err(ResourcePurgeError::InvalidIntent {
+            detail: "reclamation fence fields must not be empty".into(),
+        })
     } else {
         Ok(())
     }
@@ -177,9 +177,9 @@ pub(crate) fn validate_reference(
         || record.target.resource_id.trim().is_empty()
         || record.reference.reference_id.trim().is_empty()
     {
-        return Err(ResourcePurgeError::Invalid(
-            "resource reference fields must not be empty".into(),
-        ));
+        return Err(ResourcePurgeError::InvalidReference {
+            detail: "resource reference fields must not be empty".into(),
+        });
     }
     Ok(())
 }
@@ -190,18 +190,18 @@ pub(crate) fn prepare_replacement(
     records: Vec<ResourceReferenceRecord>,
 ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
     if reference_id.trim().is_empty() {
-        return Err(ResourcePurgeError::Invalid(
-            "replacement reference_id must not be empty".into(),
-        ));
+        return Err(ResourcePurgeError::InvalidReference {
+            detail: "replacement reference_id must not be empty".into(),
+        });
     }
     let mut identities = BTreeSet::new();
     let mut unique = Vec::with_capacity(records.len());
     for record in records {
         validate_reference(&record)?;
         if record.reference.kind != kind || record.reference.reference_id != reference_id {
-            return Err(ResourcePurgeError::Invalid(
-                "replacement rows must belong to the requested holder".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidReference {
+                detail: "replacement rows must belong to the requested holder".into(),
+            });
         }
         let identity = (
             record.target.workspace_id.clone(),
@@ -260,7 +260,9 @@ pub(crate) fn storage(error: impl ToString) -> ResourcePurgeError {
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn to_i64(value: u64) -> Result<i64, ResourcePurgeError> {
-    i64::try_from(value).map_err(|_| ResourcePurgeError::Invalid("integer exceeds i64".into()))
+    i64::try_from(value).map_err(|_| ResourcePurgeError::ArithmeticExhausted {
+        detail: "integer exceeds i64".into(),
+    })
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -452,7 +454,7 @@ mod tests {
             assert!(
                 matches!(
                     store.put(invalid).await,
-                    Err(ResourcePurgeError::Invalid(_))
+                    Err(ResourcePurgeError::InvalidIntent { .. })
                 ),
                 "V1"
             );
@@ -476,7 +478,7 @@ mod tests {
         assert!(
             matches!(
                 store.save(before.revision, invalid).await,
-                Err(ResourcePurgeError::Invalid(_))
+                Err(ResourcePurgeError::InvalidIntent { .. })
             ),
             "V2"
         );

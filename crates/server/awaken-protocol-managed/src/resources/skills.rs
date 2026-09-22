@@ -331,7 +331,13 @@ fn store_error(error: SkillStoreError) -> axum::response::Response {
             err(StatusCode::CONFLICT, error.to_string())
         }
         SkillStoreError::NotFound(_) => err(StatusCode::NOT_FOUND, error.to_string()),
-        SkillStoreError::Invalid(_) => err(StatusCode::BAD_REQUEST, error.to_string()),
+        SkillStoreError::InvalidDefinition { .. }
+        | SkillStoreError::InvalidVersion { .. }
+        | SkillStoreError::BundleMismatch { .. }
+        | SkillStoreError::InvalidSelection { .. } => {
+            err(StatusCode::BAD_REQUEST, error.to_string())
+        }
+        SkillStoreError::LifecycleConflict { .. } => err(StatusCode::CONFLICT, error.to_string()),
         SkillStoreError::Io { .. }
         | SkillStoreError::Indeterminate { .. }
         | SkillStoreError::AuthorityUnavailable { .. } => {
@@ -853,7 +859,27 @@ mod tests {
         // cause classification independent of message text and substrate.
         for (cause, status) in [
             (
-                SkillStoreError::Invalid("same".into()),
+                SkillStoreError::InvalidSelection {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SkillStoreError::InvalidDefinition {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SkillStoreError::InvalidVersion {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SkillStoreError::BundleMismatch {
+                    detail: "same".into(),
+                },
                 StatusCode::BAD_REQUEST,
             ),
             (
@@ -866,6 +892,12 @@ mod tests {
             ),
             (
                 SkillStoreError::VersionConflict("same".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                SkillStoreError::LifecycleConflict {
+                    detail: "same".into(),
+                },
                 StatusCode::CONFLICT,
             ),
             (

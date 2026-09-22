@@ -389,7 +389,13 @@ async fn upload_file(
                 (StatusCode::OK, Json(ga_metadata(&record))).into_response()
             }
         },
-        Err(ResourcePurgeError::Invalid(message)) => error(StatusCode::BAD_REQUEST, message),
+        Err(
+            ResourcePurgeError::InvalidIntent { detail: message }
+            | ResourcePurgeError::InvalidClaim { detail: message }
+            | ResourcePurgeError::InvalidReference { detail: message }
+            | ResourcePurgeError::ReceiptMismatch { detail: message }
+            | ResourcePurgeError::LimitExceeded { detail: message },
+        ) => error(StatusCode::BAD_REQUEST, message),
         Err(ResourcePurgeError::IdempotencyConflict(_)) => error(
             StatusCode::CONFLICT,
             "Idempotency-Key was already used for a different File upload",

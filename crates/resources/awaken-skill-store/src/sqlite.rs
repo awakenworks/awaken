@@ -434,9 +434,9 @@ impl SkillStore for SqliteSkillStore {
             };
             let aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
             if !aggregate.deleted {
-                return Err(SkillStoreError::Invalid(
-                    "an active Skill cannot be physically reclaimed".into(),
-                ));
+                return Err(SkillStoreError::LifecycleConflict {
+                    detail: "an active Skill cannot be physically reclaimed".into(),
+                });
             }
             conn.execute(
                 &format!("DELETE FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),

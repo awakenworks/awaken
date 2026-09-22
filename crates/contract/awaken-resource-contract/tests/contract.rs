@@ -73,7 +73,7 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
             },
             config.clone(),
         ),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::IdentityRejected { .. })
     ));
     assert!(matches!(
         MemoryStoreAggregate::register(
@@ -83,7 +83,7 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
             },
             config.clone(),
         ),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
     let suspended = MemoryStoreAggregate::rehydrate(
         MemoryStoreDefinition {
@@ -105,7 +105,7 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
                 ..config.clone()
             },
         ),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
     let repository_config = RepositoryConfigVersion {
         repository_id: "repo-1".into(),
@@ -139,14 +139,14 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
     invalid_checkout.initial_commit = Some("abc123".into());
     assert!(matches!(
         RepositoryAggregate::register(repository_definition.clone(), invalid_checkout),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
     let mut invalid_checkout = repository_config.clone();
     invalid_checkout.initial_commit = None;
     invalid_checkout.initial_branch = Some(" ".into());
     assert!(matches!(
         RepositoryAggregate::register(repository_definition, invalid_checkout),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
 
     let mut aggregate = aggregate;
@@ -167,7 +167,7 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
     skipped.version = ConfigVersion(4);
     assert!(matches!(
         aggregate.publish_config("workspace-a", ConfigVersion(2), skipped, 3),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
     assert_eq!(aggregate, committed, "R6 skipped publication is a no-op");
 }

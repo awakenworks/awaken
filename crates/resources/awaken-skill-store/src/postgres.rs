@@ -393,9 +393,9 @@ impl SkillStore for PgSkillStore {
             return Ok(0);
         };
         if !aggregate.deleted {
-            return Err(SkillStoreError::Invalid(
-                "an active Skill cannot be physically reclaimed".into(),
-            ));
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "an active Skill cannot be physically reclaimed".into(),
+            });
         }
         sqlx::query(&format!(
             "DELETE FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2"
