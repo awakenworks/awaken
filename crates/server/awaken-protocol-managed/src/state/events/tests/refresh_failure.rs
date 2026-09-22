@@ -265,8 +265,8 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
     // Bounds: these two actual topologies, one lifecycle page, one retained
     // Outcome or one child, every listed read ordinal, both writer schedules.
     // This covers control-flow cuts, not arbitrary topology/SQL refinement.
-    // Usage now reuses the initial relationship set. Its redundant coordination
-    // read is absent. Final validation now selects its fresh root before the
+    // Usage now reuses the already selected root/child snapshots. Independent
+    // usage reads and their extra Session read are absent. Final validation selects its fresh root before the
     // relation query: root-only projection reuses that exact fence, while a
     // child prefix retains the later root read after its child snapshot. Every
     // remaining actual cut is exercised, and an unexpected read fails R0.
@@ -279,9 +279,6 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                 "coordination",
                 "child_snapshot",
                 "lifecycle",
-                "usage",
-                "child_usage",
-                "session",
                 "root_snapshot",
                 "coordination",
                 "child_snapshot",
@@ -295,8 +292,6 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                 "root_snapshot",
                 "coordination",
                 "lifecycle",
-                "usage",
-                "session",
                 "root_snapshot",
                 "coordination",
                 "session",
@@ -414,7 +409,46 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
         }
     }
     assert_eq!(
-        checked_rules, 46,
+        checked_rules, 36,
         "R1-R2 every read cut and competing-writer schedule executes"
     );
+}
+
+#[tokio::test]
+async fn aggregate_usage_reuses_fenced_snapshots_without_independent_accounting_reads() {
+    // U1 zero/nonzero/saturating root+child counters x warm/cold cache -> the
+    // canonical aggregate equals the sum from the same transcript prefixes.
+    // U2 independent usage ports fail -> zero calls to those redundant ports,
+    // while root/child snapshot errors remain covered at every cut above.
+    // U3 child active clocks never add to Session active time. Restoring the old
+    // extra query fails this test instead of merely changing a timing threshold.
+    for (root_tokens, child_tokens) in [(0_u64, 0_u64), (12, 7), (u64::MAX, 7)] {
+        for cold in [false, true] {
+            let (runtime, state, id) = read_cut_fixture(true).await;
+            for (thread, tokens) in [(&id[..], root_tokens), ("refresh-child", child_tokens)] {
+                runtime.usage_by_thread.lock().unwrap().insert(
+                    thread.into(),
+                    awaken_session_contract::SessionUsage {
+                        input_tokens: tokens,
+                        active_seconds: 999,
+                        ..Default::default()
+                    },
+                );
+            }
+            runtime.reads.fail("usage", true);
+            runtime.reads.fail("child_usage", true);
+            if cold {
+                state.sessions.lock().unwrap().remove(&id);
+            }
+            state.refresh_committed_events(&id).await.unwrap();
+            let session = state.get_session(&id).unwrap();
+            assert_eq!(
+                session.usage.input_tokens,
+                Some(root_tokens.saturating_add(child_tokens))
+            );
+            assert_eq!(session.usage.active_seconds, Some(0));
+            assert_eq!(runtime.reads.count("usage"), 0);
+            assert_eq!(runtime.reads.count("child_usage"), 0);
+        }
+    }
 }

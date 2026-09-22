@@ -81,7 +81,10 @@ export function qualifyOfficialSdkCandidateDelta(delta, qualifications) {
     if (coordinates.length > 0) {
       throw new Error('same-version SDK package content differs from the generated current anchor');
     }
-    return Object.freeze({ requiredBehaviorOwners: Object.freeze([]) });
+    return Object.freeze({
+      requiredBehaviorOwners: Object.freeze([]),
+      witnesses: Object.freeze([]),
+    });
   }
 
   if (!Array.isArray(qualifications)) {
@@ -260,6 +263,11 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
     // 0.125: the Environment worker helper runs a work item on the sessions
     // token its secret carries; owned by `candidate.environment-worker-secret-token`.
     /^lib\/environments\/worker\.mjs$/u,
+    // Reviewed 0.127 source-equivalent generated class wrappers and the
+    // separately exercised root-$ref converter. Exact delta hashes still bind
+    // these paths to their reviewed bytes; this is not an open file allowlist.
+    /^internal\/(?:decoders\/line|utils\/async-queue)\.mjs$/u,
+    /^lib\/(?:environments\/poller|tools\/(?:SessionToolRunner|ToolError)|transform-json-schema)\.mjs$/u,
     /^resources\/(?:beta\/.+|files|models|skills(?:\/(?:index|skills|versions))?)\.mjs$/u,
     /^tools\/agent-toolset\/(?:fs-util|memories|node|skills)\.mjs$/u,
     /^version\.mjs$/u,

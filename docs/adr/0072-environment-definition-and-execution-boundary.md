@@ -39,6 +39,16 @@ public Managed Environment create/retrieve/list/update/archive/delete routes.
 Every successful mutation produces one immutable revision and one durable
 registration intent. A no-op replay does not mint another revision.
 
+The immutable `env_local` value is a built-in execution default, not an authored
+Managed Environment resource. It remains available to Session resolution and
+Control's execution inventory. The official `/v1/environments` list excludes it
+before pagination and retrieving it on that resource endpoint returns 404.
+Authored Environment responses require the registry's durable creation/update
+timestamps; missing observations are errors, never fabricated timestamps. UI
+Session selectors already provide the built-in local option independently of
+the authored inventory. This distinction requires no additional Environment
+store, registration path, or runtime definition.
+
 The existing Environment config, networking, package, id, and revision value
 objects become the one published Environment contract. Managed HTTP and the
 Admin Assistant translate into that vocabulary; neither owns a parallel draft

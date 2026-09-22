@@ -1,5 +1,5 @@
 {
-  "current_oracle": "0.125.0",
+  "current_oracle": "0.127.0",
   "operations": {
     "beta.agents.archive": {
       "client_rejections": [],

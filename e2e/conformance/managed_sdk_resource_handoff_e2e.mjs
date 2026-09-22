@@ -18,7 +18,7 @@ import {
   qualifiedClient,
 } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
-import { FAKE_KEY, pass, withScenarioServer } from '../harness.mjs';
+import { FAKE_KEY, pass, withScenarioServer, provisionProviderTestModel, publishManagementAgent } from '../harness.mjs';
 import { officialBetaResourceProjection } from './official_sdk_resource_projection.mjs';
 
 const QUALIFIED_CLIENTS = await loadConformanceClients();
@@ -195,43 +195,24 @@ async function exerciseResources(baseURL, creatorSpec, operatorSpec) {
 }
 
 async function configureModelDirectory(baseURL, upstreamURL) {
+  // W1 the edge owns the current Workspace; a body cannot invent "default".
+  // W2 configuration/discovery/publication reuse the same real Control helper
+  // as task qualification; this handoff suite owns only the Models assertion.
+  const context = await fetch(`${baseURL}/v1/config/workspace-context`);
+  assert.equal(context.status, 200, 'current Workspace context is available');
+  const { workspace_id: workspace } = await context.json();
+  assert.ok(typeof workspace === 'string' && workspace.length > 0);
   const providerID = `sdk-compat-${process.pid}`;
-  const connected = await fetch(`${baseURL}/v1/config/provider-connections`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      idempotency_key: providerID,
-      workspace_id: 'default',
-      provider_id: providerID,
-      display_name: 'SDK compatibility model directory',
-      dialect: 'anthropic_messages',
-      base_url: `${upstreamURL}/v1/`,
-      timeout_secs: 30,
-      secret: FAKE_KEY,
-    }),
+  const selected = await provisionProviderTestModel(baseURL, workspace, {
+    id:providerID, provider_id:providerID, model_id:'fake-haiku',
+    dialect:'anthropic_messages', base_url:`${upstreamURL}/v1/`,
+    timeout_secs:30, secret:FAKE_KEY,
+  }, 'sdk-compat-profile');
+  await publishManagementAgent(baseURL, 'sdk-compat-model', {
+    id:'sdk-compat-model', name:'SDK compatibility model',
+    system:'Expose one model for the SDK differential.',
+    model:selected.model, tools:[],
   });
-  assert.equal(connected.status, 201, await connected.text());
-  const authored = await fetch(`${baseURL}/v1/config/agents/sdk-compat-model`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      id: 'sdk-compat-model',
-      name: 'SDK compatibility model',
-      instructions: 'Expose one model for the SDK differential.',
-      model: {
-        mode: 'pinned',
-        provider_identity_ref: providerID,
-        model_ref: 'fake-haiku',
-        backend_ref: 'genai',
-      },
-      tools: [],
-    }),
-  });
-  assert.equal(authored.status, 200, await authored.text());
-  const published = await fetch(`${baseURL}/v1/config/agents/sdk-compat-model/publish`, {
-    method: 'POST',
-  });
-  assert.equal(published.status, 200, await published.text());
 }
 
 await withScenarioServer(
