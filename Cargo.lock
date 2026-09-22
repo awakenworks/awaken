@@ -1141,6 +1141,7 @@ dependencies = [
  "awaken-environment-execution-application",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
+ "awaken-reliability-testkit",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
@@ -1399,6 +1400,7 @@ name = "awaken-file-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
@@ -1605,6 +1607,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-model-catalog",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-pool",
@@ -2251,6 +2254,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-pool",
@@ -2590,6 +2594,7 @@ name = "awaken-skill-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",

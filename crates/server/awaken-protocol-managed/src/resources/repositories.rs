@@ -22,7 +22,18 @@ use std::sync::Arc;
 
 fn failure(error: ResourceRegistryError) -> axum::response::Response {
     match error {
-        ResourceRegistryError::Invalid(message) => err(StatusCode::BAD_REQUEST, message),
+        ResourceRegistryError::IdentityRejected { detail: message }
+        | ResourceRegistryError::ConfigurationRejected { detail: message }
+        | ResourceRegistryError::AdmissionRejected { detail: message } => {
+            err(StatusCode::BAD_REQUEST, message)
+        }
+        ResourceRegistryError::VersionExhausted { id } => err(
+            StatusCode::CONFLICT,
+            format!("resource config version space is exhausted for `{id}`"),
+        ),
+        ResourceRegistryError::EncodingFailure { detail } => {
+            err(StatusCode::INTERNAL_SERVER_ERROR, detail)
+        }
         ResourceRegistryError::NotFound(_) | ResourceRegistryError::ConfigNotFound { .. } => err(
             StatusCode::NOT_FOUND,
             "Repository was not found in this Workspace",
@@ -34,7 +45,8 @@ fn failure(error: ResourceRegistryError) -> axum::response::Response {
             StatusCode::CONFLICT,
             "Repository changed or this request key was used for different settings; check the existing repository",
         ),
-        ResourceRegistryError::Unavailable(_) => err(
+        ResourceRegistryError::AuthorityUnavailable { .. }
+        | ResourceRegistryError::Indeterminate { .. } => err(
             StatusCode::SERVICE_UNAVAILABLE,
             "Repository configuration service is unavailable; retry the same request",
         ),
@@ -106,5 +118,70 @@ async fn create(
     match application.create_idempotent(command, &key).await {
         Ok(details) => (StatusCode::CREATED, Json(RepositoryObject::from(details))).into_response(),
         Err(error) => failure(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_failure_status_uses_the_typed_registry_cause() {
+        // Cause/effect table: identity/config/admission -> 400; exhausted or
+        // concurrent state -> 409; missing -> 404; unavailable/indeterminate
+        // -> 503; corrupt/encoding -> 500. All diagnostics are identical so
+        // status selection cannot regress to message parsing.
+        for (cause, expected) in [
+            (
+                ResourceRegistryError::IdentityRejected {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::ConfigurationRejected {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::AdmissionRejected {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::VersionExhausted { id: "same".into() },
+                StatusCode::CONFLICT,
+            ),
+            (
+                ResourceRegistryError::NotFound("same".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                ResourceRegistryError::AuthorityUnavailable {
+                    detail: "same".into(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ResourceRegistryError::Indeterminate {
+                    detail: "same".into(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ResourceRegistryError::CorruptData("same".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ResourceRegistryError::EncodingFailure {
+                    detail: "same".into(),
+                },
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            assert_eq!(failure(cause).status(), expected);
+        }
     }
 }

@@ -485,9 +485,9 @@ impl awaken_resource_contract::ResourceAdministration for FaultInjectingResource
         self.registration_calls.fetch_add(1, Ordering::SeqCst);
         if Self::consume_failure(&self.registration_failures) {
             return Err(
-                awaken_resource_contract::ResourceRegistryError::Unavailable(
-                    "injected registration failure".into(),
-                ),
+                awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable {
+                    detail: "injected registration failure".into(),
+                },
             );
         }
         self.inner.register_repository(command).await
@@ -508,9 +508,9 @@ impl awaken_resource_contract::ResourceAdministration for FaultInjectingResource
             self.activation_calls.fetch_add(1, Ordering::SeqCst);
             if Self::consume_failure(&self.activation_failures) {
                 return Err(
-                    awaken_resource_contract::ResourceRegistryError::Unavailable(
-                        "injected activation failure".into(),
-                    ),
+                    awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable {
+                        detail: "injected activation failure".into(),
+                    },
                 );
             }
         }

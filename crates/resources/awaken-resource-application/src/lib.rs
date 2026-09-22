@@ -229,10 +229,10 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
                 .bytes()
                 .all(|byte| (0x20..=0x7e).contains(&byte))
         {
-            return Err(awaken_resource_contract::ResourceRegistryError::Invalid(
-                "idempotent MemoryStore creation requires a visible request key and no explicit id"
+            return Err(awaken_resource_contract::ResourceRegistryError::AdmissionRejected {
+                detail: "idempotent MemoryStore creation requires a visible request key and no explicit id"
                     .into(),
-            )
+            }
             .into());
         }
         // Length framing keeps Workspace/key boundaries unambiguous. The

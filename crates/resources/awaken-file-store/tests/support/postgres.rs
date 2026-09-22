@@ -14,14 +14,7 @@ pub async fn isolated_postgres_url(tag: &'static str) -> Option<String> {
     // G5 a lossy options projection could erase the schema => verify the actual
     // connection namespace before any catalog/migration write, never use public.
     // The runner owns the disposable database and its final cleanup.
-    let base = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-        Ok(base) => base,
-        Err(std::env::VarError::NotPresent) => {
-            eprintln!("[skip] AWAKEN_TEST_DATABASE_URL is not configured");
-            return None;
-        }
-        Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
-    };
+    let base = awaken_reliability_testkit::postgres_fixture_url()?;
     assert!(tag.starts_with("t_file_") && tag.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
     let schema = format!("{tag}_{}", std::process::id());
     let options: PgConnectOptions = base.parse().expect("configured PostgreSQL URL is valid");

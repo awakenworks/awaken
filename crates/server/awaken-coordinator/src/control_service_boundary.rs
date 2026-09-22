@@ -339,7 +339,7 @@ async fn repository_admission(
     // failure. Never forward credential/storage diagnostics to another process.
     response(match result {
         Ok(()) => Ok(RepositoryAdmission::Admitted),
-        Err(awaken_resource_contract::ResourceRegistryError::Invalid(_)) => {
+        Err(awaken_resource_contract::ResourceRegistryError::AdmissionRejected { .. }) => {
             Ok(RepositoryAdmission::Rejected)
         }
         Err(_) => Err("Repository authorization service is unavailable".into()),
@@ -652,17 +652,15 @@ impl awaken_resource_contract::RepositoryCredentialValidator for HttpControlServ
                 },
             )
             .await
-            .map_err(|_| {
-                ResourceRegistryError::Unavailable(
-                    "Repository authorization service is unavailable".into(),
-                )
+            .map_err(|_| ResourceRegistryError::AuthorityUnavailable {
+                detail: "Repository authorization service is unavailable".into(),
             })?;
         match decision {
             RepositoryAdmission::Admitted => Ok(()),
-            RepositoryAdmission::Rejected => Err(ResourceRegistryError::Invalid(
-                "Choose an active repository authorization in this Workspace for this Git server"
+            RepositoryAdmission::Rejected => Err(ResourceRegistryError::AdmissionRejected {
+                detail: "Choose an active repository authorization in this Workspace for this Git server"
                     .into(),
-            )),
+            }),
         }
     }
 }
@@ -784,12 +782,12 @@ mod tests {
                 .push((workspace.into(), source.into(), remote.into()));
             match source {
                 "allowed" => Ok(()),
-                "outage" => Err(ResourceRegistryError::Unavailable(
-                    "private storage detail".into(),
-                )),
-                _ => Err(ResourceRegistryError::Invalid(
-                    "private credential detail".into(),
-                )),
+                "outage" => Err(ResourceRegistryError::AuthorityUnavailable {
+                    detail: "private storage detail".into(),
+                }),
+                _ => Err(ResourceRegistryError::AdmissionRejected {
+                    detail: "private credential detail".into(),
+                }),
             }
         }
     }
@@ -890,7 +888,7 @@ mod tests {
         );
         assert!(matches!(
             RepositoryCredentialValidator::validate(&client, "workspace-a", "denied", remote).await,
-            Err(ResourceRegistryError::Invalid(_))
+            Err(ResourceRegistryError::AdmissionRejected { .. })
         ));
         assert_eq!(
             repository_admission.0.lock().unwrap().len(),
@@ -901,7 +899,10 @@ mod tests {
             RepositoryCredentialValidator::validate(&client, "workspace-a", "outage", remote)
                 .await
                 .unwrap_err();
-        assert!(matches!(outage, ResourceRegistryError::Unavailable(_)));
+        assert!(matches!(
+            outage,
+            ResourceRegistryError::AuthorityUnavailable { .. }
+        ));
         assert!(!outage.to_string().contains("private storage detail"));
         assert_eq!(repository_admission.0.lock().unwrap().len(), 5);
         let unauthorized =

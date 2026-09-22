@@ -284,7 +284,9 @@ impl FileApplication {
     ) -> Result<FileRecord, ResourcePurgeError> {
         publication
             .verify()
-            .map_err(|error| ResourcePurgeError::Invalid(error.to_string().into()))?;
+            .map_err(|error| ResourcePurgeError::InvalidIntent {
+                detail: error.to_string(),
+            })?;
         self.create_with_artifact_scope(
             CreateFileCommand {
                 workspace_id: &publication.workspace_id,
@@ -315,14 +317,11 @@ impl FileApplication {
             .get(&record.blob_id)
             .await
             .map_err(ResourcePurgeError::from)?
-            .ok_or_else(|| {
-                ResourcePurgeError::Storage(
-                    format!(
-                        "file `{file_id}` references missing blob `{}`",
-                        record.blob_id
-                    )
-                    .into(),
-                )
+            .ok_or_else(|| ResourcePurgeError::CorruptData {
+                detail: format!(
+                    "file `{file_id}` references missing blob `{}`",
+                    record.blob_id
+                ),
             })?;
         Ok(Some((record, bytes)))
     }
@@ -496,7 +495,14 @@ fn logical_file_reference(record: &FileRecord) -> ResourceReferenceRecord {
 
 fn file_catalog_error(error: FileCatalogError) -> ResourcePurgeError {
     match error {
-        FileCatalogError::Invalid(message) => ResourcePurgeError::Invalid(message),
+        FileCatalogError::InvalidRecord { detail }
+        | FileCatalogError::InvalidCapture { detail } => {
+            ResourcePurgeError::InvalidIntent { detail }
+        }
+        FileCatalogError::IdentityConflict { detail }
+        | FileCatalogError::AssociationConflict { detail } => {
+            ResourcePurgeError::IdempotencyConflict(detail)
+        }
         error => ResourcePurgeError::Catalog(error),
     }
 }
@@ -507,14 +513,14 @@ fn now_rfc3339() -> String {
 
 fn validate_file_capacity(file_size: u64, active_size: u64) -> Result<(), ResourcePurgeError> {
     if file_size > MAX_MANAGED_FILE_SIZE_BYTES {
-        return Err(ResourcePurgeError::Invalid(
-            format!("file exceeds the {MAX_MANAGED_FILE_SIZE_BYTES} byte limit").into(),
-        ));
+        return Err(ResourcePurgeError::LimitExceeded {
+            detail: format!("file exceeds the {MAX_MANAGED_FILE_SIZE_BYTES} byte limit"),
+        });
     }
     if active_size.saturating_add(file_size) > MAX_WORKSPACE_FILE_BYTES {
-        return Err(ResourcePurgeError::Invalid(
-            format!("Workspace files exceed the {MAX_WORKSPACE_FILE_BYTES} byte limit").into(),
-        ));
+        return Err(ResourcePurgeError::LimitExceeded {
+            detail: format!("Workspace files exceed the {MAX_WORKSPACE_FILE_BYTES} byte limit"),
+        });
     }
     Ok(())
 }

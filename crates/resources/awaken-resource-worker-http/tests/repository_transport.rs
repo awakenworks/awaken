@@ -309,7 +309,11 @@ impl RepositoryTransportAuthorizer for DeniedAuthorizer {
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,
     > {
-        Err(awaken_resource_contract::RepositoryBindingVerifierError::new("gateway denied"))
+        Err(
+            awaken_resource_contract::RepositoryBindingVerifierError::Denied {
+                detail: "gateway denied".into(),
+            },
+        )
     }
 }
 
@@ -358,9 +362,9 @@ impl RepositoryTransportAuthorizer for RenewingTerminalAuthorizer {
         let RepositoryTransportAuthority::TerminalPublication { lease, .. } = request.authority
         else {
             return Err(
-                awaken_resource_contract::RepositoryBindingVerifierError::new(
-                    "renewing fixture requires terminal publication authority",
-                ),
+                awaken_resource_contract::RepositoryBindingVerifierError::InvalidRequest {
+                    detail: "renewing fixture requires terminal publication authority".into(),
+                },
             );
         };
         let mut current_lease = self.current_lease.lock().unwrap();
@@ -371,9 +375,9 @@ impl RepositoryTransportAuthorizer for RenewingTerminalAuthorizer {
             )
         {
             return Err(
-                awaken_resource_contract::RepositoryBindingVerifierError::new(
-                    "renewing fixture received another terminal generation",
-                ),
+                awaken_resource_contract::RepositoryBindingVerifierError::Conflict {
+                    detail: "renewing fixture received another terminal generation".into(),
+                },
             );
         }
         *current_lease = self.renewal.clone();
@@ -442,7 +446,13 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
         )
         .await
         .expect_err("R2 non-frozen Repository must be denied");
-    assert!(denied.to_string().contains("403"), "R2: {denied}");
+    assert!(
+        matches!(
+            denied,
+            awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+        ),
+        "R2: {denied}"
+    );
 
     let unauthenticated = reqwest::Client::new()
         .post(format!(
@@ -479,7 +489,13 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
         )
         .await
         .expect_err("R4 stale incarnation must be denied");
-    assert!(stale_identity.to_string().contains("403"), "R4");
+    assert!(
+        matches!(
+            stale_identity,
+            awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+        ),
+        "R4"
+    );
 
     let denied_service = Arc::new(
         WorkerRepositoryBindingService::new(
@@ -503,7 +519,13 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
         )
         .await
         .expect_err("R6 inactive Repository must be denied");
-    assert!(inactive.to_string().contains("403"), "R6");
+    assert!(
+        matches!(
+            inactive,
+            awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+        ),
+        "R6"
+    );
 
     dispatch
         .settle(
@@ -523,7 +545,10 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
         )
         .await
         .expect_err("R5 stale claim must be rejected");
-    assert!(stale_claim.to_string().contains("409"), "R5");
+    assert!(matches!(
+        stale_claim,
+        awaken_resource_contract::RepositoryBindingVerifierError::Conflict { .. }
+    ));
 }
 
 /// Repository transport decision table:
@@ -622,7 +647,10 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
         )
         .await
         .expect_err("T3 denial must not fall back to direct transport");
-    assert!(error.to_string().contains("403"), "T3: {error}");
+    assert!(matches!(
+        error,
+        awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+    ));
 
     let (directory, identity) = support::ready_worker("worker-repository-cancel").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
@@ -654,7 +682,10 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
         )
         .await
         .expect_err("T4 cancellation during authorization must be rejected");
-    assert!(error.to_string().contains("409"), "T4: {error}");
+    assert!(matches!(
+        error,
+        awaken_resource_contract::RepositoryBindingVerifierError::Conflict { .. }
+    ));
 
     for (rule, expiry, accepted) in [
         ("T5", Some(1), false),
@@ -692,7 +723,13 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
             assert!(result.is_ok(), "{rule}: {result:?}");
         } else {
             let error = result.expect_err(rule);
-            assert!(error.to_string().contains("403"), "{rule}: {error}");
+            assert!(
+                matches!(
+                    error,
+                    awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+                ),
+                "{rule}: {error}"
+            );
         }
     }
 }
@@ -783,7 +820,10 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         )
         .await
         .expect_err("M2 foreign Repository");
-    assert!(wrong_repository.to_string().contains("403"), "M2");
+    assert!(matches!(
+        wrong_repository,
+        awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+    ));
 
     let fence = (command.clone(), lease.clone());
     let transport =
@@ -886,7 +926,13 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
             assert!(result.is_ok(), "{rule}: {result:?}");
         } else {
             let error = result.expect_err(rule);
-            assert!(error.to_string().contains("403"), "{rule}: {error}");
+            assert!(
+                matches!(
+                    error,
+                    awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+                ),
+                "{rule}: {error}"
+            );
         }
     }
 
@@ -909,7 +955,10 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         )
         .await
         .expect_err("P3 stale Worker");
-    assert!(error.to_string().contains("403"), "P3: {error}");
+    assert!(matches!(
+        error,
+        awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+    ));
 
     let mut stale_lease = lease.clone();
     stale_lease.epoch += 1;
@@ -926,7 +975,10 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         )
         .await
         .expect_err("P4 stale lease");
-    assert!(error.to_string().contains("409"), "P4: {error}");
+    assert!(matches!(
+        error,
+        awaken_resource_contract::RepositoryBindingVerifierError::Conflict { .. }
+    ));
 
     let mut expired_assertion = lease.clone();
     expired_assertion.expires_at_unix_ms = 1;
@@ -1013,7 +1065,10 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         )
         .await
         .expect_err("P11 expired current root");
-    assert!(error.to_string().contains("409"), "P11: {error}");
+    assert!(matches!(
+        error,
+        awaken_resource_contract::RepositoryBindingVerifierError::Conflict { .. }
+    ));
     assert_eq!(rejected_authorizer.0.lock().unwrap().len(), 0, "P11");
 
     let renewal = awaken_session_contract::SessionRealizationLease {
@@ -1087,7 +1142,10 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         )
         .await
         .expect_err("P5 changed command");
-    assert!(error.to_string().contains("409"), "P5: {error}");
+    assert!(matches!(
+        error,
+        awaken_resource_contract::RepositoryBindingVerifierError::Conflict { .. }
+    ));
 
     let error =
         <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
@@ -1101,7 +1159,10 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         )
         .await
         .expect_err("P6 Worker-selected Workspace must not replace the Session owner");
-    assert!(error.to_string().contains("403"), "P6: {error}");
+    assert!(matches!(
+        error,
+        awaken_resource_contract::RepositoryBindingVerifierError::Denied { .. }
+    ));
     assert_eq!(
         authorizer.0.lock().unwrap().len(),
         1,
@@ -1134,7 +1195,13 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         )
         .await
         .expect_err("P7 missing Control");
-    assert!(error.to_string().contains("503"), "P7: {error}");
+    assert!(
+        matches!(
+            error,
+            awaken_resource_contract::RepositoryBindingVerifierError::AuthorityUnavailable { .. }
+        ),
+        "P7: {error}"
+    );
 }
 
 /// Cause/effect rationale: a remote verifier without the exact dispatch claim
@@ -1152,7 +1219,10 @@ async fn remote_repository_verifier_requires_claim() {
         )
         .await
         .expect_err("claim is mandatory");
-    assert!(error.to_string().contains("requires a dispatch claim"));
+    assert!(matches!(
+        error,
+        awaken_resource_contract::RepositoryBindingVerifierError::InvalidRequest { .. }
+    ));
 
     let unused = RunClaim {
         run_id: RunId("run-unused".into()),
@@ -1168,5 +1238,8 @@ async fn remote_repository_verifier_requires_claim() {
         )
         .await
         .expect_err("empty Workspace is rejected locally");
-    assert!(empty.to_string().contains("must not be empty"));
+    assert!(matches!(
+        empty,
+        awaken_resource_contract::RepositoryBindingVerifierError::InvalidRequest { .. }
+    ));
 }

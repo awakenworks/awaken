@@ -7,7 +7,7 @@ use crate::schema::{BUNDLE_ID, converged_skill_store_bundle, selected_skill_stor
 use crate::schema::{expanded_skill_store_bundle, skill_store_bundle};
 use crate::{
     SkillAggregate, SkillDefinition, SkillStore, SkillStoreError, SkillVersion, append_to,
-    decode_aggregate, remove_version_from, validate_create,
+    decode_aggregate, encode_aggregate, remove_version_from,
 };
 
 const NS: &str = "skill_store";
@@ -61,7 +61,24 @@ fn migrate_guarded(conn: &awaken_sqlite_pool::SharedSqliteConnection) -> Result<
 }
 
 fn storage(err: impl std::fmt::Display) -> SkillStoreError {
-    SkillStoreError::Storage(err.to_string().into())
+    SkillStoreError::Indeterminate {
+        detail: err.to_string(),
+    }
+}
+
+fn create_error(error: rusqlite::Error, id: String) -> SkillStoreError {
+    match &error {
+        rusqlite::Error::SqliteFailure(code, _)
+            if matches!(
+                code.extended_code,
+                rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                    | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+            ) =>
+        {
+            SkillStoreError::AlreadyExists(id)
+        }
+        _ => storage(error),
+    }
 }
 
 async fn with_conn<T, F>(
@@ -172,7 +189,7 @@ impl SkillStore for SqliteSkillStore {
         definition: SkillDefinition,
         initial_version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
-        validate_create(&definition, &initial_version)?;
+        definition.validate_initial_version(&initial_version)?;
         let aggregate = SkillAggregate {
             definition,
             versions: std::collections::BTreeMap::from([(
@@ -184,20 +201,14 @@ impl SkillStore for SqliteSkillStore {
         };
         let ws = aggregate.definition.workspace_id.to_string();
         let id = aggregate.definition.id.to_string();
-        let data = serde_json::to_string(&aggregate).map_err(storage)?;
+        let data = encode_aggregate(&aggregate)?;
         with_conn(&self.conn, move |conn| {
             conn.execute(
                 &format!("INSERT INTO {NS}_aggregate (workspace_id, id, data) VALUES (?1, ?2, ?3)"),
                 params![ws, id, data],
             )
             .map(|_| ())
-            .map_err(|error| {
-                if error.to_string().contains("UNIQUE constraint failed") {
-                    SkillStoreError::AlreadyExists(id)
-                } else {
-                    storage(error)
-                }
-            })
+            .map_err(|error| create_error(error, id))
         })
         .await
     }
@@ -223,7 +234,7 @@ impl SkillStore for SqliteSkillStore {
                 .ok_or_else(|| SkillStoreError::NotFound(id.clone()))?;
             let mut aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
             append_to(&mut aggregate, version)?;
-            let data = serde_json::to_string(&aggregate).map_err(storage)?;
+            let data = encode_aggregate(&aggregate)?;
             transaction
                 .execute(
                     &format!(
@@ -353,7 +364,7 @@ impl SkillStore for SqliteSkillStore {
                 version,
             )?;
             if removed {
-                let data = serde_json::to_string(&aggregate).map_err(storage)?;
+                let data = encode_aggregate(&aggregate)?;
                 transaction
                     .execute(
                         &format!("UPDATE {NS}_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2"),
@@ -391,7 +402,7 @@ impl SkillStore for SqliteSkillStore {
                 return Ok(false);
             }
             aggregate.deleted = true;
-            let data = serde_json::to_string(&aggregate).map_err(storage)?;
+            let data = encode_aggregate(&aggregate)?;
             conn.execute(
                 &format!("UPDATE {NS}_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2"),
                 params![ws, id, data],
@@ -423,9 +434,9 @@ impl SkillStore for SqliteSkillStore {
             };
             let aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
             if !aggregate.deleted {
-                return Err(SkillStoreError::Invalid(
-                    "an active Skill cannot be physically reclaimed".into(),
-                ));
+                return Err(SkillStoreError::LifecycleConflict {
+                    detail: "an active Skill cannot be physically reclaimed".into(),
+                });
             }
             conn.execute(
                 &format!("DELETE FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
@@ -464,6 +475,35 @@ impl SqliteSkillStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_failure_uses_constraint_identity_not_diagnostic_text() {
+        // C1 UNIQUE/PRIMARYKEY => AlreadyExists; C2 BUSY/IO => unknown outcome.
+        // R1/R2 cross both innocuous and misleading diagnostic strings; text
+        // cannot manufacture a uniqueness receipt or erase the true conflict.
+        for (code, duplicate) in [
+            (rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE, true),
+            (rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY, true),
+            (rusqlite::ffi::SQLITE_BUSY, false),
+            (rusqlite::ffi::SQLITE_IOERR, false),
+        ] {
+            for message in ["different language", "UNIQUE constraint failed"] {
+                let error = rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(code),
+                    Some(message.into()),
+                );
+                let mapped = create_error(error, "skill".into());
+                assert_eq!(
+                    matches!(mapped, SkillStoreError::AlreadyExists(_)),
+                    duplicate
+                );
+                assert_eq!(
+                    matches!(mapped, SkillStoreError::Indeterminate { .. }),
+                    !duplicate
+                );
+            }
+        }
+    }
 
     #[test]
     fn current_baseline_exposes_only_the_skill_aggregate() {

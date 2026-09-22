@@ -292,17 +292,20 @@ impl FileCatalog for SqliteFileStore {
                             )
                             .map_err(e)?;
                         if associated.artifact_idempotency_scope.as_deref() != Some(requested) {
-                            return Ok(Err(FileCatalogError::Invalid(
-                                "artifact File association raced another terminal operation".into(),
-                            )));
+                            return Ok(Err(FileCatalogError::AssociationConflict {
+                                detail:
+                                    "artifact File association raced another terminal operation"
+                                        .into(),
+                            }));
                         }
                         transaction.commit().map_err(e)?;
                         return Ok(Ok(CreateFileRecordOutcome::Existing(associated)));
                     }
                     Ok(None) if record.deleted => {
-                        return Ok(Err(FileCatalogError::Invalid(
-                            "terminal association cannot recreate a missing tombstone".into(),
-                        )));
+                        return Ok(Err(FileCatalogError::AssociationConflict {
+                            detail: "terminal association cannot recreate a missing tombstone"
+                                .into(),
+                        }));
                     }
                     Ok(None) => {}
                     Err(error) => return Ok(Err(error)),
@@ -353,14 +356,14 @@ impl FileCatalog for SqliteFileStore {
                     )
                     .map_err(e)?
             } else {
-                return Ok(Err(FileCatalogError::Invalid(
-                    format!("file id `{}` already exists", record.id).into(),
-                )));
+                return Ok(Err(FileCatalogError::IdentityConflict {
+                    detail: format!("file id `{}` already exists", record.id),
+                }));
             };
             if inserted == 0 && !same_harvest_identity(&lookup, &record) {
-                return Ok(Err(FileCatalogError::Invalid(
-                    "artifact harvest key is bound to different File identity".into(),
-                )));
+                return Ok(Err(FileCatalogError::IdentityConflict {
+                    detail: "artifact harvest key is bound to different File identity".into(),
+                }));
             }
             let outcome = if inserted > 0 {
                 CreateFileRecordOutcome::Inserted(lookup)

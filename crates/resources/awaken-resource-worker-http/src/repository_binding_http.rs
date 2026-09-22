@@ -131,6 +131,19 @@ fn transport_expiry_is_admitted(
     }
 }
 
+fn repository_verifier_status(error: &RepositoryBindingVerifierError) -> StatusCode {
+    match error {
+        RepositoryBindingVerifierError::InvalidRequest { .. } => StatusCode::BAD_REQUEST,
+        RepositoryBindingVerifierError::Denied { .. } => StatusCode::FORBIDDEN,
+        RepositoryBindingVerifierError::Conflict { .. } => StatusCode::CONFLICT,
+        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
+        | RepositoryBindingVerifierError::Indeterminate { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        RepositoryBindingVerifierError::CorruptAuthority { .. } => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 /// Registered-Worker client for exact Repository binding verification.
 #[derive(Clone)]
 pub struct HttpRepositoryBindingVerifier {
@@ -151,9 +164,9 @@ impl HttpRepositoryBindingVerifier {
         authority: ResourceOperationFence,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
         if workspace_id.trim().is_empty() || repository_id.trim().is_empty() {
-            return Err(RepositoryBindingVerifierError::new(
-                "Workspace and Repository identities must not be empty",
-            ));
+            return Err(RepositoryBindingVerifierError::InvalidRequest {
+                detail: "Workspace and Repository identities must not be empty".into(),
+            });
         }
         let request = self
             .upstream
@@ -172,24 +185,36 @@ impl HttpRepositoryBindingVerifier {
         let request = self
             .upstream
             .authorize_request("POST", REPOSITORY_BINDING_PATH, request)
-            .map_err(RepositoryBindingVerifierError::new)?;
-        let response = request
-            .send()
-            .await
-            .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))?;
+            .map_err(|detail| RepositoryBindingVerifierError::AuthorityUnavailable { detail })?;
+        let response = request.send().await.map_err(|error| {
+            RepositoryBindingVerifierError::AuthorityUnavailable {
+                detail: error.to_string(),
+            }
+        })?;
         if response.status() == http::StatusCode::NO_CONTENT {
             return Ok(RepositoryTransport::Direct);
         }
         if response.status() != http::StatusCode::OK {
-            return Err(RepositoryBindingVerifierError::new(format!(
-                "Repository binding authority returned HTTP {}",
-                response.status()
-            )));
+            let status = response.status();
+            let detail = format!("Repository binding authority returned HTTP {status}");
+            return Err(match status {
+                http::StatusCode::BAD_REQUEST => {
+                    RepositoryBindingVerifierError::InvalidRequest { detail }
+                }
+                http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN => {
+                    RepositoryBindingVerifierError::Denied { detail }
+                }
+                http::StatusCode::CONFLICT => RepositoryBindingVerifierError::Conflict { detail },
+                status if status.is_server_error() => {
+                    RepositoryBindingVerifierError::AuthorityUnavailable { detail }
+                }
+                _ => RepositoryBindingVerifierError::Indeterminate { detail },
+            });
         }
         response.json::<RepositoryTransport>().await.map_err(|_| {
-            RepositoryBindingVerifierError::new(
-                "Repository binding authority returned an invalid transport",
-            )
+            RepositoryBindingVerifierError::CorruptAuthority {
+                detail: "Repository binding authority returned an invalid transport".into(),
+            }
         })
     }
 }
@@ -203,11 +228,10 @@ impl RepositoryBindingVerifier<ResourceOperationFence> for HttpRepositoryBinding
         config_version: ConfigVersion,
         authority: Option<&ResourceOperationFence>,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
-        let authority = authority.ok_or_else(|| {
-            RepositoryBindingVerifierError::new(
-                "remote Repository verification requires an operation fence",
-            )
-        })?;
+        let authority =
+            authority.ok_or_else(|| RepositoryBindingVerifierError::InvalidRequest {
+                detail: "remote Repository verification requires an operation fence".into(),
+            })?;
         self.verify_request(
             workspace_id,
             repository_id,
@@ -228,10 +252,8 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
         config_version: ConfigVersion,
         claim: Option<&RunClaim>,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
-        let claim = claim.ok_or_else(|| {
-            RepositoryBindingVerifierError::new(
-                "remote Repository verification requires a dispatch claim",
-            )
+        let claim = claim.ok_or_else(|| RepositoryBindingVerifierError::InvalidRequest {
+            detail: "remote Repository verification requires a dispatch claim".into(),
         })?;
         self.verify_request(
             workspace_id,
@@ -262,9 +284,9 @@ impl
         )>,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
         let (command, lease) = fence.ok_or_else(|| {
-            RepositoryBindingVerifierError::new(
-                "remote terminal Repository verification requires its publication command and realization lease",
-            )
+            RepositoryBindingVerifierError::InvalidRequest {
+                detail: "remote terminal Repository verification requires its publication command and realization lease".into(),
+            }
         })?;
         self.verify_request(
             workspace_id,
@@ -470,7 +492,7 @@ async fn verify_run_repository_binding(
         .await
     {
         Ok(transport) => transport,
-        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+        Err(error) => return repository_verifier_status(&error).into_response(),
     };
     let revalidated = service
         .dispatch
@@ -583,7 +605,7 @@ async fn verify_session_repository_binding(
         .await
     {
         Ok(transport) => transport,
-        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+        Err(error) => return repository_verifier_status(&error).into_response(),
     };
     let latest_now_ms = unix_now_ms();
     if control
@@ -719,7 +741,7 @@ async fn verify_terminal_repository_binding(
         .await
     {
         Ok(transport) => transport,
-        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+        Err(error) => return repository_verifier_status(&error).into_response(),
     };
     let latest = match control
         .terminal_repository_publication_command(&canonical.session_id, &lease)
@@ -772,6 +794,44 @@ async fn verify_terminal_repository_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repository_verifier_failures_keep_their_recovery_class_at_http_boundary() {
+        // Cause/effect table: caller shape failure -> 400; denied authority ->
+        // 403; stale/concurrent authority -> 409; unavailable or unknown read
+        // decision -> 503; corrupt authority response -> 500. Every row must
+        // remain distinct so clients never retry bad input or treat outage as
+        // denial.
+        let cases = [
+            (
+                RepositoryBindingVerifierError::InvalidRequest { detail: "x".into() },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                RepositoryBindingVerifierError::Denied { detail: "x".into() },
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                RepositoryBindingVerifierError::Conflict { detail: "x".into() },
+                StatusCode::CONFLICT,
+            ),
+            (
+                RepositoryBindingVerifierError::AuthorityUnavailable { detail: "x".into() },
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                RepositoryBindingVerifierError::Indeterminate { detail: "x".into() },
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                RepositoryBindingVerifierError::CorruptAuthority { detail: "x".into() },
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(repository_verifier_status(&error), expected, "{error}");
+        }
+    }
 
     #[test]
     fn repository_binding_wire_rejects_unknown_authority_fields() {

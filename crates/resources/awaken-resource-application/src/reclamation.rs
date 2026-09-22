@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use awaken_resource_contract::{
     FileStore, MemoryRepository, ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError,
     ResourcePurgeEvidence, ResourcePurgeGuard, ResourceReference, ResourceReferenceKind,
-    ResourceRegistry, ResourceState, ResourceTarget, SkillStore,
+    ResourceRegistry, ResourceRegistryError, ResourceState, ResourceTarget, SkillStore,
+    SkillStoreError,
 };
 
 pub struct ResourceLifecycleGuard {
@@ -34,7 +35,7 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
                 .registry
                 .find_memory_store(&target.workspace_id, &target.resource_id)
                 .await
-                .map_err(storage)?
+                .map_err(registry_guard_error)?
             {
                 Some(definition)
                     if definition.state == ResourceState::Deleted
@@ -52,7 +53,7 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
                 .registry
                 .find_repository(&target.workspace_id, &target.resource_id)
                 .await
-                .map_err(storage)?
+                .map_err(registry_guard_error)?
                 .filter(|definition| definition.state != ResourceState::Deleted)
                 .map(|definition| format!("repository:{:?}", definition.state)),
             // Active Skill lifecycle is projected into ResourceReferenceIndex by
@@ -104,7 +105,7 @@ impl ResourcePhysicalReclaimer for ResourcePhysicalCleanup {
                     .files
                     .delete(&target.resource_id)
                     .await
-                    .map_err(storage)?,
+                    .map_err(ResourcePurgeError::from)?,
             }),
             ResourceKind::Repository => Ok(ResourcePurgeEvidence::Repository {
                 local_realizations_deleted: 0,
@@ -114,7 +115,7 @@ impl ResourcePhysicalReclaimer for ResourcePhysicalCleanup {
                     .memories
                     .purge_store(&target.resource_id)
                     .await
-                    .map_err(storage)?;
+                    .map_err(indeterminate)?;
                 Ok(ResourcePurgeEvidence::MemoryStore {
                     heads_deleted: summary.heads_deleted,
                     versions_deleted: summary.versions_deleted,
@@ -126,12 +127,106 @@ impl ResourcePhysicalReclaimer for ResourcePhysicalCleanup {
                     .skills
                     .purge_skill(&target.workspace_id, &target.resource_id)
                     .await
-                    .map_err(storage)?,
+                    .map_err(skill_cleanup_error)?,
             }),
         }
     }
 }
 
-fn storage(error: impl std::fmt::Display) -> ResourcePurgeError {
-    ResourcePurgeError::Storage(error.to_string().into())
+fn indeterminate(error: impl std::fmt::Display) -> ResourcePurgeError {
+    ResourcePurgeError::Indeterminate {
+        detail: error.to_string(),
+    }
+}
+
+fn registry_guard_error(error: ResourceRegistryError) -> ResourcePurgeError {
+    // This read is an admission witness, not a cleanup result. A failed
+    // dependency observation cannot authorize physical reclamation.
+    match error {
+        ResourceRegistryError::CorruptData(detail) => ResourcePurgeError::CorruptData { detail },
+        other => ResourcePurgeError::IncompleteReferenceObservation {
+            detail: other.to_string(),
+        },
+    }
+}
+
+fn skill_cleanup_error(error: SkillStoreError) -> ResourcePurgeError {
+    // Keep known domain causes. IO/unavailable or unexpected dependency
+    // failures provide no exact whole-Skill cleanup receipt; even a missing
+    // internal file must not be reinterpreted as successful reclamation.
+    match error {
+        SkillStoreError::Reference(error) => error,
+        SkillStoreError::CorruptData { detail } => ResourcePurgeError::CorruptData { detail },
+        SkillStoreError::EncodingFailure { detail } => {
+            ResourcePurgeError::EncodingFailure { detail }
+        }
+        SkillStoreError::InvalidDefinition { detail }
+        | SkillStoreError::InvalidVersion { detail }
+        | SkillStoreError::InvalidSelection { detail } => {
+            ResourcePurgeError::InvalidIntent { detail }
+        }
+        SkillStoreError::BundleMismatch { detail } => ResourcePurgeError::CorruptData { detail },
+        SkillStoreError::LifecycleConflict { detail } => {
+            ResourcePurgeError::AdmissionIncomplete { detail }
+        }
+        other => indeterminate(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_dependency_observations_never_authorize_cleanup() {
+        // G1 unavailable/unknown registry => incomplete reference evidence;
+        // G2 corrupt registry => corruption. Neither is an empty blocker set.
+        for error in [
+            ResourceRegistryError::AuthorityUnavailable {
+                detail: "same".into(),
+            },
+            ResourceRegistryError::Indeterminate {
+                detail: "same".into(),
+            },
+        ] {
+            assert!(matches!(
+                registry_guard_error(error),
+                ResourcePurgeError::IncompleteReferenceObservation { .. }
+            ));
+        }
+        assert!(matches!(
+            registry_guard_error(ResourceRegistryError::CorruptData("same".into())),
+            ResourcePurgeError::CorruptData { .. }
+        ));
+        // P1 known corruption/encoding/refusal keep their cause; P2 IO and a
+        // missing dependency-internal item are no proof of whole-store absence.
+        assert!(matches!(
+            skill_cleanup_error(SkillStoreError::CorruptData {
+                detail: "same".into()
+            }),
+            ResourcePurgeError::CorruptData { .. }
+        ));
+        assert!(matches!(
+            skill_cleanup_error(SkillStoreError::EncodingFailure {
+                detail: "same".into()
+            }),
+            ResourcePurgeError::EncodingFailure { .. }
+        ));
+        assert!(matches!(
+            skill_cleanup_error(SkillStoreError::Reference(ResourcePurgeError::StaleClaim)),
+            ResourcePurgeError::StaleClaim
+        ));
+        for error in [
+            SkillStoreError::NotFound("internal item".into()),
+            SkillStoreError::from(std::io::Error::new(std::io::ErrorKind::NotFound, "same")),
+            SkillStoreError::Indeterminate {
+                detail: "same".into(),
+            },
+        ] {
+            assert!(matches!(
+                skill_cleanup_error(error),
+                ResourcePurgeError::Indeterminate { .. }
+            ));
+        }
+    }
 }

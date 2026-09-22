@@ -4,10 +4,7 @@
 //! whether it is a durable Run claim, an embedded marker, or another transport
 //! capability; remote adapters interpret it and local adapters may ignore it.
 
-use crate::{
-    ConfigVersion, FileRecord, ResourceAccess, ResourceErrorDetail, content_id,
-    harvest_idempotency_key,
-};
+use crate::{ConfigVersion, FileRecord, ResourceAccess, content_id, harvest_idempotency_key};
 use async_trait::async_trait;
 
 /// Why immutable File bytes are being opened. A remote Resources adapter uses
@@ -85,14 +82,21 @@ impl<C: Sync> FileContentSource<C> for UnavailableFileContentSource {
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-#[error("Repository binding verifier: {0}")]
-pub struct RepositoryBindingVerifierError(ResourceErrorDetail);
-
-impl RepositoryBindingVerifierError {
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self(ResourceErrorDetail::new(message))
-    }
+pub enum RepositoryBindingVerifierError {
+    #[error("invalid Repository binding request: {detail}")]
+    InvalidRequest { detail: String },
+    #[error("Repository binding was denied: {detail}")]
+    Denied { detail: String },
+    #[error("Repository binding authority changed concurrently: {detail}")]
+    Conflict { detail: String },
+    #[error("Repository binding authority is unavailable: {detail}")]
+    AuthorityUnavailable { detail: String },
+    #[error("Repository binding authority returned corrupt data: {detail}")]
+    CorruptAuthority { detail: String },
+    /// The verifier obtained no authoritative decision. Callers may retry the
+    /// same read-only verification, but must not infer permission or denial.
+    #[error("Repository binding decision is indeterminate: {detail}")]
+    Indeterminate { detail: String },
 }
 
 /// Deployment-selected transport for one already-authorized Repository.
@@ -136,9 +140,9 @@ impl RepositoryGatewayCapability {
     pub fn new(value: impl Into<String>) -> Result<Self, RepositoryBindingVerifierError> {
         let value = value.into();
         if value.trim().is_empty() {
-            return Err(RepositoryBindingVerifierError::new(
-                "Gateway capability must not be empty",
-            ));
+            return Err(RepositoryBindingVerifierError::CorruptAuthority {
+                detail: "Gateway capability must not be empty".into(),
+            });
         }
         Ok(Self(value))
     }
@@ -161,9 +165,9 @@ pub struct RepositoryGatewayCapabilityExpiry(u64);
 impl RepositoryGatewayCapabilityExpiry {
     pub fn new(value: u64) -> Result<Self, RepositoryBindingVerifierError> {
         if value == 0 {
-            return Err(RepositoryBindingVerifierError::new(
-                "Gateway capability expiry must be positive",
-            ));
+            return Err(RepositoryBindingVerifierError::CorruptAuthority {
+                detail: "Gateway capability expiry must be positive".into(),
+            });
         }
         Ok(Self(value))
     }
@@ -606,14 +610,15 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for UnavailableArtifactPubli
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-#[error("Memory materialization reference: {0}")]
-pub struct MemoryMaterializationReferenceError(ResourceErrorDetail);
-
-impl MemoryMaterializationReferenceError {
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self(ResourceErrorDetail::new(message))
-    }
+pub enum MemoryMaterializationReferenceError {
+    #[error("invalid Memory materialization input: {detail}")]
+    InvalidInput { detail: String },
+    #[error("Memory materialization input does not match its frozen authority: {detail}")]
+    AuthorityMismatch { detail: String },
+    #[error("Memory materialization reference encoding failed: {detail}")]
+    EncodingFailure { detail: String },
+    #[error("Memory materialization reference is corrupt: {detail}")]
+    CorruptReference { detail: String },
 }
 
 /// Encode one process-local Memory mount reference from a caller-owned fence.

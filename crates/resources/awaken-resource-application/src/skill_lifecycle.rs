@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_resource_contract::{
-    ResourceKind, ResourcePurgeError, ResourceReference, ResourceReferenceIndex,
-    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget, SkillDefinition, SkillStore,
-    SkillStoreError, SkillVersion,
+    ResourceKind, ResourceReference, ResourceReferenceIndex, ResourceReferenceKind,
+    ResourceReferenceRecord, ResourceTarget, SkillDefinition, SkillStore, SkillStoreError,
+    SkillVersion,
 };
 
 pub(crate) struct ReferenceIndexedSkillStore {
@@ -40,7 +40,7 @@ impl ReferenceIndexedSkillStore {
         self.references
             .add_reference(Self::record(workspace_id, skill_id))
             .await
-            .map_err(skill_storage)?;
+            .map_err(SkillStoreError::Reference)?;
         Ok(())
     }
 
@@ -55,10 +55,6 @@ impl ReferenceIndexedSkillStore {
     }
 }
 
-fn skill_storage(error: ResourcePurgeError) -> SkillStoreError {
-    SkillStoreError::Storage(error.to_string().into())
-}
-
 #[async_trait]
 impl SkillStore for ReferenceIndexedSkillStore {
     async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
@@ -70,6 +66,7 @@ impl SkillStore for ReferenceIndexedSkillStore {
         definition: SkillDefinition,
         initial_version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
+        definition.validate_initial_version(&initial_version)?;
         self.ensure_active(&definition.workspace_id, definition.id.as_str())
             .await?;
         self.inner.create(definition, initial_version).await
@@ -146,7 +143,7 @@ impl SkillStore for ReferenceIndexedSkillStore {
         self.references
             .remove_reference(&Self::record(workspace_id, skill_id))
             .await
-            .map_err(skill_storage)?;
+            .map_err(SkillStoreError::Reference)?;
         Ok(deleted)
     }
 
@@ -194,6 +191,50 @@ mod tests {
                 created_unix_nanos: 1,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn invalid_initial_frames_write_neither_references_nor_skills() {
+        // C1 head/last ordinal differs from the sole initial version; C2 foreign
+        // version identity; C3 no bundle; C4 changed digest. R1 C1-C3 =>
+        // InvalidVersion; R2 C4 => BundleMismatch. Both reject before either
+        // effect. The valid S1 path is covered below.
+        for fault in 0..5 {
+            let inner = Arc::new(awaken_skill_store::InMemorySkillStore::new());
+            let references =
+                Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+            let store = ReferenceIndexedSkillStore::new(inner.clone(), references.clone());
+            let (mut definition, mut version) = skill();
+            match fault {
+                0 => definition.latest_version = 2,
+                1 => definition.last_version = 2,
+                2 => version.skill_id = "foreign".into(),
+                3 => version.files.clear(),
+                _ => version.bundle_sha256 = "wrong".into(),
+            }
+            let result = store.create(definition, version).await;
+            assert!(
+                if fault == 4 {
+                    matches!(result, Err(SkillStoreError::BundleMismatch { .. }))
+                } else {
+                    matches!(result, Err(SkillStoreError::InvalidVersion { .. }))
+                },
+                "R1 fault={fault}"
+            );
+            assert!(
+                inner
+                    .definition("workspace-a", "skill-a")
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "R1 no Skill"
+            );
+            let target = ResourceTarget::new("workspace-a", ResourceKind::Skill, "skill-a");
+            assert!(
+                references.references(&target).await.unwrap().is_empty(),
+                "R1 no reference"
+            );
+        }
     }
 
     #[tokio::test]

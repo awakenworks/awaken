@@ -905,16 +905,24 @@ impl ArtifactFailure {
 fn application_failure(error: &ResourcePurgeError) -> ArtifactFailure {
     use awaken_resource_contract::{FileCatalogError, FileStoreError};
     match error {
-        ResourcePurgeError::Invalid(_)
-        | ResourcePurgeError::Catalog(FileCatalogError::Invalid(_)) => {
+        ResourcePurgeError::InvalidIntent { .. }
+        | ResourcePurgeError::InvalidClaim { .. }
+        | ResourcePurgeError::InvalidReference { .. }
+        | ResourcePurgeError::ReceiptMismatch { .. }
+        | ResourcePurgeError::LimitExceeded { .. }
+        | ResourcePurgeError::Catalog(FileCatalogError::InvalidRecord { .. })
+        | ResourcePurgeError::Catalog(FileCatalogError::InvalidCapture { .. }) => {
             ArtifactFailure::InvalidRequest {}
         }
         ResourcePurgeError::IdempotencyConflict(_)
         | ResourcePurgeError::RevisionConflict(_)
+        | ResourcePurgeError::Catalog(FileCatalogError::IdentityConflict { .. })
+        | ResourcePurgeError::Catalog(FileCatalogError::AssociationConflict { .. })
         | ResourcePurgeError::StaleClaim
         | ResourcePurgeError::StaleReclamationFence
         | ResourcePurgeError::ReclamationFenced { .. } => ArtifactFailure::Conflict {},
-        ResourcePurgeError::Catalog(FileCatalogError::CorruptData { .. })
+        ResourcePurgeError::CorruptData { .. }
+        | ResourcePurgeError::Catalog(FileCatalogError::CorruptData { .. })
         | ResourcePurgeError::Blob(FileStoreError::CorruptContent { .. }) => {
             ArtifactFailure::CorruptData {}
         }
@@ -988,7 +996,9 @@ mod tests {
         // diagnostic text cannot change the decision or expose it on the wire.
         for (error, expected) in [
             (
-                ResourcePurgeError::Invalid("private validation".into()),
+                ResourcePurgeError::InvalidIntent {
+                    detail: "private validation".into(),
+                },
                 ArtifactFailure::InvalidRequest {},
             ),
             (ResourcePurgeError::StaleClaim, ArtifactFailure::Conflict {}),
@@ -1114,24 +1124,42 @@ mod tests {
 
     #[test]
     fn application_errors_fail_closed_by_cause_class() {
-        // Adapter decision table: invalid input -> 400; concurrency conflict ->
-        // 409; unavailable storage -> 503. Publication shape is checked only by
+        use awaken_resource_contract::FileCatalogError;
+        // Adapter decision table: caller intent/claim/reference/receipt/limit
+        // -> 400; identity/association/concurrency -> 409; unknown or
+        // incomplete effect facts -> 503. Publication shape is checked only by
         // ArtifactPublication::verify; local/HTTP parity has a transport test.
-        assert_eq!(
-            application_error_status(&ResourcePurgeError::Invalid("quota".into())),
-            StatusCode::BAD_REQUEST,
-            "V3"
-        );
-        assert_eq!(
-            application_error_status(&ResourcePurgeError::RevisionConflict("file".into())),
-            StatusCode::CONFLICT,
-            "V4"
-        );
-        assert_eq!(
-            application_error_status(&ResourcePurgeError::Storage("offline".into())),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "V5"
-        );
+        let bad_request = [
+            ResourcePurgeError::InvalidIntent { detail: "x".into() },
+            ResourcePurgeError::InvalidClaim { detail: "x".into() },
+            ResourcePurgeError::InvalidReference { detail: "x".into() },
+            ResourcePurgeError::ReceiptMismatch { detail: "x".into() },
+            ResourcePurgeError::LimitExceeded { detail: "x".into() },
+        ];
+        for error in bad_request {
+            assert_eq!(application_error_status(&error), StatusCode::BAD_REQUEST);
+        }
+        for error in [
+            ResourcePurgeError::RevisionConflict("file".into()),
+            ResourcePurgeError::Catalog(FileCatalogError::IdentityConflict { detail: "x".into() }),
+            ResourcePurgeError::Catalog(FileCatalogError::AssociationConflict {
+                detail: "x".into(),
+            }),
+        ] {
+            assert_eq!(application_error_status(&error), StatusCode::CONFLICT);
+        }
+        for error in [
+            ResourcePurgeError::Indeterminate {
+                detail: "offline".into(),
+            },
+            ResourcePurgeError::ArithmeticExhausted { detail: "x".into() },
+            ResourcePurgeError::AdmissionIncomplete { detail: "x".into() },
+        ] {
+            assert_eq!(
+                application_error_status(&error),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
     }
 
     #[test]

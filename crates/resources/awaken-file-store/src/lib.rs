@@ -236,18 +236,18 @@ fn validate_record(record: &FileRecord) -> Result<(), FileCatalogError> {
         || record.mime_type.trim().is_empty()
         || record.created_at.trim().is_empty()
     {
-        return Err(FileCatalogError::Invalid(
-            "id, workspace, blob, filename, MIME type, and created_at are required".into(),
-        ));
+        return Err(FileCatalogError::InvalidRecord {
+            detail: "id, workspace, blob, filename, MIME type, and created_at are required".into(),
+        });
     }
     if record
         .artifact_idempotency_scope
         .as_deref()
         .is_some_and(|scope| scope.trim().is_empty())
     {
-        return Err(FileCatalogError::Invalid(
-            "artifact idempotency scope must be nonempty".into(),
-        ));
+        return Err(FileCatalogError::InvalidRecord {
+            detail: "artifact idempotency scope must be nonempty".into(),
+        });
     }
     if record.artifact_idempotency_scope.is_some()
         && (record
@@ -263,10 +263,11 @@ fn validate_record(record: &FileRecord) -> Result<(), FileCatalogError> {
                 .as_deref()
                 .is_none_or(|value| value.trim().is_empty()))
     {
-        return Err(FileCatalogError::Invalid(
-            "terminal artifact association requires harvest, Session, and logical-path identity"
-                .into(),
-        ));
+        return Err(FileCatalogError::InvalidRecord {
+            detail:
+                "terminal artifact association requires harvest, Session, and logical-path identity"
+                    .into(),
+        });
     }
     Ok(())
 }
@@ -301,18 +302,16 @@ fn artifact_association_decision(
     let requested_scope = candidate
         .artifact_idempotency_scope
         .as_deref()
-        .ok_or_else(|| {
-            FileCatalogError::Invalid(
-                "artifact association requires a terminal idempotency scope".into(),
-            )
+        .ok_or_else(|| FileCatalogError::InvalidRecord {
+            detail: "artifact association requires a terminal idempotency scope".into(),
         })?;
     if records
         .iter()
         .any(|record| !same_harvest_identity(record, candidate))
     {
-        return Err(FileCatalogError::Invalid(
-            "artifact harvest key is bound to different File identity".into(),
-        ));
+        return Err(FileCatalogError::IdentityConflict {
+            detail: "artifact harvest key is bound to different File identity".into(),
+        });
     }
     let exact = records
         .iter()
@@ -326,9 +325,9 @@ fn artifact_association_decision(
             )));
         }
         _ => {
-            return Err(FileCatalogError::Invalid(
-                "artifact File has duplicate terminal-operation evidence".into(),
-            ));
+            return Err(FileCatalogError::AssociationConflict {
+                detail: "artifact File has duplicate terminal-operation evidence".into(),
+            });
         }
     }
 
@@ -341,23 +340,23 @@ fn artifact_association_decision(
             [] => return Ok(None),
             [record] => record,
             _ => {
-                return Err(FileCatalogError::Invalid(
-                    "artifact File has ambiguous tombstoned harvest evidence".into(),
-                ));
+                return Err(FileCatalogError::AssociationConflict {
+                    detail: "artifact File has ambiguous tombstoned harvest evidence".into(),
+                });
             }
         },
         [record] => *record,
         _ => {
-            return Err(FileCatalogError::Invalid(
-                "artifact File has duplicate active harvest evidence".into(),
-            ));
+            return Err(FileCatalogError::AssociationConflict {
+                detail: "artifact File has duplicate active harvest evidence".into(),
+            });
         }
     };
     match target.artifact_idempotency_scope.as_deref() {
         None => Ok(Some(ArtifactAssociationDecision::Associate(target.clone()))),
-        Some(_) => Err(FileCatalogError::Invalid(
-            "artifact File is already associated with another terminal operation".into(),
-        )),
+        Some(_) => Err(FileCatalogError::AssociationConflict {
+            detail: "artifact File is already associated with another terminal operation".into(),
+        }),
     }
 }
 
@@ -442,25 +441,26 @@ impl FileCatalog for InMemoryFileStore {
                         return Ok(CreateFileRecordOutcome::Existing(existing.clone()));
                     }
                     None if record.deleted => {
-                        return Err(FileCatalogError::Invalid(
-                            "terminal association cannot recreate a missing tombstone".into(),
-                        ));
+                        return Err(FileCatalogError::AssociationConflict {
+                            detail: "terminal association cannot recreate a missing tombstone"
+                                .into(),
+                        });
                     }
                     None => {}
                 }
             } else if let Some(existing) = matching.into_iter().find(|record| !record.deleted) {
                 if !same_harvest_identity(&existing, &record) {
-                    return Err(FileCatalogError::Invalid(
-                        "artifact harvest key is bound to different File identity".into(),
-                    ));
+                    return Err(FileCatalogError::IdentityConflict {
+                        detail: "artifact harvest key is bound to different File identity".into(),
+                    });
                 }
                 return Ok(CreateFileRecordOutcome::Existing(existing));
             }
         }
         if files.contains_key(&record.id) {
-            return Err(FileCatalogError::Invalid(
-                format!("file id `{}` already exists", record.id).into(),
-            ));
+            return Err(FileCatalogError::IdentityConflict {
+                detail: format!("file id `{}` already exists", record.id),
+            });
         }
         files.insert(record.id.clone(), record.clone());
         Ok(CreateFileRecordOutcome::Inserted(record))
