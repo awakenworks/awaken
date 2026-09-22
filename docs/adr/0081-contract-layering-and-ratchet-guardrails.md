@@ -206,6 +206,53 @@ September 22 follow-up qualification is in progress:
   exact process/policy frame preservation. The complete PostgreSQL/MinIO gate
   also passed, including credential rotation and exact-prefix PITR recovery.
 
+#### September 22 semantic follow-up
+
+FileCatalog now distinguishes invalid requests, corrupt durable observations,
+absent configured authority and indeterminate outcomes. The existing File
+application carries those failures into ResourcePurgeError without flattening
+them to Storage text. Artifact publication composes the existing Resource and
+Catalog errors; its HTTP adapter has one private error projection. The wire
+projection carries a decision class, never database diagnostics. Contradictory
+or unreadable responses remain indeterminate. A malformed receipt after an
+application effect is a receipt mismatch, not evidence of a refused write.
+Response-loss recovery retains the original capture revision/effect identity.
+
+Image-build memory records now use the same RecordBackend/CAS implementation as
+SQLite and PostgreSQL. Its crate-local lifecycle table owns replay, conflicting
+recipes, exact lease expiry, stale completion, retry deadlines and Ready
+invalidation; SQL-specific concurrency and restart tests remain at their
+adapters. Sandbox policy PostgreSQL runs the existing exact-version table and
+reconnect check. An explicitly configured Model Catalog or image-build database
+must connect successfully; a failed connection cannot report suite success.
+Stream checkpoint register laws have one owner in store-conformance and bindings
+for memory, filesystem and PostgreSQL, alongside their existing crash/corruption
+and dispatch-fence tests.
+
+SessionRealizationLease and its authorization laws now share a domain module in
+the existing Session contract. Repository ports store that value; they no longer
+define it. Root mutation values and their observation-preservation kernel now
+live beside PersistedSession in session_repo/mutation.rs; repository_port.rs
+contains only the required persistence interface. Realization command and
+projection values live in session_realization/model.rs while the parent owns
+Control roles. These are intra-crate ownership boundaries, preserving private
+transition access and the existing dependency depth. The public re-export, serialized coordinates, neutral FenceToken
+implementation and root CAS boundary remain unchanged. Its existing Kani harness
+moves with the production kernel and retains its obligation. This relocation is
+not completion of the Session size budget. Separating the entire remaining
+configuration/state graph requires resolving its lower vocabulary dependencies;
+adding a facade chain or widening private transition methods solely to reduce
+line counts does not qualify as closure.
+
+Reused owners are the existing aggregates, repositories, operation identities,
+receipts, CAS implementations and test entrypoints. Modified code is limited to
+error projection, image-build backend delegation, backend test bindings and the
+Session lease definition location. New code consists of necessary error cases
+and missing conformance/transport test rules; there is no new queue, database,
+retry scheduler, provider hierarchy or central conformance framework. The error
+scanner still exposes remaining opaque Resource payloads; these changes do not
+claim they are all resolved.
+
 #### Static structure
 
 | Classification | Authoritative owner | Resolution |

@@ -1918,6 +1918,7 @@ dependencies = [
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
  "awaken-sqlite-runtime",
+ "awaken-store-conformance",
  "awaken-store-inmem",
  "awaken-store-postgres",
  "awaken-store-sqlite",

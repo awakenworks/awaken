@@ -1933,8 +1933,8 @@ pub awaken_protocol_managed::StateError::NotFound
 pub awaken_protocol_managed::StateError::Run(awaken_session_contract::session::RunError)
 pub awaken_protocol_managed::StateError::TerminalCreateConflict
 pub awaken_protocol_managed::StateError::VaultNotFound(alloc::string::String)
-impl core::convert::From<awaken_session_contract::session_repo::repository_port::SessionRepositoryError> for awaken_protocol_managed::StateError
-pub fn awaken_protocol_managed::StateError::from(awaken_session_contract::session_repo::repository_port::SessionRepositoryError) -> Self
+impl core::convert::From<awaken_session_contract::session_repo::mutation::SessionRepositoryError> for awaken_protocol_managed::StateError
+pub fn awaken_protocol_managed::StateError::from(awaken_session_contract::session_repo::mutation::SessionRepositoryError) -> Self
 pub struct awaken_protocol_managed::AgentRegistryState
 impl awaken_protocol_managed::AgentRegistryState
 pub fn awaken_protocol_managed::AgentRegistryState::from_repository(alloc::sync::Arc<dyn awaken_protocol_managed::ManagedAgentRepository>) -> Self

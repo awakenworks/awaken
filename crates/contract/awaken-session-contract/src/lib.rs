@@ -27,11 +27,13 @@ mod lifecycle;
 mod mcp_probe;
 mod model_resolution;
 mod network_policy;
+mod realization_lease;
 mod resource;
 mod resource_activation;
 mod run_admission;
 mod run_application;
 mod session;
+pub use realization_lease::SessionRealizationLease;
 mod session_realization;
 mod session_repo;
 mod skill_execution;
@@ -243,10 +245,9 @@ pub use session_repo::{
     SessionDispositionTransitionError, SessionEventDispatchSettlementEffect, SessionExecutionState,
     SessionExecutionStateError, SessionExecutionTransitionError, SessionIdempotencyReceipt,
     SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
-    SessionRealizationLease, SessionRecoveryQuarantine, SessionRepository,
-    SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
-    SessionScan, SessionScanCursor, SessionScanQuery, SessionStore, SessionTombstone,
-    VisibleMcpServer,
+    SessionRecoveryQuarantine, SessionRepository, SessionRepositoryConflict,
+    SessionRepositoryError, SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor,
+    SessionScanQuery, SessionStore, SessionTombstone, VisibleMcpServer,
 };
 pub use skill_execution::{
     SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin,

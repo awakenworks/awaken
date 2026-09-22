@@ -46,11 +46,13 @@ impl ReplaceArtifactCapture {
         };
         let actual = self
             .decide(Some(capture))
-            .map_err(|error| FileCatalogError::Storage(error.to_string().into()))?;
+            .map_err(|error| FileCatalogError::CorruptData {
+                detail: error.to_string(),
+            })?;
         if actual != ReplaceArtifactCaptureOutcome::Replayed(capture.clone()) {
-            return Err(FileCatalogError::Storage(
-                "noncanonical output capture receipt".into(),
-            ));
+            return Err(FileCatalogError::CorruptData {
+                detail: "noncanonical output capture receipt".into(),
+            });
         }
         Ok(())
     }
@@ -85,9 +87,9 @@ impl ReplaceArtifactCapture {
         };
         if let Some(current) = current {
             if current.workspace_id != self.workspace_id || current.session_id != self.session_id {
-                return Err(FileCatalogError::Storage(
-                    "output capture belongs to another scope".into(),
-                ));
+                return Err(FileCatalogError::CorruptData {
+                    detail: "output capture belongs to another scope".into(),
+                });
             }
             if current == &next {
                 return Ok(ReplaceArtifactCaptureOutcome::Replayed(current.clone()));
@@ -109,13 +111,16 @@ impl ArtifactCapture {
         session_id: &str,
     ) -> Result<(), FileCatalogError> {
         if self.workspace_id != workspace_id || self.session_id != session_id {
-            return Err(FileCatalogError::Storage(
-                "output capture belongs to another scope".into(),
-            ));
+            return Err(FileCatalogError::CorruptData {
+                detail: "output capture belongs to another scope".into(),
+            });
         }
-        let expected_revision = self.revision.checked_sub(1).ok_or_else(|| {
-            FileCatalogError::Storage("uncommitted output capture revision".into())
-        })?;
+        let expected_revision =
+            self.revision
+                .checked_sub(1)
+                .ok_or_else(|| FileCatalogError::CorruptData {
+                    detail: "uncommitted output capture revision".into(),
+                })?;
         let request = ReplaceArtifactCapture {
             workspace_id: self.workspace_id.clone(),
             session_id: self.session_id.clone(),
@@ -167,5 +172,51 @@ impl ArtifactCapture {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_and_observation_failures_have_different_meanings() {
+        // C1 invalid caller revision => Invalid (no execution); C2 stored
+        // invalid revision or wrong scope => CorruptData; C3 wrong receipt =>
+        // CorruptData. The same words cannot erase the observation boundary.
+        let request = ReplaceArtifactCapture {
+            workspace_id: "w".into(),
+            session_id: "s".into(),
+            expected_revision: u64::MAX,
+            file_ids: vec![],
+        };
+        assert!(matches!(
+            request.decide(None),
+            Err(FileCatalogError::Invalid(_))
+        ));
+        let mut observed = ArtifactCapture {
+            workspace_id: "w".into(),
+            session_id: "s".into(),
+            revision: 0,
+            file_ids: vec![],
+        };
+        assert!(matches!(
+            observed.verify_scope("w", "s"),
+            Err(FileCatalogError::CorruptData { .. })
+        ));
+        observed.revision = 1;
+        assert!(matches!(
+            observed.verify_scope("other", "s"),
+            Err(FileCatalogError::CorruptData { .. })
+        ));
+        let valid = ReplaceArtifactCapture {
+            expected_revision: 0,
+            ..request
+        };
+        observed.revision = 2;
+        assert!(matches!(
+            valid.verify_outcome(&ReplaceArtifactCaptureOutcome::Applied(observed)),
+            Err(FileCatalogError::CorruptData { .. })
+        ));
     }
 }

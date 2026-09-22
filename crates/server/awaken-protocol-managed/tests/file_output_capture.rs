@@ -247,7 +247,9 @@ impl FileCatalog for ReadOnlyCaptureCatalog {
     ) -> Result<Option<ArtifactCapture>, FileCatalogError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         if self.fail {
-            Err(FileCatalogError::Storage("injected outage".into()))
+            Err(FileCatalogError::Indeterminate {
+                detail: "injected outage".into(),
+            })
         } else {
             Ok(self.value.clone())
         }

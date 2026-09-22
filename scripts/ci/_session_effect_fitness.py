@@ -30,6 +30,9 @@ SESSION_REPOSITORY_RECOVERY = (
 SESSION_REPOSITORY_PORT = (
     "crates/contract/awaken-session-contract/src/session_repo/repository_port.rs"
 )
+SESSION_REPOSITORY_MUTATION = (
+    "crates/contract/awaken-session-contract/src/session_repo/mutation.rs"
+)
 SESSION_REPOSITORY_PUBLICATION_AGGREGATE = (
     "crates/contract/awaken-session-contract/src/session_repo/repository_publication.rs"
 )
@@ -172,9 +175,12 @@ REQUIRED = {
         "Self::Unavailable(_)",
         "Self::Corrupt(_)",
     ),
-    SESSION_REPOSITORY_PORT: (
+    SESSION_REPOSITORY_MUTATION: (
         "Unavailable(String)",
         "Corrupt(String)",
+        "validate_observation_replacement",
+    ),
+    SESSION_REPOSITORY_PORT: (
         "async fn get(&self, session_id: &SessionId)\n    -> Result<PersistedSession",
         "async fn owner(&self, session_id: &SessionId) -> Result<String",
     ),
@@ -1522,6 +1528,7 @@ fn recover_terminal_receipts() {
     for rule, relative in (
         ("repository recovery policy", SESSION_REPOSITORY_RECOVERY),
         ("repository root-CAS port", SESSION_REPOSITORY_PORT),
+        ("repository root mutation model", SESSION_REPOSITORY_MUTATION),
         ("terminal preparation authorization", SESSION_TERMINAL_AUTHORIZATION),
         ("Host terminal provider authorization", RUNTIME_HOST_TERMINAL_PREPARATION),
         ("Host terminal two-stage effects", RUNTIME_HOST_TERMINAL_CLEANUP),

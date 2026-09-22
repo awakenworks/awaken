@@ -47,7 +47,7 @@ pub async fn awaken_store_conformance::session_store::create_receipt_decision_ta
 pub async fn awaken_store_conformance::session_store::create_receipt_race_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(alloc::sync::Arc<R>)
 pub async fn awaken_store_conformance::session_store::create_session<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R, &str, awaken_session_contract::session_repo::persisted_session::PersistedSession, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
 pub async fn awaken_store_conformance::session_store::credential_source_dependency_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
-pub fn awaken_store_conformance::session_store::delete_mutation(&awaken_session_contract::session_repo::persisted_session::PersistedSession, &str) -> awaken_session_contract::session_repo::repository_port::SessionMutation
+pub fn awaken_store_conformance::session_store::delete_mutation(&awaken_session_contract::session_repo::persisted_session::PersistedSession, &str) -> awaken_session_contract::session_repo::mutation::SessionMutation
 pub async fn awaken_store_conformance::session_store::deleted_event_admission_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
 pub async fn awaken_store_conformance::session_store::deployment_cas_decision_table<R: awaken_deployment_contract::DeploymentRepository + awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R, [&dyn awaken_deployment_contract::DeploymentRepository; 3])
 pub fn awaken_store_conformance::session_store::deployment_fact(&str, &str) -> awaken_deployment_contract::DeploymentLifecycleFact
@@ -61,7 +61,7 @@ pub async fn awaken_store_conformance::session_store::lifecycle_outbox_insert_fa
 pub async fn awaken_store_conformance::session_store::lifecycle_outbox_tracks_every_committed_transition<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
 pub async fn awaken_store_conformance::session_store::ownership_is_one_atomic_repository_fact<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
 pub async fn awaken_store_conformance::session_store::pending_resource_activation_index_is_durable<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
-pub fn awaken_store_conformance::session_store::record(&str, &awaken_session_contract::session_repo::repository_port::SessionMutationPayload) -> awaken_session_contract::session_repo::repository_port::IdempotencyRecord
+pub fn awaken_store_conformance::session_store::record(&str, &awaken_session_contract::session_repo::mutation::SessionMutationPayload) -> awaken_session_contract::session_repo::mutation::IdempotencyRecord
 pub async fn awaken_store_conformance::session_store::replace_session<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R, &str, awaken_session_contract::session_repo::persisted_session::PersistedSession, &str, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
 pub async fn awaken_store_conformance::session_store::root_cas_decision_table<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
 pub async fn awaken_store_conformance::session_store::run_suite<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore + 'static>(impl core::ops::function::Fn() -> R)
@@ -72,6 +72,10 @@ pub fn awaken_store_conformance::session_store::session(&str, &str) -> awaken_se
 pub async fn awaken_store_conformance::session_store::tombstone_requires_hidden_completed_cleanup<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
 pub async fn awaken_store_conformance::session_store::vault_reference_index_returns_only_live_scoped_sessions<R: awaken_session_contract::session_repo::lifecycle_outbox::SessionStore>(&R)
 pub fn awaken_store_conformance::session_store::with_mcp_credential_source(awaken_session_contract::session_repo::persisted_session::PersistedSession, &str) -> awaken_session_contract::session_repo::persisted_session::PersistedSession
+pub mod awaken_store_conformance::stream_checkpoint
+pub async fn awaken_store_conformance::stream_checkpoint::delete_is_idempotent(&dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore, &str)
+pub fn awaken_store_conformance::stream_checkpoint::sample(&str) -> awaken_agent_contract::stream::checkpoint::StreamCheckpoint
+pub async fn awaken_store_conformance::stream_checkpoint::writes_are_exact(&dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore, &str) -> awaken_agent_contract::stream::checkpoint::StreamCheckpoint
 pub mod awaken_store_conformance::work_queue
 pub mod awaken_store_conformance::work_queue::session_access
 pub async fn awaken_store_conformance::work_queue::session_access::capability_and_metadata_contract(&impl awaken_session_work_contract::WorkQueue, u64)

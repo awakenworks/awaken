@@ -497,7 +497,7 @@ fn logical_file_reference(record: &FileRecord) -> ResourceReferenceRecord {
 fn file_catalog_error(error: FileCatalogError) -> ResourcePurgeError {
     match error {
         FileCatalogError::Invalid(message) => ResourcePurgeError::Invalid(message),
-        FileCatalogError::Storage(message) => ResourcePurgeError::Storage(message),
+        error => ResourcePurgeError::Catalog(error),
     }
 }
 

@@ -24,7 +24,9 @@ fn e(x: impl ToString) -> FileStoreError {
 }
 
 fn ce(x: impl ToString) -> FileCatalogError {
-    FileCatalogError::Storage(x.to_string().into())
+    FileCatalogError::Indeterminate {
+        detail: x.to_string(),
+    }
 }
 
 fn row_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
@@ -290,21 +292,20 @@ impl FileCatalog for SqliteFileStore {
                             )
                             .map_err(e)?;
                         if associated.artifact_idempotency_scope.as_deref() != Some(requested) {
-                            return Ok(Err(
+                            return Ok(Err(FileCatalogError::Invalid(
                                 "artifact File association raced another terminal operation".into(),
-                            ));
+                            )));
                         }
                         transaction.commit().map_err(e)?;
                         return Ok(Ok(CreateFileRecordOutcome::Existing(associated)));
                     }
                     Ok(None) if record.deleted => {
-                        return Ok(Err(
+                        return Ok(Err(FileCatalogError::Invalid(
                             "terminal association cannot recreate a missing tombstone".into(),
-                        ));
+                        )));
                     }
                     Ok(None) => {}
-                    Err(FileCatalogError::Invalid(message)) => return Ok(Err(message)),
-                    Err(FileCatalogError::Storage(message)) => return Err(e(message)),
+                    Err(error) => return Ok(Err(error)),
                 }
             }
 
@@ -352,12 +353,14 @@ impl FileCatalog for SqliteFileStore {
                     )
                     .map_err(e)?
             } else {
-                return Ok(Err(format!("file id `{}` already exists", record.id).into()));
+                return Ok(Err(FileCatalogError::Invalid(
+                    format!("file id `{}` already exists", record.id).into(),
+                )));
             };
             if inserted == 0 && !same_harvest_identity(&lookup, &record) {
-                return Ok(Err(
+                return Ok(Err(FileCatalogError::Invalid(
                     "artifact harvest key is bound to different File identity".into(),
-                ));
+                )));
             }
             let outcome = if inserted > 0 {
                 CreateFileRecordOutcome::Inserted(lookup)
@@ -369,7 +372,6 @@ impl FileCatalog for SqliteFileStore {
         })
         .await
         .map_err(ce)?
-        .map_err(FileCatalogError::Invalid)
     }
 
     async fn get_file(

@@ -10,6 +10,7 @@ pub mod dream_store;
 pub mod env_registry;
 pub mod resource_registry;
 pub mod session_store;
+pub mod stream_checkpoint;
 pub mod work_queue;
 pub mod worker_directory;
 

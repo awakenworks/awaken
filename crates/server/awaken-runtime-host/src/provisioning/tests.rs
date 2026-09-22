@@ -2097,16 +2097,18 @@ impl FileCatalog for FailingFileCatalog {
         &self,
         _request: awaken_resource_contract::ReplaceArtifactCapture,
     ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, FileCatalogError> {
-        Err(FileCatalogError::Storage(
-            "injected catalog replacement failure".into(),
-        ))
+        Err(FileCatalogError::Indeterminate {
+            detail: "injected catalog replacement failure".into(),
+        })
     }
 
     async fn create_file(
         &self,
         _record: FileRecord,
     ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
-        Err(FileCatalogError::Storage("injected catalog failure".into()))
+        Err(FileCatalogError::Indeterminate {
+            detail: "injected catalog failure".into(),
+        })
     }
 
     async fn get_file(

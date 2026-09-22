@@ -20,7 +20,9 @@ fn e(x: impl ToString) -> FileStoreError {
 }
 
 fn ce(x: impl ToString) -> FileCatalogError {
-    FileCatalogError::Storage(x.to_string().into())
+    FileCatalogError::Indeterminate {
+        detail: x.to_string(),
+    }
 }
 
 fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {

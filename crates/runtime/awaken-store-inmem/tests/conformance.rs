@@ -100,3 +100,11 @@ async fn concurrent_operations_cas_one_winner() {
     awaken_store_conformance::concurrent_operations_cas_one_winner(&MemoryCommitCoordinator::new())
         .await;
 }
+
+#[tokio::test]
+async fn stream_checkpoint_register_conforms() {
+    let store = awaken_store_inmem::MemoryStreamCheckpointStore::new();
+    awaken_store_conformance::stream_checkpoint::writes_are_exact(&store, "stream-register").await;
+    awaken_store_conformance::stream_checkpoint::delete_is_idempotent(&store, "stream-register")
+        .await;
+}

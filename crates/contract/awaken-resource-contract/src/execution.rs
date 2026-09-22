@@ -278,9 +278,7 @@ impl<C> ArtifactPublication<C> {
             || self.mime_type.trim().is_empty()
             || self.mime_type.len() > 255
         {
-            return Err(ArtifactPublicationError::new(
-                "artifact requires an exact Workspace, Session, bounded relative path, and MIME type",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest { detail: "artifact requires an exact Workspace, Session, bounded relative path, and MIME type".into() });
         }
         let actual = content_id(&self.bytes);
         let expected_effect =
@@ -290,19 +288,19 @@ impl<C> ArtifactPublication<C> {
             .as_deref()
             .is_some_and(|scope| scope.trim().is_empty())
         {
-            return Err(ArtifactPublicationError::new(
-                "artifact idempotency scope must be nonempty",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail: "artifact idempotency scope must be nonempty".into(),
+            });
         }
         if self.content_id != actual {
-            return Err(ArtifactPublicationError::new(
-                "artifact bytes do not match the asserted content id",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail: "artifact bytes do not match the asserted content id".into(),
+            });
         }
         if self.effect_id != expected_effect {
-            return Err(ArtifactPublicationError::new(
-                "artifact effect id does not match its exact publication intent",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail: "artifact effect id does not match its exact publication intent".into(),
+            });
         }
         Ok(())
     }
@@ -314,9 +312,11 @@ impl<C> ArtifactRecovery<C> {
             || self.session_id.trim().is_empty()
             || self.idempotency_scope.trim().is_empty()
         {
-            return Err(ArtifactPublicationError::new(
-                "artifact recovery requires an exact Workspace, Session, and idempotency scope",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail:
+                    "artifact recovery requires an exact Workspace, Session, and idempotency scope"
+                        .into(),
+            });
         }
         Ok(())
     }
@@ -355,9 +355,9 @@ impl<C> ArtifactRecovery<C> {
             })
             .collect::<Vec<_>>();
         if !ArtifactPublicationReceipt::canonicalize(&mut receipts) {
-            return Err(ArtifactPublicationError::new(
-                "artifact recovery found duplicate durable effect evidence",
-            ));
+            return Err(ArtifactPublicationError::ReceiptMismatch {
+                detail: "artifact recovery found duplicate durable effect evidence".into(),
+            });
         }
         Ok(receipts)
     }
@@ -375,9 +375,9 @@ impl<C> ArtifactRecovery<C> {
         if canonical == receipts {
             Ok(())
         } else {
-            Err(ArtifactPublicationError::new(
-                "artifact recovery response is not canonical",
-            ))
+            Err(ArtifactPublicationError::ReceiptMismatch {
+                detail: "artifact recovery response is not canonical".into(),
+            })
         }
     }
 }
@@ -492,21 +492,44 @@ impl ArtifactPublicationReceipt {
         }) {
             Ok(())
         } else {
-            Err(ArtifactPublicationError::new(
-                "artifact receipt does not match its exact publication intent",
-            ))
+            Err(ArtifactPublicationError::ReceiptMismatch {
+                detail: "artifact receipt does not match its exact publication intent".into(),
+            })
         }
     }
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-#[error("artifact publication error: {0}")]
-pub struct ArtifactPublicationError(ResourceErrorDetail);
+pub enum ArtifactPublicationError {
+    #[error(transparent)]
+    Resource(#[from] crate::ResourcePurgeError),
+    #[error(transparent)]
+    Catalog(#[from] crate::FileCatalogError),
+    #[error("invalid artifact request: {detail}")]
+    InvalidRequest { detail: String },
+    #[error("artifact authority denied the request: {detail}")]
+    Denied { detail: String },
+    #[error("artifact authority unavailable: {detail}")]
+    AuthorityUnavailable { detail: String },
+    #[error("artifact conflicts with current authority: {detail}")]
+    Conflict { detail: String },
+    #[error("artifact data is corrupt: {detail}")]
+    CorruptData { detail: String },
+    #[error("artifact receipt is not exact: {detail}")]
+    ReceiptMismatch { detail: String },
+    /// The effect may already have committed. Preserve its original identity
+    /// and reconcile through the existing capture/recovery operation.
+    #[error("artifact outcome is indeterminate: {detail}")]
+    Indeterminate { detail: String },
+}
 
 impl ArtifactPublicationError {
+    /// Unclassified failures remain unknown, never evidence of non-execution.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self(ResourceErrorDetail::new(message))
+        Self::Indeterminate {
+            detail: message.into(),
+        }
     }
 }
 
@@ -548,9 +571,9 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for UnavailableArtifactPubli
         _session_id: &str,
         _fence: Option<&C>,
     ) -> Result<Option<crate::ArtifactCapture>, ArtifactPublicationError> {
-        Err(ArtifactPublicationError::new(
-            "artifact capture is not configured by the composition root",
-        ))
+        Err(ArtifactPublicationError::AuthorityUnavailable {
+            detail: "artifact capture is not configured by the composition root".into(),
+        })
     }
 
     async fn replace_capture(
@@ -558,27 +581,27 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for UnavailableArtifactPubli
         _request: crate::ReplaceArtifactCapture,
         _fence: Option<&C>,
     ) -> Result<crate::ReplaceArtifactCaptureOutcome, ArtifactPublicationError> {
-        Err(ArtifactPublicationError::new(
-            "artifact capture is not configured by the composition root",
-        ))
+        Err(ArtifactPublicationError::AuthorityUnavailable {
+            detail: "artifact capture is not configured by the composition root".into(),
+        })
     }
 
     async fn publish(
         &self,
         _publication: ArtifactPublication<C>,
     ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
-        Err(ArtifactPublicationError::new(
-            "artifact publisher is not configured by the composition root",
-        ))
+        Err(ArtifactPublicationError::AuthorityUnavailable {
+            detail: "artifact publisher is not configured by the composition root".into(),
+        })
     }
 
     async fn recover(
         &self,
         _recovery: ArtifactRecovery<C>,
     ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
-        Err(ArtifactPublicationError::new(
-            "artifact recovery is not configured by the composition root",
-        ))
+        Err(ArtifactPublicationError::AuthorityUnavailable {
+            detail: "artifact recovery is not configured by the composition root".into(),
+        })
     }
 }
 

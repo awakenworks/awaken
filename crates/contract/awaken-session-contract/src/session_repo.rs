@@ -13,12 +13,13 @@
 //! realization consumes that pin through the common exact resolver without
 //! selecting another source or revision.
 
-use crate::SessionRevision;
+use crate::{SessionRealizationLease, SessionRevision};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod activity_state;
 mod disposition;
 mod lifecycle_outbox;
+mod mutation;
 mod persisted_session;
 mod recovery;
 mod repository_port;
@@ -28,17 +29,18 @@ mod runtime_intervals;
 use disposition::{SessionDeleteDispositionClass, session_delete_request_plan};
 pub use disposition::{SessionDisposition, SessionDispositionTransitionError};
 pub use lifecycle_outbox::{LifecycleOutbox, SessionStore};
+pub use mutation::{
+    IdempotencyRecord, ScopedPersistedSession, SessionCreateResult, SessionIdempotencyReceipt,
+    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
+    SessionRepositoryConflict, SessionRepositoryError, SessionTombstone,
+    session_tombstone_is_admitted,
+};
 pub use persisted_session::{PersistedSession, SessionEventDispatchSettlementEffect};
 pub use recovery::{
     SessionRecoveryQuarantine, SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor,
     SessionScanQuery,
 };
-pub use repository_port::{
-    IdempotencyRecord, ScopedPersistedSession, SessionCreateResult, SessionIdempotencyReceipt,
-    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
-    SessionRealizationLease, SessionRepository, SessionRepositoryConflict, SessionRepositoryError,
-    SessionTombstone, session_tombstone_is_admitted,
-};
+pub use repository_port::SessionRepository;
 pub use repository_publication::SessionArchiveWithRepositoryPublicationError;
 
 #[cfg(test)]
