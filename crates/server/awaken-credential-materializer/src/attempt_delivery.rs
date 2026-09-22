@@ -141,6 +141,10 @@ mod tests {
         // source becomes Disabled. R1 C1+C2 => fresh claim-epoch delivery whose
         // authority equals publication and whose plaintext resolves exactly.
         // R2 C3 => reject before issuance/material crosses the Vault boundary.
+        // R3 the same still-current claim epoch asks again after a carrier
+        // expires => issue another exact ephemeral delivery, not a new claim or
+        // Credential revision. This proves issuer capability, not that Worker
+        // runtime currently invokes it during a long Run.
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let secrets = Arc::new(InMemorySecretStore::new());
         let source = enter_credential(
@@ -193,19 +197,18 @@ mod tests {
         key_document(&keys, &holder);
         let issuer =
             Arc::new(crate::recipient_envelope::RecipientKeyEnvelope::open(&keys).unwrap());
-        let delivery = VaultAttemptCredentialDeliverySource::new(
+        let delivery_source = VaultAttemptCredentialDeliverySource::new(
             PinnedCredentialMaterializer::new(credentials.clone(), secrets.clone()),
             issuer.clone(),
-        )
-        .deliver(AttemptCredentialDeliveryRequest {
+        );
+        let request = AttemptCredentialDeliveryRequest {
             candidate_fingerprint: CandidateFingerprint("candidate-a".into()),
             published_access: published.clone(),
             selected_plaintext_holder: holder.clone(),
             binding: binding.clone(),
             claim_epoch: 7,
-        })
-        .await
-        .expect("R1");
+        };
+        let delivery = delivery_source.deliver(request.clone()).await.expect("R1");
         assert!(
             credential_access_has_same_authority(&delivery.access, &published),
             "R1"
@@ -224,6 +227,36 @@ mod tests {
         assert_eq!(
             material.material.into_secret().unwrap().expose_secret(),
             "claim-delivery-secret"
+        );
+        let reissued = delivery_source.deliver(request).await.expect("R3");
+        assert_eq!(reissued.claim_epoch, delivery.claim_epoch, "R3 same claim");
+        assert_eq!(
+            reissued.candidate_fingerprint, delivery.candidate_fingerprint,
+            "R3 exact candidate"
+        );
+        assert!(
+            credential_access_has_same_authority(&reissued.access, &published),
+            "R3"
+        );
+        let reissued_material =
+            awaken_credential_contract::CredentialMaterialResolver::resolve_exact(
+                issuer.as_ref(),
+                awaken_credential_contract::CredentialMaterialRequest {
+                    access: &reissued.access,
+                    selected_holder: &holder,
+                    binding: &binding,
+                },
+            )
+            .await
+            .expect("R3 exact ciphertext");
+        assert_eq!(
+            reissued_material
+                .material
+                .into_secret()
+                .unwrap()
+                .expose_secret(),
+            "claim-delivery-secret",
+            "R3"
         );
 
         let mut disabled = source;
