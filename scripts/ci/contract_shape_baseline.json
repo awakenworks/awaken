@@ -50,10 +50,10 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 3031,
-      "catch_all_errors": 13,
+      "production_lines": 3062,
+      "catch_all_errors": 11,
       "growth_reasons": {
-        "production_lines": "September 22: 13 pre-existing opaque Resource wrappers are newly visible to the strengthened scanner, not resolved debt (ADR-0081 section 9); 33 production lines add typed FileStore and FileContentSource failure categories with preserved error provenance.",
+        "production_lines": "Preserve FileCatalog and Artifact failure decisions through existing local and HTTP ports; added typed payloads replace opaque errors, not new capability defaults. Session lease laws move together without changing dependency depth.",
         "catch_all_errors": "September 22: 13 pre-existing opaque Resource wrappers are newly visible to the strengthened scanner, not resolved debt (ADR-0081 section 9); 33 production lines add typed FileStore and FileContentSource failure categories with preserved error provenance."
       }
     },
@@ -85,10 +85,10 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 13222,
+      "production_lines": 13234,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "session.rs split into session/{roles,neutral}.rs for the 2000-line file limit; +6 lines are the mod/use declarations of the split"
+        "production_lines": "Keep one typed FileCatalog/Artifact error projection and separate existing Session mutation and realization models from ports inside the same crate; no dependency-depth or capability-default increase."
       }
     },
     "awaken-session-dream-contract": {

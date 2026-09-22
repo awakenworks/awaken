@@ -169,8 +169,8 @@ impl HttpArtifactPublisher {
         operation: ArtifactCaptureOperation,
         fence: Option<&ArtifactPublicationFence>,
     ) -> Result<ArtifactCaptureResponse, ArtifactPublicationError> {
-        let fence = fence.ok_or_else(|| {
-            ArtifactPublicationError::new("remote artifact capture requires an execution fence")
+        let fence = fence.ok_or_else(|| ArtifactPublicationError::InvalidRequest {
+            detail: "remote artifact capture requires an execution fence".into(),
         })?;
         let payload = ArtifactCaptureRequest {
             operation_fence: fence.clone(),
@@ -188,16 +188,16 @@ impl HttpArtifactPublisher {
         let request = self
             .upstream
             .authorize_request("POST", ARTIFACT_CAPTURE_PATH, request)
-            .map_err(ArtifactPublicationError::new)?;
+            .map_err(|detail| ArtifactPublicationError::Denied { detail })?;
         let response = request
             .send()
             .await
             .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
         if response.status() != http::StatusCode::OK {
-            return Err(ArtifactPublicationError::new(format!(
-                "artifact capture authority returned HTTP {}",
-                response.status()
-            )));
+            return Err(remote_failure(
+                response.status(),
+                response.bytes().await.ok().as_deref(),
+            ));
         }
         response
             .json()
@@ -224,14 +224,14 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
             )
             .await?;
         let ArtifactCaptureResponse::Current(capture) = response else {
-            return Err(ArtifactPublicationError::new(
-                "artifact capture authority returned the wrong operation",
-            ));
+            return Err(ArtifactPublicationError::ReceiptMismatch {
+                detail: "artifact capture authority returned the wrong operation".into(),
+            });
         };
         if let Some(capture) = &capture {
             capture
                 .verify_scope(workspace_id, session_id)
-                .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+                .map_err(ArtifactPublicationError::from)?;
         }
         Ok(capture)
     }
@@ -254,13 +254,13 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
             )
             .await?;
         let ArtifactCaptureResponse::Replaced(outcome) = response else {
-            return Err(ArtifactPublicationError::new(
-                "artifact capture authority returned the wrong operation",
-            ));
+            return Err(ArtifactPublicationError::ReceiptMismatch {
+                detail: "artifact capture authority returned the wrong operation".into(),
+            });
         };
         request
             .verify_outcome(&outcome)
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(ArtifactPublicationError::from)?;
         Ok(outcome)
     }
 
@@ -286,14 +286,14 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
                 ArtifactPublicationFence::Terminal(effect)
             }
             Some(_) => {
-                return Err(ArtifactPublicationError::new(
-                    "artifact idempotency scope does not match its execution fence",
-                ));
+                return Err(ArtifactPublicationError::InvalidRequest {
+                    detail: "artifact idempotency scope does not match its execution fence".into(),
+                });
             }
             None => {
-                return Err(ArtifactPublicationError::new(
-                    "remote artifact publication requires an execution fence",
-                ));
+                return Err(ArtifactPublicationError::InvalidRequest {
+                    detail: "remote artifact publication requires an execution fence".into(),
+                });
             }
         };
         let metadata = ArtifactPublicationRequest {
@@ -324,16 +324,17 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
         let request = self
             .upstream
             .authorize_request("POST", ARTIFACT_PUBLICATION_PATH, request)
-            .map_err(ArtifactPublicationError::new)?;
+            .map_err(|detail| ArtifactPublicationError::Denied { detail })?;
         let response = request
             .send()
             .await
             .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
         let status = response.status();
         if status != http::StatusCode::OK {
-            return Err(ArtifactPublicationError::new(format!(
-                "artifact authority returned HTTP {status}"
-            )));
+            return Err(remote_failure(
+                response.status(),
+                response.bytes().await.ok().as_deref(),
+            ));
         }
         let receipt = response
             .json::<ArtifactPublicationReceipt>()
@@ -349,14 +350,14 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
     ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
         recovery.verify()?;
         let ArtifactPublicationFence::Terminal(effect) = &recovery.fence else {
-            return Err(ArtifactPublicationError::new(
-                "remote artifact recovery requires a terminal effect",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail: "remote artifact recovery requires a terminal effect".into(),
+            });
         };
         if recovery.idempotency_scope != effect.operation_id() {
-            return Err(ArtifactPublicationError::new(
-                "artifact recovery scope does not match its terminal effect",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail: "artifact recovery scope does not match its terminal effect".into(),
+            });
         }
         let request = ArtifactRecoveryRequest {
             terminal_effect: effect.clone(),
@@ -376,16 +377,17 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
         let request = self
             .upstream
             .authorize_request("POST", ARTIFACT_RECOVERY_PATH, request)
-            .map_err(ArtifactPublicationError::new)?;
+            .map_err(|detail| ArtifactPublicationError::Denied { detail })?;
         let response = request
             .send()
             .await
             .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
         let status = response.status();
         if status != http::StatusCode::OK {
-            return Err(ArtifactPublicationError::new(format!(
-                "artifact recovery authority returned HTTP {status}"
-            )));
+            return Err(remote_failure(
+                response.status(),
+                response.bytes().await.ok().as_deref(),
+            ));
         }
         let receipts = response
             .json::<Vec<ArtifactPublicationReceipt>>()
@@ -711,17 +713,21 @@ async fn publish_artifact(
     .await
     {
         Ok(guard) => guard,
-        Err(status) => return status.into_response(),
+        Err(status) => return admission_error_response(status),
     };
     let file_publication = publication.into_file_application();
     match service.application.create_artifact(&file_publication).await {
         Ok(record) => {
             match ArtifactPublicationReceipt::from_publication_record(&file_publication, record) {
                 Ok(receipt) => (StatusCode::OK, Json(receipt)).into_response(),
-                Err(_) => StatusCode::CONFLICT.into_response(),
+                Err(_) => (
+                    ArtifactFailure::ReceiptMismatch {}.status(),
+                    Json(ArtifactFailure::ReceiptMismatch {}),
+                )
+                    .into_response(),
             }
         }
-        Err(error) => application_error_status(&error).into_response(),
+        Err(error) => application_error_response(&error),
     }
 }
 
@@ -761,7 +767,7 @@ async fn capture_artifacts(
     .await
     {
         Ok(guard) => guard,
-        Err(status) => return status.into_response(),
+        Err(status) => return admission_error_response(status),
     };
     match request.operation {
         ArtifactCaptureOperation::Read {
@@ -781,7 +787,7 @@ async fn capture_artifacts(
                     }
                     Json(ArtifactCaptureResponse::Current(capture)).into_response()
                 }
-                Err(error) => application_error_status(&error).into_response(),
+                Err(error) => application_error_response(&error),
             }
         }
         ArtifactCaptureOperation::Replace { request } => {
@@ -793,8 +799,12 @@ async fn capture_artifacts(
                 Ok(outcome) if request.verify_outcome(&outcome).is_ok() => {
                     Json(ArtifactCaptureResponse::Replaced(outcome)).into_response()
                 }
-                Ok(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
-                Err(error) => application_error_status(&error).into_response(),
+                Ok(_) => (
+                    ArtifactFailure::ReceiptMismatch {}.status(),
+                    Json(ArtifactFailure::ReceiptMismatch {}),
+                )
+                    .into_response(),
+                Err(error) => application_error_response(&error),
             }
         }
     }
@@ -829,7 +839,7 @@ async fn recover_artifacts(
     )
     .await
     {
-        return status.into_response();
+        return admission_error_response(status);
     }
     let records = match service
         .application
@@ -837,27 +847,249 @@ async fn recover_artifacts(
         .await
     {
         Ok(records) => records,
-        Err(error) => return application_error_status(&error).into_response(),
+        Err(error) => return application_error_response(&error),
     };
     match recovery.receipts_from_records(records) {
         Ok(receipts) => (StatusCode::OK, Json(receipts)).into_response(),
-        Err(_) => StatusCode::CONFLICT.into_response(),
+        Err(_) => (
+            ArtifactFailure::ReceiptMismatch {}.status(),
+            Json(ArtifactFailure::ReceiptMismatch {}),
+        )
+            .into_response(),
     }
 }
 
-fn application_error_status(error: &ResourcePurgeError) -> StatusCode {
-    match error {
-        ResourcePurgeError::Invalid(_) => StatusCode::BAD_REQUEST,
-        ResourcePurgeError::IdempotencyConflict(_) | ResourcePurgeError::RevisionConflict(_) => {
-            StatusCode::CONFLICT
+// This is the private wire projection of Resources failures, not a second
+// error authority. Never transmit backend diagnostics or infer absence from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ArtifactFailure {
+    InvalidRequest {},
+    Denied {},
+    Conflict {},
+    CorruptData {},
+    ReceiptMismatch {},
+    AuthorityUnavailable {},
+    Indeterminate {},
+}
+
+impl ArtifactFailure {
+    fn status(self) -> StatusCode {
+        match self {
+            Self::InvalidRequest {} => StatusCode::BAD_REQUEST,
+            Self::Denied {} => StatusCode::FORBIDDEN,
+            Self::Conflict {} => StatusCode::CONFLICT,
+            Self::CorruptData {} => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ReceiptMismatch {} => StatusCode::BAD_GATEWAY,
+            Self::AuthorityUnavailable {} | Self::Indeterminate {} => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
         }
-        _ => StatusCode::SERVICE_UNAVAILABLE,
+    }
+    fn error(self) -> ArtifactPublicationError {
+        let detail = format!("artifact authority reported {self:?}");
+        match self {
+            Self::InvalidRequest {} => ArtifactPublicationError::InvalidRequest { detail },
+            Self::Denied {} => ArtifactPublicationError::Denied { detail },
+            Self::Conflict {} => ArtifactPublicationError::Conflict { detail },
+            Self::CorruptData {} => ArtifactPublicationError::CorruptData { detail },
+            Self::ReceiptMismatch {} => ArtifactPublicationError::ReceiptMismatch { detail },
+            Self::AuthorityUnavailable {} => {
+                ArtifactPublicationError::AuthorityUnavailable { detail }
+            }
+            Self::Indeterminate {} => ArtifactPublicationError::Indeterminate { detail },
+        }
+    }
+}
+
+fn application_failure(error: &ResourcePurgeError) -> ArtifactFailure {
+    use awaken_resource_contract::{FileCatalogError, FileStoreError};
+    match error {
+        ResourcePurgeError::Invalid(_)
+        | ResourcePurgeError::Catalog(FileCatalogError::Invalid(_)) => {
+            ArtifactFailure::InvalidRequest {}
+        }
+        ResourcePurgeError::IdempotencyConflict(_)
+        | ResourcePurgeError::RevisionConflict(_)
+        | ResourcePurgeError::StaleClaim
+        | ResourcePurgeError::StaleReclamationFence
+        | ResourcePurgeError::ReclamationFenced { .. } => ArtifactFailure::Conflict {},
+        ResourcePurgeError::Catalog(FileCatalogError::CorruptData { .. })
+        | ResourcePurgeError::Blob(FileStoreError::CorruptContent { .. }) => {
+            ArtifactFailure::CorruptData {}
+        }
+        ResourcePurgeError::Catalog(FileCatalogError::AuthorityUnavailable { .. })
+        | ResourcePurgeError::Blob(FileStoreError::AuthorityUnavailable { .. }) => {
+            ArtifactFailure::AuthorityUnavailable {}
+        }
+        _ => ArtifactFailure::Indeterminate {},
+    }
+}
+
+#[cfg(test)]
+fn application_error_status(error: &ResourcePurgeError) -> StatusCode {
+    application_failure(error).status()
+}
+
+fn application_error_response(error: &ResourcePurgeError) -> Response {
+    let failure = application_failure(error);
+    (failure.status(), Json(failure)).into_response()
+}
+
+fn admission_error_response(status: StatusCode) -> Response {
+    // This boundary has not invoked the File application. Unlike an arbitrary
+    // remote 503, its missing authority is known before the physical effect.
+    let failure = match status {
+        StatusCode::BAD_REQUEST => ArtifactFailure::InvalidRequest {},
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ArtifactFailure::Denied {},
+        StatusCode::CONFLICT => ArtifactFailure::Conflict {},
+        StatusCode::SERVICE_UNAVAILABLE => ArtifactFailure::AuthorityUnavailable {},
+        _ => ArtifactFailure::Indeterminate {},
+    };
+    (failure.status(), Json(failure)).into_response()
+}
+
+fn remote_failure(status: StatusCode, body: Option<&[u8]>) -> ArtifactPublicationError {
+    // A lost body or nonempty malformed/contradictory envelope cannot prove
+    // non-execution. Only an actually empty legacy response may use the
+    // middleware admission status; decode failure is not an empty body.
+    let Some(body) = body else {
+        return ArtifactFailure::Indeterminate {}.error();
+    };
+    if !body.is_empty() {
+        return match serde_json::from_slice::<ArtifactFailure>(body) {
+            Ok(failure) if failure.status() == status => failure.error(),
+            _ => ArtifactFailure::Indeterminate {}.error(),
+        };
+    }
+    // Admission refusals also originate in authentication/fence middleware,
+    // which returns bare statuses before calling the Resources application.
+    match status {
+        StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE => {
+            ArtifactFailure::InvalidRequest {}.error()
+        }
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ArtifactFailure::Denied {}.error(),
+        StatusCode::CONFLICT => ArtifactFailure::Conflict {}.error(),
+        _ => ArtifactFailure::Indeterminate {}.error(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn error_projection_preserves_decisions_without_backend_diagnostics() {
+        use awaken_resource_contract::FileCatalogError;
+        // Cause/effect table: R1 invalid => refusal; R2 stale => conflict;
+        // R3 corrupt stored data => corrupt, never absent; R4 unknown commit
+        // => indeterminate; R5 missing authority => unavailable. Each row uses
+        // the real server response encoder and HTTP client decoder. Changing
+        // diagnostic text cannot change the decision or expose it on the wire.
+        for (error, expected) in [
+            (
+                ResourcePurgeError::Invalid("private validation".into()),
+                ArtifactFailure::InvalidRequest {},
+            ),
+            (ResourcePurgeError::StaleClaim, ArtifactFailure::Conflict {}),
+            (
+                ResourcePurgeError::Catalog(FileCatalogError::CorruptData {
+                    detail: "private SQL".into(),
+                }),
+                ArtifactFailure::CorruptData {},
+            ),
+            (
+                ResourcePurgeError::Catalog(FileCatalogError::Indeterminate {
+                    detail: "private host".into(),
+                }),
+                ArtifactFailure::Indeterminate {},
+            ),
+            (
+                ResourcePurgeError::Catalog(FileCatalogError::AuthorityUnavailable {
+                    detail: "private topology".into(),
+                }),
+                ArtifactFailure::AuthorityUnavailable {},
+            ),
+        ] {
+            let router = Router::new().route(
+                "/",
+                post(move || {
+                    let error = error.clone();
+                    async move { application_error_response(&error) }
+                }),
+            );
+            let address = awaken_dispatch_testkit::worker_http::serve(router).await;
+            let response = reqwest::Client::new()
+                .post(format!("http://{address}/"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected.status());
+            assert_eq!(
+                remote_failure(response.status(), response.bytes().await.ok().as_deref()),
+                expected.error()
+            );
+            let encoded = serde_json::to_string(&expected).unwrap();
+            assert!(!encoded.contains("private"));
+        }
+    }
+
+    #[tokio::test]
+    async fn contradictory_or_unreadable_failure_does_not_prove_non_execution() {
+        // R6 typed refusal with a success/mismatched envelope => unknown;
+        // R7 unreadable server error => unknown; R8 bare middleware denial =>
+        // denied; R9 bare stale fence => conflict; R10 post-effect bad receipt
+        // => ReceiptMismatch, never a claim that the write was rejected.
+        // R11 a nonempty malformed/extended 400 envelope is not the legacy
+        // empty admission response and therefore remains indeterminate.
+        // R12 response-body transport failure never becomes a bare denial.
+        assert_eq!(
+            remote_failure(StatusCode::FORBIDDEN, None),
+            ArtifactFailure::Indeterminate {}.error()
+        );
+        for (status, body, expected) in [
+            (
+                StatusCode::BAD_REQUEST,
+                "not-json",
+                ArtifactFailure::Indeterminate {},
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"kind":"invalid_request","committed":true}"#,
+                ArtifactFailure::Indeterminate {},
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                r#"{"kind":"receipt_mismatch"}"#,
+                ArtifactFailure::ReceiptMismatch {},
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                r#"{"kind":"invalid_request"}"#,
+                ArtifactFailure::Indeterminate {},
+            ),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "not-json",
+                ArtifactFailure::Indeterminate {},
+            ),
+            (StatusCode::FORBIDDEN, "", ArtifactFailure::Denied {}),
+            (StatusCode::CONFLICT, "", ArtifactFailure::Conflict {}),
+        ] {
+            let router = Router::new().route("/", post(move || async move { (status, body) }));
+            let address = awaken_dispatch_testkit::worker_http::serve(router).await;
+            let response = reqwest::Client::new()
+                .post(format!("http://{address}/"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                remote_failure(response.status(), response.bytes().await.ok().as_deref()),
+                expected.error()
+            );
+        }
+    }
+
     use awaken_dispatch_contract::RunClaim;
     use awaken_worker_contract::WorkerIdentity;
 

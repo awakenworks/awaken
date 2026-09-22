@@ -83,11 +83,11 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for ApplicationArtifactPubli
             .application
             .artifact_capture(workspace_id, session_id)
             .await
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(ArtifactPublicationError::from)?;
         if let Some(capture) = &capture {
             capture
                 .verify_scope(workspace_id, session_id)
-                .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+                .map_err(ArtifactPublicationError::from)?;
         }
         Ok(capture)
     }
@@ -102,10 +102,10 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for ApplicationArtifactPubli
             .application
             .replace_artifact_capture(request.clone())
             .await
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(ArtifactPublicationError::from)?;
         request
             .verify_outcome(&outcome)
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(ArtifactPublicationError::from)?;
         Ok(outcome)
     }
 
@@ -119,7 +119,7 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for ApplicationArtifactPubli
             .application
             .create_artifact(&file_publication)
             .await
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(ArtifactPublicationError::from)?;
         ArtifactPublicationReceipt::from_publication_record(&file_publication, record)
     }
 
@@ -132,7 +132,7 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for ApplicationArtifactPubli
             .application
             .list_including_deleted(&recovery.workspace_id, Some(&recovery.session_id))
             .await
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(ArtifactPublicationError::from)?;
         recovery.receipts_from_records(records)
     }
 }

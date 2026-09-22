@@ -56,21 +56,27 @@ impl FileCatalog for UnavailableWorkerFiles {
         _workspace_id: &str,
         _session_id: &str,
     ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, FileCatalogError> {
-        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+        Err(FileCatalogError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn replace_artifact_capture(
         &self,
         _request: awaken_resource_contract::ReplaceArtifactCapture,
     ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, FileCatalogError> {
-        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+        Err(FileCatalogError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn create_file(
         &self,
         _record: FileRecord,
     ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
-        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+        Err(FileCatalogError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn get_file(
@@ -79,7 +85,9 @@ impl FileCatalog for UnavailableWorkerFiles {
         _file_id: &str,
         _include_deleted: bool,
     ) -> Result<Option<FileRecord>, FileCatalogError> {
-        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+        Err(FileCatalogError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn list_files(
@@ -87,7 +95,9 @@ impl FileCatalog for UnavailableWorkerFiles {
         _workspace_id: &str,
         _scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
-        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+        Err(FileCatalogError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn list_files_including_deleted(
@@ -95,7 +105,9 @@ impl FileCatalog for UnavailableWorkerFiles {
         _workspace_id: &str,
         _scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
-        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+        Err(FileCatalogError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn mark_file_deleted(
@@ -103,11 +115,15 @@ impl FileCatalog for UnavailableWorkerFiles {
         _workspace_id: &str,
         _file_id: &str,
     ) -> Result<Option<FileRecord>, FileCatalogError> {
-        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+        Err(FileCatalogError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn active_size_bytes(&self, _workspace_id: &str) -> Result<u64, FileCatalogError> {
-        Err(FileCatalogError::Storage(FILE_UNAVAILABLE.into()))
+        Err(FileCatalogError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 }
 

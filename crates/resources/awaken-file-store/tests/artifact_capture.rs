@@ -407,7 +407,7 @@ async fn reject_corrupt(catalog: &dyn FileCatalog, session: &str) {
     assert!(
         matches!(
             catalog.artifact_capture("capture-workspace", session).await,
-            Err(awaken_resource_contract::FileCatalogError::Storage(_))
+            Err(awaken_resource_contract::FileCatalogError::CorruptData { .. })
         ),
         "D1 read {session}"
     );
@@ -416,7 +416,7 @@ async fn reject_corrupt(catalog: &dyn FileCatalog, session: &str) {
     assert!(
         matches!(
             catalog.replace_artifact_capture(replacement).await,
-            Err(awaken_resource_contract::FileCatalogError::Storage(_))
+            Err(awaken_resource_contract::FileCatalogError::CorruptData { .. })
         ),
         "D1 replace {session}"
     );

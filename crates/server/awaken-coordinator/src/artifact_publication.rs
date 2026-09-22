@@ -69,15 +69,17 @@ impl ClaimFencedArtifactPublisher {
         let guard = match fence {
             Some(ArtifactPublicationFence::SessionMaterialization(_))
             | Some(ArtifactPublicationFence::RepositoryPublication { .. }) => {
-                return Err(ArtifactPublicationError::new(
-                    "Session Resource materialization cannot publish Artifacts",
-                ));
+                return Err(ArtifactPublicationError::InvalidRequest {
+                    detail: "Session Resource materialization cannot publish Artifacts".into(),
+                });
             }
             Some(ArtifactPublicationFence::Run(claim)) => {
                 if idempotency_scope.is_some() {
-                    return Err(ArtifactPublicationError::new(
-                        "ordinary Artifact publication cannot use a terminal idempotency scope",
-                    ));
+                    return Err(ArtifactPublicationError::InvalidRequest {
+                        detail:
+                            "ordinary Artifact publication cannot use a terminal idempotency scope"
+                                .into(),
+                    });
                 }
                 let guard = self
                     .dispatch
@@ -85,11 +87,13 @@ impl ClaimFencedArtifactPublisher {
                     .await
                     .map_err(|error| ArtifactPublicationError::new(error.to_string()))?
                     .filter(|guard| guard.is_live_at(artifact_now_ms()))
-                    .ok_or_else(|| ArtifactPublicationError::new("dispatch claim is stale"))?;
+                    .ok_or_else(|| ArtifactPublicationError::Conflict {
+                        detail: "dispatch claim is stale".into(),
+                    })?;
                 if !guard.matches_execution_scope(workspace_id, session_id) {
-                    return Err(ArtifactPublicationError::new(
-                        "artifact is outside its dispatch scope",
-                    ));
+                    return Err(ArtifactPublicationError::Denied {
+                        detail: "artifact is outside its dispatch scope".into(),
+                    });
                 }
                 Some(guard)
             }
@@ -115,9 +119,10 @@ impl ClaimFencedArtifactPublisher {
             }
             None if idempotency_scope.is_none() => None,
             None => {
-                return Err(ArtifactPublicationError::new(
-                    "unfenced Artifact publication cannot use a terminal idempotency scope",
-                ));
+                return Err(ArtifactPublicationError::InvalidRequest {
+                    detail: "unfenced Artifact publication cannot use a terminal idempotency scope"
+                        .into(),
+                });
             }
         };
         Ok(guard)
@@ -131,9 +136,9 @@ impl ClaimFencedArtifactPublisher {
         ArtifactPublicationError,
     > {
         self.terminal_preparation_control.get().ok_or_else(|| {
-            ArtifactPublicationError::new(format!(
-                "{effect_kind} Artifact effect has no Session authority"
-            ))
+            ArtifactPublicationError::AuthorityUnavailable {
+                detail: format!("{effect_kind} Artifact effect has no Session authority"),
+            }
         })
     }
 
@@ -150,14 +155,14 @@ impl ClaimFencedArtifactPublisher {
             lease.expires_at_unix_ms,
             now_unix_ms,
         ) {
-            return Err(ArtifactPublicationError::new(format!(
-                "{effect_kind} Artifact effect is expired"
-            )));
+            return Err(ArtifactPublicationError::Conflict {
+                detail: format!("{effect_kind} Artifact effect is expired"),
+            });
         }
         self.checkpoint_artifact_control.get().ok_or_else(|| {
-            ArtifactPublicationError::new(format!(
-                "{effect_kind} Artifact effect has no Session authority"
-            ))
+            ArtifactPublicationError::AuthorityUnavailable {
+                detail: format!("{effect_kind} Artifact effect has no Session authority"),
+            }
         })
     }
 
@@ -169,22 +174,22 @@ impl ClaimFencedArtifactPublisher {
         idempotency_scope: Option<&str>,
     ) -> Result<(), ArtifactPublicationError> {
         if idempotency_scope != Some(effect.operation_id()) {
-            return Err(ArtifactPublicationError::new(
-                "terminal Artifact scope does not match its cleanup operation",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail: "terminal Artifact scope does not match its cleanup operation".into(),
+            });
         }
         let control = self.terminal_control("terminal")?;
         let authorization = control
             .authorize_terminal_cleanup_effect(effect)
             .await
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(control_publication_error)?;
         authorization
             .verify_for(effect)
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(control_publication_error)?;
         if authorization.workspace_id() != workspace_id || effect.command.thread_id != session_id {
-            return Err(ArtifactPublicationError::new(
-                "terminal Artifact effect is outside its Session authority",
-            ));
+            return Err(ArtifactPublicationError::Denied {
+                detail: "terminal Artifact effect is outside its Session authority".into(),
+            });
         }
         Ok(())
     }
@@ -197,24 +202,27 @@ impl ClaimFencedArtifactPublisher {
         idempotency_scope: Option<&str>,
     ) -> Result<(), ArtifactPublicationError> {
         if idempotency_scope.is_some() {
-            return Err(ArtifactPublicationError::new(
-                "checkpoint source-release Artifact cannot reserve terminal association scope",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail:
+                    "checkpoint source-release Artifact cannot reserve terminal association scope"
+                        .into(),
+            });
         }
         let lease = operation.realization.as_ref().ok_or_else(|| {
-            ArtifactPublicationError::new(
-                "checkpoint source-release Artifact has no realization lease",
-            )
+            ArtifactPublicationError::InvalidRequest {
+                detail: "checkpoint source-release Artifact has no realization lease".into(),
+            }
         })?;
         let control = self.checkpoint_control_for_live_lease(lease, "checkpoint source-release")?;
         let authorized_workspace = control
             .authorize_checkpoint_release_artifact_effect(session_id, operation)
             .await
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+            .map_err(control_publication_error)?;
         if authorized_workspace != workspace_id {
-            return Err(ArtifactPublicationError::new(
-                "checkpoint source-release Artifact is outside its Session authority",
-            ));
+            return Err(ArtifactPublicationError::Denied {
+                detail: "checkpoint source-release Artifact is outside its Session authority"
+                    .into(),
+            });
         }
         Ok(())
     }
@@ -274,9 +282,9 @@ impl ArtifactPublisher<ArtifactPublicationFence> for ClaimFencedArtifactPublishe
         recovery: ArtifactRecovery<ArtifactPublicationFence>,
     ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
         let ArtifactPublicationFence::Terminal(effect) = &recovery.fence else {
-            return Err(ArtifactPublicationError::new(
-                "artifact recovery requires an exact terminal effect",
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail: "artifact recovery requires an exact terminal effect".into(),
+            });
         };
         self.authorize_terminal_artifact(
             effect,
@@ -286,6 +294,17 @@ impl ArtifactPublisher<ArtifactPublicationFence> for ClaimFencedArtifactPublishe
         )
         .await?;
         self.inner.recover(recovery).await
+    }
+}
+
+fn control_publication_error(
+    error: awaken_session_contract::SessionRealizationControlFailure,
+) -> ArtifactPublicationError {
+    use awaken_session_contract::SessionRealizationControlFailure as Failure;
+    let detail = error.to_string();
+    match error {
+        Failure::Unavailable(_) => ArtifactPublicationError::AuthorityUnavailable { detail },
+        _ => ArtifactPublicationError::Conflict { detail },
     }
 }
 

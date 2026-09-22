@@ -58,13 +58,18 @@ fn decode_artifact_capture(
 ) -> Result<ArtifactCapture, FileCatalogError> {
     let revision = awaken_sql_storage::StoredU64::try_from(revision)
         .map(awaken_sql_storage::StoredU64::domain_value)
-        .map_err(|error| FileCatalogError::Storage(error.to_string().into()))?;
+        .map_err(|error| FileCatalogError::CorruptData {
+            detail: error.to_string(),
+        })?;
     let capture = ArtifactCapture {
         workspace_id,
         session_id,
         revision,
-        file_ids: serde_json::from_str(file_ids_json)
-            .map_err(|error| FileCatalogError::Storage(error.to_string().into()))?,
+        file_ids: serde_json::from_str(file_ids_json).map_err(|error| {
+            FileCatalogError::CorruptData {
+                detail: error.to_string(),
+            }
+        })?,
     };
     capture.verify_scope(&capture.workspace_id, &capture.session_id)?;
     Ok(capture)
@@ -429,9 +434,9 @@ impl FileCatalog for InMemoryFileStore {
                     }
                     Some(ArtifactAssociationDecision::Associate(target)) => {
                         let existing = files.get_mut(&target.id).ok_or_else(|| {
-                            FileCatalogError::Storage(
-                                "artifact File disappeared during association".into(),
-                            )
+                            FileCatalogError::CorruptData {
+                                detail: "artifact File disappeared during association".into(),
+                            }
                         })?;
                         existing.artifact_idempotency_scope = Some(requested.to_string());
                         return Ok(CreateFileRecordOutcome::Existing(existing.clone()));
