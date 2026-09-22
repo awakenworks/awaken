@@ -97,6 +97,14 @@ struct ClaimBoundCredentialDeliveryRefresh {
     claim: RunClaim,
 }
 
+fn claim_credential_refresh_is_available(
+    binding_count: usize,
+    delivery_count: usize,
+    transport_available: bool,
+) -> bool {
+    binding_count > 0 && delivery_count == binding_count && transport_available
+}
+
 /// Process-local proof that this drive selected its committed read authority
 /// for the exact claim before any physical executor can be entered. It carries
 /// no second lifecycle state: the durable claim and recovery source remain the
@@ -626,7 +634,11 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                     format!("claimed credential delivery validation failed: {error}"),
                 ))
             })?;
-            if dispatch.claimed_credential_delivery_transport().is_some() {
+            if claim_credential_refresh_is_available(
+                credential_bindings.len(),
+                credential_deliveries.len(),
+                dispatch.claimed_credential_delivery_transport().is_some(),
+            ) {
                 realization = realization.with_delivery_refresh(Arc::new(
                     ClaimBoundCredentialDeliveryRefresh {
                         dispatch: dispatch.clone(),

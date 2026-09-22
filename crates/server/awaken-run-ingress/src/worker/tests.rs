@@ -874,3 +874,28 @@ async fn worker_rejects_unmatched_claim_delivery_without_panicking() {
         "R2/E2 invalid claim delivery must fail closed instead of panicking"
     );
 }
+
+#[test]
+fn claim_refresh_requires_complete_control_delivery_and_transport() {
+    /* Claim-refresh capability table. C1 bindings are absent/present; C2
+     * response-local deliveries are absent, complete, or partial; C3 the
+     * Worker has the authenticated redelivery transport. E1 only the complete
+     * C1+C2+C3 row installs live refresh; E2 every other row keeps the claim's
+     * original published/cached envelope path. This reproduces the distributed
+     * k3d deployment whose Control intentionally has no delivery source. */
+    for (bindings, deliveries, transport, expected) in [
+        (0, 0, false, false),
+        (0, 0, true, false),
+        (1, 0, true, false),
+        (1, 1, false, false),
+        (2, 1, true, false),
+        (1, 1, true, true),
+        (2, 2, true, true),
+    ] {
+        assert_eq!(
+            super::claim_credential_refresh_is_available(bindings, deliveries, transport),
+            expected,
+            "bindings={bindings} deliveries={deliveries} transport={transport}",
+        );
+    }
+}
