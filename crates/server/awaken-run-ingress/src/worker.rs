@@ -28,8 +28,9 @@ use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
 };
 use awaken_runtime_contract::{
-    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialRealization,
-    CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
+    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
+    AttemptCredentialDeliverySource, AttemptCredentialRealization, CredentialRealizationReceipt,
+    CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
 use awaken_session_contract::{SessionRunActivityAdmission, SessionRunActivityAdmissionMode};
 use tokio_util::sync::CancellationToken;
@@ -87,6 +88,11 @@ struct ClaimBoundOwnershipVerifier {
 }
 
 struct ClaimBoundCredentialRecorder {
+    dispatch: Arc<dyn crate::DispatchQueue>,
+    claim: RunClaim,
+}
+
+struct ClaimBoundCredentialDeliveryRefresh {
     dispatch: Arc<dyn crate::DispatchQueue>,
     claim: RunClaim,
 }
@@ -161,6 +167,22 @@ impl CredentialRealizationRecorder for ClaimBoundCredentialRecorder {
             )),
             Err(error) => Err(CredentialRealizationRecordError(error.to_string())),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl AttemptCredentialDeliverySource for ClaimBoundCredentialDeliveryRefresh {
+    async fn deliver(
+        &self,
+        request: AttemptCredentialDeliveryRequest,
+    ) -> Result<AttemptCredentialDelivery, String> {
+        self.dispatch
+            .claimed_credential_delivery_transport()
+            .ok_or_else(|| "claim credential delivery transport is unavailable".to_string())?
+            .refresh_credential_delivery(&self.claim, request)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "dispatch claim was superseded during credential delivery".to_string())
     }
 }
 
@@ -591,7 +613,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             ctx = ctx.with_execution_scope(scope.clone());
         }
         if !credential_bindings.is_empty() {
-            let realization = AttemptCredentialRealization::new_with_deliveries(
+            let mut realization = AttemptCredentialRealization::new_with_deliveries(
                 credential_bindings.to_vec(),
                 credential_deliveries.to_vec(),
                 Arc::new(ClaimBoundCredentialRecorder {
@@ -604,6 +626,14 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                     format!("claimed credential delivery validation failed: {error}"),
                 ))
             })?;
+            if dispatch.claimed_credential_delivery_transport().is_some() {
+                realization = realization.with_delivery_refresh(Arc::new(
+                    ClaimBoundCredentialDeliveryRefresh {
+                        dispatch: dispatch.clone(),
+                        claim: claim.clone(),
+                    },
+                ));
+            }
             ctx = ctx.with_credential_realization(realization);
         }
         // Always install the claim-fenced adapter. A database-less Worker has no

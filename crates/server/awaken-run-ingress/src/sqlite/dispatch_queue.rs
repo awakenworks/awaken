@@ -1420,6 +1420,41 @@ impl DispatchQueue for SqliteDispatchStore {
 
 #[async_trait]
 impl ControlDispatchQueue for SqliteDispatchStore {
+    async fn current_credential_binding(
+        &self,
+        claim: &RunClaim,
+        candidate: &awaken_runtime_contract::CandidateFingerprint,
+    ) -> Result<Option<AttemptCredentialBinding>, DispatchError> {
+        let claim = claim.clone();
+        let candidate = candidate.clone();
+        let now_ms = self.clock.now_ms();
+        self.with_conn(move |conn, p| {
+            let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+            let now_ms = durable_i64("dispatch store time", now_ms)?;
+            let bindings_json: Option<Option<String>> = conn
+                .query_row(
+                    &format!(
+                        "SELECT credential_bindings FROM {p}_dispatch WHERE run_id = ?1 \
+                         AND status = 'running' AND lease_owner = ?2 AND lease_epoch = ?3 \
+                         AND lease_until > ?4"
+                    ),
+                    params![claim.run_id.0, claim.owner, claim_epoch, now_ms],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            let bindings: Vec<AttemptCredentialBinding> = bindings_json
+                .flatten()
+                .map(|value| serde_json::from_str(&value).map_err(json_err))
+                .transpose()?
+                .unwrap_or_default();
+            Ok(bindings
+                .into_iter()
+                .find(|binding| binding.candidate_fingerprint == candidate))
+        })
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,

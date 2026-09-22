@@ -1418,6 +1418,47 @@ impl DispatchQueue for PostgresDispatchStore {
 
 #[async_trait]
 impl ControlDispatchQueue for PostgresDispatchStore {
+    async fn current_credential_binding(
+        &self,
+        claim: &RunClaim,
+        candidate: &awaken_runtime_contract::CandidateFingerprint,
+    ) -> Result<Option<AttemptCredentialBinding>, DispatchError> {
+        let p = NS;
+        let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let now_ms = durable_i64(
+            "dispatch store time",
+            crate::postgres_helpers::postgres_now_ms(&mut *tx).await?,
+        )?;
+        let row = sqlx::query(&format!(
+            "SELECT credential_bindings FROM {p}_dispatch WHERE run_id = $1 \
+             AND status = 'running' AND lease_owner = $2 AND lease_epoch = $3 \
+             AND lease_until > $4"
+        ))
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(claim_epoch)
+        .bind(now_ms)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let binding = row
+            .map(|row| {
+                row.try_get::<Option<Json<Vec<AttemptCredentialBinding>>>, _>("credential_bindings")
+                    .map_err(store_error)
+            })
+            .transpose()?
+            .flatten()
+            .and_then(|bindings| {
+                bindings
+                    .0
+                    .into_iter()
+                    .find(|binding| &binding.candidate_fingerprint == candidate)
+            });
+        tx.commit().await.map_err(store_error)?;
+        Ok(binding)
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
