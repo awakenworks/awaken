@@ -119,27 +119,39 @@ test('every multi-version Managed E2E consumes the canonical anchor matrix', () 
   }
 });
 
-test('a reviewed candidate joins every shared conformance suite without becoming an anchor', async () => {
+test('candidate admission remains distinct from qualified anchors before and after promotion', async () => {
   // Candidate admission graph: C1=the stable reviewed-role matrix is valid;
   // C2=the caller supplies the sole reviewed package alias. Effects: E1=the
   // exact candidate is appended once with an explicit non-anchor role; E2=the
   // stable matrix remains unchanged; E3=an arbitrary import specifier fails
   // before module evaluation. This lets one implementation drive current and
-  // candidate tests without silently promoting registry-latest code.
+  // candidate tests without silently promoting registry-latest code. C3 an
+  // alias resolves to an already-qualified version -> E4 reject before resource
+  // fixtures begin, so version-pair identities cannot execute twice. The
+  // promoted matrix below models C3 even after a future candidate is installed.
   const matrix = readSdkMatrix();
   const candidateVersion = installedPackageVersion('@anthropic-ai/sdk-candidate');
-  const clients = await loadConformanceClients(
-    matrix,
-    '@anthropic-ai/sdk-candidate',
-    candidateVersion,
-  );
-  assert.equal(clients.length, matrix.length + 1, 'E1');
-  assert.equal(clients.at(-1).role, 'candidate', 'E1');
-  assert.equal(clients.at(-1).version, candidateVersion, 'E1');
-  assert.deepEqual(
-    currentAndCandidateClients(clients).map(({ role }) => role),
-    ['current_oracle', 'candidate'],
-    'E1: release-depth suites execute current and candidate',
+  const anchors = await loadQualifiedClients(matrix);
+  if (anchors.some(({ version }) => version === candidateVersion)) {
+    await assert.rejects(
+      loadConformanceClients(matrix, '@anthropic-ai/sdk-candidate', candidateVersion),
+      /already a qualified anchor/u, 'E4 installed promotion',
+    );
+    assert.equal(anchors.length, matrix.length);
+  } else {
+    const clients = await loadConformanceClients(matrix, '@anthropic-ai/sdk-candidate', candidateVersion);
+    assert.equal(clients.length, matrix.length + 1, 'E1');
+    assert.equal(clients.at(-1).role, 'candidate', 'E1');
+    assert.equal(clients.at(-1).version, candidateVersion, 'E1');
+    assert.deepEqual(currentAndCandidateClients(clients).map(({ role }) => role),
+      ['current_oracle', 'candidate'], 'E1');
+  }
+  const promoted = matrix.map(entry => entry.role === 'current_oracle' ? {
+    ...entry, module: fileURLToPath(import.meta.resolve('@anthropic-ai/sdk-candidate')),
+  } : entry);
+  await assert.rejects(
+    loadConformanceClients(promoted, '@anthropic-ai/sdk-candidate', candidateVersion),
+    /already a qualified anchor/u, 'E4 exact official package under two aliases',
   );
   assert.deepEqual(readSdkMatrix(), matrix, 'E2');
   await assert.rejects(
@@ -154,8 +166,9 @@ test('a reviewed candidate joins every shared conformance suite without becoming
   );
   assert.throws(
     () => currentAndCandidateClients([
-      ...clients,
-      { ...clients.at(-1), id: 'candidate-duplicate' },
+      ...anchors,
+      { role: 'candidate', id: 'candidate-one' },
+      { role: 'candidate', id: 'candidate-two' },
     ]),
     /at most one reviewed candidate/u,
     'E3: ambiguous candidate evidence fails closed',
@@ -185,6 +198,20 @@ test('a reviewed candidate joins every shared conformance suite without becoming
   ]) {
     assert.equal(candidateMatrix.split(owner).length, 2, `${owner} executes exactly once`);
   }
+});
+
+test('distinct anchor aliases cannot duplicate one installed SDK version', async () => {
+  // A1 distinct role/module names but identical resolved version -> reject;
+  // A2 the canonical matrix still yields one client per distinct version.
+  // Use the actual installed package path as the second alias, not a fake SDK.
+  const matrix = readSdkMatrix();
+  const current = matrix.find(entry => entry.role === 'current_oracle');
+  const duplicate = matrix.map(entry => entry.role === 'oldest_supported' ? {
+    ...entry, module: fileURLToPath(import.meta.resolve(current.module)),
+  } : entry);
+  await assert.rejects(loadQualifiedClients(duplicate), /duplicate SDK version/u, 'A1');
+  const clients = await loadQualifiedClients(matrix);
+  assert.equal(new Set(clients.map(({ version }) => version)).size, clients.length, 'A2');
 });
 
 function profileClient(profile) {
