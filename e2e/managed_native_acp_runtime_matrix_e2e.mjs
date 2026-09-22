@@ -25,6 +25,7 @@ import {
   startUpstream,
   stopServer,
   waitForPort,
+  waitForRetainedUnknownExecution,
   waitForSessionEventReceipt,
   waitForValue,
   withServer,
@@ -356,15 +357,18 @@ async function exerciseDirectMatrix() {
     }
 
     // Test design D5, applied to every ACP row.
-    // Causes: C1=slow active ACP prompt with an exact User receipt; C2=official
-    // user.interrupt; C3=later valid User turn. Effects: E1=C1 owns one exact
-    // durable physical-attempt slot and its receipt processes after interruption; E2=C2 kills
-    // the owned subprocess and returns idle without its late marker; E3=C3 succeeds.
-    // Constraint: the canonical dispatch row is the readiness witness, so the
-    // test neither bypasses SessionEnvironment with a host-path side channel nor
-    // guesses from timing. Receipt completion and all behavioral effects are
-    // asserted from committed state/events. Decision rules:
-    // D5-I(C1+C2)->E1+E2; D5-R(D5-I+C3)->E3.
+    // Causes: C1=slow active ACP prompt with an exact User receipt and occupied
+    // durable physical-attempt slot; C2=official user.interrupt; C3=no terminal
+    // receipt from the opaque predecessor. Effects: E1=the Interrupt receipt is
+    // processed while the accepted User receipt remains unprocessed; E2=the Run
+    // reports terminal unknown and emits no late reply; E3=the aggregate remains
+    // running and the exact cancelled physical slot is retained, so no later
+    // turn can overlap or replay the uncertain operation.
+    // Constraint: the canonical dispatch row is the readiness and occupancy
+    // witness. A subprocess reap without a provider/attempt terminal receipt is
+    // not physical-quiescence authority. Direct cooperative cancellation has a
+    // separate Host test; this matrix owns the durable ACP row. Decision rule:
+    // D5-U(C1+C2+C3)->E1+E2+E3.
     for (const runtime of ACP_RUNTIME_IDS) {
       const sessionId = sessions.get(runtime).id;
       const before = await listEvents(client, sessionId);
@@ -406,33 +410,27 @@ async function exerciseDirectMatrix() {
         client,
         sessionId,
         [{ type: 'user.interrupt' }],
-        ({ session, delta }) => session.status === 'idle'
-          && delta.some((event) => event.type === 'session.status_idle'),
-        `${runtime}: ACP interrupt to terminal idle`,
+        ({ delta }) => delta.some((event) => event.type === 'session.error'
+            && event.error?.retry_status?.type === 'terminal'
+            && /execution result is unknown/iu.test(event.error?.message ?? '')),
+        `${runtime}: ACP interrupt to retained unknown execution`,
       );
-      await waitForSessionEventReceipt(
+      const retained = await waitForRetainedUnknownExecution(
         client,
         sessionId,
         activeReceipt.id,
         BETAS,
-        () => true,
-        `${runtime}: original User receipt to process after ACP interrupt`,
+        DISPATCH_DATABASE,
+        `${runtime}: retained unknown ACP attempt`,
+        { cancellationRequested: true },
       );
-      const afterActive = interrupted.listed.slice(before.length);
+      const afterActive = retained.events.slice(before.length);
       assert.ok(
         !eventText(afterActive).includes(`matrix-${runtime}-uncancelled`),
         `${runtime}: interrupted subprocess emitted no late reply`,
       );
-      const steered = await sendBatch(
-        client,
-        sessionId,
-        [{ type: 'user.message', content: [{ type: 'text', text: `matrix-basic steered ${runtime}` }] }],
-        ({ session, delta }) => session.status === 'idle'
-          && eventText(delta).includes(`matrix-${runtime}-reply`),
-        `${runtime}: follow-up after ACP interrupt`,
-      );
-      assert.ok(eventText(steered.delta).includes(`matrix-${runtime}-reply`));
-      pass(`${runtime}: ACP interrupt/no-late-output/recovery`);
+      assert.equal(interrupted.session.status, 'running', `${runtime}: aggregate occupancy remains visible`);
+      pass(`${runtime}: ACP interrupt/unknown/no-late-output/slot retention`);
     }
   } finally {
     if (running) await stopServer(running.server);
@@ -481,47 +479,21 @@ async function exerciseNativeControlRows() {
     );
     assert.ok(eventText(allowed.delta, 'agent.tool_result').includes('NATIVE-MATRIX-HITL'));
     pass('native: qualified HITL allow and tool reply');
-  });
+  }, SERVER_ENV);
 
-  // Test design N2 (Native error/recovery).
-  // Causes: C1=permanent Native provider fault; C2=later valid User turn.
-  // Effects: E1=session.error; E2=C2 replies on the same Session.
-  // Constraint: the accepted POST is not treated as the terminal effect.
-  // Decision rules N2-F(C1)->E1; N2-R(C1+C2)->E2.
-  await withServer('error', PORT + 2, async (baseURL) => {
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL });
-    const session = await client.beta.sessions.create({
-      agent: 'assistant', environment_id: 'env_local', betas: BETAS,
-    });
-    const failed = await sendBatch(
-      client,
-      session.id,
-      [{ type: 'user.message', content: [{ type: 'text', text: 'matrix BOOM' }] }],
-      ({ delta }) => delta.some((event) => event.type === 'session.error'),
-      'Native provider fault to session.error',
-    );
-    assert.ok(failed.delta.some((event) => event.type === 'session.error'));
-    const recovered = await sendBatch(
-      client,
-      session.id,
-      [{ type: 'user.message', content: [{ type: 'text', text: 'native recovered' }] }],
-      ({ session: current, delta }) => current.status === 'idle'
-        && eventText(delta).includes('Echo: native recovered'),
-      'Native turn after session.error',
-    );
-    assert.ok(eventText(recovered.delta).includes('Echo: native recovered'));
-    pass('native: session.error and same-Session recovery');
-  });
-
-  // Test design N3 (Native interrupt/recovery).
+  // Test design N2 (Native interrupt).
   // Causes: C1=slow Native provider Run with an exact User receipt;
-  // C2=user.interrupt; C3=replacement User turn. Effects: E1=C1 reaches running
-  // and its receipt processes after interruption; E2=C2 returns idle; E3=C3
-  // completes. Constraint: the upstream is deterministic and local, and the
-  // original receipt is fenced only after the interrupt terminal edge. Decision rule
-  // N3=C1+C2+C3=>E1+E2+E3.
+  // C2=user.interrupt; C3=no provider terminal receipt. Effects: E1=C1 reaches
+  // running but remains unprocessed; E2=C2 reports terminal unknown without an
+  // aggregate Idle; E3=the cancelled physical slot remains occupied. Constraint:
+  // a local deterministic upstream is still external to the discarded request
+  // Future. Decision rule N2-U=C1+C2+C3=>E1+E2+E3. Native provider-fault
+  // uncertainty is owned once by managed_session_error_e2e.mjs.
   const upstream = await startUpstream('echo', { delayMs: 900 });
-  const server = spawnServer('real', PORT + 3, realServerEnv('echo', upstream));
+  const server = spawnServer('real', PORT + 3, {
+    ...realServerEnv('echo', upstream),
+    ...SERVER_ENV,
+  });
   try {
     await waitForPort(PORT + 3, 900_000, server.server);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: server.baseUrl });
@@ -538,42 +510,31 @@ async function exerciseNativeControlRows() {
       'Native slow Run to reach running',
       { timeoutMs: 10_000, pollMs: 10 },
     );
-    const interruptReceipt = (await client.beta.sessions.events.send(session.id, {
-      events: [{ type: 'user.interrupt' }], betas: BETAS,
-    })).data[0];
     const activeReceipt = (await active).data[0];
     assert.equal(activeReceipt?.type, 'user.message', 'Native exact interrupted User receipt');
-    await waitForSessionEventReceipt(
+    await sendBatch(
       client,
       session.id,
-      interruptReceipt.id,
-      BETAS,
-      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
-      'Native interrupt receipt to process into idle',
-      { timeoutMs: 10_000, pollMs: 10 },
+      [{ type: 'user.interrupt' }],
+      ({ delta }) => delta.some((event) => event.type === 'session.error'
+        && event.error?.retry_status?.type === 'terminal'
+        && /execution result is unknown/iu.test(event.error?.message ?? '')),
+      'Native interrupt to retained unknown execution',
     );
-    await waitForSessionEventReceipt(
+    await waitForRetainedUnknownExecution(
       client,
       session.id,
       activeReceipt.id,
       BETAS,
-      () => true,
-      'Native original User receipt to process after interrupt idle',
-      { timeoutMs: 10_000, pollMs: 10 },
+      DISPATCH_DATABASE,
+      'Native interrupted input to retain physical occupancy',
+      { cancellationRequested: true },
     );
-    const recovered = await sendBatch(
-      client,
-      session.id,
-      [{ type: 'user.message', content: [{ type: 'text', text: 'native replacement' }] }],
-      ({ session: current, delta }) => current.status === 'idle'
-        && eventText(delta).includes('native replacement'),
-      'Native replacement after interrupt',
-    );
-    assert.ok(eventText(recovered.delta).includes('native replacement'));
-    pass('native: active interrupt and replacement turn');
+    pass('native: active interrupt/unknown/unprocessed-input/slot retention');
   } finally {
     await stopServer(server.server);
     upstream.close();
+    cleanupFixtureTree(ROOT);
   }
 }
 
