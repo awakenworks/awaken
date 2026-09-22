@@ -22119,6 +22119,182 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     );
 }
 
+async fn terminal_physical_claim_fixture(
+    label: &str,
+    ttl_ms: u64,
+) -> (
+    Arc<SharedHost>,
+    Arc<awaken_dispatch::AnyDispatchStore>,
+    Arc<awaken_dispatch::ManualClock>,
+    ThreadId,
+    RunId,
+    awaken_dispatch::RunClaim,
+) {
+    use awaken_dispatch::{DispatchQueue, RunClaim, RunDispatch};
+
+    let clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch = Arc::new(
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
+            .expect("physical Dispatch fixture"),
+    );
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_coordinator_dispatch_store(dispatch.clone()),
+    );
+    let session = ThreadId(format!("terminal-{label}-physical-session"));
+    let run = RunId(format!("terminal-{label}-physical-run"));
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                &session.0, &run.0,
+            ))
+            .for_session(session.clone())
+            .with_session_activity_epoch(1),
+        )
+        .await
+        .unwrap();
+    let claimed = dispatch
+        .claim_run(&run, "old-worker", ttl_ms, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let physical_claim = RunClaim::from(&claimed.lease);
+    dispatch.begin_attempt(&physical_claim, None).await.unwrap();
+    (host, dispatch, clock, session, run, physical_claim)
+}
+
+#[test]
+fn terminal_quiescence_and_thread_archive_share_the_exact_unsettled_states() {
+    // C1 one of the seven durable Dispatch states; E1 the five still-runnable
+    // states prohibit quiescence, while DeadLetter and Superseded do not.
+    // Rules S1=Reserved/ReservationLeased/Pending/Leased/Awaiting=>true;
+    // S2=DeadLetter/Superseded=>false. Both callers use the same predicate.
+    use awaken_dispatch::DispatchState as S;
+    for (state, expected) in [
+        (S::Reserved, true),
+        (S::ReservationLeased, true),
+        (S::Pending, true),
+        (S::Leased, true),
+        (S::Awaiting, true),
+        (S::DeadLetter, false),
+        (S::Superseded, false),
+    ] {
+        assert_eq!(super::dispatch_remains_unsettled(state), expected, "S1/S2");
+    }
+}
+
+#[tokio::test]
+async fn terminal_quiescence_does_not_rewait_an_expired_physical_claim() {
+    // C1 the terminal Session owns one still-occupied physical Dispatch slot;
+    // C2 its exact mutation Claim has expired; C3 no independent stop receipt
+    // has retired that slot. E1 durable cancellation is retained; E2 neither
+    // of two cold recovery passes waits the full normal settlement window;
+    // E3 the physical slot is never cleared or treated as a successful cleanup.
+    // Rules Q1=C1+C2+C3=>E1+E2+E3; Q2 in the sibling test retains the
+    // ordinary wait for a Claim that was live before cancellation. Expiry is
+    // supplied by the Dispatch clock, not a sleep or a caller assertion.
+    use awaken_dispatch::{ControlDispatchQueue, DispatchQueue};
+
+    let (host, dispatch, clock, session, run, physical_claim) =
+        terminal_physical_claim_fixture("expired", 100).await;
+    clock.advance(101);
+    assert!(
+        !dispatch.claim_is_current(&physical_claim).await.unwrap(),
+        "Q1/C2"
+    );
+
+    for _ in 0..2 {
+        let failure = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            host.quiesce_terminal_delegations(&session.0),
+        )
+        .await
+        .expect("Q1/E2 expired claim must not consume the normal ten-second wait")
+        .expect_err("Q1/E3 no stop receipt means cleanup stays pending");
+        assert!(
+            failure.to_string().contains("physical attempt"),
+            "Q1/E3: {failure}"
+        );
+        let row = dispatch.list_dispatches().await.unwrap().pop().unwrap();
+        assert!(
+            row.cancellation_requested && row.physical_attempt_active,
+            "Q1/E1+E3"
+        );
+        assert_eq!(
+            dispatch
+                .load_physical_attempt(&run)
+                .await
+                .unwrap()
+                .unwrap()
+                .claim,
+            physical_claim,
+            "Q1/E3 only the original Dispatch authority may retire the slot"
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() {
+    // C1 the physical Claim is current before Session cancellation; C2 that
+    // cancellation revokes the mutation lease; C3 the same old Worker later
+    // retires only its physical slot; C4 a fresh cancellation Claim settles.
+    // E1 terminal cleanup does not mistake C2 for prior staleness; E2 it waits
+    // until C3+C4, then succeeds; E3 no physical slot or runnable row remains.
+    // Rule Q2=C1+C2+C3+C4=>E1+E2+E3. Q1 covers pre-cancel expiry instead.
+    use awaken_dispatch::{DispatchOutcome, DispatchQueue};
+
+    let (host, dispatch, _clock, session, run, physical_claim) =
+        terminal_physical_claim_fixture("live", 30_000).await;
+    assert!(
+        dispatch.claim_is_current(&physical_claim).await.unwrap(),
+        "Q2/C1"
+    );
+    let terminal = tokio::spawn({
+        let host = host.clone();
+        let session = session.clone();
+        async move { host.quiesce_terminal_delegations(&session.0).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if dispatch
+                .list_dispatches()
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.run_id == run && row.cancellation_requested)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Q2/C2 cancellation becomes durable");
+    assert!(
+        !terminal.is_finished(),
+        "Q2/E1 normal physical work still blocks"
+    );
+    dispatch.finish_attempt(&physical_claim).await.unwrap();
+    let cancellation = dispatch
+        .claim_run(&run, "cancellation-worker", 30_000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    dispatch
+        .settle(&run, cancellation.lease.epoch, DispatchOutcome::Done, &[])
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), terminal)
+        .await
+        .expect("Q2/E2 exact settlement completes before deadline")
+        .unwrap()
+        .expect("Q2/E2 terminal quiescence succeeds");
+    assert!(
+        dispatch.list_dispatches().await.unwrap().is_empty(),
+        "Q2/E3"
+    );
+}
+
 async fn settle_cancelled_dispatch_rows(
     dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
     expected_rows: usize,
