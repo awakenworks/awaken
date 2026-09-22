@@ -81,7 +81,7 @@ export function validateSdkMatrix(entries) {
 
 export async function loadQualifiedClients(entries = readSdkMatrix()) {
   validateSdkMatrix(entries);
-  return Promise.all(entries.map(async (entry) => {
+  const clients = await Promise.all(entries.map(async (entry) => {
     const sdk = await import(entry.module);
     const installed = installedPackage(entry.module);
     return {
@@ -91,6 +91,12 @@ export async function loadQualifiedClients(entries = readSdkMatrix()) {
       toFile: sdk.toFile,
     };
   }));
+  const versions = new Set();
+  for (const client of clients) {
+    assert.ok(!versions.has(client.version), `duplicate SDK version ${client.version} in qualified anchors`);
+    versions.add(client.version);
+  }
+  return clients;
 }
 
 export async function loadConformanceClients(
@@ -114,13 +120,17 @@ export async function loadConformanceClients(
     /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u,
     'the conformance candidate requires one exact reviewed version',
   );
-  const sdk = await import(candidateModule);
   const installed = installedPackage(candidateModule);
   assert.equal(
     installed.version,
     candidateVersion,
     'the installed conformance candidate must match its reviewed version',
   );
+  assert.ok(
+    !clients.some(({ version }) => version === installed.version),
+    'the candidate version is already a qualified anchor; omit candidate coordinates after promotion',
+  );
+  const sdk = await import(candidateModule);
   return [...clients, {
     id: 'candidate',
     module: candidateModule,
