@@ -67,6 +67,23 @@ fn executable_metadata_is_bound_into_new_bundle_hashes() {
 }
 
 async fn aggregate_lifecycle(store: &dyn SkillStore) {
+    // R0 the initial head and highest ordinal must name the sole initial
+    // version. Every direct backend rejects a fabricated history before insert.
+    let mut invalid = definition("ws-invalid", "invalid-frame");
+    invalid.last_version = 2;
+    assert!(matches!(
+        store
+            .create(invalid, version("invalid-frame", 1, b"v1"))
+            .await,
+        Err(SkillStoreError::InvalidVersion { .. })
+    ));
+    assert!(
+        store
+            .definition("ws-invalid", "invalid-frame")
+            .await
+            .unwrap()
+            .is_none()
+    );
     let binary = [0, 159, 146, 150, 255];
     store
         .create(
@@ -180,7 +197,7 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
     let pinned_v3 = store.version("ws-a", "skill-a", 3).await.unwrap().unwrap();
     assert!(matches!(
         store.delete_version("ws-a", "skill-a", 3).await,
-        Err(SkillStoreError::Invalid(_))
+        Err(SkillStoreError::LifecycleConflict { .. })
     ));
     assert_eq!(
         store.version("ws-a", "skill-a", 3).await.unwrap(),
@@ -190,6 +207,117 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
     assert!(store.delete_skill("ws-a", "skill-a").await.unwrap());
     assert!(!store.delete_skill("ws-a", "skill-a").await.unwrap());
     assert!(store.definition("ws-b", "skill-a").await.unwrap().is_some());
+}
+
+async fn corrupt_frame_is_not_absent_or_overwritten(store: &dyn SkillStore) {
+    // D1 corrupt persisted frame => every scoped read fails CorruptData;
+    // D2 append/delete after D1 => same error, never rewrite damaged evidence.
+    // Each durable adapter injects and re-reads its own bytes around this suite.
+    assert!(
+        matches!(
+            store.definition("fault-workspace", "fault-skill").await,
+            Err(SkillStoreError::CorruptData { .. })
+        ),
+        "D1 definition"
+    );
+    assert!(
+        matches!(
+            store.version("fault-workspace", "fault-skill", 1).await,
+            Err(SkillStoreError::CorruptData { .. })
+        ),
+        "D1 pin"
+    );
+    assert!(
+        matches!(
+            store.snapshot_latest_versions("fault-workspace").await,
+            Err(SkillStoreError::CorruptData { .. })
+        ),
+        "D1 snapshot"
+    );
+    assert!(
+        matches!(
+            store
+                .append_version(
+                    "fault-workspace",
+                    "fault-skill",
+                    version("fault-skill", 2, b"v2")
+                )
+                .await,
+            Err(SkillStoreError::CorruptData { .. })
+        ),
+        "D2 append"
+    );
+    assert!(
+        matches!(
+            store.delete_skill("fault-workspace", "fault-skill").await,
+            Err(SkillStoreError::CorruptData { .. })
+        ),
+        "D2 delete"
+    );
+}
+
+#[tokio::test]
+async fn filesystem_corruption_retains_the_original_frame() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = FsSkillStore::open(directory.path()).unwrap();
+    store
+        .create(
+            definition("fault-workspace", "fault-skill"),
+            version("fault-skill", 1, b"v1"),
+        )
+        .await
+        .unwrap();
+    // The fresh store has one Workspace directory and one committed aggregate;
+    // discover that exact fixture rather than duplicating its identity codec.
+    let workspace = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_dir())
+        .unwrap();
+    let path = std::fs::read_dir(workspace)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    std::fs::write(&path, b"{}").unwrap();
+    corrupt_frame_is_not_absent_or_overwritten(&store).await;
+    assert_eq!(std::fs::read(path).unwrap(), b"{}", "D2 original bytes");
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_corruption_retains_the_original_frame() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("corrupt.sqlite");
+    let store = awaken_skill_store::SqliteSkillStore::open(path.to_str().unwrap()).unwrap();
+    store
+        .create(
+            definition("fault-workspace", "fault-skill"),
+            version("fault-skill", 1, b"v1"),
+        )
+        .await
+        .unwrap();
+    let connection = awaken_sqlite_pool::SqliteConnectionFactory::file(path)
+        .open()
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE skill_store_aggregate SET data='{}' WHERE workspace_id=?1 AND id=?2",
+            ["fault-workspace", "fault-skill"],
+        )
+        .unwrap();
+    corrupt_frame_is_not_absent_or_overwritten(&store).await;
+    let stored: String = connection
+        .query_row(
+            "SELECT data FROM skill_store_aggregate WHERE workspace_id=?1 AND id=?2",
+            ["fault-workspace", "fault-skill"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, "{}", "D2 original bytes");
 }
 
 #[cfg(feature = "test-support")]
@@ -420,27 +548,36 @@ mod postgres {
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
-    fn database_url() -> String {
-        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".into()
-        })
-    }
-
     async fn schema_pool() -> Option<PgPool> {
-        let admin = PgPool::connect(&database_url()).await.ok()?;
-        let _ = admin.execute("DROP SCHEMA IF EXISTS t_skill CASCADE").await;
-        admin.execute("CREATE SCHEMA t_skill").await.ok()?;
-        admin.close().await;
-        PgPoolOptions::new()
-            .after_connect(|connection, _| {
-                Box::pin(async move {
-                    connection.execute("SET search_path = t_skill").await?;
-                    Ok(())
-                })
-            })
-            .connect(&database_url())
+        let url = awaken_reliability_testkit::postgres_fixture_url()?;
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&url)
             .await
-            .ok()
+            .expect("configured PostgreSQL must be reachable");
+        admin
+            .execute("DROP SCHEMA IF EXISTS t_skill CASCADE")
+            .await
+            .expect("reset owned test schema");
+        admin
+            .execute("CREATE SCHEMA t_skill")
+            .await
+            .expect("create owned test schema");
+        admin.close().await;
+        Some(
+            PgPoolOptions::new()
+                .max_connections(4)
+                .after_connect(|connection, _| {
+                    Box::pin(async move {
+                        connection.execute("SET search_path = t_skill").await?;
+                        Ok(())
+                    })
+                })
+                .connect(&url)
+                .await
+                .expect("configured schema connection must succeed"),
+        )
     }
 
     #[tokio::test]
@@ -466,7 +603,32 @@ mod postgres {
 
         let store = PgSkillStore::with_pool(pool.clone());
         store.ensure_schema().await.unwrap();
-        PgSkillStore::with_existing_pool(pool).await.unwrap();
+        PgSkillStore::with_existing_pool(pool.clone())
+            .await
+            .unwrap();
         aggregate_lifecycle(&store).await;
+        store
+            .create(
+                definition("fault-workspace", "fault-skill"),
+                version("fault-skill", 1, b"v1"),
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE skill_store_aggregate SET data='{}' WHERE workspace_id=$1 AND id=$2")
+            .bind("fault-workspace")
+            .bind("fault-skill")
+            .execute(&pool)
+            .await
+            .unwrap();
+        corrupt_frame_is_not_absent_or_overwritten(&store).await;
+        let stored: String = sqlx::query_scalar(
+            "SELECT data FROM skill_store_aggregate WHERE workspace_id=$1 AND id=$2",
+        )
+        .bind("fault-workspace")
+        .bind("fault-skill")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, "{}", "D2 original bytes");
     }
 }

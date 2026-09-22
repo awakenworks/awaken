@@ -50,11 +50,9 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 3062,
-      "catch_all_errors": 11,
+      "production_lines": 3171,
       "growth_reasons": {
-        "production_lines": "Preserve FileCatalog and Artifact failure decisions through existing local and HTTP ports; added typed payloads replace opaque errors, not new capability defaults. Session lease laws move together without changing dependency depth.",
-        "catch_all_errors": "September 22: 13 pre-existing opaque Resource wrappers are newly visible to the strengthened scanner, not resolved debt (ADR-0081 section 9); 33 production lines add typed FileStore and FileContentSource failure categories with preserved error provenance."
+        "production_lines": "Replace the last generic Resource Invalid payloads with domain causes and remove ResourceErrorDetail"
       }
     },
     "awaken-dispatch-contract": {

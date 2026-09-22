@@ -205,12 +205,22 @@ pub enum ResourceRegistryError {
     ConfigNotFound { id: String, version: ConfigVersion },
     #[error("resource `{0}` was concurrently modified")]
     ConcurrentModification(String),
-    #[error("invalid resource registry command: {0}")]
-    Invalid(crate::ResourceErrorDetail),
+    #[error("resource identity was rejected: {detail}")]
+    IdentityRejected { detail: String },
+    #[error("resource configuration was rejected: {detail}")]
+    ConfigurationRejected { detail: String },
+    #[error("resource admission was rejected: {detail}")]
+    AdmissionRejected { detail: String },
+    #[error("resource config version space is exhausted for `{id}`")]
+    VersionExhausted { id: String },
+    #[error("resource registry request encoding failed: {detail}")]
+    EncodingFailure { detail: String },
     #[error("resource registry data is corrupt: {0}")]
     CorruptData(String),
-    #[error("resource registry is unavailable: {0}")]
-    Unavailable(crate::ResourceErrorDetail),
+    #[error("resource registry authority unavailable: {detail}")]
+    AuthorityUnavailable { detail: String },
+    #[error("resource registry outcome is indeterminate: {detail}")]
+    Indeterminate { detail: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -223,8 +233,10 @@ pub enum RegistryRepositoryError {
     ConcurrentModification(String),
     #[error("stored resource registry data is corrupt: {0}")]
     CorruptData(String),
-    #[error("resource registry repository is unavailable: {0}")]
-    Unavailable(crate::ResourceErrorDetail),
+    /// The repository supplied no definitive receipt. Mutation callers must
+    /// reuse their existing identity/CAS, not infer that no write occurred.
+    #[error("resource registry repository outcome is indeterminate: {detail}")]
+    Indeterminate { detail: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,17 +364,18 @@ fn validate_publish(
             expected,
             current,
         }),
-        ConfigPublicationDecision::VersionExhausted => Err(ResourceRegistryError::Invalid(
-            format!("resource `{id}` exhausted config versions").into(),
-        )),
-        ConfigPublicationDecision::NonSuccessor => Err(ResourceRegistryError::Invalid(
-            format!(
-                "resource `{id}` config version must advance from {} to {}",
-                current.0,
-                current.0 + 1
-            )
-            .into(),
-        )),
+        ConfigPublicationDecision::VersionExhausted => {
+            Err(ResourceRegistryError::VersionExhausted { id: id.into() })
+        }
+        ConfigPublicationDecision::NonSuccessor => {
+            Err(ResourceRegistryError::ConfigurationRejected {
+                detail: format!(
+                    "resource `{id}` config version must advance from {} to {}",
+                    current.0,
+                    current.0 + 1
+                ),
+            })
+        }
     }
 }
 
@@ -382,17 +395,17 @@ impl MemoryStoreAggregate {
         initial_config: MemoryStoreConfigVersion,
     ) -> Result<Self, ResourceRegistryError> {
         if definition.id.as_str().trim().is_empty() || definition.workspace_id.trim().is_empty() {
-            return Err(ResourceRegistryError::Invalid(
-                "resource id and workspace id must be non-empty".into(),
-            ));
+            return Err(ResourceRegistryError::IdentityRejected {
+                detail: "resource id and workspace id must be non-empty".into(),
+            });
         }
         if definition.id != initial_config.memory_store_id
             || definition.current_config_version != ConfigVersion::INITIAL
             || initial_config.version != ConfigVersion::INITIAL
         {
-            return Err(ResourceRegistryError::Invalid(
-                "initial MemoryStore definition/config must agree at version 1".into(),
-            ));
+            return Err(ResourceRegistryError::ConfigurationRejected {
+                detail: "initial MemoryStore definition/config must agree at version 1".into(),
+            });
         }
         Self::rehydrate(
             definition,
@@ -429,8 +442,11 @@ impl MemoryStoreAggregate {
     ) -> Result<Self, ResourceRegistryError> {
         let timestamps = definition.timestamps;
         definition.timestamps = ResourceTimestamps::default();
-        let request = serde_json::to_string(&(&definition, &initial_config))
-            .map_err(|error| ResourceRegistryError::Invalid(error.to_string().into()))?;
+        let request = serde_json::to_string(&(&definition, &initial_config)).map_err(|error| {
+            ResourceRegistryError::EncodingFailure {
+                detail: error.to_string(),
+            }
+        })?;
         definition.timestamps = timestamps;
         let mut aggregate = Self::register(definition, initial_config)?;
         aggregate.creation_request_sha256 = Some(crate::memory_sha256_hex(&request));
@@ -526,9 +542,9 @@ impl MemoryStoreAggregate {
             workspace_id,
         )?;
         if config.memory_store_id != self.definition.id {
-            return Err(ResourceRegistryError::Invalid(
-                "MemoryStore config identity does not match its aggregate".into(),
-            ));
+            return Err(ResourceRegistryError::ConfigurationRejected {
+                detail: "MemoryStore config identity does not match its aggregate".into(),
+            });
         }
         validate_publish(
             self.definition.id.as_str(),
@@ -580,17 +596,17 @@ impl RepositoryAggregate {
         initial_config: RepositoryConfigVersion,
     ) -> Result<Self, ResourceRegistryError> {
         if definition.id.as_str().trim().is_empty() || definition.workspace_id.trim().is_empty() {
-            return Err(ResourceRegistryError::Invalid(
-                "resource id and workspace id must be non-empty".into(),
-            ));
+            return Err(ResourceRegistryError::IdentityRejected {
+                detail: "resource id and workspace id must be non-empty".into(),
+            });
         }
         if definition.id != initial_config.repository_id
             || definition.current_config_version != ConfigVersion::INITIAL
             || initial_config.version != ConfigVersion::INITIAL
         {
-            return Err(ResourceRegistryError::Invalid(
-                "initial Repository definition/config must agree at version 1".into(),
-            ));
+            return Err(ResourceRegistryError::ConfigurationRejected {
+                detail: "initial Repository definition/config must agree at version 1".into(),
+            });
         }
         Self::rehydrate(
             definition,
@@ -627,8 +643,11 @@ impl RepositoryAggregate {
     ) -> Result<Self, ResourceRegistryError> {
         let timestamps = definition.timestamps;
         definition.timestamps = ResourceTimestamps::default();
-        let request = serde_json::to_string(&(&definition, &initial_config))
-            .map_err(|error| ResourceRegistryError::Invalid(error.to_string().into()))?;
+        let request = serde_json::to_string(&(&definition, &initial_config)).map_err(|error| {
+            ResourceRegistryError::EncodingFailure {
+                detail: error.to_string(),
+            }
+        })?;
         definition.timestamps = timestamps;
         let mut aggregate = Self::register(definition, initial_config)?;
         aggregate.creation_request_sha256 = Some(crate::memory_sha256_hex(&request));
@@ -804,18 +823,18 @@ fn validate_repository_config(
             version.0
         )))
     } else if config.initial_branch.is_some() && config.initial_commit.is_some() {
-        Err(ResourceRegistryError::Invalid(
-            "Repository checkout cannot select both branch and commit".into(),
-        ))
+        Err(ResourceRegistryError::ConfigurationRejected {
+            detail: "Repository checkout cannot select both branch and commit".into(),
+        })
     } else if config
         .initial_branch
         .iter()
         .chain(config.initial_commit.iter())
         .any(|value| value.trim().is_empty())
     {
-        Err(ResourceRegistryError::Invalid(
-            "Repository checkout value must be non-empty".into(),
-        ))
+        Err(ResourceRegistryError::ConfigurationRejected {
+            detail: "Repository checkout value must be non-empty".into(),
+        })
     } else {
         Ok(())
     }

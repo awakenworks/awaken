@@ -168,13 +168,8 @@ mod tests {
         const SCHEMA: &str = "t_environment_image_build_concurrency";
         // G1 absent configuration => reported local skip; G2 explicit fixture
         // unavailable => fail, never claim the concurrency rules were executed.
-        let database_url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-            Ok(url) => url,
-            Err(std::env::VarError::NotPresent) => {
-                eprintln!("[skip] AWAKEN_TEST_DATABASE_URL is not configured");
-                return;
-            }
-            Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
+        let Some(database_url) = awaken_reliability_testkit::postgres_fixture_url() else {
+            return;
         };
         let admin = PgPoolOptions::new()
             .max_connections(1)

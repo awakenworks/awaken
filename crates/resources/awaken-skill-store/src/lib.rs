@@ -51,38 +51,18 @@ pub(crate) struct SkillAggregate {
     pub deleted: bool,
 }
 
-pub(crate) fn validate_create(
-    definition: &SkillDefinition,
-    version: &SkillVersion,
-) -> Result<(), SkillStoreError> {
-    if definition.id.as_str().trim().is_empty()
-        || definition.workspace_id.as_str().trim().is_empty()
-    {
-        return Err(SkillStoreError::Invalid(
-            "skill and Workspace ids must be non-empty".into(),
-        ));
+fn corrupt(detail: impl Into<String>) -> SkillStoreError {
+    SkillStoreError::CorruptData {
+        detail: format!("invalid persisted Skill aggregate: {}", detail.into()),
     }
-    if definition.latest_version != version.version
-        || definition.last_version != version.version
-        || version.skill_id != definition.id
-        || version.version == 0
-        || version.files.is_empty()
-        || version.skill_md().is_none()
-    {
-        return Err(SkillStoreError::Invalid(
-            "definition and initial Skill version are inconsistent".into(),
-        ));
-    }
-    if version.bundle_sha256 != bundle_sha256(&version.files) {
-        return Err(SkillStoreError::Invalid(
-            "Skill bundle SHA-256 does not match its files".into(),
-        ));
-    }
-    Ok(())
 }
 
-fn corrupt(detail: impl Into<String>) -> SkillStoreError {
-    SkillStoreError::Storage(format!("invalid persisted Skill aggregate: {}", detail.into()).into())
+/// One encoding boundary for all persisted Skill substrates. A serialization
+/// failure precedes the write; it must not masquerade as an unknown commit.
+pub(crate) fn encode_aggregate(aggregate: &SkillAggregate) -> Result<String, SkillStoreError> {
+    serde_json::to_string(aggregate).map_err(|error| SkillStoreError::EncodingFailure {
+        detail: error.to_string(),
+    })
 }
 
 /// Decode one persisted aggregate and re-establish every invariant that a valid
@@ -156,9 +136,9 @@ pub(crate) fn append_to(
         || version.bundle_sha256 != bundle_sha256(&version.files)
         || version.skill_md().is_none()
     {
-        return Err(SkillStoreError::Invalid(
-            "Skill version must be the next valid immutable bundle".into(),
-        ));
+        return Err(SkillStoreError::InvalidVersion {
+            detail: "Skill version must be the next valid immutable bundle".into(),
+        });
     }
     if aggregate.versions.contains_key(&version.version) {
         return Err(SkillStoreError::VersionConflict(
@@ -219,9 +199,9 @@ pub(crate) fn remove_version_from(
     ) {
         SkillVersionRetirementDecision::Unchanged => return Ok(false),
         SkillVersionRetirementDecision::RejectOnlyVisible => {
-            return Err(SkillStoreError::Invalid(
-                "the only Skill version cannot be deleted; delete the Skill instead".into(),
-            ));
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "the only Skill version cannot be deleted; delete the Skill instead".into(),
+            });
         }
         SkillVersionRetirementDecision::RetireVisibility => {}
     }
@@ -303,7 +283,7 @@ impl SkillStore for InMemorySkillStore {
         definition: SkillDefinition,
         initial_version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
-        validate_create(&definition, &initial_version)?;
+        definition.validate_initial_version(&initial_version)?;
         let mut inner = self.inner.lock().unwrap();
         let workspace = inner.entry(definition.workspace_id.clone()).or_default();
         if workspace.contains_key(&definition.id) {
@@ -486,9 +466,9 @@ impl SkillStore for InMemorySkillStore {
             return Ok(0);
         };
         if !aggregate.deleted {
-            return Err(SkillStoreError::Invalid(
-                "an active Skill cannot be physically reclaimed".into(),
-            ));
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "an active Skill cannot be physically reclaimed".into(),
+            });
         }
         let versions = aggregate.versions.len() as u64;
         workspace.remove(&skill_id);
@@ -564,9 +544,8 @@ impl FsSkillStore {
             .read(true)
             .write(true)
             .open(self.root.join(".awaken-skill.lock"))
-            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
-        file.lock_shared()
-            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
+            .map_err(SkillStoreError::from)?;
+        file.lock_shared().map_err(SkillStoreError::from)?;
         Ok(file)
     }
 
@@ -575,9 +554,8 @@ impl FsSkillStore {
             .read(true)
             .write(true)
             .open(self.root.join(".awaken-skill.lock"))
-            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
-        file.lock()
-            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
+            .map_err(SkillStoreError::from)?;
+        file.lock().map_err(SkillStoreError::from)?;
         Ok(file)
     }
 
@@ -589,14 +567,13 @@ impl FsSkillStore {
         match std::fs::read(self.aggregate_path(workspace, id)) {
             Ok(bytes) => decode_aggregate(&bytes, workspace, id).map(Some),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(SkillStoreError::Io(error.to_string().into())),
+            Err(error) => Err(SkillStoreError::from(error)),
         }
     }
 
     fn write_aggregate(&self, aggregate: &SkillAggregate) -> Result<(), SkillStoreError> {
         let dir = self.ws_dir(aggregate.definition.workspace_id.as_str());
-        std::fs::create_dir_all(&dir)
-            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
+        std::fs::create_dir_all(&dir).map_err(SkillStoreError::from)?;
         sync_skill_directory(&self.root)?;
         let path = self.aggregate_path(
             aggregate.definition.workspace_id.as_str(),
@@ -607,21 +584,20 @@ impl FsSkillStore {
             std::process::id(),
             FS_SKILL_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        let bytes = serde_json::to_vec(aggregate)
-            .map_err(|error| SkillStoreError::Storage(error.to_string().into()))?;
+        let bytes = encode_aggregate(aggregate)?;
         let publish = (|| -> std::io::Result<()> {
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&temp)?;
-            file.write_all(&bytes)?;
+            file.write_all(bytes.as_bytes())?;
             file.sync_all()?;
             std::fs::rename(&temp, &path)?;
             File::open(&dir)?.sync_all()
         })();
         if let Err(error) = publish {
             let _ = std::fs::remove_file(&temp);
-            return Err(SkillStoreError::Io(error.to_string().into()));
+            return Err(SkillStoreError::from(error));
         }
         Ok(())
     }
@@ -634,19 +610,16 @@ impl FsSkillStore {
         let read_dir = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(SkillStoreError::Io(error.to_string().into())),
+            Err(error) => return Err(SkillStoreError::from(error)),
         };
         let mut out = Vec::new();
         for entry in read_dir {
-            let path = entry
-                .map_err(|error| SkillStoreError::Io(error.to_string().into()))?
-                .path();
+            let path = entry.map_err(SkillStoreError::from)?.path();
             if path
                 .extension()
                 .is_some_and(|extension| extension == "json")
             {
-                let bytes = std::fs::read(&path)
-                    .map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
+                let bytes = std::fs::read(&path).map_err(SkillStoreError::from)?;
                 let aggregate: SkillAggregate = serde_json::from_slice(&bytes)
                     .map_err(|error| corrupt(format!("malformed JSON: {error}")))?;
                 let aggregate =
@@ -670,15 +643,9 @@ impl SkillStore for FsSkillStore {
     async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
         let _guard = self.shared_lock()?;
         let mut workspaces = Vec::new();
-        for entry in std::fs::read_dir(&self.root)
-            .map_err(|error| SkillStoreError::Io(error.to_string().into()))?
-        {
-            let entry = entry.map_err(|error| SkillStoreError::Io(error.to_string().into()))?;
-            if entry
-                .file_type()
-                .map_err(|error| SkillStoreError::Io(error.to_string().into()))?
-                .is_dir()
-            {
+        for entry in std::fs::read_dir(&self.root).map_err(SkillStoreError::from)? {
+            let entry = entry.map_err(SkillStoreError::from)?;
+            if entry.file_type().map_err(SkillStoreError::from)?.is_dir() {
                 let encoded = entry
                     .file_name()
                     .into_string()
@@ -696,7 +663,7 @@ impl SkillStore for FsSkillStore {
         definition: SkillDefinition,
         initial_version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
-        validate_create(&definition, &initial_version)?;
+        definition.validate_initial_version(&initial_version)?;
         let _guard = self.exclusive_lock()?;
         if self
             .read_aggregate(definition.workspace_id.as_str(), definition.id.as_str())?
@@ -762,9 +729,7 @@ impl SkillStore for FsSkillStore {
                     .versions
                     .get(&aggregate.definition.latest_version)
                     .cloned()
-                    .ok_or_else(|| {
-                        SkillStoreError::Storage("Skill latest version is missing".into())
-                    })
+                    .ok_or_else(|| corrupt("Skill latest version is missing"))
             })
             .collect()
     }
@@ -851,9 +816,9 @@ impl SkillStore for FsSkillStore {
             return Ok(0);
         };
         if !aggregate.deleted {
-            return Err(SkillStoreError::Invalid(
-                "an active Skill cannot be physically reclaimed".into(),
-            ));
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "an active Skill cannot be physically reclaimed".into(),
+            });
         }
         match std::fs::remove_file(self.aggregate_path(workspace_id, skill_id)) {
             Ok(()) => {
@@ -861,7 +826,7 @@ impl SkillStore for FsSkillStore {
                 Ok(aggregate.versions.len() as u64)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(error) => Err(SkillStoreError::Io(error.to_string().into())),
+            Err(error) => Err(SkillStoreError::from(error)),
         }
     }
 }
@@ -869,7 +834,7 @@ impl SkillStore for FsSkillStore {
 fn sync_skill_directory(path: &Path) -> Result<(), SkillStoreError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| SkillStoreError::Io(error.to_string().into()))
+        .map_err(SkillStoreError::from)
 }
 
 #[cfg(test)]
@@ -938,6 +903,62 @@ mod tests {
         )
     }
 
+    #[test]
+    fn persisted_frames_are_classified_as_corrupt_not_input_or_io_failures() {
+        // Cause table: C1 key identity drift; C2 empty/invalid history;
+        // C3 broken retirement/head coordinates; C4 changed immutable bundle;
+        // C5 malformed encoding. R1 valid => exact codec round-trip;
+        // R2 any C1-C5 => CorruptData. These are observations of durable data,
+        // never caller Invalid errors or evidence of an absent Skill.
+        let (definition, version) = aggregate("w", "s");
+        let frame = SkillAggregate {
+            definition,
+            versions: BTreeMap::from([(1, version)]),
+            retired_versions: Default::default(),
+            deleted: false,
+        };
+        let valid = serde_json::to_value(&frame).unwrap();
+        let encoded = encode_aggregate(&frame).unwrap();
+        assert_eq!(
+            encoded.as_bytes(),
+            serde_json::to_vec(&frame).unwrap(),
+            "R1 byte compatibility"
+        );
+        assert_eq!(
+            encode_aggregate(&decode_aggregate(encoded.as_bytes(), "w", "s").unwrap()).unwrap(),
+            encoded
+        );
+        for fault in 0..10 {
+            let mut value = valid.clone();
+            match fault {
+                0 => value["definition"]["workspace_id"] = "foreign".into(),
+                1 => value["definition"]["id"] = "foreign".into(),
+                2 => value["versions"] = serde_json::json!({}),
+                3 => value["definition"]["last_version"] = 2.into(),
+                4 => value["retired_versions"] = serde_json::json!([2]),
+                5 => value["retired_versions"] = serde_json::json!([1]),
+                6 => value["definition"]["latest_version"] = 2.into(),
+                7 => value["versions"]["1"]["version"] = 2.into(),
+                8 => value["versions"]["1"]["bundle_sha256"] = "wrong".into(),
+                _ => value["versions"]["1"]["files"] = serde_json::json!([]),
+            }
+            assert!(
+                matches!(
+                    decode_aggregate(&serde_json::to_vec(&value).unwrap(), "w", "s"),
+                    Err(SkillStoreError::CorruptData { .. })
+                ),
+                "R2 fault={fault}"
+            );
+        }
+        assert!(
+            matches!(
+                decode_aggregate(b"not-json", "w", "s"),
+                Err(SkillStoreError::CorruptData { .. })
+            ),
+            "C5"
+        );
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -951,7 +972,7 @@ mod tests {
         store.create(definition, version.clone()).await.unwrap();
         assert!(matches!(
             store.purge_skill("workspace", "retained").await,
-            Err(SkillStoreError::Invalid(_))
+            Err(SkillStoreError::LifecycleConflict { .. })
         ));
         assert!(store.delete_skill("workspace", "retained").await.unwrap());
         assert!(

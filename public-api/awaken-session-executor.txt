@@ -546,7 +546,7 @@ pub async fn awaken_session_executor::SharedHost::define_outcome(&self, &str, &s
 impl awaken_session_executor::SharedHost
 pub fn awaken_session_executor::SharedHost::ensure_terminal_dispatch_reconciliation(&alloc::sync::Arc<Self>) -> bool
 impl awaken_session_executor::SharedHost
-pub async fn awaken_session_executor::SharedHost::harvest_thread_artifacts(&self, &str) -> core::result::Result<awaken_session_executor::provisioning::HarvestedArtifacts, awaken_resource_contract::lifecycle::ResourcePurgeError>
+pub async fn awaken_session_executor::SharedHost::harvest_thread_artifacts(&self, &str) -> core::result::Result<awaken_session_executor::provisioning::HarvestedArtifacts, awaken_resource_contract::execution::ArtifactPublicationError>
 impl awaken_session_executor::SharedHost
 pub async fn awaken_session_executor::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_session_executor::SharedHost

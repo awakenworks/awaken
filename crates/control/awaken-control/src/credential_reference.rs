@@ -34,11 +34,10 @@ impl awaken_resource_contract::RepositoryCredentialValidator for CredentialRevis
         remote_url: &str,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
         use awaken_resource_contract::ResourceRegistryError;
-        let unavailable = || {
-            ResourceRegistryError::Invalid(
+        let unavailable = || ResourceRegistryError::AdmissionRejected {
+            detail:
                 "Choose an active repository authorization in this Workspace for this Git server"
                     .into(),
-            )
         };
         // Session-owned material is retired with its Session and must not be
         // promoted into a reusable Agent resource, even if its target matches.
@@ -87,10 +86,12 @@ fn repository_credential_lookup_error(
 ) -> awaken_resource_contract::ResourceRegistryError {
     use awaken_resource_contract::ResourceRegistryError;
     match error {
-        awaken_credential_vault::CredentialError::SourceNotFound(_) => ResourceRegistryError::Invalid(
-            "Choose an active repository authorization in this Workspace for this Git server".into(),
-        ),
-        _ => ResourceRegistryError::Unavailable("Repository authorization could not be checked; retry when the credential service is available".into()),
+        awaken_credential_vault::CredentialError::SourceNotFound(_) => {
+            ResourceRegistryError::AdmissionRejected {
+                detail: "Choose an active repository authorization in this Workspace for this Git server".into(),
+            }
+        }
+        _ => ResourceRegistryError::AuthorityUnavailable { detail: "Repository authorization could not be checked; retry when the credential service is available".into() },
     }
 }
 
@@ -134,13 +135,16 @@ mod tests {
         let error = repository_credential_lookup_error(CredentialError::Storage(
             "private database location".into(),
         ));
-        assert!(matches!(error, ResourceRegistryError::Unavailable(_)));
+        assert!(matches!(
+            error,
+            ResourceRegistryError::AuthorityUnavailable { .. }
+        ));
         assert!(!error.to_string().contains("private database location"));
         assert!(matches!(
             repository_credential_lookup_error(CredentialError::SourceNotFound(
                 "foreign-id".into()
             )),
-            ResourceRegistryError::Invalid(_)
+            ResourceRegistryError::AdmissionRejected { .. }
         ));
     }
 

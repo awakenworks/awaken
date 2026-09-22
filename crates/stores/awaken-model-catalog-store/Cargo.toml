@@ -22,6 +22,7 @@ awaken-scoped-migration-sqlite.workspace = true
 awaken-sqlite-pool = { workspace = true, optional = true }
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 tokio.workspace = true
 tempfile = "3"
 rusqlite.workspace = true

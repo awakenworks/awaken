@@ -29,13 +29,20 @@ pub awaken_resource_contract::CreateFileRecordOutcome::Inserted(awaken_resource_
 impl awaken_resource_contract::CreateFileRecordOutcome
 pub fn awaken_resource_contract::CreateFileRecordOutcome::record(&self) -> &awaken_resource_contract::FileRecord
 pub enum awaken_resource_contract::FileCatalogError
+pub awaken_resource_contract::FileCatalogError::AssociationConflict
+pub awaken_resource_contract::FileCatalogError::AssociationConflict::detail: alloc::string::String
 pub awaken_resource_contract::FileCatalogError::AuthorityUnavailable
 pub awaken_resource_contract::FileCatalogError::AuthorityUnavailable::detail: alloc::string::String
 pub awaken_resource_contract::FileCatalogError::CorruptData
 pub awaken_resource_contract::FileCatalogError::CorruptData::detail: alloc::string::String
+pub awaken_resource_contract::FileCatalogError::IdentityConflict
+pub awaken_resource_contract::FileCatalogError::IdentityConflict::detail: alloc::string::String
 pub awaken_resource_contract::FileCatalogError::Indeterminate
 pub awaken_resource_contract::FileCatalogError::Indeterminate::detail: alloc::string::String
-pub awaken_resource_contract::FileCatalogError::Invalid(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::FileCatalogError::InvalidCapture
+pub awaken_resource_contract::FileCatalogError::InvalidCapture::detail: alloc::string::String
+pub awaken_resource_contract::FileCatalogError::InvalidRecord
+pub awaken_resource_contract::FileCatalogError::InvalidRecord::detail: alloc::string::String
 pub enum awaken_resource_contract::FileContentSourceError
 pub awaken_resource_contract::FileContentSourceError::Indeterminate
 pub awaken_resource_contract::FileContentSourceError::Indeterminate::detail: alloc::string::String
@@ -91,6 +98,15 @@ pub awaken_resource_contract::MemoryActor::SessionActor
 pub awaken_resource_contract::MemoryActor::SessionActor::session_id: alloc::string::String
 pub awaken_resource_contract::MemoryActor::UserActor
 pub awaken_resource_contract::MemoryActor::UserActor::user_id: alloc::string::String
+pub enum awaken_resource_contract::MemoryMaterializationReferenceError
+pub awaken_resource_contract::MemoryMaterializationReferenceError::AuthorityMismatch
+pub awaken_resource_contract::MemoryMaterializationReferenceError::AuthorityMismatch::detail: alloc::string::String
+pub awaken_resource_contract::MemoryMaterializationReferenceError::CorruptReference
+pub awaken_resource_contract::MemoryMaterializationReferenceError::CorruptReference::detail: alloc::string::String
+pub awaken_resource_contract::MemoryMaterializationReferenceError::EncodingFailure
+pub awaken_resource_contract::MemoryMaterializationReferenceError::EncodingFailure::detail: alloc::string::String
+pub awaken_resource_contract::MemoryMaterializationReferenceError::InvalidInput
+pub awaken_resource_contract::MemoryMaterializationReferenceError::InvalidInput::detail: alloc::string::String
 pub enum awaken_resource_contract::MemoryStoreApplicationError
 pub awaken_resource_contract::MemoryStoreApplicationError::Purge(awaken_resource_contract::ResourcePurgeError)
 pub awaken_resource_contract::MemoryStoreApplicationError::Registry(awaken_resource_contract::ResourceRegistryError)
@@ -105,8 +121,9 @@ pub enum awaken_resource_contract::RegistryRepositoryError
 pub awaken_resource_contract::RegistryRepositoryError::AlreadyExists(alloc::string::String)
 pub awaken_resource_contract::RegistryRepositoryError::ConcurrentModification(alloc::string::String)
 pub awaken_resource_contract::RegistryRepositoryError::CorruptData(alloc::string::String)
+pub awaken_resource_contract::RegistryRepositoryError::Indeterminate
+pub awaken_resource_contract::RegistryRepositoryError::Indeterminate::detail: alloc::string::String
 pub awaken_resource_contract::RegistryRepositoryError::NotFound(alloc::string::String)
-pub awaken_resource_contract::RegistryRepositoryError::Unavailable(awaken_resource_contract::ResourceErrorDetail)
 pub enum awaken_resource_contract::ReplaceArtifactCaptureOutcome
 pub awaken_resource_contract::ReplaceArtifactCaptureOutcome::Applied(awaken_resource_contract::ArtifactCapture)
 pub awaken_resource_contract::ReplaceArtifactCaptureOutcome::Conflict
@@ -115,6 +132,19 @@ pub enum awaken_resource_contract::ReplaceOutcome
 pub awaken_resource_contract::ReplaceOutcome::ConcurrentModification
 pub awaken_resource_contract::ReplaceOutcome::Replaced
 pub awaken_resource_contract::ReplaceOutcome::Replaced::revision: awaken_resource_contract::AggregateRevision
+pub enum awaken_resource_contract::RepositoryBindingVerifierError
+pub awaken_resource_contract::RepositoryBindingVerifierError::AuthorityUnavailable
+pub awaken_resource_contract::RepositoryBindingVerifierError::AuthorityUnavailable::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::Conflict
+pub awaken_resource_contract::RepositoryBindingVerifierError::Conflict::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::CorruptAuthority
+pub awaken_resource_contract::RepositoryBindingVerifierError::CorruptAuthority::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::Denied
+pub awaken_resource_contract::RepositoryBindingVerifierError::Denied::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::Indeterminate
+pub awaken_resource_contract::RepositoryBindingVerifierError::Indeterminate::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::InvalidRequest
+pub awaken_resource_contract::RepositoryBindingVerifierError::InvalidRequest::detail: alloc::string::String
 pub enum awaken_resource_contract::RepositoryTransport
 pub awaken_resource_contract::RepositoryTransport::Direct
 pub awaken_resource_contract::RepositoryTransport::GatewayMediated
@@ -132,16 +162,37 @@ pub awaken_resource_contract::ResourceKind::MemoryStore
 pub awaken_resource_contract::ResourceKind::Repository
 pub awaken_resource_contract::ResourceKind::Skill
 pub enum awaken_resource_contract::ResourcePurgeError
+pub awaken_resource_contract::ResourcePurgeError::AdmissionIncomplete
+pub awaken_resource_contract::ResourcePurgeError::AdmissionIncomplete::detail: alloc::string::String
+pub awaken_resource_contract::ResourcePurgeError::ArithmeticExhausted
+pub awaken_resource_contract::ResourcePurgeError::ArithmeticExhausted::detail: alloc::string::String
 pub awaken_resource_contract::ResourcePurgeError::Blob(awaken_resource_contract::FileStoreError)
 pub awaken_resource_contract::ResourcePurgeError::Catalog(awaken_resource_contract::FileCatalogError)
+pub awaken_resource_contract::ResourcePurgeError::CorruptData
+pub awaken_resource_contract::ResourcePurgeError::CorruptData::detail: alloc::string::String
+pub awaken_resource_contract::ResourcePurgeError::EncodingFailure
+pub awaken_resource_contract::ResourcePurgeError::EncodingFailure::detail: alloc::string::String
 pub awaken_resource_contract::ResourcePurgeError::IdempotencyConflict(alloc::string::String)
-pub awaken_resource_contract::ResourcePurgeError::Invalid(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::ResourcePurgeError::IncompleteReferenceObservation
+pub awaken_resource_contract::ResourcePurgeError::IncompleteReferenceObservation::detail: alloc::string::String
+pub awaken_resource_contract::ResourcePurgeError::Indeterminate
+pub awaken_resource_contract::ResourcePurgeError::Indeterminate::detail: alloc::string::String
+pub awaken_resource_contract::ResourcePurgeError::InvalidClaim
+pub awaken_resource_contract::ResourcePurgeError::InvalidClaim::detail: alloc::string::String
+pub awaken_resource_contract::ResourcePurgeError::InvalidIntent
+pub awaken_resource_contract::ResourcePurgeError::InvalidIntent::detail: alloc::string::String
+pub awaken_resource_contract::ResourcePurgeError::InvalidReference
+pub awaken_resource_contract::ResourcePurgeError::InvalidReference::detail: alloc::string::String
 pub awaken_resource_contract::ResourcePurgeError::InvalidTransition
 pub awaken_resource_contract::ResourcePurgeError::InvalidTransition::from: awaken_resource_contract::ResourcePurgeStatus
 pub awaken_resource_contract::ResourcePurgeError::InvalidTransition::to: awaken_resource_contract::ResourcePurgeStatus
 pub awaken_resource_contract::ResourcePurgeError::LeaseHeld
 pub awaken_resource_contract::ResourcePurgeError::LeaseHeld::lease_expires_at_unix_ms: u64
+pub awaken_resource_contract::ResourcePurgeError::LimitExceeded
+pub awaken_resource_contract::ResourcePurgeError::LimitExceeded::detail: alloc::string::String
 pub awaken_resource_contract::ResourcePurgeError::NotFound(alloc::string::String)
+pub awaken_resource_contract::ResourcePurgeError::ReceiptMismatch
+pub awaken_resource_contract::ResourcePurgeError::ReceiptMismatch::detail: alloc::string::String
 pub awaken_resource_contract::ResourcePurgeError::ReclamationFenced
 pub awaken_resource_contract::ResourcePurgeError::ReclamationFenced::kind: awaken_resource_contract::ResourceKind
 pub awaken_resource_contract::ResourcePurgeError::ReclamationFenced::resource_id: alloc::string::String
@@ -150,7 +201,6 @@ pub awaken_resource_contract::ResourcePurgeError::RetentionHeld::not_before_unix
 pub awaken_resource_contract::ResourcePurgeError::RevisionConflict(alloc::string::String)
 pub awaken_resource_contract::ResourcePurgeError::StaleClaim
 pub awaken_resource_contract::ResourcePurgeError::StaleReclamationFence
-pub awaken_resource_contract::ResourcePurgeError::Storage(awaken_resource_contract::ResourceErrorDetail)
 pub enum awaken_resource_contract::ResourcePurgeEvidence
 pub awaken_resource_contract::ResourcePurgeEvidence::File
 pub awaken_resource_contract::ResourcePurgeEvidence::File::blob_deleted: bool
@@ -180,7 +230,11 @@ pub awaken_resource_contract::ResourceReferenceKind::RuntimeHandle
 pub awaken_resource_contract::ResourceReferenceKind::SessionBinding
 pub awaken_resource_contract::ResourceReferenceKind::WorkspaceOwnership
 pub enum awaken_resource_contract::ResourceRegistryError
+pub awaken_resource_contract::ResourceRegistryError::AdmissionRejected
+pub awaken_resource_contract::ResourceRegistryError::AdmissionRejected::detail: alloc::string::String
 pub awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(alloc::string::String)
+pub awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable
+pub awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable::detail: alloc::string::String
 pub awaken_resource_contract::ResourceRegistryError::ConcurrentModification(alloc::string::String)
 pub awaken_resource_contract::ResourceRegistryError::ConfigConflict
 pub awaken_resource_contract::ResourceRegistryError::ConfigConflict::current: awaken_resource_contract::ConfigVersion
@@ -189,13 +243,21 @@ pub awaken_resource_contract::ResourceRegistryError::ConfigConflict::id: alloc::
 pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound
 pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound::id: alloc::string::String
 pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound::version: awaken_resource_contract::ConfigVersion
+pub awaken_resource_contract::ResourceRegistryError::ConfigurationRejected
+pub awaken_resource_contract::ResourceRegistryError::ConfigurationRejected::detail: alloc::string::String
 pub awaken_resource_contract::ResourceRegistryError::CorruptData(alloc::string::String)
-pub awaken_resource_contract::ResourceRegistryError::Invalid(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::ResourceRegistryError::EncodingFailure
+pub awaken_resource_contract::ResourceRegistryError::EncodingFailure::detail: alloc::string::String
+pub awaken_resource_contract::ResourceRegistryError::IdentityRejected
+pub awaken_resource_contract::ResourceRegistryError::IdentityRejected::detail: alloc::string::String
+pub awaken_resource_contract::ResourceRegistryError::Indeterminate
+pub awaken_resource_contract::ResourceRegistryError::Indeterminate::detail: alloc::string::String
 pub awaken_resource_contract::ResourceRegistryError::NotActive
 pub awaken_resource_contract::ResourceRegistryError::NotActive::id: alloc::string::String
 pub awaken_resource_contract::ResourceRegistryError::NotActive::state: awaken_resource_contract::ResourceState
 pub awaken_resource_contract::ResourceRegistryError::NotFound(alloc::string::String)
-pub awaken_resource_contract::ResourceRegistryError::Unavailable(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::ResourceRegistryError::VersionExhausted
+pub awaken_resource_contract::ResourceRegistryError::VersionExhausted::id: alloc::string::String
 pub enum awaken_resource_contract::ResourceState
 pub awaken_resource_contract::ResourceState::Active
 pub awaken_resource_contract::ResourceState::Archived
@@ -203,11 +265,32 @@ pub awaken_resource_contract::ResourceState::Deleted
 pub awaken_resource_contract::ResourceState::Suspended
 pub enum awaken_resource_contract::SkillStoreError
 pub awaken_resource_contract::SkillStoreError::AlreadyExists(alloc::string::String)
-pub awaken_resource_contract::SkillStoreError::Invalid(awaken_resource_contract::ResourceErrorDetail)
-pub awaken_resource_contract::SkillStoreError::Io(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::SkillStoreError::AuthorityUnavailable
+pub awaken_resource_contract::SkillStoreError::AuthorityUnavailable::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::BundleMismatch
+pub awaken_resource_contract::SkillStoreError::BundleMismatch::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::CorruptData
+pub awaken_resource_contract::SkillStoreError::CorruptData::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::EncodingFailure
+pub awaken_resource_contract::SkillStoreError::EncodingFailure::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::Indeterminate
+pub awaken_resource_contract::SkillStoreError::Indeterminate::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::InvalidDefinition
+pub awaken_resource_contract::SkillStoreError::InvalidDefinition::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::InvalidSelection
+pub awaken_resource_contract::SkillStoreError::InvalidSelection::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::InvalidVersion
+pub awaken_resource_contract::SkillStoreError::InvalidVersion::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::Io
+pub awaken_resource_contract::SkillStoreError::Io::detail: alloc::string::String
+pub awaken_resource_contract::SkillStoreError::Io::kind: core::io::error::ErrorKind
+pub awaken_resource_contract::SkillStoreError::LifecycleConflict
+pub awaken_resource_contract::SkillStoreError::LifecycleConflict::detail: alloc::string::String
 pub awaken_resource_contract::SkillStoreError::NotFound(alloc::string::String)
-pub awaken_resource_contract::SkillStoreError::Storage(awaken_resource_contract::ResourceErrorDetail)
+pub awaken_resource_contract::SkillStoreError::Reference(awaken_resource_contract::ResourcePurgeError)
 pub awaken_resource_contract::SkillStoreError::VersionConflict(alloc::string::String)
+impl core::convert::From<core::io::error::Error> for awaken_resource_contract::SkillStoreError
+pub fn awaken_resource_contract::SkillStoreError::from(core::io::error::Error) -> Self
 pub struct awaken_resource_contract::AggregateRevision(_)
 impl awaken_resource_contract::AggregateRevision
 pub const awaken_resource_contract::AggregateRevision::INITIAL: Self
@@ -369,9 +452,6 @@ impl awaken_resource_contract::CompleteGeneration for awaken_resource_contract::
 pub fn awaken_resource_contract::MemoryGeneration::content_digest(&self) -> &str
 pub fn awaken_resource_contract::MemoryGeneration::subject_id(&self) -> &str
 pub fn awaken_resource_contract::MemoryGeneration::version(&self) -> u64
-pub struct awaken_resource_contract::MemoryMaterializationReferenceError(_)
-impl awaken_resource_contract::MemoryMaterializationReferenceError
-pub fn awaken_resource_contract::MemoryMaterializationReferenceError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_resource_contract::MemoryPurgeSummary
 pub awaken_resource_contract::MemoryPurgeSummary::copy_conflicts_deleted: u64
 pub awaken_resource_contract::MemoryPurgeSummary::heads_deleted: u64
@@ -465,9 +545,6 @@ pub fn awaken_resource_contract::RepositoryAggregate::rehydrate(awaken_resource_
 pub fn awaken_resource_contract::RepositoryAggregate::resolve_for_execution(&self, &str) -> core::result::Result<awaken_resource_contract::RepositoryConfigVersion, awaken_resource_contract::ResourceRegistryError>
 pub fn awaken_resource_contract::RepositoryAggregate::validate_integrity(&self) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
 pub fn awaken_resource_contract::RepositoryAggregate::verify_live_binding(&self, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
-pub struct awaken_resource_contract::RepositoryBindingVerifierError(_)
-impl awaken_resource_contract::RepositoryBindingVerifierError
-pub fn awaken_resource_contract::RepositoryBindingVerifierError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_resource_contract::RepositoryConfigVersion
 pub awaken_resource_contract::RepositoryConfigVersion::clone_policy: awaken_resource_contract::ClonePolicy
 pub awaken_resource_contract::RepositoryConfigVersion::credential_binding: core::option::Option<alloc::string::String>
@@ -522,17 +599,6 @@ pub awaken_resource_contract::ResolvedFileContent::content_id: alloc::string::St
 pub awaken_resource_contract::ResolvedFileContent::file_id: alloc::string::String
 pub awaken_resource_contract::ResolvedFileContent::filename: alloc::string::String
 pub awaken_resource_contract::ResolvedFileContent::media_type: alloc::string::String
-pub struct awaken_resource_contract::ResourceErrorDetail(_)
-impl awaken_resource_contract::ResourceErrorDetail
-pub fn awaken_resource_contract::ResourceErrorDetail::new(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::convert::From<&str> for awaken_resource_contract::ResourceErrorDetail
-pub fn awaken_resource_contract::ResourceErrorDetail::from(&str) -> Self
-impl core::convert::From<alloc::string::String> for awaken_resource_contract::ResourceErrorDetail
-pub fn awaken_resource_contract::ResourceErrorDetail::from(alloc::string::String) -> Self
-impl core::convert::From<awaken_resource_contract::ResourceErrorDetail> for alloc::string::String
-pub fn alloc::string::String::from(awaken_resource_contract::ResourceErrorDetail) -> Self
-impl core::fmt::Display for awaken_resource_contract::ResourceErrorDetail
-pub fn awaken_resource_contract::ResourceErrorDetail::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_resource_contract::ResourcePurgeIntent
 pub awaken_resource_contract::ResourcePurgeIntent::attempts: u32
 pub awaken_resource_contract::ResourcePurgeIntent::blockers: alloc::vec::Vec<awaken_resource_contract::ResourceReference>
@@ -593,6 +659,8 @@ pub awaken_resource_contract::SkillDefinition::last_version: u64
 pub awaken_resource_contract::SkillDefinition::latest_version: u64
 pub awaken_resource_contract::SkillDefinition::timestamps: awaken_resource_contract::ResourceTimestamps
 pub awaken_resource_contract::SkillDefinition::workspace_id: alloc::string::String
+impl awaken_resource_contract::SkillDefinition
+pub fn awaken_resource_contract::SkillDefinition::validate_initial_version(&self, &awaken_resource_contract::SkillVersion) -> core::result::Result<(), awaken_resource_contract::SkillStoreError>
 pub struct awaken_resource_contract::SkillId(_)
 impl awaken_resource_contract::SkillId
 pub fn awaken_resource_contract::SkillId::as_str(&self) -> &str

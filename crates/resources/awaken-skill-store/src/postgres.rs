@@ -7,7 +7,7 @@ use sqlx::postgres::PgPool;
 use crate::schema::{BUNDLE_ID, converged_skill_store_bundle, selected_skill_store_bundle};
 use crate::{
     SkillAggregate, SkillDefinition, SkillStore, SkillStoreError, SkillVersion, append_to,
-    decode_aggregate, remove_version_from, validate_create,
+    decode_aggregate, encode_aggregate, remove_version_from,
 };
 
 const NS: &str = "skill_store";
@@ -88,7 +88,9 @@ async fn selected_bundles(
 }
 
 fn storage(err: impl std::fmt::Display) -> SkillStoreError {
-    SkillStoreError::Storage(err.to_string().into())
+    SkillStoreError::Indeterminate {
+        detail: err.to_string(),
+    }
 }
 
 /// A Postgres-backed [`SkillStore`].
@@ -175,7 +177,7 @@ impl SkillStore for PgSkillStore {
         definition: SkillDefinition,
         initial_version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
-        validate_create(&definition, &initial_version)?;
+        definition.validate_initial_version(&initial_version)?;
         let aggregate = SkillAggregate {
             definition,
             versions: std::collections::BTreeMap::from([(
@@ -185,7 +187,7 @@ impl SkillStore for PgSkillStore {
             retired_versions: Default::default(),
             deleted: false,
         };
-        let data = serde_json::to_string(&aggregate).map_err(storage)?;
+        let data = encode_aggregate(&aggregate)?;
         sqlx::query(&format!(
             "INSERT INTO {NS}_aggregate (workspace_id, id, data) VALUES ($1, $2, $3)"
         ))
@@ -228,7 +230,7 @@ impl SkillStore for PgSkillStore {
         let data = row.try_get::<String, _>("data").map_err(storage)?;
         let mut aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
         append_to(&mut aggregate, version)?;
-        let data = serde_json::to_string(&aggregate).map_err(storage)?;
+        let data = encode_aggregate(&aggregate)?;
         sqlx::query(&format!(
             "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
         ))
@@ -342,7 +344,7 @@ impl SkillStore for PgSkillStore {
             version,
         )?;
         if removed {
-            let data = serde_json::to_string(&aggregate).map_err(storage)?;
+            let data = encode_aggregate(&aggregate)?;
             sqlx::query(&format!(
                 "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
             ))
@@ -369,7 +371,7 @@ impl SkillStore for PgSkillStore {
             return Ok(false);
         }
         aggregate.deleted = true;
-        let data = serde_json::to_string(&aggregate).map_err(storage)?;
+        let data = encode_aggregate(&aggregate)?;
         sqlx::query(&format!(
             "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
         ))
@@ -391,9 +393,9 @@ impl SkillStore for PgSkillStore {
             return Ok(0);
         };
         if !aggregate.deleted {
-            return Err(SkillStoreError::Invalid(
-                "an active Skill cannot be physically reclaimed".into(),
-            ));
+            return Err(SkillStoreError::LifecycleConflict {
+                detail: "an active Skill cannot be physically reclaimed".into(),
+            });
         }
         sqlx::query(&format!(
             "DELETE FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2"

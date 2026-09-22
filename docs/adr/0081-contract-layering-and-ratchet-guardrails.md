@@ -229,6 +229,54 @@ Stream checkpoint register laws have one owner in store-conformance and bindings
 for memory, filesystem and PostgreSQL, alongside their existing crash/corruption
 and dispatch-fence tests.
 
+Skill adapters now share their encoding boundary as well as aggregate decoding.
+Persisted corruption, pre-write encoding failure, typed IO causes, absent
+composition authority and unknown operation outcomes remain distinct. Runtime
+and Managed Skill boundaries classify availability failures consistently across
+filesystem and SQL substrates; reference-index failures retain their original
+Resource error. SQLite uniqueness is selected by the native constraint code,
+never diagnostic text. Initial-frame validation has one owner on
+SkillDefinition, shared by every backend and the reference-index decorator.
+Invalid identity, head/history coordinates or bundle content are rejected before
+both reference and Skill writes; a rejected request cannot leave a retention
+reference behind. Durable corruption tests require failed reads and writes
+to retain the original damaged frame on filesystem, SQLite and PostgreSQL.
+
+The existing reliability testkit owns optional PostgreSQL fixture admission for
+the touched suites. It adds no database driver or conformance registry: each
+suite still owns its schema and behavioral rules. Absent configuration is an
+explicit local skip; invalid configuration cannot become absence, and a
+configured connection or schema setup must succeed. The Skill fixture's former
+`.ok()?` paths are removed under this same policy.
+
+ArtifactHarvester now returns the existing ArtifactPublicationError directly;
+it no longer flattens publisher or Catalog failures into a purge-storage string.
+Resource Registry separates missing dependency authority from indeterminate
+repository outcomes, and both remain server availability failures at the Session
+and protocol boundaries. Purge codecs distinguish corrupt stored observations
+from caller validation and pre-write encoding failures. Incomplete reference
+observations cannot authorize reclamation. Purge phases require a complete
+claim/receipt frame, and checked generation, expiry and revision arithmetic is
+performed before mutating the in-memory intent. Rejected transitions therefore
+retain the exact old frame instead of leaving half-applied state behind.
+
+Repository binding verification keeps caller-invalid, denied, concurrent,
+unavailable, corrupt-authority and indeterminate observations distinct from the
+Registry through the local and HTTP verifiers into Run and Host error
+classification. Memory materialization references likewise distinguish invalid
+encoder inputs, frozen-authority mismatch, encoding failure and corrupt wire
+values. Both changes extend the existing ports and adapters; they introduce no
+second binding or materialization authority.
+
+The remaining Resource `Invalid(ResourceErrorDetail)` payloads are removed.
+File Catalog, Skill, Registry and Purge failures now expose stable domain causes
+for malformed records, identity/association conflicts, definition/version/bundle
+failures, admission/configuration failures, claim/reference/receipt failures and
+exhausted arithmetic. Protocol and Runtime adapters select recovery and status
+from those variants; diagnostic text is no longer a decision input. The now
+unused `ResourceErrorDetail` wrapper was deleted rather than retained as a
+parallel compatibility vocabulary.
+
 SessionRealizationLease and its authorization laws now share a domain module in
 the existing Session contract. Repository ports store that value; they no longer
 define it. Root mutation values and their observation-preservation kernel now

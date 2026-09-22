@@ -23,13 +23,20 @@ use awaken_session_contract::{SkillBundleSource, SkillCatalogApplication};
 pub(crate) fn skill_store_run_error(error: SkillStoreError) -> RunError {
     let message = error.to_string();
     match error {
-        SkillStoreError::NotFound(_) | SkillStoreError::Invalid(_) => {
-            RunError::bad_request(message)
-        }
-        SkillStoreError::Io(_) => RunError::unavailable(message),
+        SkillStoreError::NotFound(_)
+        | SkillStoreError::InvalidDefinition { .. }
+        | SkillStoreError::InvalidVersion { .. }
+        | SkillStoreError::BundleMismatch { .. }
+        | SkillStoreError::InvalidSelection { .. } => RunError::bad_request(message),
+        SkillStoreError::Io { .. }
+        | SkillStoreError::Indeterminate { .. }
+        | SkillStoreError::AuthorityUnavailable { .. } => RunError::unavailable(message),
         SkillStoreError::AlreadyExists(_)
         | SkillStoreError::VersionConflict(_)
-        | SkillStoreError::Storage(_) => RunError::internal(message),
+        | SkillStoreError::LifecycleConflict { .. }
+        | SkillStoreError::CorruptData { .. }
+        | SkillStoreError::EncodingFailure { .. }
+        | SkillStoreError::Reference(_) => RunError::internal(message),
     }
 }
 
@@ -225,7 +232,7 @@ impl SkillCatalog {
         selections: &[AgentSkillBinding],
     ) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
         awaken_agent_contract::validate_agent_skills(selections)
-            .map_err(|error| SkillStoreError::Invalid(error.into()))?;
+            .map_err(|error| SkillStoreError::InvalidSelection { detail: error })?;
         let mut bindings = Vec::with_capacity(selections.len());
         for selection in selections {
             let version = match selection.kind {
@@ -235,8 +242,8 @@ impl SkillCatalog {
                     let binding = self
                         .application
                         .as_ref()
-                        .ok_or_else(|| {
-                            SkillStoreError::Storage("no Skill catalog application".into())
+                        .ok_or_else(|| SkillStoreError::AuthorityUnavailable {
+                            detail: "no Skill catalog application".into(),
                         })?
                         .resolve_custom(workspace, &selection.skill_id, &selection.version)
                         .await?;
@@ -280,7 +287,9 @@ impl SkillCatalog {
                                     binding.clone(),
                                     lease.clone(),
                                 )
-                                .map_err(|error| SkillStoreError::Invalid(error.into()))?,
+                                .map_err(|error| SkillStoreError::InvalidSelection {
+                                    detail: error,
+                                })?,
                             ),
                         ),
                         (Some(claim), None) => {
@@ -290,21 +299,24 @@ impl SkillCatalog {
                     };
                     self.bundle_source
                         .as_ref()
-                        .ok_or_else(|| SkillStoreError::Storage("no Skill bundle source".into()))?
+                        .ok_or_else(|| SkillStoreError::AuthorityUnavailable {
+                            detail: "no Skill bundle source".into(),
+                        })?
                         .load(workspace, binding, authority.as_ref())
                         .await
-                        .map_err(|error| SkillStoreError::Storage(error.to_string().into()))?
+                        .map_err(|error| SkillStoreError::Indeterminate {
+                            detail: error.to_string(),
+                        })?
                         .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?
                 }
             };
             if version.bundle_sha256 != binding.bundle_sha256 {
-                return Err(SkillStoreError::Invalid(
-                    format!(
+                return Err(SkillStoreError::CorruptData {
+                    detail: format!(
                         "Skill {} version {} hash changed",
                         binding.skill_id, binding.version
-                    )
-                    .into(),
-                ));
+                    ),
+                });
             }
             versions.push(version);
         }
@@ -439,8 +451,11 @@ mod tests {
     #[test]
     fn session_skill_repository_failures_follow_the_closed_error_table() {
         // Cause/effect decision table: caller-controlled missing/invalid
-        // selectors => 400; temporary filesystem I/O => 503; impossible write
-        // conflicts or durable storage/corruption => 500. Every runtime Skill
+        // selectors => 400; IO, missing authority and indeterminate backend
+        // outcomes => 503; corrupt data/encoding or impossible conflicts =>
+        // 500. SQL and filesystem failures now share the same cause policy.
+        // Reference-index refusals preserve their owned Resource error; they
+        // cannot be mistaken for a missing Skill or permission to publish. Every runtime Skill
         // entry point uses this one adapter so create, restore, and live apply
         // cannot classify the same repository cause differently.
         let rules = [
@@ -449,10 +464,28 @@ mod tests {
                 RunErrorKind::BadRequest,
             ),
             (
-                SkillStoreError::Invalid("x".into()),
+                SkillStoreError::InvalidSelection { detail: "x".into() },
                 RunErrorKind::BadRequest,
             ),
-            (SkillStoreError::Io("x".into()), RunErrorKind::Unavailable),
+            (
+                SkillStoreError::InvalidDefinition { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::InvalidVersion { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::BundleMismatch { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::from(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "x",
+                )),
+                RunErrorKind::Unavailable,
+            ),
             (
                 SkillStoreError::AlreadyExists("x".into()),
                 RunErrorKind::Internal,
@@ -461,7 +494,32 @@ mod tests {
                 SkillStoreError::VersionConflict("x".into()),
                 RunErrorKind::Internal,
             ),
-            (SkillStoreError::Storage("x".into()), RunErrorKind::Internal),
+            (
+                SkillStoreError::LifecycleConflict { detail: "x".into() },
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::Indeterminate { detail: "x".into() },
+                RunErrorKind::Unavailable,
+            ),
+            (
+                SkillStoreError::CorruptData { detail: "x".into() },
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::EncodingFailure { detail: "x".into() },
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::AuthorityUnavailable { detail: "x".into() },
+                RunErrorKind::Unavailable,
+            ),
+            (
+                SkillStoreError::Reference(
+                    awaken_resource_contract::ResourcePurgeError::StaleClaim,
+                ),
+                RunErrorKind::Internal,
+            ),
         ];
         for (cause, effect) in rules {
             assert_eq!(skill_store_run_error(cause).kind, effect);

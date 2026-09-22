@@ -103,9 +103,9 @@ impl MemoryMaterializationReferenceEncoder<SessionTerminalMemoryIntent>
             || config_version != intent.config_version()
             || access != intent.access()
         {
-            return Err(MemoryMaterializationReferenceError::new(
-                "terminal Memory encoder inputs do not match the frozen intent",
-            ));
+            return Err(MemoryMaterializationReferenceError::AuthorityMismatch {
+                detail: "terminal Memory encoder inputs do not match the frozen intent".into(),
+            });
         }
         terminal_memory_materialization_reference(intent)
     }
@@ -125,29 +125,33 @@ impl MemoryMaterializationReferenceEncoder<SessionResourceMaterializationIntent>
         let awaken_session_contract::SessionResourceMaterializationTarget::Input(input) =
             intent.target()
         else {
-            return Err(MemoryMaterializationReferenceError::new(
-                "Session Resource materialization target is not an input",
-            ));
+            return Err(MemoryMaterializationReferenceError::InvalidInput {
+                detail: "Session Resource materialization target is not an input".into(),
+            });
         };
         let awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: expected_store,
             config,
         } = &input.source
         else {
-            return Err(MemoryMaterializationReferenceError::new(
-                "Session Resource materialization target is not a Memory input",
-            ));
+            return Err(MemoryMaterializationReferenceError::InvalidInput {
+                detail: "Session Resource materialization target is not a Memory input".into(),
+            });
         };
         if expected_store.as_str() != memory_store_id
             || config.version != config_version
             || input.access != access
         {
-            return Err(MemoryMaterializationReferenceError::new(
-                "Session Resource Memory encoder inputs do not match the frozen intent",
-            ));
+            return Err(MemoryMaterializationReferenceError::AuthorityMismatch {
+                detail: "Session Resource Memory encoder inputs do not match the frozen intent"
+                    .into(),
+            });
         }
-        let encoded = serde_json::to_string(intent)
-            .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
+        let encoded = serde_json::to_string(intent).map_err(|error| {
+            MemoryMaterializationReferenceError::EncodingFailure {
+                detail: error.to_string(),
+            }
+        })?;
         Ok(format!("{MEMORY_REFERENCE_V3_PREFIX}{encoded}"))
     }
 }
@@ -168,7 +172,11 @@ pub fn memory_materialization_reference(
         access,
         claim: claim.clone(),
     })
-    .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
+    .map_err(
+        |error| MemoryMaterializationReferenceError::EncodingFailure {
+            detail: error.to_string(),
+        },
+    )?;
     Ok(format!("{MEMORY_REFERENCE_V1_PREFIX}{encoded}"))
 }
 
@@ -185,7 +193,11 @@ pub fn terminal_memory_materialization_reference(
         materialization: intent.materialization().clone(),
         fence: ResourceOperationFence::Terminal(intent.effect().clone()),
     })
-    .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
+    .map_err(
+        |error| MemoryMaterializationReferenceError::EncodingFailure {
+            detail: error.to_string(),
+        },
+    )?;
     Ok(format!("{MEMORY_REFERENCE_V2_PREFIX}{encoded}"))
 }
 
@@ -195,27 +207,37 @@ fn parse_reference(
     if let Some(encoded) = reference.strip_prefix(MEMORY_REFERENCE_V1_PREFIX) {
         return serde_json::from_str(encoded)
             .map(MemoryMaterializationReference::RunV1)
-            .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()));
+            .map_err(
+                |error| MemoryMaterializationReferenceError::CorruptReference {
+                    detail: error.to_string(),
+                },
+            );
     }
     if let Some(encoded) = reference.strip_prefix(MEMORY_REFERENCE_V3_PREFIX) {
         return serde_json::from_str(encoded)
             .map(Box::new)
             .map(MemoryMaterializationReference::RealizationV3)
-            .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()));
+            .map_err(
+                |error| MemoryMaterializationReferenceError::CorruptReference {
+                    detail: error.to_string(),
+                },
+            );
     }
     let encoded = reference
         .strip_prefix(MEMORY_REFERENCE_V2_PREFIX)
-        .ok_or_else(|| {
-            MemoryMaterializationReferenceError::new(
-                "operation requires an exact Memory authority reference",
-            )
+        .ok_or_else(|| MemoryMaterializationReferenceError::CorruptReference {
+            detail: "operation requires an exact Memory authority reference".into(),
         })?;
     let decoded = serde_json::from_str::<TerminalMemoryMaterializationReferenceV2>(encoded)
-        .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
+        .map_err(
+            |error| MemoryMaterializationReferenceError::CorruptReference {
+                detail: error.to_string(),
+            },
+        )?;
     let ResourceOperationFence::Terminal(effect) = decoded.fence else {
-        return Err(MemoryMaterializationReferenceError::new(
-            "Memory v2 references are terminal-only",
-        ));
+        return Err(MemoryMaterializationReferenceError::CorruptReference {
+            detail: "Memory v2 references are terminal-only".into(),
+        });
     };
     SessionTerminalMemoryIntent::try_from_untrusted_parts(
         decoded.binding_id,
@@ -226,7 +248,11 @@ fn parse_reference(
     )
     .map(Box::new)
     .map(MemoryMaterializationReference::TerminalV2)
-    .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))
+    .map_err(
+        |error| MemoryMaterializationReferenceError::CorruptReference {
+            detail: error.to_string(),
+        },
+    )
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -1315,8 +1341,10 @@ mod tests {
         // lossless rolling-compatible capability; W2 exact v2 intent plus
         // terminal fence => lossless capability without caller Workspace or old
         // Run claim; W3 bad prefix, unknown field, Run-in-v2, or non-canonical
-        // evidence => reject. The HTTP reference is transport only, never a
-        // second Resource, Session, or dispatch authority.
+        // evidence => typed corrupt reference; W4 encoder arguments diverge
+        // from the frozen intent => typed authority mismatch. The HTTP
+        // reference is transport only, never a second Resource, Session, or
+        // dispatch authority.
         let claim = RunClaim {
             run_id: awaken_agent_contract::agent::run::Id("run-memory".into()),
             owner: "worker-memory".into(),
@@ -1348,16 +1376,53 @@ mod tests {
         };
         assert_eq!(parsed.as_ref(), &intent, "W2 lossless");
 
-        assert!(parse_reference("invalid:{}").is_err(), "W3 bad prefix");
+        assert!(
+            matches!(
+                parse_reference("invalid:{}"),
+                Err(MemoryMaterializationReferenceError::CorruptReference { .. })
+            ),
+            "W3 bad prefix"
+        );
 
         let unknown = format!(
             "{},\"authority_bypass\":true}}",
             encoded.strip_suffix('}').expect("reference JSON object")
         );
-        assert!(parse_reference(&unknown).is_err(), "W3 unknown field");
+        assert!(
+            matches!(
+                parse_reference(&unknown),
+                Err(MemoryMaterializationReferenceError::CorruptReference { .. })
+            ),
+            "W3 unknown field"
+        );
 
         let run_in_v2 = terminal.replacen("\"type\":\"terminal\"", "\"type\":\"run\"", 1);
-        assert!(parse_reference(&run_in_v2).is_err(), "W3 Run-in-v2");
+        assert!(
+            matches!(
+                parse_reference(&run_in_v2),
+                Err(MemoryMaterializationReferenceError::CorruptReference { .. })
+            ),
+            "W3 Run-in-v2"
+        );
+
+        let mismatch =
+            <HttpMemoryMaterializationReferenceEncoder as MemoryMaterializationReferenceEncoder<
+                SessionTerminalMemoryIntent,
+            >>::encode(
+                &HttpMemoryMaterializationReferenceEncoder,
+                "workspace",
+                "another-memory",
+                intent.config_version(),
+                intent.access(),
+                &intent,
+            );
+        assert!(
+            matches!(
+                mismatch,
+                Err(MemoryMaterializationReferenceError::AuthorityMismatch { .. })
+            ),
+            "W4"
+        );
     }
 
     #[test]

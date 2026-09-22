@@ -579,14 +579,7 @@ mod postgres {
         // G1 unconfigured local run => explicit skip. G2 configured but
         // unreachable/invalid => failure. G3 connected => schema creation and
         // scoped connection must succeed; no `.ok()` may erase their failure.
-        let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-            Ok(url) => url,
-            Err(std::env::VarError::NotPresent) => {
-                eprintln!("[skip] AWAKEN_TEST_DATABASE_URL is not configured");
-                return None;
-            }
-            Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
-        };
+        let url = awaken_reliability_testkit::postgres_fixture_url()?;
         let admin = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(5))

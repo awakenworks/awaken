@@ -27,7 +27,8 @@ fn session_input_error(error: awaken_session_contract::SessionInputError) -> Run
     use awaken_resource_contract::ResourceRegistryError;
     use awaken_session_contract::SessionInputError;
     match &error {
-        SessionInputError::Registry(ResourceRegistryError::Unavailable(_)) => {
+        SessionInputError::Registry(ResourceRegistryError::AuthorityUnavailable { .. })
+        | SessionInputError::Registry(ResourceRegistryError::Indeterminate { .. }) => {
             RunError::unavailable(error.to_string())
         }
         SessionInputError::Registry(ResourceRegistryError::CorruptData(_)) => {
@@ -1146,7 +1147,15 @@ mod input_error_tests {
         use awaken_session_contract::{RunErrorKind, SessionInputError};
         for (error, expected) in [
             (
-                SessionInputError::Registry(ResourceRegistryError::Unavailable("same".into())),
+                SessionInputError::Registry(ResourceRegistryError::AuthorityUnavailable {
+                    detail: "same".into(),
+                }),
+                RunErrorKind::Unavailable,
+            ),
+            (
+                SessionInputError::Registry(ResourceRegistryError::Indeterminate {
+                    detail: "same".into(),
+                }),
                 RunErrorKind::Unavailable,
             ),
             (

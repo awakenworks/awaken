@@ -486,10 +486,14 @@ fn registry_error(error: ResourceRegistryError) -> axum::response::Response {
             StatusCode::NOT_FOUND
         }
         ResourceRegistryError::NotActive { .. } => StatusCode::CONFLICT,
-        ResourceRegistryError::Invalid(_) => StatusCode::BAD_REQUEST,
-        ResourceRegistryError::CorruptData(_) | ResourceRegistryError::Unavailable(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        ResourceRegistryError::IdentityRejected { .. }
+        | ResourceRegistryError::ConfigurationRejected { .. }
+        | ResourceRegistryError::AdmissionRejected { .. } => StatusCode::BAD_REQUEST,
+        ResourceRegistryError::VersionExhausted { .. } => StatusCode::CONFLICT,
+        ResourceRegistryError::EncodingFailure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        ResourceRegistryError::CorruptData(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ResourceRegistryError::AuthorityUnavailable { .. }
+        | ResourceRegistryError::Indeterminate { .. } => StatusCode::SERVICE_UNAVAILABLE,
     };
     err(status, error.to_string())
 }
@@ -1215,6 +1219,66 @@ async fn redact_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_outages_are_not_invalid_input_or_missing_memory() {
+        // M1 positive missing => 404; M2 identity/config/admission failures =>
+        // 400; M3 version exhaustion/concurrent state => 409; M4 unavailable
+        // or unknown dependency => 503; M5 corrupt observation or encoding =>
+        // 500. One diagnostic string cannot collapse these distinct facts.
+        for (error, status) in [
+            (
+                ResourceRegistryError::NotFound("same".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                ResourceRegistryError::ConfigurationRejected {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::IdentityRejected {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::AdmissionRejected {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ResourceRegistryError::VersionExhausted { id: "same".into() },
+                StatusCode::CONFLICT,
+            ),
+            (
+                ResourceRegistryError::AuthorityUnavailable {
+                    detail: "same".into(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ResourceRegistryError::Indeterminate {
+                    detail: "same".into(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ResourceRegistryError::CorruptData("same".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ResourceRegistryError::EncodingFailure {
+                    detail: "same".into(),
+                },
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            assert_eq!(registry_error(error).status(), status);
+        }
+    }
 
     #[test]
     fn nullable_memory_page_matches_both_official_sdk_spellings() {

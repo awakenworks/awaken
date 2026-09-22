@@ -2112,9 +2112,9 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             awaken_resource_contract::RepositoryBindingVerifierError,
         > {
             Err(
-                awaken_resource_contract::RepositoryBindingVerifierError::new(
-                    "injected binding failure",
-                ),
+                awaken_resource_contract::RepositoryBindingVerifierError::Denied {
+                    detail: "injected binding failure".into(),
+                },
             )
         }
     }
@@ -19003,18 +19003,18 @@ impl
             fence.target()
         else {
             return Err(
-                awaken_resource_contract::MemoryMaterializationReferenceError::new(
-                    "realization Memory encoder did not receive a Memory input",
-                ),
+                awaken_resource_contract::MemoryMaterializationReferenceError::InvalidInput {
+                    detail: "realization Memory encoder did not receive a Memory input".into(),
+                },
             );
         };
         let awaken_session_contract::ResolvedInputSource::MemoryStore { config, .. } =
             &input.source
         else {
             return Err(
-                awaken_resource_contract::MemoryMaterializationReferenceError::new(
-                    "realization Memory encoder did not receive a Memory input",
-                ),
+                awaken_resource_contract::MemoryMaterializationReferenceError::InvalidInput {
+                    detail: "realization Memory encoder did not receive a Memory input".into(),
+                },
             );
         };
         if workspace_id != "realization-workspace"
@@ -19026,9 +19026,9 @@ impl
             || fence.lease().owner != "realization-memory-worker"
         {
             return Err(
-                awaken_resource_contract::MemoryMaterializationReferenceError::new(
-                    "realization Memory encoder received a foreign frozen input",
-                ),
+                awaken_resource_contract::MemoryMaterializationReferenceError::AuthorityMismatch {
+                    detail: "realization Memory encoder received a foreign frozen input".into(),
+                },
             );
         }
         self.events.lock().unwrap().push("encode-realization-v3");
@@ -19054,9 +19054,9 @@ impl
             || access != awaken_resource_contract::ResourceAccess::ReadWrite
         {
             return Err(
-                awaken_resource_contract::MemoryMaterializationReferenceError::new(
-                    "terminal Memory encoder received a foreign frozen input",
-                ),
+                awaken_resource_contract::MemoryMaterializationReferenceError::AuthorityMismatch {
+                    detail: "terminal Memory encoder received a foreign frozen input".into(),
+                },
             );
         }
         self.events.lock().unwrap().push("encode-terminal-v2");

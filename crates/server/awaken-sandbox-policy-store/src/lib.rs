@@ -701,13 +701,8 @@ mod tests {
         use sqlx::Executor;
         use sqlx::postgres::PgPoolOptions;
 
-        let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-            Ok(url) => url,
-            Err(std::env::VarError::NotPresent) => {
-                eprintln!("[skip] AWAKEN_TEST_DATABASE_URL is not configured");
-                return;
-            }
-            Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+            return;
         };
         let admin = PgPool::connect(&url).await.unwrap();
         let _ = admin

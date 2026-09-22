@@ -68,16 +68,16 @@ impl ReplaceArtifactCapture {
             || self.file_ids.iter().any(|id| id.trim().is_empty())
             || self.expected_revision >= i64::MAX as u64
         {
-            return Err(FileCatalogError::Invalid(
-                "invalid output capture identity or revision".into(),
-            ));
+            return Err(FileCatalogError::InvalidCapture {
+                detail: "invalid output capture identity or revision".into(),
+            });
         }
         let mut file_ids = self.file_ids.clone();
         file_ids.sort();
         if file_ids.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(FileCatalogError::Invalid(
-                "duplicate output File reference".into(),
-            ));
+            return Err(FileCatalogError::InvalidCapture {
+                detail: "duplicate output File reference".into(),
+            });
         }
         let next = ArtifactCapture {
             workspace_id: self.workspace_id.clone(),
@@ -145,9 +145,9 @@ impl ArtifactCapture {
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
         if ids != expected || records.len() != self.file_ids.len() {
-            return Err(FileCatalogError::Invalid(
-                "output capture references missing Files".into(),
-            ));
+            return Err(FileCatalogError::InvalidCapture {
+                detail: "output capture references missing Files".into(),
+            });
         }
         let mut paths = BTreeSet::new();
         for record in records {
@@ -165,10 +165,11 @@ impl ArtifactCapture {
                     )
                 || !paths.insert(path)
             {
-                return Err(FileCatalogError::Invalid(
-                    "output capture requires distinct live artifact paths in its exact scope"
-                        .into(),
-                ));
+                return Err(FileCatalogError::InvalidCapture {
+                    detail:
+                        "output capture requires distinct live artifact paths in its exact scope"
+                            .into(),
+                });
             }
         }
         Ok(())
@@ -192,7 +193,7 @@ mod tests {
         };
         assert!(matches!(
             request.decide(None),
-            Err(FileCatalogError::Invalid(_))
+            Err(FileCatalogError::InvalidCapture { .. })
         ));
         let mut observed = ArtifactCapture {
             workspace_id: "w".into(),

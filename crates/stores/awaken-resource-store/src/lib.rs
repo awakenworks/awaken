@@ -103,9 +103,9 @@ pub(crate) fn validate_fence_request(
         || target.workspace_id.trim().is_empty()
         || target.resource_id.trim().is_empty()
     {
-        Err(ResourcePurgeError::Invalid(
-            "reclamation fence fields must not be empty".into(),
-        ))
+        Err(ResourcePurgeError::InvalidIntent {
+            detail: "reclamation fence fields must not be empty".into(),
+        })
     } else {
         Ok(())
     }
@@ -177,9 +177,9 @@ pub(crate) fn validate_reference(
         || record.target.resource_id.trim().is_empty()
         || record.reference.reference_id.trim().is_empty()
     {
-        return Err(ResourcePurgeError::Invalid(
-            "resource reference fields must not be empty".into(),
-        ));
+        return Err(ResourcePurgeError::InvalidReference {
+            detail: "resource reference fields must not be empty".into(),
+        });
     }
     Ok(())
 }
@@ -190,18 +190,18 @@ pub(crate) fn prepare_replacement(
     records: Vec<ResourceReferenceRecord>,
 ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
     if reference_id.trim().is_empty() {
-        return Err(ResourcePurgeError::Invalid(
-            "replacement reference_id must not be empty".into(),
-        ));
+        return Err(ResourcePurgeError::InvalidReference {
+            detail: "replacement reference_id must not be empty".into(),
+        });
     }
     let mut identities = BTreeSet::new();
     let mut unique = Vec::with_capacity(records.len());
     for record in records {
         validate_reference(&record)?;
         if record.reference.kind != kind || record.reference.reference_id != reference_id {
-            return Err(ResourcePurgeError::Invalid(
-                "replacement rows must belong to the requested holder".into(),
-            ));
+            return Err(ResourcePurgeError::InvalidReference {
+                detail: "replacement rows must belong to the requested holder".into(),
+            });
         }
         let identity = (
             record.target.workspace_id.clone(),
@@ -233,24 +233,36 @@ pub(crate) fn replacement_coordinates(
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn encode_intent(intent: &ResourcePurgeIntent) -> Result<String, ResourcePurgeError> {
-    serde_json::to_string(intent).map_err(|error| storage(error.to_string()))
+    serde_json::to_string(intent).map_err(|error| ResourcePurgeError::EncodingFailure {
+        detail: error.to_string(),
+    })
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn decode_intent(data: &str) -> Result<ResourcePurgeIntent, ResourcePurgeError> {
     let intent: ResourcePurgeIntent =
-        serde_json::from_str(data).map_err(|error| storage(error.to_string()))?;
-    intent.validate()?;
+        serde_json::from_str(data).map_err(|error| ResourcePurgeError::CorruptData {
+            detail: error.to_string(),
+        })?;
+    intent
+        .validate()
+        .map_err(|error| ResourcePurgeError::CorruptData {
+            detail: error.to_string(),
+        })?;
     Ok(intent)
 }
 
 pub(crate) fn storage(error: impl ToString) -> ResourcePurgeError {
-    ResourcePurgeError::Storage(error.to_string().into())
+    ResourcePurgeError::Indeterminate {
+        detail: error.to_string(),
+    }
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn to_i64(value: u64) -> Result<i64, ResourcePurgeError> {
-    i64::try_from(value).map_err(|_| ResourcePurgeError::Invalid("integer exceeds i64".into()))
+    i64::try_from(value).map_err(|_| ResourcePurgeError::ArithmeticExhausted {
+        detail: "integer exceeds i64".into(),
+    })
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -302,9 +314,9 @@ pub(crate) fn parse_reference_kind(
         "runtime_handle" => Ok(ResourceReferenceKind::RuntimeHandle),
         "extraction_intent" => Ok(ResourceReferenceKind::ExtractionIntent),
         "retention_hold" => Ok(ResourceReferenceKind::RetentionHold),
-        other => Err(storage(format!(
-            "unknown resource reference kind `{other}`"
-        ))),
+        other => Err(ResourcePurgeError::CorruptData {
+            detail: format!("unknown resource reference kind `{other}`"),
+        }),
     }
 }
 
@@ -349,6 +361,36 @@ mod tests {
                 reference_id: holder.into(),
             },
         }
+    }
+
+    #[test]
+    fn malformed_persisted_purge_frames_are_corruption_not_bad_commands() {
+        // D1 malformed JSON; D2 valid JSON with invalid immutable coordinates;
+        // D3 Completed without an exact receipt. Each is a stored observation,
+        // not a caller command and not a missing intent. Valid bytes round-trip.
+        let original = intent("codec");
+        let encoded = encode_intent(&original).unwrap();
+        assert_eq!(decode_intent(&encoded).unwrap(), original);
+        assert!(matches!(
+            decode_intent("not-json"),
+            Err(ResourcePurgeError::CorruptData { .. })
+        ));
+        let mut invalid = original.clone();
+        invalid.target.resource_id.clear();
+        assert!(matches!(
+            decode_intent(&serde_json::to_string(&invalid).unwrap()),
+            Err(ResourcePurgeError::CorruptData { .. })
+        ));
+        invalid = original;
+        invalid.status = ResourcePurgeStatus::Completed;
+        assert!(matches!(
+            decode_intent(&serde_json::to_string(&invalid).unwrap()),
+            Err(ResourcePurgeError::CorruptData { .. })
+        ));
+        assert!(matches!(
+            parse_reference_kind("unknown"),
+            Err(ResourcePurgeError::CorruptData { .. })
+        ));
     }
 
     #[test]
@@ -404,6 +446,23 @@ mod tests {
     }
 
     async fn repository_spec(store: &(impl ResourcePurgeRepository + ResourceReferenceIndex)) {
+        // V1 a schema-valid but incomplete claim/receipt frame is rejected
+        // before insert on every backend; V2 the same rule precedes root CAS.
+        for status in [ResourcePurgeStatus::Claimed, ResourcePurgeStatus::Completed] {
+            let mut invalid = intent("invalid-frame");
+            invalid.status = status;
+            assert!(
+                matches!(
+                    store.put(invalid).await,
+                    Err(ResourcePurgeError::InvalidIntent { .. })
+                ),
+                "V1"
+            );
+            assert!(
+                store.get("invalid-frame").await.unwrap().is_none(),
+                "V1 no row"
+            );
+        }
         assert_eq!(
             store.put(intent("purge-1")).await.unwrap(),
             PutResourcePurgeOutcome::Inserted
@@ -411,6 +470,22 @@ mod tests {
         assert_eq!(
             store.put(intent("purge-1")).await.unwrap(),
             PutResourcePurgeOutcome::Existing
+        );
+        let before = store.get("purge-1").await.unwrap().unwrap();
+        let mut invalid = before.clone();
+        invalid.status = ResourcePurgeStatus::Completed;
+        invalid.revision += 1;
+        assert!(
+            matches!(
+                store.save(before.revision, invalid).await,
+                Err(ResourcePurgeError::InvalidIntent { .. })
+            ),
+            "V2"
+        );
+        assert_eq!(
+            store.get("purge-1").await.unwrap().unwrap(),
+            before,
+            "V2 no partial CAS"
         );
         assert!(store.recoverable(19, 10).await.unwrap().is_empty());
         let mut value = store.recoverable(20, 10).await.unwrap().remove(0);
@@ -735,7 +810,7 @@ mod tests {
             .await
             .expect_err("S2 corrupt storage-local row must fail closed");
         assert!(
-            matches!(error, ResourcePurgeError::Storage(_)),
+            matches!(error, ResourcePurgeError::CorruptData { .. }),
             "S2/E2: {error:?}"
         );
         let (fence_count, reference_count): (i64, i64) = store

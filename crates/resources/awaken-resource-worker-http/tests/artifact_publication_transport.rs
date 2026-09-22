@@ -751,7 +751,7 @@ async fn embedded_and_raw_http_artifact_admission_have_the_same_resource_effects
         assert_eq!(local.is_ok(), valid, "P1/P2 embedded {fault}");
         if !valid {
             assert!(
-                matches!(local, Err(ResourcePurgeError::Invalid(_))),
+                matches!(local, Err(ResourcePurgeError::InvalidIntent { .. })),
                 "P2 {fault}"
             );
             assert!(

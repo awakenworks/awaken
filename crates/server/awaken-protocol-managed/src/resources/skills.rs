@@ -331,8 +331,21 @@ fn store_error(error: SkillStoreError) -> axum::response::Response {
             err(StatusCode::CONFLICT, error.to_string())
         }
         SkillStoreError::NotFound(_) => err(StatusCode::NOT_FOUND, error.to_string()),
-        SkillStoreError::Invalid(_) => err(StatusCode::BAD_REQUEST, error.to_string()),
-        SkillStoreError::Io(_) | SkillStoreError::Storage(_) => {
+        SkillStoreError::InvalidDefinition { .. }
+        | SkillStoreError::InvalidVersion { .. }
+        | SkillStoreError::BundleMismatch { .. }
+        | SkillStoreError::InvalidSelection { .. } => {
+            err(StatusCode::BAD_REQUEST, error.to_string())
+        }
+        SkillStoreError::LifecycleConflict { .. } => err(StatusCode::CONFLICT, error.to_string()),
+        SkillStoreError::Io { .. }
+        | SkillStoreError::Indeterminate { .. }
+        | SkillStoreError::AuthorityUnavailable { .. } => {
+            err(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
+        SkillStoreError::CorruptData { .. }
+        | SkillStoreError::EncodingFailure { .. }
+        | SkillStoreError::Reference(_) => {
             err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
         }
     }
@@ -837,6 +850,98 @@ async fn version_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_failure_status_depends_on_cause_not_backend_or_message() {
+        // R1 caller invalid/missing => 400/404; R2 known conflict => 409;
+        // R3 IO/indeterminate/missing authority => 503; R4 corrupted durable
+        // data/encoding/reference refusal => 500. Identical diagnostics keep
+        // cause classification independent of message text and substrate.
+        for (cause, status) in [
+            (
+                SkillStoreError::InvalidSelection {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SkillStoreError::InvalidDefinition {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SkillStoreError::InvalidVersion {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SkillStoreError::BundleMismatch {
+                    detail: "same".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SkillStoreError::NotFound("same".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                SkillStoreError::AlreadyExists("same".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                SkillStoreError::VersionConflict("same".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                SkillStoreError::LifecycleConflict {
+                    detail: "same".into(),
+                },
+                StatusCode::CONFLICT,
+            ),
+            (
+                SkillStoreError::from(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "same",
+                )),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                SkillStoreError::Indeterminate {
+                    detail: "same".into(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                SkillStoreError::AuthorityUnavailable {
+                    detail: "same".into(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                SkillStoreError::CorruptData {
+                    detail: "same".into(),
+                },
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                SkillStoreError::EncodingFailure {
+                    detail: "same".into(),
+                },
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                SkillStoreError::Reference(
+                    awaken_resource_contract::ResourcePurgeError::StaleClaim,
+                ),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            assert_eq!(store_error(cause).status(), status);
+        }
+    }
+
     use awaken_skill_store::InMemorySkillStore;
     use awaken_tenancy::WorkspaceScope;
     use axum::body::Body;

@@ -50,5 +50,6 @@ sqlite = ["dep:awaken-sql-storage", "dep:rusqlite", "dep:awaken-scoped-migration
 object-store = ["dep:object_store", "dep:futures"]
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs"] }
 tempfile = "3"

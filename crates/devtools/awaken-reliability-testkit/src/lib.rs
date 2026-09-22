@@ -1,8 +1,12 @@
-//! Test-only process-crash evidence primitive.
+//! Test-only execution and process-crash evidence primitives.
 //!
 //! This crate owns no product state and implements no domain transition. It
 //! gives existing integration suites one shared parent-side process-kill
-//! harness. Each domain test still owns its durable marker and assertions.
+//! harness and fixture admission. Each domain test still owns its durable
+//! marker, schema and behavioral assertions.
+
+mod fixture;
+pub use fixture::postgres_fixture_url;
 
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;

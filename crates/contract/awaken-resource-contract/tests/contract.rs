@@ -73,7 +73,7 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
             },
             config.clone(),
         ),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::IdentityRejected { .. })
     ));
     assert!(matches!(
         MemoryStoreAggregate::register(
@@ -83,7 +83,7 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
             },
             config.clone(),
         ),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
     let suspended = MemoryStoreAggregate::rehydrate(
         MemoryStoreDefinition {
@@ -105,7 +105,7 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
                 ..config.clone()
             },
         ),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
     let repository_config = RepositoryConfigVersion {
         repository_id: "repo-1".into(),
@@ -139,14 +139,14 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
     invalid_checkout.initial_commit = Some("abc123".into());
     assert!(matches!(
         RepositoryAggregate::register(repository_definition.clone(), invalid_checkout),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
     let mut invalid_checkout = repository_config.clone();
     invalid_checkout.initial_commit = None;
     invalid_checkout.initial_branch = Some(" ".into());
     assert!(matches!(
         RepositoryAggregate::register(repository_definition, invalid_checkout),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
 
     let mut aggregate = aggregate;
@@ -167,7 +167,7 @@ fn resource_registry_aggregates_define_one_backend_neutral_decision_table() {
     skipped.version = ConfigVersion(4);
     assert!(matches!(
         aggregate.publish_config("workspace-a", ConfigVersion(2), skipped, 3),
-        Err(ResourceRegistryError::Invalid(_))
+        Err(ResourceRegistryError::ConfigurationRejected { .. })
     ));
     assert_eq!(aggregate, committed, "R6 skipped publication is a no-op");
 }
@@ -267,11 +267,34 @@ fn error_display_prefixes_are_stable() {
         .to_string(),
         "file store error: boom"
     );
-    assert_eq!(SkillStoreError::Io("io".into()).to_string(), "io: io");
     assert_eq!(
-        SkillStoreError::Storage("s".into()).to_string(),
-        "storage: s"
+        SkillStoreError::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "io"
+        ))
+        .to_string(),
+        "io: io"
     );
+    assert_eq!(
+        SkillStoreError::Indeterminate { detail: "s".into() }.to_string(),
+        "Skill outcome is indeterminate: s"
+    );
+}
+
+#[test]
+fn skill_io_preserves_the_os_cause_independently_of_its_message() {
+    // R1-R4 identical diagnostics with different OS causes retain their exact
+    // kind. Logical NotFound remains a store observation, never inferred by
+    // this conversion from an arbitrary missing filesystem dependency.
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::InvalidData,
+        std::io::ErrorKind::ConnectionReset,
+    ] {
+        let error = SkillStoreError::from(std::io::Error::new(kind, "same diagnostic"));
+        assert!(matches!(error, SkillStoreError::Io { kind: actual, .. } if actual == kind));
+    }
 }
 
 // The two hard caps are part of the wire contract (Anthropic parity, ADR-0057);

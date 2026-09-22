@@ -14,8 +14,10 @@ use crate::schema::REGISTRY_NS;
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
 
-fn unavailable(error: impl ToString) -> RegistryRepositoryError {
-    RegistryRepositoryError::Unavailable(error.to_string().into())
+fn indeterminate(error: impl ToString) -> RegistryRepositoryError {
+    RegistryRepositoryError::Indeterminate {
+        detail: error.to_string(),
+    }
 }
 
 fn corrupt(error: impl ToString) -> RegistryRepositoryError {
@@ -32,7 +34,7 @@ impl SqliteResourceStore {
     {
         awaken_sqlite_pool::with_connection(self.connection.clone(), operation)
             .await
-            .map_err(unavailable)?
+            .map_err(indeterminate)?
     }
 
     async fn registry_record<T: DeserializeOwned + Send + 'static>(
@@ -53,7 +55,7 @@ impl SqliteResourceStore {
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()
-                    .map_err(unavailable)
+                    .map_err(indeterminate)
             })
             .await?;
         row.map(|(revision, data)| {
@@ -92,7 +94,7 @@ impl SqliteResourceStore {
                 {
                     Ok(InsertOutcome::AlreadyRegistered)
                 }
-                Err(error) => Err(unavailable(error)),
+                Err(error) => Err(indeterminate(error)),
             }
         })
         .await
@@ -128,7 +130,7 @@ impl SqliteResourceStore {
                             data
                         ],
                     )
-                    .map_err(unavailable)
+                    .map_err(indeterminate)
             })
             .await?;
         Ok(if changed == 1 {
@@ -150,7 +152,7 @@ impl SqliteResourceStore {
                         "SELECT id, revision, data FROM {REGISTRY_NS}_entry \
                          WHERE kind = ?1 ORDER BY id"
                     ))
-                    .map_err(unavailable)?;
+                    .map_err(indeterminate)?;
                 statement
                     .query_map(params![kind], |row| {
                         Ok((
@@ -159,9 +161,9 @@ impl SqliteResourceStore {
                             row.get::<_, String>(2)?,
                         ))
                     })
-                    .map_err(unavailable)?
+                    .map_err(indeterminate)?
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(unavailable)
+                    .map_err(indeterminate)
             })
             .await?;
         rows.into_iter()

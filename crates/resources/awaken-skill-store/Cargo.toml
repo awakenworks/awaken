@@ -35,6 +35,7 @@ awaken-scoped-migration-sqlite = { workspace = true, optional = true }
 awaken-sqlite-pool = { workspace = true, optional = true }
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
