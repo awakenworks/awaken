@@ -150,7 +150,7 @@ mod tests {
     use std::sync::Arc;
 
     use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use sqlx::postgres::PgPoolOptions;
     use tokio::sync::Barrier;
 
     use super::*;
@@ -166,13 +166,22 @@ mod tests {
         // durable fact. Decision rules: P1=C1+C2=>E1, P2=E1+C3+C4=>E2,
         // P3=E2+C5=>E3, P4=E2+C6=>E4, P5=E4+C7=>E5.
         const SCHEMA: &str = "t_environment_image_build_concurrency";
-        let database_url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".into()
-        });
-        let Ok(admin) = PgPool::connect(&database_url).await else {
-            eprintln!("[skip] no PostgreSQL reachable for Environment image-build concurrency");
-            return;
+        // G1 absent configuration => reported local skip; G2 explicit fixture
+        // unavailable => fail, never claim the concurrency rules were executed.
+        let database_url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
+            Ok(url) => url,
+            Err(std::env::VarError::NotPresent) => {
+                eprintln!("[skip] AWAKEN_TEST_DATABASE_URL is not configured");
+                return;
+            }
+            Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
         };
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&database_url)
+            .await
+            .expect("G2 configured PostgreSQL must be reachable");
         admin
             .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
             .await
@@ -201,6 +210,7 @@ mod tests {
             .await
             .expect("P1 migrate");
         let build_store = store(pool.clone());
+        crate::durable::tests::lifecycle(build_store.as_ref()).await;
         let demand = crate::test_demand();
         build_store
             .ensure(demand.clone(), 100)

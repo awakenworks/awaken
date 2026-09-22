@@ -202,32 +202,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("environment-images.db");
         let store = open_sqlite_environment_image_build_store(&path).unwrap();
-        let demand = crate::test_demand();
-        store.ensure(demand.clone(), 100).await.unwrap();
-        let stale = store
-            .claim_next("worker-a", 100, 10)
-            .await
-            .unwrap()
-            .unwrap();
-        let current = store
-            .claim_next("worker-b", 110, 10)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            !store
-                .complete(&stale, "image@sha256:stale", 111)
-                .await
-                .unwrap(),
-            "R3"
-        );
-        assert!(
-            store
-                .complete(&current, "image@sha256:ready", 111)
-                .await
-                .unwrap(),
-            "R4"
-        );
+        let demand = crate::durable::tests::lifecycle(store.as_ref()).await;
         drop(store);
 
         let reopened = open_sqlite_environment_image_build_store(&path).unwrap();

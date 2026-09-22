@@ -197,3 +197,123 @@ impl<B: RecordBackend> DurableEnvironmentImageBuildStore<B> {
 pub(crate) fn storage(error: impl std::fmt::Display) -> EnvironmentImageBuildError {
     EnvironmentImageBuildError::Storage(error.to_string())
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    pub(crate) async fn lifecycle(
+        store: &dyn EnvironmentImageBuildStore,
+    ) -> EnvironmentImageBuildDemand {
+        // Causes: C1 same recipe/key; C2 changed recipe/same key; C3 current
+        // lease; C4 exact expiry; C5 retry deadline; C6 Ready. Effects/rules:
+        // R1 C1 => idempotent ensure; R2 C2 => conflict/no overwrite;
+        // R3 C3 => no second claimant; R4 C4 => successor epoch/stale no-op;
+        // R5 failure => no claim before C5, eligible at C5;
+        // R6 completion => Ready/no claim; R7 C6 invalidation => one Pending;
+        // R8 same completion replay => false/no mutation (the port's receipt).
+        let mut demand = crate::test_demand();
+        demand.build_key.push_str(":conformance");
+        assert!(store.get(&demand.build_key).await.unwrap().is_none());
+        store.ensure(demand.clone(), 100).await.unwrap();
+        store.ensure(demand.clone(), 101).await.unwrap();
+        let original = store.get(&demand.build_key).await.unwrap().unwrap();
+        let mut conflict = demand.clone();
+        conflict.base_image.push_str("-different");
+        assert!(
+            matches!(
+                store.ensure(conflict, 102).await,
+                Err(EnvironmentImageBuildError::Conflict(_))
+            ),
+            "R2"
+        );
+        assert_eq!(
+            store.get(&demand.build_key).await.unwrap().unwrap(),
+            original,
+            "R1/R2"
+        );
+        let first = store.claim_next("first", 100, 10).await.unwrap().unwrap();
+        assert!(
+            store.claim_next("other", 109, 10).await.unwrap().is_none(),
+            "R3"
+        );
+        let successor = store
+            .claim_next("successor", 110, 10)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(successor.lease_epoch > first.lease_epoch, "R4");
+        assert!(
+            !store
+                .complete(&first, "image@sha256:stale", 111)
+                .await
+                .unwrap(),
+            "R4"
+        );
+        assert!(!store.fail(&first, "stale", 111, 10).await.unwrap(), "R4");
+        assert!(
+            store.fail(&successor, "temporary", 111, 10).await.unwrap(),
+            "R5"
+        );
+        assert!(
+            store.claim_next("retry", 120, 10).await.unwrap().is_none(),
+            "R5"
+        );
+        let retry = store.claim_next("retry", 121, 10).await.unwrap().unwrap();
+        assert!(
+            store
+                .complete(&retry, "image@sha256:ready", 122)
+                .await
+                .unwrap(),
+            "R6"
+        );
+        let ready = store.get(&demand.build_key).await.unwrap().unwrap();
+        assert!(
+            !store
+                .complete(&retry, "image@sha256:other", 123)
+                .await
+                .unwrap(),
+            "R8"
+        );
+        assert_eq!(
+            store.get(&demand.build_key).await.unwrap().unwrap(),
+            ready,
+            "R8"
+        );
+        assert!(
+            store.claim_next("late", 1000, 10).await.unwrap().is_none(),
+            "R6"
+        );
+        assert!(
+            store
+                .invalidate_ready(&demand.build_key, 1001)
+                .await
+                .unwrap(),
+            "R7"
+        );
+        assert!(
+            !store
+                .invalidate_ready(&demand.build_key, 1002)
+                .await
+                .unwrap(),
+            "R7"
+        );
+        let rebuilt = store
+            .claim_next("rebuild", 1003, 10)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .complete(&rebuilt, "image@sha256:ready", 1004)
+                .await
+                .unwrap()
+        );
+        demand
+    }
+
+    #[tokio::test]
+    async fn memory_obeys_the_same_lifecycle() {
+        lifecycle(&crate::InMemoryEnvironmentImageBuildStore::new()).await;
+    }
+}

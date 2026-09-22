@@ -575,20 +575,24 @@ mod postgres {
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
-    fn database_url() -> String {
-        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-        })
-    }
-
     async fn schema_pool(schema: &'static str) -> Option<PgPool> {
-        let admin = match PgPool::connect(&database_url()).await {
-            Ok(pool) => pool,
-            Err(err) => {
-                println!("[skip] no Postgres reachable: {err}");
+        // G1 unconfigured local run => explicit skip. G2 configured but
+        // unreachable/invalid => failure. G3 connected => schema creation and
+        // scoped connection must succeed; no `.ok()` may erase their failure.
+        let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
+            Ok(url) => url,
+            Err(std::env::VarError::NotPresent) => {
+                eprintln!("[skip] AWAKEN_TEST_DATABASE_URL is not configured");
                 return None;
             }
+            Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
         };
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("G2 configured PostgreSQL must be reachable");
         let _ = admin
             .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
             .await;
@@ -597,17 +601,46 @@ mod postgres {
             .await
             .expect("create schema");
         admin.close().await;
-        PgPoolOptions::new()
-            .after_connect(move |conn, _meta| {
-                Box::pin(async move {
-                    conn.execute(format!("SET search_path = {schema}").as_str())
-                        .await?;
-                    Ok(())
+        Some(
+            PgPoolOptions::new()
+                .max_connections(4)
+                .after_connect(move |conn, _meta| {
+                    Box::pin(async move {
+                        conn.execute(format!("SET search_path = {schema}").as_str())
+                            .await?;
+                        Ok(())
+                    })
                 })
-            })
-            .connect(&database_url())
-            .await
-            .ok()
+                .connect(&url)
+                .await
+                .expect("G3 scoped PostgreSQL connection must succeed"),
+        )
+    }
+
+    #[test]
+    fn configured_database_failure_is_not_a_successful_skip() {
+        // G2 an explicitly invalid fixture must make the actual backend test
+        // process fail. A child owns its environment, so this fault cannot
+        // race live suites or mutate the parent's configured database URL.
+        // G1 unconfigured local runs keep their separate reported-skip policy.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "postgres::postgres_snapshot_rejects_a_dangling_offering_row",
+                "--nocapture",
+            ])
+            .env("AWAKEN_TEST_DATABASE_URL", "invalid-postgres-test-url")
+            .output()
+            .expect("run the actual backend fixture in isolation");
+        assert!(
+            !output.status.success(),
+            "G2 configured failure must fail the test process"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("configured PostgreSQL must be reachable"),
+            "G2 must fail at fixture admission, not because the test was never selected"
+        );
     }
 
     async fn repo(schema: &'static str) -> Option<PostgresCatalogRepo> {
