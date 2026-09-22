@@ -13,6 +13,7 @@
 
 use awaken_provisioning_contract as pc;
 
+use crate::exec_attempts::DisposalSeal;
 use crate::{
     ContainerRuntime, ContainerSandbox, ContainerState, RuntimeAgentProcess, RuntimeError,
 };
@@ -138,7 +139,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// Close this environment to new exec attempts — the exact call disposal
     /// makes, so a test can observe the gate without racing a real cleanup.
     #[cfg(test)]
-    pub(crate) fn seal_exec_attempts(&self) -> bool {
+    pub(crate) fn seal_exec_attempts(&self) -> DisposalSeal {
         self.execs.seal()
     }
 
@@ -156,12 +157,15 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// keeps the demand honest — a Session environment that never exec'd cannot
     /// be holding an orphan, so a runtime with no exec support is never asked
     /// to reap and its fail-closed inherited implementation stays unreachable.
-    pub(crate) async fn reap_exec_orphans(&self) -> Result<(), pc::SandboxError> {
+    pub(crate) async fn reap_exec_orphans(&self) -> Result<DisposalSeal, pc::SandboxError> {
         // Closing and asking are one step. Closing must happen even when there
         // is nothing to reap, or an environment that never exec'd could
-        // acquire its first process during its own cleanup.
-        if !self.execs.seal() {
-            return Ok(());
+        // acquire its first process during its own cleanup. The seal is
+        // returned rather than dropped because the workspace reads that follow
+        // are exactly what it makes sound.
+        let seal = self.execs.seal();
+        if !seal.any_started() {
+            return Ok(seal);
         }
         if let Err(error) = self.runtime.reap_exec_orphans(&self.container_id).await {
             // A container that is no longer running has already stopped every
@@ -181,6 +185,6 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
             }
         }
         self.execs.clear_orphans();
-        Ok(())
+        Ok(seal)
     }
 }

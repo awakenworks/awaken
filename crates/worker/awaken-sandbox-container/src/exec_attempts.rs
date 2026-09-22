@@ -93,6 +93,25 @@ pub(crate) fn exec_orphan_reaper_command() -> pc::MaterializedCommand {
 /// to slip a process past a sweep that had already decided what to stop.
 const SEALED: u64 = 1 << 63;
 
+/// Evidence that one environment is closed to new Session work.
+///
+/// Cleanup reads the workspace — Secret write-back, the Memory harvest — and
+/// those reads are only sound once nothing new can start writing to it.
+/// Sealing is what makes that true, so the reads take this value rather than
+/// trusting the order of the lines above them: a caller that has not sealed
+/// has nothing to pass, and one cannot be built from anywhere else.
+pub(crate) struct DisposalSeal {
+    started: bool,
+}
+
+impl DisposalSeal {
+    /// Whether any exec attempt was ever started, and so whether the container
+    /// must still be asked to forget them.
+    pub(crate) const fn any_started(&self) -> bool {
+        self.started
+    }
+}
+
 /// Every exec attempt one Session environment started, and the subset whose
 /// caller went away before it held the process.
 ///
@@ -159,8 +178,8 @@ impl ExecAttempts {
         )
     }
 
-    /// Close this environment to new attempts, and report whether any attempt
-    /// was ever started.
+    /// Close this environment to new attempts, and report what that
+    /// established.
     ///
     /// One call because disposal needs both answers and must not act on them
     /// separately: closing first is what keeps a concurrent spawn from
@@ -168,8 +187,10 @@ impl ExecAttempts {
     /// count is what keeps reaping from being demanded of a runtime that never
     /// exec'd, whose inherited failure would otherwise be reachable. Idempotent,
     /// so a retried disposal seals once and still reports the same count.
-    pub(crate) fn seal(&self) -> bool {
-        self.state.fetch_or(SEALED, Ordering::SeqCst) & !SEALED > 0
+    pub(crate) fn seal(&self) -> DisposalSeal {
+        DisposalSeal {
+            started: self.state.fetch_or(SEALED, Ordering::SeqCst) & !SEALED > 0,
+        }
     }
 
     /// Whether this environment is closed to new attempts.
@@ -225,7 +246,7 @@ mod tests {
     /// | A4   | 1  | 1  | 1  | E1,E3  |
     #[test]
     fn a_started_attempt_is_visible_to_disposal_even_when_it_never_returned() {
-        assert!(!ExecAttempts::default().seal(), "A1");
+        assert!(!ExecAttempts::default().seal().any_started(), "A1");
 
         let attempts = ExecAttempts::default();
         let first = attempts.begin().expect("A2 an open environment admits");
@@ -234,7 +255,10 @@ mod tests {
         assert_eq!(attempts.orphaned(), vec![first], "A3");
         attempts.clear_orphans();
         assert!(attempts.orphaned().is_empty(), "A4");
-        assert!(attempts.seal(), "A4 started is not undone by reaping");
+        assert!(
+            attempts.seal().any_started(),
+            "A4 started is not undone by reaping"
+        );
     }
 
     /// The disposal gate. C1=the environment was sealed; C2=an attempt was
@@ -252,13 +276,13 @@ mod tests {
         assert!(open.begin().is_some(), "B1");
 
         let empty = ExecAttempts::default();
-        assert!(!empty.seal(), "B2 nothing was started");
+        assert!(!empty.seal().any_started(), "B2 nothing was started");
         assert!(empty.sealed(), "B2/E2");
         assert!(empty.begin().is_none(), "B2/E1");
 
         let used = ExecAttempts::default();
         let attempt = used.begin().expect("B3 admitted before sealing");
-        assert!(used.seal(), "B3 one attempt was started");
+        assert!(used.seal().any_started(), "B3 one attempt was started");
         assert!(used.sealed(), "B3/E2");
         assert!(used.begin().is_none(), "B3/E1");
         // The gate cannot resurrect a name either: the refused caller has no
@@ -266,7 +290,10 @@ mod tests {
         used.retain_orphan(attempt.clone());
         assert_eq!(used.orphaned(), vec![attempt], "B3/E2");
 
-        assert!(used.seal(), "B4/E3 sealing again reports the same count");
+        assert!(
+            used.seal().any_started(),
+            "B4/E3 sealing again reports the same count"
+        );
         assert!(used.begin().is_none(), "B4/E1");
     }
 
