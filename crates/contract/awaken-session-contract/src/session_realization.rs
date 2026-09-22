@@ -36,7 +36,7 @@ pub use terminal_cleanup_authorization::{
     SessionTerminalCleanupWork,
 };
 
-pub use crate::realization_lease::{
+pub use awaken_session_resource_contract::{
     realization_lease_authorizes, realization_lease_generation_authorizes,
     realization_lease_is_live_at,
 };

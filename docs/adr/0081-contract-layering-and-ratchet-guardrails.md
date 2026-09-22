@@ -277,29 +277,36 @@ from those variants; diagnostic text is no longer a decision input. The now
 unused `ResourceErrorDetail` wrapper was deleted rather than retained as a
 parallel compatibility vocabulary.
 
-SessionRealizationLease and its authorization laws now share a domain module in
-the existing Session contract. Repository ports store that value; they no longer
-define it. Root mutation values and their observation-preservation kernel now
-live beside PersistedSession in session_repo/mutation.rs; repository_port.rs
-contains only the required persistence interface. Realization command and
-projection values live in session_realization/model.rs while the parent owns
-Control roles. These are intra-crate ownership boundaries, preserving private
-transition access and the existing dependency depth. The public re-export, serialized coordinates, neutral FenceToken
-implementation and root CAS boundary remain unchanged. Its existing Kani harness
-moves with the production kernel and retains its obligation. This relocation is
-not completion of the Session size budget. Separating the entire remaining
-configuration/state graph requires resolving its lower vocabulary dependencies;
-adding a facade chain or widening private transition methods solely to reduce
-line counts does not qualify as closure.
+Session Resource resolution, mutation policy and realization-lease vocabulary
+now belong to `awaken-session-resource-contract`; the original Session contract
+is a source-compatible re-export facade for these names. The extracted crate is
+types-only, remains at dependency depth 2 and keeps the Session facade at depth
+3. The serialized coordinates, neutral `FenceToken` implementation and Resource
+resolution behavior remain unchanged. The lease Kani harness moved with its
+production kernel and is selected from the new package. Resource activation and
+terminal cleanup remain with the Session aggregate: moving them exposed a
+crate-private retirement plan and the Repository aggregate's private cleanup
+transitions, so that candidate was rejected instead of widening internal methods
+to manufacture a size reduction.
+
+Root mutation values and their observation-preservation kernel live beside
+`PersistedSession` in `session_repo/mutation.rs`; `repository_port.rs` contains
+only the required persistence interface. Realization command and projection
+values live in `session_realization/model.rs` while the parent owns Control
+roles. This still does not complete the Session size budget. The remaining
+Environment, Repository and realization model is coupled to lower MCP and
+Runtime vocabulary at depth 2. A further facade split would grow the contract
+chain from 3 to 4; marking that complete would require either removing the
+compatibility facade or changing the accepted depth decision.
 
 Reused owners are the existing aggregates, repositories, operation identities,
 receipts, CAS implementations and test entrypoints. Modified code is limited to
 error projection, image-build backend delegation, backend test bindings and the
-Session lease definition location. New code consists of necessary error cases
-and missing conformance/transport test rules; there is no new queue, database,
-retry scheduler, provider hierarchy or central conformance framework. The error
-scanner still exposes remaining opaque Resource payloads; these changes do not
-claim they are all resolved.
+Session Resource vocabulary owner. New code consists of necessary error cases,
+one types-only contract owner and missing conformance/transport test rules;
+there is no new queue, database, retry scheduler, provider hierarchy or central
+conformance framework. The corrected scanner now reports zero opaque Resource
+error payloads.
 
 #### Static structure
 

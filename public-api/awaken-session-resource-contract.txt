@@ -1,0 +1,117 @@
+pub mod awaken_session_resource_contract
+pub use awaken_session_resource_contract::CanonicalJsonHashError
+pub use awaken_session_resource_contract::SandboxCheckpointRef
+pub use awaken_session_resource_contract::SandboxRestoreRequest
+pub use awaken_session_resource_contract::SessionId
+pub use awaken_session_resource_contract::canonical_json_sha256
+pub use awaken_session_resource_contract::stable_fingerprint
+pub enum awaken_session_resource_contract::ResolvedInputSource
+pub awaken_session_resource_contract::ResolvedInputSource::File
+pub awaken_session_resource_contract::ResolvedInputSource::File::file_id: awaken_resource_contract::input::FileId
+pub awaken_session_resource_contract::ResolvedInputSource::MemoryStore
+pub awaken_session_resource_contract::ResolvedInputSource::MemoryStore::config: awaken_resource_contract::registry::MemoryStoreConfigVersion
+pub awaken_session_resource_contract::ResolvedInputSource::MemoryStore::memory_store_id: awaken_resource_contract::input::MemoryStoreId
+pub awaken_session_resource_contract::ResolvedInputSource::Repository
+pub awaken_session_resource_contract::ResolvedInputSource::Repository::config: awaken_resource_contract::registry::RepositoryConfigVersion
+pub awaken_session_resource_contract::ResolvedInputSource::Repository::credential: core::option::Option<alloc::boxed::Box<awaken_session_resource_contract::ResolvedRepositoryCredential>>
+pub awaken_session_resource_contract::ResolvedInputSource::Repository::repository_id: awaken_resource_contract::input::RepositoryId
+pub enum awaken_session_resource_contract::SessionInputError
+pub awaken_session_resource_contract::SessionInputError::InvalidBindingId(alloc::string::String)
+pub awaken_session_resource_contract::SessionInputError::InvalidCredentialPin(alloc::string::String)
+pub awaken_session_resource_contract::SessionInputError::InvalidSkillPin(alloc::string::String)
+pub awaken_session_resource_contract::SessionInputError::InvalidTransition(alloc::string::String)
+pub awaken_session_resource_contract::SessionInputError::MountCollision(alloc::string::String)
+pub awaken_session_resource_contract::SessionInputError::Registry(awaken_resource_contract::registry::ResourceRegistryError)
+pub awaken_session_resource_contract::SessionInputError::UnknownBinding(alloc::string::String)
+pub awaken_session_resource_contract::SessionInputError::UnknownReplacement(alloc::string::String)
+pub awaken_session_resource_contract::SessionInputError::UnsafeMountPath(alloc::string::String)
+pub enum awaken_session_resource_contract::SessionMutationPolicy
+pub awaken_session_resource_contract::SessionMutationPolicy::FileResources
+pub awaken_session_resource_contract::SessionMutationPolicy::Frozen
+pub awaken_session_resource_contract::SessionMutationPolicy::Managed
+impl awaken_session_resource_contract::SessionMutationPolicy
+pub const fn awaken_session_resource_contract::SessionMutationPolicy::admits_public_agent_mutation(self) -> bool
+pub const fn awaken_session_resource_contract::SessionMutationPolicy::admits_repository_credential_mutation(self) -> bool
+pub fn awaken_session_resource_contract::SessionMutationPolicy::admits_resource_replacement(self, &awaken_session_resource_contract::ResolvedSessionResources, &awaken_session_resource_contract::ResolvedSessionResources) -> bool
+pub const fn awaken_session_resource_contract::SessionMutationPolicy::is_managed(&self) -> bool
+pub struct awaken_session_resource_contract::ResolvedInput
+pub awaken_session_resource_contract::ResolvedInput::access: awaken_resource_contract::input::ResourceAccess
+pub awaken_session_resource_contract::ResolvedInput::binding_id: awaken_resource_contract::input::BindingId
+pub awaken_session_resource_contract::ResolvedInput::created_at_unix_ms: core::option::Option<u64>
+pub awaken_session_resource_contract::ResolvedInput::instructions: core::option::Option<alloc::string::String>
+pub awaken_session_resource_contract::ResolvedInput::mount_path: alloc::string::String
+pub awaken_session_resource_contract::ResolvedInput::source: awaken_session_resource_contract::ResolvedInputSource
+pub awaken_session_resource_contract::ResolvedInput::updated_at_unix_ms: core::option::Option<u64>
+pub struct awaken_session_resource_contract::ResolvedRepositoryCredential
+pub awaken_session_resource_contract::ResolvedRepositoryCredential::access: awaken_credential_contract::CredentialAccess
+pub awaken_session_resource_contract::ResolvedRepositoryCredential::selected_plaintext_holder: awaken_credential_contract::PlaintextHolder
+impl awaken_session_resource_contract::ResolvedRepositoryCredential
+pub fn awaken_session_resource_contract::ResolvedRepositoryCredential::validate_for_repository(&self, &str, &str) -> core::result::Result<(), awaken_session_resource_contract::SessionInputError>
+pub struct awaken_session_resource_contract::ResolvedSessionResources
+impl awaken_session_resource_contract::ResolvedSessionResources
+pub fn awaken_session_resource_contract::ResolvedSessionResources::attach(&self, awaken_session_resource_contract::ResolvedInput) -> core::result::Result<Self, awaken_session_resource_contract::SessionInputError>
+pub fn awaken_session_resource_contract::ResolvedSessionResources::compatibility_facts(&self) -> awaken_session_resource_contract::SessionResourceCompatibilityFacts
+pub fn awaken_session_resource_contract::ResolvedSessionResources::detach(&self, &awaken_resource_contract::input::BindingId) -> core::result::Result<(Self, awaken_session_resource_contract::ResolvedInput), awaken_session_resource_contract::SessionInputError>
+pub fn awaken_session_resource_contract::ResolvedSessionResources::inputs(&self) -> &[awaken_session_resource_contract::ResolvedInput]
+pub fn awaken_session_resource_contract::ResolvedSessionResources::into_parts(self) -> (alloc::vec::Vec<awaken_session_resource_contract::ResolvedInput>, alloc::vec::Vec<awaken_session_resource_contract::ResolvedSkillBinding>)
+pub fn awaken_session_resource_contract::ResolvedSessionResources::observe_input_times(&mut self, &Self, u64)
+pub fn awaken_session_resource_contract::ResolvedSessionResources::replace(&self, awaken_session_resource_contract::ResolvedInput) -> core::result::Result<Self, awaken_session_resource_contract::SessionInputError>
+pub fn awaken_session_resource_contract::ResolvedSessionResources::sandbox_layout_bindings(&self) -> alloc::vec::Vec<awaken_resource_contract::input::InputBinding>
+pub fn awaken_session_resource_contract::ResolvedSessionResources::skills(&self) -> &[awaken_session_resource_contract::ResolvedSkillBinding]
+pub fn awaken_session_resource_contract::ResolvedSessionResources::try_new(alloc::vec::Vec<awaken_session_resource_contract::ResolvedInput>, alloc::vec::Vec<awaken_session_resource_contract::ResolvedSkillBinding>) -> core::result::Result<Self, awaken_session_resource_contract::SessionInputError>
+pub fn awaken_session_resource_contract::ResolvedSessionResources::update_input(&self, &awaken_resource_contract::input::BindingId, impl core::ops::function::FnOnce(&mut awaken_session_resource_contract::ResolvedInput)) -> core::result::Result<Self, awaken_session_resource_contract::SessionInputError>
+pub fn awaken_session_resource_contract::ResolvedSessionResources::with_skills(self, alloc::vec::Vec<awaken_session_resource_contract::ResolvedSkillBinding>) -> core::result::Result<Self, awaken_session_resource_contract::SessionInputError>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_session_resource_contract::ResolvedSessionResources
+pub fn awaken_session_resource_contract::ResolvedSessionResources::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct awaken_session_resource_contract::ResolvedSkillBinding
+pub awaken_session_resource_contract::ResolvedSkillBinding::bundle_sha256: alloc::string::String
+pub awaken_session_resource_contract::ResolvedSkillBinding::kind: awaken_agent_contract::skill::AgentSkillKind
+pub awaken_session_resource_contract::ResolvedSkillBinding::skill_id: alloc::string::String
+pub awaken_session_resource_contract::ResolvedSkillBinding::version: u64
+pub struct awaken_session_resource_contract::SessionInputAttachment
+pub awaken_session_resource_contract::SessionInputAttachment::binding: awaken_resource_contract::input::InputBinding
+pub awaken_session_resource_contract::SessionInputAttachment::replaces: core::option::Option<awaken_resource_contract::input::BindingId>
+pub struct awaken_session_resource_contract::SessionInputResolver
+impl awaken_session_resource_contract::SessionInputResolver
+pub fn awaken_session_resource_contract::SessionInputResolver::effective_bindings(&[awaken_resource_contract::input::InputBinding], &[awaken_session_resource_contract::SessionInputAttachment]) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::input::InputBinding>, awaken_session_resource_contract::SessionInputError>
+pub async fn awaken_session_resource_contract::SessionInputResolver::resolve_inputs(&str, core::option::Option<&dyn awaken_resource_contract::registry::ExecutionResourceResolver>, &[awaken_resource_contract::input::InputBinding], &[awaken_session_resource_contract::SessionInputAttachment]) -> core::result::Result<awaken_session_resource_contract::ResolvedSessionResources, awaken_session_resource_contract::SessionInputError>
+pub struct awaken_session_resource_contract::SessionRealizationLease
+pub awaken_session_resource_contract::SessionRealizationLease::epoch: u64
+pub awaken_session_resource_contract::SessionRealizationLease::expires_at_unix_ms: u64
+pub awaken_session_resource_contract::SessionRealizationLease::owner: alloc::string::String
+pub awaken_session_resource_contract::SessionRealizationLease::runtime_incarnation: alloc::string::String
+impl awaken_session_resource_contract::SessionRealizationLease
+pub fn awaken_session_resource_contract::SessionRealizationLease::sandbox_effect_fence(&self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<awaken_provisioning_contract::sandbox::fence::SandboxEffectFence, awaken_provisioning_contract::sandbox::error::SandboxError>
+impl awaken_provisioning_contract::sandbox::fence::FenceToken for awaken_session_resource_contract::SessionRealizationLease
+pub fn awaken_session_resource_contract::SessionRealizationLease::epoch(&self) -> u64
+pub fn awaken_session_resource_contract::SessionRealizationLease::expires_at_unix_ms(&self) -> u64
+pub fn awaken_session_resource_contract::SessionRealizationLease::owner(&self) -> &str
+pub fn awaken_session_resource_contract::SessionRealizationLease::runtime_incarnation(&self) -> &str
+pub struct awaken_session_resource_contract::SessionResourceCompatibilityFacts
+impl awaken_session_resource_contract::SessionResourceCompatibilityFacts
+pub const fn awaken_session_resource_contract::SessionResourceCompatibilityFacts::has_credentialed_repository(self) -> bool
+pub const fn awaken_session_resource_contract::SessionResourceCompatibilityFacts::has_readonly_input(self) -> bool
+pub const fn awaken_session_resource_contract::SessionResourceCompatibilityFacts::has_repository(self) -> bool
+pub const fn awaken_session_resource_contract::SessionResourceCompatibilityFacts::has_resources(self) -> bool
+pub struct awaken_session_resource_contract::SessionResourceManifest
+pub awaken_session_resource_contract::SessionResourceManifest::resources: awaken_session_resource_contract::ResolvedSessionResources
+pub awaken_session_resource_contract::SessionResourceManifest::revision: u64
+pub awaken_session_resource_contract::SessionResourceManifest::workspace_id: alloc::string::String
+impl awaken_session_resource_contract::SessionResourceManifest
+pub fn awaken_session_resource_contract::SessionResourceManifest::at_revision(impl core::convert::Into<alloc::string::String>, u64, awaken_session_resource_contract::ResolvedSessionResources) -> Self
+pub fn awaken_session_resource_contract::SessionResourceManifest::new(impl core::convert::Into<alloc::string::String>, awaken_session_resource_contract::ResolvedSessionResources) -> Self
+pub struct awaken_session_resource_contract::SessionResourceTransition
+impl awaken_session_resource_contract::SessionResourceTransition
+pub fn awaken_session_resource_contract::SessionResourceTransition::desired(&self) -> &awaken_session_resource_contract::SessionResourceManifest
+pub fn awaken_session_resource_contract::SessionResourceTransition::new(awaken_session_resource_contract::SessionResourceManifest, awaken_session_resource_contract::SessionResourceManifest) -> core::result::Result<Self, awaken_session_resource_contract::SessionInputError>
+pub fn awaken_session_resource_contract::SessionResourceTransition::operation_fingerprint(&self) -> alloc::string::String
+pub fn awaken_session_resource_contract::SessionResourceTransition::previous(&self) -> &awaken_session_resource_contract::SessionResourceManifest
+pub fn awaken_session_resource_contract::SessionResourceTransition::reversed(&self) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_session_resource_contract::SessionResourceTransition
+pub fn awaken_session_resource_contract::SessionResourceTransition::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn awaken_session_resource_contract::realization_lease_authorizes(&awaken_session_resource_contract::SessionRealizationLease, &awaken_session_resource_contract::SessionRealizationLease, u64) -> bool
+pub fn awaken_session_resource_contract::realization_lease_generation_authorizes(&awaken_session_resource_contract::SessionRealizationLease, &awaken_session_resource_contract::SessionRealizationLease) -> bool
+pub const fn awaken_session_resource_contract::realization_lease_is_live_at(u64, u64) -> bool
+pub fn awaken_session_resource_contract::repository_transport_credential_target(&str) -> core::result::Result<awaken_credential_contract::descriptor::CredentialTarget, awaken_credential_contract::descriptor::CredentialDescriptorError>
+pub fn awaken_session_resource_contract::repository_transport_credential_usage() -> awaken_credential_contract::usage::CredentialUsage
+pub fn awaken_session_resource_contract::repository_transport_material_binding(&str, &awaken_resource_contract::input::RepositoryId, awaken_resource_contract::registry::ConfigVersion) -> awaken_credential_contract::custody::CredentialMaterialBinding

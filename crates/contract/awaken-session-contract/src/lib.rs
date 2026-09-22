@@ -27,13 +27,10 @@ mod lifecycle;
 mod mcp_probe;
 mod model_resolution;
 mod network_policy;
-mod realization_lease;
-mod resource;
 mod resource_activation;
 mod run_admission;
 mod run_application;
 mod session;
-pub use realization_lease::SessionRealizationLease;
 mod session_realization;
 mod session_repo;
 mod skill_execution;
@@ -96,8 +93,8 @@ pub use baseline::{
     EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,
     EnvironmentSnapshot, SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint,
     SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionMutationPolicy,
-    SessionRuntimePlacement, SessionSystemPromptSelection, resolved_environment_snapshot_is_exact,
+    SessionCreationIntent, SessionMcpAuthoringContext, SessionRuntimePlacement,
+    SessionSystemPromptSelection, resolved_environment_snapshot_is_exact,
 };
 pub use coordination::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
@@ -156,6 +153,13 @@ pub use awaken_session_mcp_contract::{
     McpTarget, McpTargetError, McpTargetIdentity, SessionMcpAttachment, SessionMcpAttachmentSet,
     StageMcpAttachment,
 };
+pub use awaken_session_resource_contract::{
+    ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
+    ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,
+    SessionMutationPolicy, SessionRealizationLease, SessionResourceCompatibilityFacts,
+    SessionResourceManifest, SessionResourceTransition, repository_transport_credential_target,
+    repository_transport_credential_usage, repository_transport_material_binding,
+};
 pub use awaken_session_types::{SessionId, SessionRevision};
 pub use environment::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,
@@ -181,13 +185,6 @@ pub use mcp_probe::{
 pub use model_resolution::{
     SessionModelOverride, SessionModelOverrideDecision, SessionModelPublication,
     SessionModelPublicationResolver, SessionModelResolutionError, session_model_override_decision,
-};
-pub use resource::{
-    ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
-    ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,
-    SessionResourceCompatibilityFacts, SessionResourceManifest, SessionResourceTransition,
-    repository_transport_credential_target, repository_transport_credential_usage,
-    repository_transport_material_binding,
 };
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,

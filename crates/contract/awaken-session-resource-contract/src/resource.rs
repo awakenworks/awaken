@@ -14,6 +14,46 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 /// and never reads the Agent binding repository itself.
 pub struct SessionInputResolver;
 
+/// Immutable authoring boundary for one Session's public mutation surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMutationPolicy {
+    #[default]
+    Managed,
+    Frozen,
+    FileResources,
+}
+
+impl SessionMutationPolicy {
+    #[must_use]
+    pub const fn is_managed(&self) -> bool {
+        matches!(self, Self::Managed)
+    }
+
+    #[must_use]
+    pub const fn admits_public_agent_mutation(self) -> bool {
+        matches!(self, Self::Managed)
+    }
+
+    #[must_use]
+    pub const fn admits_repository_credential_mutation(self) -> bool {
+        matches!(self, Self::Managed)
+    }
+
+    #[must_use]
+    pub fn admits_resource_replacement(
+        self,
+        current: &ResolvedSessionResources,
+        next: &ResolvedSessionResources,
+    ) -> bool {
+        match self {
+            Self::Managed => true,
+            Self::Frozen => false,
+            Self::FileResources => current.preserves_profiled_resources_except_files(next),
+        }
+    }
+}
+
 /// A temporary Session input and, when present, the exact Agent binding it
 /// replaces. Replacement is explicit; array order is never authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,7 +277,7 @@ pub(crate) fn session_resource_compatibility_facts(
 /// canonical representation of a Session that selected no Skills.
 ///
 /// ```compile_fail
-/// use awaken_session_contract::ResolvedSessionResources;
+/// use awaken_session_resource_contract::ResolvedSessionResources;
 ///
 /// let _ = ResolvedSessionResources {
 ///     inputs: Vec::new(),

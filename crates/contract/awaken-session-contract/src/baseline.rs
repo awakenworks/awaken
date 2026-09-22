@@ -1,6 +1,6 @@
 //! Immutable Session baseline and its consumed creation intent (ADR-0066 D1).
 
-use crate::SessionNetworkPolicy;
+use crate::{SessionMutationPolicy, SessionNetworkPolicy};
 use awaken_credential_contract::CredentialRealizationProfile;
 use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 
@@ -67,21 +67,6 @@ pub struct EnvironmentFingerprint(pub String);
 #[serde(transparent)]
 pub struct SessionBaselineFingerprint(pub String);
 
-/// Immutable authoring boundary for one Session.
-///
-/// `Managed` preserves the ordinary Anthropic-compatible mutation surface.
-/// Product-authored profiled Sessions select one of the narrower policies at
-/// creation; adapters may project those product modes, but cannot reinterpret
-/// this persisted fact after the Session root exists.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionMutationPolicy {
-    #[default]
-    Managed,
-    Frozen,
-    FileResources,
-}
-
 /// Immutable selection of the Agent system instructions presented by one
 /// Session. A closed enum preserves the distinction between inheritance, an
 /// explicit clear, and a replacement without encoding it in mutable metadata.
@@ -106,40 +91,6 @@ impl SessionSystemPromptSelection {
             Self::Inherit => inherited,
             Self::Clear => None,
             Self::Replace(value) => Some(value.clone()),
-        }
-    }
-}
-
-impl SessionMutationPolicy {
-    #[must_use]
-    pub const fn is_managed(&self) -> bool {
-        matches!(self, Self::Managed)
-    }
-
-    #[must_use]
-    pub const fn admits_public_agent_mutation(self) -> bool {
-        matches!(self, Self::Managed)
-    }
-
-    #[must_use]
-    pub const fn admits_repository_credential_mutation(self) -> bool {
-        matches!(self, Self::Managed)
-    }
-
-    /// Decide whether one complete public Resource manifest may replace the
-    /// current desired manifest. The policy remains the only mutation
-    /// authority; protocol adapters may fail earlier to avoid lowering side
-    /// effects, but cannot widen this decision.
-    #[must_use]
-    pub fn admits_resource_replacement(
-        self,
-        current: &crate::ResolvedSessionResources,
-        next: &crate::ResolvedSessionResources,
-    ) -> bool {
-        match self {
-            Self::Managed => true,
-            Self::Frozen => false,
-            Self::FileResources => current.preserves_profiled_resources_except_files(next),
         }
     }
 }
