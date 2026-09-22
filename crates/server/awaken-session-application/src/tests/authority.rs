@@ -5134,12 +5134,40 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
                     state: RunState::Running,
                 },
             ],
-            latest_run_id: Some(successor_run_id),
+            latest_run_id: Some(successor_run_id.clone()),
             messages: Vec::new(),
             message_commit_cursors: Vec::new(),
             state: Vec::new(),
             state_commit_cursors: Vec::new(),
-            events: Vec::new(),
+            // R2 both immutable boundaries belong to this same atomic prefix;
+            // latest Run metadata cannot synthesize the older terminal audit.
+            events: [
+                (source_run_id.clone(), RunState::Ended(EndCause::NaturalEnd)),
+                (successor_run_id, RunState::Running),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (run_id, state))| {
+                let draft: awaken_agent_contract::audit::draft::Draft =
+                    awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged {
+                        state,
+                        await_reason: None,
+                        await_target: None,
+                    }
+                    .into();
+                awaken_agent_contract::audit::record::Record {
+                    sequence: awaken_agent_contract::encode_run_lifecycle_cursor(
+                        index as u64 + 1,
+                        0,
+                    )
+                    .unwrap()
+                    .0,
+                    run_id,
+                    kind: draft.kind,
+                    payload: draft.payload,
+                }
+            })
+            .collect(),
             resume_tickets: Vec::new(),
             thread_version: 2,
             store_cursor: 2,

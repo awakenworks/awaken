@@ -347,22 +347,6 @@ impl awaken_session_contract::ThreadReadRuntime for PreparingFake {
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-    /// the sole authority; Managed uses this projection to observe Runs accepted
-    /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
-            .committed_run_lifecycle(thread, cursor, limit)
-            .await
-    }
-
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
     /// Read the durable disposition of one logical child Thread through its
     /// parent Session's physical commit partition. Legacy Threads without the
     /// state cell remain Active.
@@ -1043,22 +1027,6 @@ impl awaken_session_contract::ThreadReadRuntime for HotRuntime {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-    /// the sole authority; Managed uses this projection to observe Runs accepted
-    /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
-            .committed_run_lifecycle(thread, cursor, limit)
-            .await
     }
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -3664,23 +3632,6 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             }
             snapshot.claimed_run_id = run_id.clone();
             Ok(Some(snapshot))
-        }
-
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
-        // answered this role method with anything but the refusal below.
-        /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-        /// the sole authority; Managed uses this projection to observe Runs accepted
-        /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
-        async fn committed_run_lifecycle(
-            &self,
-            thread: &str,
-            cursor: awaken_agent_contract::RunLifecycleCursor,
-            limit: usize,
-        ) -> Result<awaken_agent_contract::RunLifecyclePage, awaken_session_contract::RunError>
-        {
-            awaken_session_contract::NeutralRuntime
-                .committed_run_lifecycle(thread, cursor, limit)
-                .await
         }
 
         // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never

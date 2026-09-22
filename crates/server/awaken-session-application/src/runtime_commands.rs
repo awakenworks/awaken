@@ -10,7 +10,6 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
-use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecyclePage};
 use awaken_session_contract::{
     AgentCapabilities, CommittedOutcomeProjection, DelegatedRun, OutcomeDrive, Pending,
     PersistedSession, ResolvedSkillBinding, RunError, SessionRepositoryError, SessionUsage,
@@ -920,17 +919,6 @@ impl SessionApplication {
         }
         self.runtime
             .archive_session_thread(session_id, thread_id)
-            .await
-    }
-
-    pub async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunError> {
-        self.runtime
-            .committed_run_lifecycle(thread, cursor, limit)
             .await
     }
 

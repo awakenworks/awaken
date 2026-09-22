@@ -17,7 +17,6 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecyclePage};
 use awaken_protocol_managed::ManagedState;
 use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
 
@@ -142,7 +141,6 @@ struct ScriptFake {
 
 struct CommittedRunEvidence {
     snapshot: awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-    lifecycle: Vec<RunLifecycleEvent>,
 }
 
 #[derive(Default)]
@@ -251,7 +249,9 @@ impl CommittedEvidence {
             .map(|(sequence, event)| {
                 let draft: awaken_agent_contract::audit::draft::Draft = event.into();
                 awaken_agent_contract::audit::record::Record {
-                    sequence,
+                    sequence: awaken_agent_contract::encode_run_lifecycle_cursor(sequence, 0)
+                        .unwrap()
+                        .0,
                     run_id: run_id.clone(),
                     kind: draft.kind,
                     payload: draft.payload,
@@ -264,14 +264,22 @@ impl CommittedEvidence {
             let terminal = records.pop().expect("the terminal fact is last");
             records.extend(rows.iter().enumerate().map(|(offset, row)| {
                 awaken_agent_contract::audit::record::Record {
-                    sequence: 2 + offset as u64,
+                    sequence: awaken_agent_contract::encode_run_lifecycle_cursor(
+                        2 + offset as u64,
+                        0,
+                    )
+                    .unwrap()
+                    .0,
                     run_id: run_id.clone(),
                     kind: awaken_agent_contract::audit::kind::Kind::PermissionDecided,
                     payload: permission_decided_payload(*row),
                 }
             }));
             let mut terminal = terminal;
-            terminal.sequence = 2 + rows.len() as u64;
+            terminal.sequence =
+                awaken_agent_contract::encode_run_lifecycle_cursor(2 + rows.len() as u64, 0)
+                    .unwrap()
+                    .0;
             records.push(terminal);
         }
         records
@@ -295,7 +303,12 @@ impl CommittedEvidence {
         // carried it (and the Step's new Messages) sits at that same cursor.
         let terminal_cursor = events
             .last()
-            .map(|record| record.sequence)
+            .map(|record| {
+                awaken_agent_contract::decode_run_lifecycle_cursor(
+                    awaken_agent_contract::RunLifecycleCursor(record.sequence),
+                )
+                .0
+            })
             .expect("the fixture always commits a terminal fact");
         let mut messages = command.messages.clone();
         let mut message_commit_cursors = vec![1; messages.len()];
@@ -348,44 +361,6 @@ impl CommittedEvidence {
             store_cursor: terminal_cursor,
             next_commit_ordinal: 1,
         }
-    }
-
-    fn lifecycle(
-        self,
-        thread_id: &str,
-        run_id: RunId,
-        terminal_state: RunState,
-    ) -> Vec<RunLifecycleEvent> {
-        let mut previous = None;
-        self.audit_records(&run_id, &terminal_state)
-            .into_iter()
-            .filter_map(|record| {
-                // Only the lifecycle events carry a RunState. Other committed
-                // audit kinds (a permission decision, for one) are real records
-                // that simply have no lifecycle meaning, so they are skipped
-                // here rather than treated as malformed.
-                let state: RunState = serde_json::from_value(record.payload.get("state")?.clone())
-                    .expect("a lifecycle RunEvent always carries RunState");
-                let kind = awaken_agent_contract::classify_run_lifecycle_record(
-                    &record.kind,
-                    &state,
-                    previous.as_ref(),
-                )?;
-                if record.kind == awaken_agent_contract::audit::kind::Kind::RunStateChanged {
-                    previous = Some(state.clone());
-                }
-                Some(RunLifecycleEvent {
-                    cursor: awaken_agent_contract::encode_run_lifecycle_cursor(record.sequence, 0)
-                        .expect("fixture cursor fits"),
-                    source_commit_cursor: record.sequence,
-                    thread_id: ThreadId(thread_id.into()),
-                    run_id: run_id.clone(),
-                    kind,
-                    state,
-                    await_reason: None,
-                })
-            })
-            .collect()
     }
 }
 
@@ -645,11 +620,6 @@ impl awaken_session_contract::CoordinationRuntime for ScriptFake {
                     &command,
                     outcome.clone(),
                     &self.usage,
-                ),
-                lifecycle: profile.lifecycle(
-                    delivery.session_id.as_str(),
-                    delivery.run_id.clone(),
-                    outcome.state().clone(),
                 ),
             });
         }
@@ -1049,31 +1019,6 @@ impl awaken_session_contract::ThreadReadRuntime for ScriptFake {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        thread_id: &str,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunError> {
-        let events = self
-            .durable
-            .lock()
-            .unwrap()
-            .committed_run
-            .as_ref()
-            .map(|evidence| evidence.lifecycle.clone())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|event| event.thread_id.0 == thread_id)
-            .filter(|event| event.cursor > cursor)
-            .take(limit)
-            .collect::<Vec<_>>();
-        Ok(RunLifecyclePage {
-            next_cursor: events.last().map_or(cursor, |event| event.cursor),
-            events,
-        })
     }
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never

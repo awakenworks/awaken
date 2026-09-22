@@ -35,7 +35,7 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::lifecycle::{
-    RunLifecycleCursor, decode_run_lifecycle_cursor,
+    RunLifecycleCursor, RunLifecycleEventKind, decode_run_lifecycle_cursor,
 };
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_agent_contract::thread::read::transcript::{
@@ -84,20 +84,20 @@ fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, state: RunState) -> Th
         RunState::Ended(cause) => RunDisposition::ended(run.clone(), cause),
         RunState::Awaiting => panic!("awaiting checkpoints must be constructed with a ticket"),
     };
-    ThreadCommit {
-        thread_id: thread.clone(),
-        run: disposition,
-        messages: vec![Message::text(
+    // The production assembler supplies a typed lifecycle fact, rather than
+    // a text-only placeholder that opaque persistence cannot validate.
+    ThreadCommit::assemble(
+        thread.clone(),
+        disposition,
+        true,
+        vec![Message::text(
             MsgId(format!("m-{text}")),
             Role::Assistant,
             text,
         )],
-        state: Vec::new(),
-        events: vec![Draft {
-            kind: EventKind::RunStateChanged,
-            payload: serde_json::json!({ "text": text }),
-        }],
-    }
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 fn ended_checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
@@ -682,6 +682,40 @@ pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>
     assert_eq!(snapshot.thread_version, 2, "R3/E3 per-Thread version");
     assert_eq!(snapshot.store_cursor, 3, "R3/E3 backend-wide prefix cursor");
     assert_eq!(snapshot.next_commit_ordinal, 1, "claimed Run ordinal");
+    // L1 the atomic prefix contains two local lifecycle facts and excludes the
+    // later foreign Thread. L2 an exclusive page must still use pre-cursor
+    // history for classification. Every physical backend executes these same
+    // assertions; this is not a second lifecycle reader or fixture projection.
+    let lifecycle = snapshot
+        .lifecycle_events_after(RunLifecycleCursor::default(), usize::MAX)
+        .unwrap();
+    assert_eq!(
+        lifecycle
+            .events
+            .iter()
+            .map(|event| (event.run_id.clone(), event.kind, event.source_commit_cursor,))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                awaiting_run.clone(),
+                RunLifecycleEventKind::Awaiting,
+                shape_record.sequence
+            ),
+            (
+                claimed_run.clone(),
+                RunLifecycleEventKind::Running,
+                claimed_record.sequence
+            ),
+        ],
+        "L1 scoped facts and exact coordinates"
+    );
+    assert!(
+        lifecycle
+            .events
+            .iter()
+            .all(|event| event.thread_id == thread),
+        "L1 owner"
+    );
     // T1: two local commits + one foreign commit => exactly the local time
     // observations, within the snapshot fence; new writes never use a fixture date.
     assert_eq!(
@@ -750,6 +784,20 @@ pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>
     );
     assert_eq!(updated.thread_version, 3);
     assert_eq!(updated.store_cursor, 4);
+    let resumed = updated
+        .lifecycle_events_after(lifecycle.next_cursor, usize::MAX)
+        .unwrap();
+    assert_eq!(resumed.events.len(), 1, "L2 no foreign or replayed fact");
+    assert_eq!(
+        resumed.events[0].run_id, awaiting_run,
+        "L2 exact earlier Run"
+    );
+    assert_eq!(
+        resumed.events[0].kind,
+        RunLifecycleEventKind::Resumed,
+        "L2 retained Awaiting predecessor"
+    );
+    assert_eq!(resumed.events[0].source_commit_cursor, 4, "L2 source fence");
 }
 
 /// Operation receipts make an ambiguous acknowledgement retry exactly-once at
