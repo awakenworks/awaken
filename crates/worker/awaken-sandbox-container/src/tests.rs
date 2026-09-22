@@ -7459,10 +7459,16 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
      * disposal has begun every Session spawn edge refuses, because the reaper
      * enumerates once and a process started after that sweep would still be
      * writing when Secret write-back and the Memory harvest read the
-     * workspace; E4 disposal completes anyway, because what reaping is for is
-     * already true; E5 disposal fails closed. Rules: R1 C1 => E1; R2 C2 => E1;
-     * R3 C3 => E2; R4 (C1|C2)+C4 => E3; R5 C1+C5(stopped) => E4;
-     * R6 C1+C6 => E5; R7 C1+C5(absent) => E4.
+     * workspace; E4 the environment is removed regardless, because a lost
+     * harvest costs one round of bytes and a leaked container costs the host
+     * permanently; E5 the skipped harvest is reported rather than silent.
+     * Rules: R1 C1 => E1; R2 C2 => E1; R3 C3 => E2; R4 (C1|C2)+C4 => E3;
+     * R5 C1+C5(stopped) => E4,E5; R6 C1+C6 => E4,E5; R7 C1+C5(absent) => E4,E5.
+     *
+     * C5 and C6 converge on purpose: an in-container read needs an exec, and
+     * neither state can run one. They would diverge again the day a harvest
+     * can read a stopped container without exec-ing it — a stopped container
+     * IS quiet, which is the stronger guarantee, not the weaker one.
      *
      * R1 is the edge that had no record at all: `Sandbox::spawn` never
      * counted its attempt, so `reap_exec_orphans` read "nothing was started"
@@ -7536,10 +7542,20 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
         state.alive.insert("cid-exec-record".into(), false);
         state.fail_spawn = true;
     }
-    sandbox
-        .dispose()
-        .await
-        .expect("R5 a stopped container does not strand disposal");
+    assert!(
+        sandbox.dispose().await.is_err(),
+        "R5 a stopped container reports its skipped harvest",
+    );
+    assert!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .removals
+            .iter()
+            .any(|(id, _)| id == "cid-exec-record"),
+        "R5/E4 and is removed rather than stranded",
+    );
 
     // R7: the container is not merely stopped but absent. Reaping cannot be
     // asked of what is gone, and its obligation is met a fortiori.
@@ -7550,14 +7566,16 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
         .await
         .expect("R7 process exec starts");
     runtime.st.lock().unwrap().alive.remove("cid-exec-record");
-    sandbox
-        .dispose()
-        .await
-        .expect("R7 an absent container does not strand disposal");
+    let absent = sandbox.dispose().await;
+    assert!(
+        absent.is_err(),
+        "R7 an absent container also reports the skipped harvest",
+    );
 
-    // R6: the container is still running and still refuses to reap. That is
-    // the fail-closed half — something may be writing while the harvest reads
-    // — so disposal must surface it rather than proceed.
+    // R6: the container refuses to reap, so nothing can promise the workspace
+    // is quiet. The in-container harvest is skipped and the caller is told —
+    // but the environment is removed anyway, because a lost harvest costs one
+    // round of bytes and a leaked container costs the host permanently.
     let runtime = Arc::new(FakeRuntime::default());
     let provider = ContainerProvider::new(runtime.clone(), "fixture");
     let sandbox = provider.create_container(&mountless()).await.unwrap();
@@ -7565,9 +7583,24 @@ async fn disposal_reaps_every_exec_edge_and_then_refuses_new_ones() {
         .await
         .expect("R6 process exec starts");
     runtime.st.lock().unwrap().fail_spawn = true;
+    let refused = sandbox.dispose().await;
     assert!(
-        sandbox.dispose().await.is_err(),
-        "R6 a live container that will not reap fails disposal closed",
+        refused.is_err(),
+        "R6/E5 a skipped harvest is reported, never silent",
+    );
+    assert!(
+        format!("{}", refused.unwrap_err()).contains("skipped its in-container harvest"),
+        "R6/E5 the report names what was lost",
+    );
+    assert!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .removals
+            .iter()
+            .any(|(id, _)| id == "cid-exec-record"),
+        "R6/E6 the environment is removed even so",
     );
 
     // R3: never exec'd, so the reaper is never demanded.
