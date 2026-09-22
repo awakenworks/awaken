@@ -103,16 +103,13 @@ impl SessionApplication {
                 "Agent settlement does not identify a committed child boundary",
             ));
         }
-        let observation = self
-            .runtime_interval_observation(
-                command.session_id.as_str(),
-                command.session_activity_epoch,
-                &command.source_thread_id,
-                &command.source_run_id,
-                &state,
-                Some(snapshot.store_cursor),
-            )
-            .await?;
+        let observation = Self::runtime_interval_observation(
+            command.session_activity_epoch,
+            &command.source_thread_id,
+            &command.source_run_id,
+            &state,
+            &snapshot,
+        )?;
         Ok((snapshot, state, observation))
     }
 

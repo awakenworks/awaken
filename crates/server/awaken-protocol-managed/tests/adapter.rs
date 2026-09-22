@@ -14,8 +14,7 @@ use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::{
-    RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind, RunLifecyclePage,
-    encode_run_lifecycle_cursor,
+    RunLifecycleEvent, RunLifecycleEventKind, encode_run_lifecycle_cursor,
 };
 use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency};
 use awaken_session_contract::{
@@ -794,7 +793,7 @@ impl EchoFake {
                 message_commit_cursors,
                 state: Vec::new(),
                 state_commit_cursors: Vec::new(),
-                events: Vec::new(),
+                events: awaken_protocol_managed::test_support::lifecycle_audit_records(lifecycle),
                 resume_tickets: Vec::new(),
                 thread_version: u64::try_from(lifecycle.len()).unwrap(),
                 store_cursor: latest.source_commit_cursor,
@@ -1420,30 +1419,6 @@ impl awaken_session_contract::ThreadReadRuntime for EchoFake {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunError> {
-        let events = self
-            .state
-            .lock()
-            .unwrap()
-            .lifecycle
-            .get(thread)
-            .into_iter()
-            .flatten()
-            .filter(|event| event.cursor > cursor)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(RunLifecyclePage {
-            next_cursor: events.last().map_or(cursor, |event| event.cursor),
-            events,
-        })
     }
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -2317,22 +2292,6 @@ impl awaken_session_contract::ThreadReadRuntime for CapableFake {
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-    /// the sole authority; Managed uses this projection to observe Runs accepted
-    /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
-            .committed_run_lifecycle(thread, cursor, limit)
-            .await
-    }
-
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
     /// Read the durable disposition of one logical child Thread through its
     /// parent Session's physical commit partition. Legacy Threads without the
     /// state cell remain Active.
@@ -2742,7 +2701,9 @@ impl ToolAwaitingFake {
                 message_commit_cursors: run.message_commit_cursors.clone(),
                 state: Vec::new(),
                 state_commit_cursors: Vec::new(),
-                events: Vec::new(),
+                events: awaken_protocol_managed::test_support::lifecycle_audit_records(
+                    &run.lifecycle,
+                ),
                 resume_tickets,
                 thread_version: u64::try_from(run.lifecycle.len()).unwrap(),
                 store_cursor: run
@@ -3524,30 +3485,6 @@ impl awaken_session_contract::ThreadReadRuntime for ToolAwaitingFake {
         Ok(Some(snapshot))
     }
 
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunError> {
-        let events = self
-            .run
-            .lock()
-            .unwrap()
-            .as_ref()
-            .filter(|run| run.session_id == thread)
-            .into_iter()
-            .flat_map(|run| run.lifecycle.iter())
-            .filter(|event| event.cursor > cursor)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(RunLifecyclePage {
-            next_cursor: events.last().map_or(cursor, |event| event.cursor),
-            events,
-        })
-    }
-
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Read the durable disposition of one logical child Thread through its
@@ -3961,22 +3898,6 @@ impl awaken_session_contract::ThreadReadRuntime for OutcomeFake {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-    /// the sole authority; Managed uses this projection to observe Runs accepted
-    /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
-            .committed_run_lifecycle(thread, cursor, limit)
-            .await
     }
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -5463,17 +5384,6 @@ impl awaken_session_contract::ThreadReadRuntime for RecordingFake {
         Ok(Some(snapshot))
     }
 
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunError> {
-        self.committed
-            .committed_run_lifecycle(thread, cursor, limit)
-            .await
-    }
-
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Read the durable disposition of one logical child Thread through its
@@ -6445,17 +6355,6 @@ impl awaken_session_contract::ThreadReadRuntime for InterruptRedirectFake {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunError> {
-        self.committed
-            .committed_run_lifecycle(thread, cursor, limit)
-            .await
     }
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never

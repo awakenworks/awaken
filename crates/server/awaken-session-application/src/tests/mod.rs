@@ -217,6 +217,23 @@ impl RecordingBoundaries {
             .then_some(commit_cursor)
             .into_iter()
             .collect();
+        // The fixture commit carries its terminal audit alongside Run state and
+        // Messages. A separately synthesized feed is not another fact authority.
+        let draft: awaken_agent_contract::audit::draft::Draft =
+            awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged {
+                state: state.clone(),
+                await_reason: None,
+                await_target: None,
+            }
+            .into();
+        let events = vec![awaken_agent_contract::audit::record::Record {
+            sequence: awaken_agent_contract::encode_run_lifecycle_cursor(commit_cursor, 0)
+                .unwrap()
+                .0,
+            run_id: run_id.clone(),
+            kind: draft.kind,
+            payload: draft.payload,
+        }];
         self.set_recovery_snapshot(
             session_id,
             thread_id,
@@ -234,7 +251,7 @@ impl RecordingBoundaries {
                 message_commit_cursors,
                 state: Vec::new(),
                 state_commit_cursors: Vec::new(),
-                events: Vec::new(),
+                events,
                 resume_tickets: Vec::new(),
                 thread_version: 1,
                 store_cursor: commit_cursor,
@@ -266,79 +283,6 @@ impl RecordingBoundaries {
             .unwrap()
             .get(&(session_id.to_string(), thread_id.to_string()))
             .cloned()
-    }
-
-    fn lifecycle(&self, session_id: &str) -> Vec<awaken_agent_contract::RunLifecycleEvent> {
-        let mut boundaries = self
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|((candidate_session, _), _)| candidate_session == session_id)
-            .flat_map(|((_, thread_id), snapshot)| {
-                let commit_count = snapshot.runs.len();
-                snapshot.runs.iter().enumerate().map(move |(index, run)| {
-                    let source_commit_cursor = if commit_count == 1 {
-                        snapshot.store_cursor.max(1)
-                    } else {
-                        (index as u64 + 1).min(snapshot.store_cursor.max(1))
-                    };
-                    (
-                        source_commit_cursor,
-                        awaken_agent_contract::agent::thread::Id(thread_id.clone()),
-                        run.id.clone(),
-                        run.state.clone(),
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
-        boundaries.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then_with(|| left.1.0.cmp(&right.1.0))
-                .then_with(|| left.2.0.cmp(&right.2.0))
-        });
-        let mut offsets = HashMap::<u64, usize>::new();
-        boundaries
-            .into_iter()
-            .map(|(source_commit_cursor, thread_id, run_id, state)| {
-                let offset = offsets.entry(source_commit_cursor).or_default();
-                let cursor = awaken_agent_contract::encode_run_lifecycle_cursor(
-                    source_commit_cursor,
-                    *offset,
-                )
-                .expect("test lifecycle cursor");
-                *offset += 1;
-                awaken_agent_contract::RunLifecycleEvent {
-                    cursor,
-                    source_commit_cursor,
-                    kind: awaken_agent_contract::classify_run_lifecycle_event(&state, None),
-                    thread_id,
-                    run_id,
-                    state,
-                    await_reason: None,
-                }
-            })
-            .collect()
-    }
-
-    fn lifecycle_page(
-        &self,
-        session_id: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> awaken_agent_contract::RunLifecyclePage {
-        let events = self
-            .lifecycle(session_id)
-            .into_iter()
-            .filter(|event| event.cursor > cursor)
-            .take(limit)
-            .collect::<Vec<_>>();
-        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        awaken_agent_contract::RunLifecyclePage {
-            events,
-            next_cursor,
-        }
     }
 }
 
@@ -375,6 +319,18 @@ impl RecordingAgentAdmissionRuntime {
 
     fn set_lifecycle_visible(&self, visible: bool) {
         self.lifecycle_visible.store(visible, Ordering::SeqCst);
+    }
+
+    fn observed_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot> {
+        let mut snapshot = self.boundaries.snapshot(session_id, thread_id)?;
+        if !self.lifecycle_visible.load(Ordering::SeqCst) {
+            snapshot.events.clear();
+        }
+        Some(snapshot)
     }
 }
 
@@ -1048,22 +1004,6 @@ impl awaken_session_contract::ThreadReadRuntime for NoopRuntime {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-    /// the sole authority; Managed uses this projection to observe Runs accepted
-    /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
-            .committed_run_lifecycle(thread, cursor, limit)
-            .await
     }
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1831,15 +1771,6 @@ impl awaken_session_contract::ThreadReadRuntime for RecordingReplyRuntime {
         Ok(Some(snapshot))
     }
 
-    async fn committed_run_lifecycle(
-        &self,
-        session_id: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
-        Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
-    }
-
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Read the durable disposition of one logical child Thread through its
@@ -2450,7 +2381,7 @@ impl awaken_session_contract::ThreadReadRuntime for RecordingAgentAdmissionRunti
         if !self.generic_recovery_available.load(Ordering::SeqCst) {
             return Ok(None);
         }
-        Ok(self.boundaries.snapshot(session_id.as_str(), thread_id))
+        Ok(self.observed_snapshot(session_id.as_str(), thread_id))
     }
 
     async fn session_thread_run_recovery_snapshot(
@@ -2460,7 +2391,7 @@ impl awaken_session_contract::ThreadReadRuntime for RecordingAgentAdmissionRunti
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        let Some(mut snapshot) = self.boundaries.snapshot(session_id.as_str(), thread_id) else {
+        let Some(mut snapshot) = self.observed_snapshot(session_id.as_str(), thread_id) else {
             return Ok(None);
         };
         if !snapshot.runs.iter().any(|run| &run.id == run_id) {
@@ -2468,21 +2399,6 @@ impl awaken_session_contract::ThreadReadRuntime for RecordingAgentAdmissionRunti
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        session_id: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
-        if !self.lifecycle_visible.load(Ordering::SeqCst) {
-            return Ok(awaken_agent_contract::RunLifecyclePage {
-                events: Vec::new(),
-                next_cursor: cursor,
-            });
-        }
-        Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
     }
 
     async fn session_thread_disposition(
@@ -2876,14 +2792,18 @@ impl awaken_session_contract::CoordinationRuntime for RecordingBoundaryBudgetRun
         }
         Ok(self
             .boundaries
-            .lifecycle(session_id.as_str())
-            .into_iter()
-            .map(|event| awaken_session_contract::CoordinatedThreadLink {
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((owner, _), _)| owner == session_id.as_str())
+            .flat_map(|(_, snapshot)| snapshot.runs.iter())
+            .map(|run| awaken_session_contract::CoordinatedThreadLink {
                 session_id: session_id.clone(),
-                thread_id: event.thread_id,
+                thread_id: run.thread_id.clone(),
                 target: self.child_target.clone(),
                 created_by_operation_id: "budget-spawn".into(),
-                latest_run_id: Some(event.run_id),
+                latest_run_id: Some(run.id.clone()),
             })
             .collect())
     }
@@ -3164,15 +3084,6 @@ impl awaken_session_contract::ThreadReadRuntime for RecordingBoundaryBudgetRunti
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        session_id: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
-        Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
     }
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never

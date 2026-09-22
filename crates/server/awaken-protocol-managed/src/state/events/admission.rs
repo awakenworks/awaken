@@ -127,7 +127,8 @@ impl ManagedState {
                 drive: ValidatedEventBatchDrive::PreferredBatch,
             });
         }
-        let lifecycle_events = self.committed_lifecycle_prefix(session_id).await?;
+        let lifecycle_events =
+            Self::committed_lifecycle_prefix(root_snapshot.iter().chain(child_snapshots.values()))?;
         let mut candidates = Vec::new();
         if let Some(snapshot) = root_snapshot.as_ref()
             && let Some((run_id, correlation_id, pending)) =

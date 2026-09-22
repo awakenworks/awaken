@@ -1122,6 +1122,8 @@ pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::state_co
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::store_cursor: u64
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::thread_id: awaken_agent_contract::agent::thread::Id
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::thread_version: u64
+impl awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot
+pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::lifecycle_events_after(&self, awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursor, usize) -> core::result::Result<awaken_agent_contract::thread::read::lifecycle::RunLifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>
 pub struct awaken_agent_contract::thread::read::recovery::RunResumeTicket
 pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::ticket: awaken_agent_contract::agent::awaiting::ResumeTicket

@@ -275,7 +275,9 @@ export function descendingReceiptObservation(events: any[], receiptId: string) {
   };
 }
 
-async function waitForRecentSessionEventReceipt(
+// Pressure qualification and retained-cluster diagnostics share this exact
+// receipt observer; exporting it adds no alternate wait or acceptance policy.
+export async function waitForRecentSessionEventReceipt(
   client: Anthropic,
   sessionId: string,
   receiptId: string,

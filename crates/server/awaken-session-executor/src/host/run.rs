@@ -241,25 +241,6 @@ impl SharedHost {
         })
     }
 
-    /// Fence the parent Runtime at its durable dispatch authority, wait for any
-    /// foreground projection to observe settlement, and only then read the child
-    /// registry plus its committed-state watermark.
-    /// Durable committed-truth lifecycle feed for the partition containing
-    /// `thread`. A database-less Worker has only a non-authoritative recovery
-    /// projection and therefore cannot expose this Control-side feed.
-    pub(crate) async fn run_lifecycle_feed(
-        &self,
-        thread: &str,
-    ) -> Result<std::sync::Arc<crate::store::HostCommit>, HostError> {
-        let commit = self.commit_for_read(thread).await?;
-        if matches!(commit.as_ref(), crate::store::HostCommit::Remote(_)) {
-            return Err(HostError::bad_request(
-                "run lifecycle feed is available only from committed-truth authority",
-            ));
-        }
-        Ok(commit)
-    }
-
     /// True when `thread` has a run awaiting a decision.
     pub async fn is_awaiting(&self, thread: &str) -> bool {
         let commit = match self.commit_for_read(thread).await {

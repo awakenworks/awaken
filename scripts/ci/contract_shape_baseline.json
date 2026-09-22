@@ -10,10 +10,10 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4875,
+      "production_lines": 4918,
       "catch_all_errors": 5,
       "growth_reasons": {
-        "production_lines": "the UTC calendar codec moved from awaken-session-contract into the clock port's own crate so every context spells a clock reading identically"
+        "production_lines": "The existing RunRecoverySnapshot gains a 43-line borrow-only lifecycle projection over its own audit facts, sharing the existing classifier and cursor kernel. This removes the Session-level global lifecycle read and forwarding port rather than adding another IO port, store, cache, or parallel projector. ADR-0081 types vocabulary owns this pure algebra; a separate crate or repeated caller fold would increase duplication."
       }
     },
     "awaken-credential-contract": {
@@ -85,7 +85,7 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 13245,
+      "production_lines": 13222,
       "catch_all_errors": 7,
       "growth_reasons": {
         "production_lines": "session.rs split into session/{roles,neutral}.rs for the 2000-line file limit; +6 lines are the mod/use declarations of the split"

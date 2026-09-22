@@ -6378,7 +6378,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     );
 
     let feed = host
-        .run_lifecycle_feed("t-query-after-provisioning-denial")
+        .commit_for_read("t-query-after-provisioning-denial")
         .await
         .expect("committed query must not retry Sandbox provisioning");
     let page = awaken_agent_contract::RunLifecycleFeed::events_after(

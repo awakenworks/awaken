@@ -16,6 +16,42 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
 use awaken_runtime_contract::tool_batch::ToolBatch;
 
 use crate::types::tunnel::{Tunnel, TunnelCertificate, TunnelToken};
+
+/// Materialize authored fixture transitions as real committed audit records.
+/// Snapshot and lifecycle assertions must describe one fact set. Classification
+/// still belongs to the production reducer, so an inconsistent expected kind
+/// cannot manufacture an Awaiting predecessor or override the encoded state.
+pub fn lifecycle_audit_records<'a>(
+    events: impl IntoIterator<Item = &'a awaken_agent_contract::RunLifecycleEvent>,
+) -> Vec<awaken_agent_contract::audit::record::Record> {
+    use awaken_agent_contract::{RunLifecycleEventKind, audit::run_event::RunEvent};
+    let mut records = events
+        .into_iter()
+        .map(|event| {
+            let fact = if event.kind == RunLifecycleEventKind::Rescheduled {
+                RunEvent::RunRescheduled {
+                    state: event.state.clone(),
+                    claim_epoch: 1,
+                }
+            } else {
+                RunEvent::RunStateChanged {
+                    state: event.state.clone(),
+                    await_reason: event.await_reason.clone(),
+                    await_target: None,
+                }
+            };
+            let draft: awaken_agent_contract::audit::draft::Draft = fact.into();
+            awaken_agent_contract::audit::record::Record {
+                sequence: event.cursor.0,
+                run_id: event.run_id.clone(),
+                kind: draft.kind,
+                payload: draft.payload,
+            }
+        })
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| record.sequence);
+    records
+}
 use crate::{
     EnvironmentAuthoringState, ManagedTunnelApplication, ManagedTunnelApplicationError,
     ManagedTunnelScope,
@@ -533,7 +569,7 @@ impl CoordinatedRuntimeFake {
             .lock()
             .unwrap()
             .push(awaken_agent_contract::RunLifecycleEvent {
-                cursor: awaken_agent_contract::RunLifecycleCursor(base + 4),
+                cursor: awaken_agent_contract::encode_run_lifecycle_cursor(base + 4, 0).unwrap(),
                 source_commit_cursor: base + 4,
                 thread_id: awaken_agent_contract::agent::thread::Id(Self::CHILD_THREAD_ID.into()),
                 run_id,
@@ -568,7 +604,8 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             } else {
                 let root_run_id = RunId(format!("coord-root-{run_ordinal}"));
                 lifecycle.push(awaken_agent_contract::RunLifecycleEvent {
-                    cursor: awaken_agent_contract::RunLifecycleCursor(base + 1),
+                    cursor: awaken_agent_contract::encode_run_lifecycle_cursor(base + 1, 0)
+                        .unwrap(),
                     source_commit_cursor: base + 1,
                     thread_id: awaken_agent_contract::agent::thread::Id(thread.into()),
                     run_id: root_run_id.clone(),
@@ -623,7 +660,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             .get_or_insert_with(|| ToolBatch::operation_id_for_step(&root_run_id, 0, &call_id));
         let run_id = RunId(format!("coord-run-{run_ordinal}"));
         let running = awaken_agent_contract::RunLifecycleEvent {
-            cursor: awaken_agent_contract::RunLifecycleCursor(base + 2),
+            cursor: awaken_agent_contract::encode_run_lifecycle_cursor(base + 2, 0).unwrap(),
             source_commit_cursor: base + 2,
             thread_id: awaken_agent_contract::agent::thread::Id(Self::CHILD_THREAD_ID.into()),
             run_id: run_id.clone(),
@@ -660,7 +697,8 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
                 .lock()
                 .unwrap()
                 .push(awaken_agent_contract::RunLifecycleEvent {
-                    cursor: awaken_agent_contract::RunLifecycleCursor(base + 3),
+                    cursor: awaken_agent_contract::encode_run_lifecycle_cursor(base + 3, 0)
+                        .unwrap(),
                     source_commit_cursor: base + 3,
                     thread_id: awaken_agent_contract::agent::thread::Id(
                         Self::CHILD_THREAD_ID.into(),
@@ -684,7 +722,11 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
                 .lock()
                 .unwrap()
                 .push(awaken_agent_contract::RunLifecycleEvent {
-                    cursor: awaken_agent_contract::RunLifecycleCursor(root_terminal_cursor),
+                    cursor: awaken_agent_contract::encode_run_lifecycle_cursor(
+                        root_terminal_cursor,
+                        0,
+                    )
+                    .unwrap(),
                     source_commit_cursor: root_terminal_cursor,
                     thread_id: awaken_agent_contract::agent::thread::Id(thread.into()),
                     run_id: root_run_id,
@@ -942,7 +984,7 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
             .lock()
             .unwrap()
             .push(awaken_agent_contract::RunLifecycleEvent {
-                cursor: awaken_agent_contract::RunLifecycleCursor(base + 1),
+                cursor: awaken_agent_contract::encode_run_lifecycle_cursor(base + 1, 0).unwrap(),
                 source_commit_cursor: base + 1,
                 thread_id: awaken_agent_contract::agent::thread::Id(command.session_id.to_string()),
                 run_id: command.run_id.clone(),
@@ -982,7 +1024,8 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
             .lock()
             .unwrap()
             .push(awaken_agent_contract::RunLifecycleEvent {
-                cursor: awaken_agent_contract::RunLifecycleCursor(root_terminal_cursor),
+                cursor: awaken_agent_contract::encode_run_lifecycle_cursor(root_terminal_cursor, 0)
+                    .unwrap(),
                 source_commit_cursor: root_terminal_cursor,
                 thread_id: awaken_agent_contract::agent::thread::Id(String::from(
                     command.session_id,
@@ -1549,7 +1592,9 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
                 message_commit_cursors,
                 state,
                 state_commit_cursors,
-                events: Vec::new(),
+                events: lifecycle_audit_records(lifecycle.iter().filter(|event| {
+                    event.thread_id.0 == thread_id && event.source_commit_cursor <= store_cursor
+                })),
                 resume_tickets: Vec::new(),
                 thread_version: lifecycle.len() as u64,
                 store_cursor,
@@ -1589,27 +1634,6 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        _thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, awaken_session_contract::RunError> {
-        let events = self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|event| event.cursor > cursor)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(awaken_agent_contract::RunLifecyclePage {
-            next_cursor: events.last().map_or(cursor, |event| event.cursor),
-            events,
-        })
     }
 
     async fn session_thread_disposition(

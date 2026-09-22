@@ -148,29 +148,26 @@ impl ManagedState {
         })
     }
 
-    /// Read the complete committed lifecycle prefix through its one paginated
-    /// Runtime port. Admission and projection use this same helper so neither
+    /// Derive the complete lifecycle from already observed atomic prefixes.
+    /// Admission and projection use this same helper so neither
     /// can silently truncate or reinterpret Awaiting commit coordinates.
-    pub(super) async fn committed_lifecycle_prefix(
-        &self,
-        session_id: &str,
+    pub(super) fn committed_lifecycle_prefix<'a>(
+        snapshots: impl IntoIterator<
+            Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        >,
     ) -> Result<Vec<RunLifecycleEvent>, StateError> {
-        const PAGE_SIZE: usize = 256;
-        let mut read_cursor = awaken_agent_contract::RunLifecycleCursor::default();
         let mut lifecycle_events = Vec::new();
-        loop {
-            let page = self
-                .application
-                .committed_run_lifecycle(session_id, read_cursor, PAGE_SIZE)
-                .await
-                .map_err(StateError::Run)?;
-            let count = page.events.len();
+        for snapshot in snapshots {
+            let page = snapshot
+                .lifecycle_events_after(
+                    awaken_agent_contract::RunLifecycleCursor::default(),
+                    usize::MAX,
+                )
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
             lifecycle_events.extend(page.events);
-            if page.next_cursor == read_cursor || count < PAGE_SIZE {
-                return Ok(lifecycle_events);
-            }
-            read_cursor = page.next_cursor;
         }
+        lifecycle_events.sort_by_key(|event| event.cursor);
+        Ok(lifecycle_events)
     }
 
     /// Classify one coordinated child from the same Runtime prefix already read
