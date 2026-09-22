@@ -1898,7 +1898,10 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         .harvest_with_fence_mode("ordinary-absent", None, ArtifactCaptureMode::ReceiptOnly)
         .await
         .expect_err("B4 non-terminal receipt-only must fail closed");
-    assert!(error.to_string().contains("terminal fence"), "B4");
+    assert!(
+        matches!(error, ArtifactPublicationError::InvalidRequest { .. }),
+        "B4"
+    );
     assert_eq!(
         publisher
             .recover_calls
@@ -1952,7 +1955,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
         .await
         .expect_err("H5/E5");
     assert!(
-        error.to_string().contains("root Session Workspace"),
+        matches!(error, ArtifactPublicationError::AuthorityUnavailable { .. }),
         "H5/E5"
     );
     assert_eq!(
@@ -2538,6 +2541,29 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
         install_batch_artifact_environment(&host, "capture-fault", "workspace-a").await;
         let result = host.harvest_thread_artifacts("capture-fault").await;
         assert_eq!(result.is_ok(), success, "{mode}: {result:?}");
+        // F6 classification survives the real Host boundary: IO/response loss
+        // stays indeterminate; a bad observation stays corrupt; a known CAS
+        // conflict stays conflict. No Storage(String) wrapper may erase it.
+        if let Err(error) = &result {
+            use awaken_resource_contract::{ArtifactPublicationError as Failure, FileCatalogError};
+            match mode {
+                "corrupt_read" | "corrupt_reply" => assert!(
+                    matches!(
+                        error,
+                        Failure::Catalog(FileCatalogError::CorruptData { .. })
+                    ),
+                    "{mode}: {error:?}"
+                ),
+                "conflict" => assert!(
+                    matches!(error, Failure::Conflict { .. }),
+                    "{mode}: {error:?}"
+                ),
+                _ => assert!(
+                    matches!(error, Failure::Indeterminate { .. }),
+                    "{mode}: {error:?}"
+                ),
+            }
+        }
         assert_eq!(
             scans.load(std::sync::atomic::Ordering::SeqCst),
             scans_expected,

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::host::SharedHost;
 use awaken_provisioning_contract as pc;
-use awaken_resource_contract::ResourcePurgeError;
+use awaken_resource_contract::ArtifactPublicationError;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
 #[cfg(test)]
@@ -1095,7 +1095,7 @@ impl SharedHost {
     pub async fn harvest_thread_artifacts(
         &self,
         thread: &str,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.artifact_harvester().harvest(thread).await
     }
 }
@@ -1141,7 +1141,7 @@ impl ArtifactHarvester {
     pub(crate) async fn harvest(
         &self,
         thread: &str,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         let fence = self
             .current_claim(thread)
             .map(awaken_run_ingress::ArtifactPublicationFence::Run);
@@ -1152,7 +1152,7 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
         claim: Option<awaken_run_ingress::RunClaim>,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence(
             thread,
             claim.map(awaken_run_ingress::ArtifactPublicationFence::Run),
@@ -1164,7 +1164,7 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
         fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode(thread, fence, ArtifactCaptureMode::Live)
             .await
     }
@@ -1177,7 +1177,7 @@ impl ArtifactHarvester {
         thread: &str,
         fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
         capture_mode: ArtifactCaptureMode,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode_from_environment(thread, fence, capture_mode, None)
             .await
     }
@@ -1189,7 +1189,7 @@ impl ArtifactHarvester {
         thread: &str,
         fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode_from_environment(
             thread,
             fence,
@@ -1205,7 +1205,7 @@ impl ArtifactHarvester {
         fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
         capture_mode: ArtifactCaptureMode,
         exact_environment: Option<&Arc<crate::session_environment::SessionEnvironment>>,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         let terminal_effect = fence.as_ref().and_then(|fence| match fence {
             awaken_run_ingress::ArtifactPublicationFence::Terminal(effect) => Some(effect),
             awaken_run_ingress::ArtifactPublicationFence::Run(_)
@@ -1214,9 +1214,9 @@ impl ArtifactHarvester {
             | awaken_run_ingress::ArtifactPublicationFence::CheckpointRelease(_) => None,
         });
         if capture_mode == ArtifactCaptureMode::ReceiptOnly && terminal_effect.is_none() {
-            return Err(ResourcePurgeError::Storage(
-                "receipt-only Artifact recovery requires a terminal fence".into(),
-            ));
+            return Err(ArtifactPublicationError::InvalidRequest {
+                detail: "receipt-only Artifact recovery requires a terminal fence".into(),
+            });
         }
         let workspace_owner = terminal_effect
             .map(|effect| effect.command.session_id.as_str())
@@ -1228,9 +1228,10 @@ impl ArtifactHarvester {
         let workspace = match (workspace, terminal_effect) {
             (Some(workspace), _) => workspace,
             (None, Some(_)) => {
-                return Err(ResourcePurgeError::Storage(
-                    "terminal Artifact recovery has no root Session Workspace projection".into(),
-                ));
+                return Err(ArtifactPublicationError::AuthorityUnavailable {
+                    detail: "terminal Artifact recovery has no root Session Workspace projection"
+                        .into(),
+                });
             }
             (None, None) => self.local_workspace.clone(),
         };
@@ -1263,18 +1264,18 @@ impl ArtifactHarvester {
         let current_capture = self
             .publisher
             .capture(&workspace, thread, fence.as_ref())
-            .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
+            .await?;
         if let Some(capture) = &current_capture {
             capture
                 .verify_scope(&workspace, thread)
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
+                .map_err(ArtifactPublicationError::from)?;
         }
         let expected_revision = current_capture.map_or(0, |capture| capture.revision);
-        let artifacts = env
-            .capture_artifacts()
-            .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
+        let artifacts = env.capture_artifacts().await.map_err(|error| {
+            ArtifactPublicationError::Indeterminate {
+                detail: error.to_string(),
+            }
+        })?;
         let idempotency_scope = terminal_effect.map(|effect| effect.operation_id().to_string());
         let mut receipts = Vec::new();
         for captured in artifacts {
@@ -1282,9 +1283,9 @@ impl ArtifactHarvester {
             let bytes = captured.bytes;
             let content_id = awaken_resource_contract::content_id(&bytes);
             if content_id != artifact.content_hash || content_id != artifact.id {
-                return Err(ResourcePurgeError::Storage(
-                    format!("artifact `{}` changed during harvest", artifact.path).into(),
-                ));
+                return Err(ArtifactPublicationError::CorruptData {
+                    detail: format!("artifact `{}` changed during harvest", artifact.path),
+                });
             }
             let logical_path = pc::WorkspaceLayout::outputs_relative(&artifact.path)
                 .or_else(|| artifact.path.strip_prefix("/outputs/"))
@@ -1307,17 +1308,9 @@ impl ArtifactHarvester {
                 idempotency_scope: idempotency_scope.clone(),
                 fence: fence.clone(),
             };
-            publication
-                .verify()
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
-            let receipt = self
-                .publisher
-                .publish(publication.clone())
-                .await
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
-            receipt
-                .verify(&publication)
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
+            publication.verify()?;
+            let receipt = self.publisher.publish(publication.clone()).await?;
+            receipt.verify(&publication)?;
             receipts.push(receipt);
         }
         let replacement = awaken_resource_contract::ReplaceArtifactCapture {
@@ -1332,15 +1325,14 @@ impl ArtifactHarvester {
         let outcome = self
             .publisher
             .replace_capture(replacement.clone(), fence.as_ref())
-            .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
+            .await?;
         replacement
             .verify_outcome(&outcome)
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
+            .map_err(ArtifactPublicationError::from)?;
         if outcome == awaken_resource_contract::ReplaceArtifactCaptureOutcome::Conflict {
-            return Err(ResourcePurgeError::RevisionConflict(
-                "output capture changed; a fresh harvest is required".into(),
-            ));
+            return Err(ArtifactPublicationError::Conflict {
+                detail: "output capture changed; a fresh harvest is required".into(),
+            });
         }
         Ok(HarvestedArtifacts { receipts })
     }
@@ -1350,18 +1342,14 @@ impl ArtifactHarvester {
         thread: &str,
         workspace: String,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         let recovery = awaken_resource_contract::ArtifactRecovery {
             workspace_id: workspace,
             session_id: thread.to_string(),
             idempotency_scope: effect.operation_id().to_string(),
             fence: awaken_run_ingress::ArtifactPublicationFence::Terminal(effect.clone()),
         };
-        let receipts = self
-            .publisher
-            .recover(recovery)
-            .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
+        let receipts = self.publisher.recover(recovery).await?;
         Ok(HarvestedArtifacts { receipts })
     }
 }

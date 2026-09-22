@@ -34,7 +34,8 @@ fn failure(error: ResourceRegistryError) -> axum::response::Response {
             StatusCode::CONFLICT,
             "Repository changed or this request key was used for different settings; check the existing repository",
         ),
-        ResourceRegistryError::Unavailable(_) => err(
+        ResourceRegistryError::AuthorityUnavailable { .. }
+        | ResourceRegistryError::Indeterminate { .. } => err(
             StatusCode::SERVICE_UNAVAILABLE,
             "Repository configuration service is unavailable; retry the same request",
         ),

@@ -90,7 +90,7 @@ fn repository_credential_lookup_error(
         awaken_credential_vault::CredentialError::SourceNotFound(_) => ResourceRegistryError::Invalid(
             "Choose an active repository authorization in this Workspace for this Git server".into(),
         ),
-        _ => ResourceRegistryError::Unavailable("Repository authorization could not be checked; retry when the credential service is available".into()),
+        _ => ResourceRegistryError::AuthorityUnavailable { detail: "Repository authorization could not be checked; retry when the credential service is available".into() },
     }
 }
 
@@ -134,7 +134,10 @@ mod tests {
         let error = repository_credential_lookup_error(CredentialError::Storage(
             "private database location".into(),
         ));
-        assert!(matches!(error, ResourceRegistryError::Unavailable(_)));
+        assert!(matches!(
+            error,
+            ResourceRegistryError::AuthorityUnavailable { .. }
+        ));
         assert!(!error.to_string().contains("private database location"));
         assert!(matches!(
             repository_credential_lookup_error(CredentialError::SourceNotFound(

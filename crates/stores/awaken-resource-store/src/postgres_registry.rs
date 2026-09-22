@@ -14,8 +14,10 @@ use crate::schema::REGISTRY_NS;
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
 
-fn unavailable(error: impl ToString) -> RegistryRepositoryError {
-    RegistryRepositoryError::Unavailable(error.to_string().into())
+fn indeterminate(error: impl ToString) -> RegistryRepositoryError {
+    RegistryRepositoryError::Indeterminate {
+        detail: error.to_string(),
+    }
 }
 
 fn corrupt(error: impl ToString) -> RegistryRepositoryError {
@@ -38,7 +40,7 @@ impl PostgresResourceStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(unavailable)?
+            .map_err(indeterminate)?
             .map(|row| {
                 let revision: i64 = row.try_get("revision").map_err(corrupt)?;
                 let revision = u64::try_from(revision)
@@ -74,7 +76,7 @@ impl PostgresResourceStore {
             Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23505") => {
                 Ok(InsertOutcome::AlreadyRegistered)
             }
-            Err(error) => Err(unavailable(error)),
+            Err(error) => Err(indeterminate(error)),
         }
     }
 
@@ -104,7 +106,7 @@ impl PostgresResourceStore {
             .execute(&self.pool)
             .await
             .map(|result| result.rows_affected())
-            .map_err(unavailable)?;
+            .map_err(indeterminate)?;
         Ok(if changed == 1 {
             ReplaceOutcome::Replaced { revision: next }
         } else {
@@ -124,7 +126,7 @@ impl PostgresResourceStore {
             .bind(kind)
             .fetch_all(&self.pool)
             .await
-            .map_err(unavailable)?
+            .map_err(indeterminate)?
             .into_iter()
             .map(|row| {
                 let id: String = row.try_get("id").map_err(corrupt)?;

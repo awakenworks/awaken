@@ -50,10 +50,10 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 3107,
-      "catch_all_errors": 9,
+      "production_lines": 3147,
+      "catch_all_errors": 6,
       "growth_reasons": {
-        "production_lines": "Skill failures now retain IO kind, corrupt observations, unknown outcomes and Resource reference provenance. Initial-frame validation moved from the Skill adapter into its existing domain value owner so the reference-index decorator rejects invalid commands before either write.",
+        "production_lines": "Preserve resource cleanup failure causes and validate persisted purge frames without weakening limits",
         "catch_all_errors": "September 22: 13 pre-existing opaque Resource wrappers are newly visible to the strengthened scanner, not resolved debt (ADR-0081 section 9); 33 production lines add typed FileStore and FileContentSource failure categories with preserved error provenance."
       }
     },

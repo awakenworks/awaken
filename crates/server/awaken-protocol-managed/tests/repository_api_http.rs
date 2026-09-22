@@ -25,9 +25,9 @@ impl RepositoryCredentialValidator for Admission {
     ) -> Result<(), ResourceRegistryError> {
         match (workspace, source) {
             ("test", "github-source") => Ok(()),
-            (_, "outage") => Err(ResourceRegistryError::Unavailable(
-                "private database location".into(),
-            )),
+            (_, "outage") => Err(ResourceRegistryError::AuthorityUnavailable {
+                detail: "private database location".into(),
+            }),
             _ => Err(ResourceRegistryError::Invalid(
                 "Repository authorization is unavailable".into(),
             )),

@@ -118,8 +118,8 @@ fn registry_error(error: RegistryRepositoryError) -> ResourceRegistryError {
         RegistryRepositoryError::CorruptData(message) => {
             ResourceRegistryError::CorruptData(message)
         }
-        RegistryRepositoryError::Unavailable(message) => {
-            ResourceRegistryError::Unavailable(message)
+        RegistryRepositoryError::Indeterminate { detail: message } => {
+            ResourceRegistryError::Indeterminate { detail: message }
         }
     }
 }
@@ -466,6 +466,27 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn repository_outcomes_keep_their_cause_at_the_application_boundary() {
+        // C1 no definitive repository receipt => indeterminate, never rejected;
+        // C2 corrupt data => corruption; C3 confirmed absence => NotFound.
+        // Equal diagnostics prove this projection does not inspect message text.
+        assert!(matches!(
+            registry_error(RegistryRepositoryError::Indeterminate {
+                detail: "same".into()
+            }),
+            ResourceRegistryError::Indeterminate { .. }
+        ));
+        assert!(matches!(
+            registry_error(RegistryRepositoryError::CorruptData("same".into())),
+            ResourceRegistryError::CorruptData(_)
+        ));
+        assert!(matches!(
+            registry_error(RegistryRepositoryError::NotFound("same".into())),
+            ResourceRegistryError::NotFound(_)
+        ));
+    }
 
     struct FixedClock(u64);
 

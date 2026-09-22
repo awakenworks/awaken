@@ -240,8 +240,16 @@ pub enum ResourcePurgeError {
         from: ResourcePurgeStatus,
         to: ResourcePurgeStatus,
     },
-    #[error("resource purge repository failure: {0}")]
-    Storage(crate::ResourceErrorDetail),
+    #[error("resource data is corrupt: {detail}")]
+    CorruptData { detail: String },
+    #[error("resource encoding failed before publication: {detail}")]
+    EncodingFailure { detail: String },
+    #[error("complete Resource references could not be observed: {detail}")]
+    IncompleteReferenceObservation { detail: String },
+    /// Preserve the original intent and reconcile before retrying: this failure
+    /// does not prove absence or that the preceding mutation failed to commit.
+    #[error("resource operation outcome is indeterminate: {detail}")]
+    Indeterminate { detail: String },
 }
 
 impl ResourcePurgeIntent {
@@ -309,6 +317,33 @@ impl ResourcePurgeIntent {
                 "reference_id must not be empty".into(),
             ));
         }
+        let claim_absent = self.claim_owner.is_none() && self.lease_expires_at_unix_ms.is_none();
+        let progressed = self.claim_generation > 0 && self.revision > 0;
+        let phase_matches = match self.status {
+            ResourcePurgeStatus::Pending => claim_absent && self.receipt.is_none(),
+            ResourcePurgeStatus::Claimed => {
+                progressed
+                    && self
+                        .claim_owner
+                        .as_ref()
+                        .is_some_and(|owner| !owner.trim().is_empty())
+                    && self.lease_expires_at_unix_ms.is_some()
+                    && self.receipt.is_none()
+            }
+            ResourcePurgeStatus::Completed => {
+                claim_absent
+                    && progressed
+                    && self
+                        .receipt
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.evidence.kind() == self.target.kind)
+            }
+        };
+        if !phase_matches {
+            return Err(ResourcePurgeError::Invalid(
+                "purge phase, claim and receipt do not describe one complete frame".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -351,21 +386,22 @@ impl ResourcePurgeIntent {
                 lease_expires_at_unix_ms: self.lease_expires_at_unix_ms.unwrap_or_default(),
             });
         }
-        self.claim_generation = self
+        let generation = self
             .claim_generation
             .checked_add(1)
             .ok_or_else(|| ResourcePurgeError::Invalid("claim generation exhausted".into()))?;
+        let expiry = now_unix_ms
+            .checked_add(lease_ms)
+            .ok_or_else(|| ResourcePurgeError::Invalid("claim lease overflow".into()))?;
+        let revision = self.next_revision()?;
+        self.claim_generation = generation;
         self.attempts = self.attempts.saturating_add(1);
         self.status = ResourcePurgeStatus::Claimed;
         self.claim_owner = Some(owner.to_string());
-        self.lease_expires_at_unix_ms = Some(
-            now_unix_ms
-                .checked_add(lease_ms)
-                .ok_or_else(|| ResourcePurgeError::Invalid("claim lease overflow".into()))?,
-        );
+        self.lease_expires_at_unix_ms = Some(expiry);
         self.blockers.clear();
         self.last_error = None;
-        self.bump_revision()?;
+        self.revision = revision;
         Ok(self.claim_generation)
     }
 
@@ -384,12 +420,14 @@ impl ResourcePurgeIntent {
                 "defer requires at least one blocker".into(),
             ));
         }
+        let revision = self.next_revision()?;
         blockers.sort();
         blockers.dedup();
         self.blockers = blockers;
         self.status = ResourcePurgeStatus::Pending;
         self.clear_claim();
-        self.bump_revision()
+        self.revision = revision;
+        Ok(())
     }
 
     pub fn retry(
@@ -400,10 +438,12 @@ impl ResourcePurgeIntent {
         error: impl Into<String>,
     ) -> Result<(), ResourcePurgeError> {
         self.require_claim(owner, generation, now_unix_ms)?;
+        let revision = self.next_revision()?;
         self.status = ResourcePurgeStatus::Pending;
         self.last_error = Some(error.into());
         self.clear_claim();
-        self.bump_revision()
+        self.revision = revision;
+        Ok(())
     }
 
     pub fn complete(
@@ -419,10 +459,12 @@ impl ResourcePurgeIntent {
                 "receipt evidence kind does not match target".into(),
             ));
         }
+        let revision = self.next_revision()?;
         self.receipt = Some(receipt);
         self.status = ResourcePurgeStatus::Completed;
         self.clear_claim();
-        self.bump_revision()
+        self.revision = revision;
+        Ok(())
     }
 
     fn require_claim(
@@ -450,12 +492,10 @@ impl ResourcePurgeIntent {
         self.lease_expires_at_unix_ms = None;
     }
 
-    fn bump_revision(&mut self) -> Result<(), ResourcePurgeError> {
-        self.revision = self
-            .revision
+    fn next_revision(&self) -> Result<u64, ResourcePurgeError> {
+        self.revision
             .checked_add(1)
-            .ok_or_else(|| ResourcePurgeError::Invalid("revision exhausted".into()))?;
-        Ok(())
+            .ok_or_else(|| ResourcePurgeError::Invalid("revision exhausted".into()))
     }
 }
 
@@ -603,6 +643,129 @@ pub trait ResourcePhysicalReclaimer: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn purge_phase_requires_a_complete_claim_and_receipt_frame() {
+        // P1 Pending has no live claim/receipt; P2 Claimed has an exact owner,
+        // expiry and positive authority coordinates, but no completion;
+        // P3 Completed has matching evidence and no remaining claim. Canonical
+        // transitions construct valid witnesses; each mutation below breaks
+        // one required axis and must be rejected, even though JSON still parses.
+        let pending = intent(ResourceKind::File);
+        let mut claimed = pending.clone();
+        claimed.claim("worker", 20, 100).unwrap();
+        let mut completed = claimed.clone();
+        let receipt = ResourcePurgeReceipt {
+            purged_at_unix_ms: 21,
+            evidence: ResourcePurgeEvidence::File { blob_deleted: true },
+        };
+        completed
+            .complete("worker", claimed.claim_generation, 21, receipt.clone())
+            .unwrap();
+        for value in [&pending, &claimed, &completed] {
+            value.validate().unwrap();
+        }
+        let mut invalid = Vec::new();
+        for base in [&pending, &completed] {
+            let mut value = base.clone();
+            value.claim_owner = Some("worker".into());
+            invalid.push(value);
+            let mut value = base.clone();
+            value.lease_expires_at_unix_ms = Some(100);
+            invalid.push(value);
+        }
+        for base in [&pending, &claimed] {
+            let mut value = base.clone();
+            value.receipt = Some(receipt.clone());
+            invalid.push(value);
+        }
+        let mut value = claimed.clone();
+        value.claim_owner = None;
+        invalid.push(value);
+        let mut value = claimed.clone();
+        value.claim_owner = Some(" ".into());
+        invalid.push(value);
+        let mut value = claimed.clone();
+        value.lease_expires_at_unix_ms = None;
+        invalid.push(value);
+        let mut value = completed.clone();
+        value.receipt = None;
+        invalid.push(value);
+        let mut value = completed.clone();
+        value.receipt.as_mut().unwrap().evidence = ResourcePurgeEvidence::Skill {
+            versions_deleted: 0,
+        };
+        invalid.push(value);
+        for base in [&claimed, &completed] {
+            let mut value = base.clone();
+            value.claim_generation = 0;
+            invalid.push(value);
+            let mut value = base.clone();
+            value.revision = 0;
+            invalid.push(value);
+        }
+        for (case, value) in invalid.into_iter().enumerate() {
+            assert!(
+                matches!(value.validate(), Err(ResourcePurgeError::Invalid(_))),
+                "invalid authority frame {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_purge_transitions_preserve_the_entire_old_frame() {
+        // A1 generation overflow; A2 lease overflow; A3 revision overflow in
+        // claim/defer/retry/complete. Every fallible prerequisite precedes
+        // mutation: Err must leave owner, phase, receipt and diagnostics exact.
+        for mode in [
+            "generation",
+            "expiry",
+            "claim",
+            "defer",
+            "retry",
+            "complete",
+        ] {
+            let mut value = intent(ResourceKind::File);
+            if matches!(mode, "defer" | "retry" | "complete") {
+                value.claim("worker", 20, 100).unwrap();
+            }
+            if mode == "generation" {
+                value.claim_generation = u64::MAX;
+            }
+            if !matches!(mode, "generation" | "expiry") {
+                value.revision = u64::MAX;
+            }
+            let before = value.clone();
+            let result = match mode {
+                "defer" => value.defer(
+                    "worker",
+                    value.claim_generation,
+                    21,
+                    vec![ResourceReference {
+                        kind: ResourceReferenceKind::WorkspaceOwnership,
+                        reference_id: "blocker".into(),
+                    }],
+                ),
+                "retry" => value.retry("worker", value.claim_generation, 21, "failure"),
+                "complete" => value.complete(
+                    "worker",
+                    value.claim_generation,
+                    21,
+                    ResourcePurgeReceipt {
+                        purged_at_unix_ms: 21,
+                        evidence: ResourcePurgeEvidence::File { blob_deleted: true },
+                    },
+                ),
+                "expiry" => value.claim("worker", u64::MAX, 1).map(|_| ()),
+                _ => value.claim("worker", 20, 100).map(|_| ()),
+            };
+            assert!(
+                matches!(result, Err(ResourcePurgeError::Invalid(_))),
+                "{mode}"
+            );
+            assert_eq!(value, before, "{mode} must not partially transition");
+        }
+    }
+
     #[test]
     fn memory_purge_evidence_adds_nonzero_candidates_without_rewriting_legacy_receipts() {
         // RC-WIRE legacy/no-candidate => exact unchanged JSON; a nonzero count

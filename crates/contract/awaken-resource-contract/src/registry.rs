@@ -209,8 +209,10 @@ pub enum ResourceRegistryError {
     Invalid(crate::ResourceErrorDetail),
     #[error("resource registry data is corrupt: {0}")]
     CorruptData(String),
-    #[error("resource registry is unavailable: {0}")]
-    Unavailable(crate::ResourceErrorDetail),
+    #[error("resource registry authority unavailable: {detail}")]
+    AuthorityUnavailable { detail: String },
+    #[error("resource registry outcome is indeterminate: {detail}")]
+    Indeterminate { detail: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -223,8 +225,10 @@ pub enum RegistryRepositoryError {
     ConcurrentModification(String),
     #[error("stored resource registry data is corrupt: {0}")]
     CorruptData(String),
-    #[error("resource registry repository is unavailable: {0}")]
-    Unavailable(crate::ResourceErrorDetail),
+    /// The repository supplied no definitive receipt. Mutation callers must
+    /// reuse their existing identity/CAS, not infer that no write occurred.
+    #[error("resource registry repository outcome is indeterminate: {detail}")]
+    Indeterminate { detail: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

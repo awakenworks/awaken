@@ -315,14 +315,11 @@ impl FileApplication {
             .get(&record.blob_id)
             .await
             .map_err(ResourcePurgeError::from)?
-            .ok_or_else(|| {
-                ResourcePurgeError::Storage(
-                    format!(
-                        "file `{file_id}` references missing blob `{}`",
-                        record.blob_id
-                    )
-                    .into(),
-                )
+            .ok_or_else(|| ResourcePurgeError::CorruptData {
+                detail: format!(
+                    "file `{file_id}` references missing blob `{}`",
+                    record.blob_id
+                ),
             })?;
         Ok(Some((record, bytes)))
     }

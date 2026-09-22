@@ -59,9 +59,9 @@ pub struct UnavailableRepositoryCredentialValidator;
 #[async_trait]
 impl RepositoryCredentialValidator for UnavailableRepositoryCredentialValidator {
     async fn validate(&self, _: &str, _: &str, _: &str) -> Result<(), ResourceRegistryError> {
-        Err(ResourceRegistryError::Unavailable(
-            "Repository authorization service is unavailable".into(),
-        ))
+        Err(ResourceRegistryError::AuthorityUnavailable {
+            detail: "Repository authorization service is unavailable".into(),
+        })
     }
 }
 

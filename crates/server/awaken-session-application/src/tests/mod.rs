@@ -566,9 +566,11 @@ impl awaken_resource_contract::ResourceReferenceIndex for RecordingReferenceInde
         records: Vec<awaken_resource_contract::ResourceReferenceRecord>,
     ) -> Result<(), awaken_resource_contract::ResourcePurgeError> {
         if self.fail_replace.load(Ordering::SeqCst) {
-            return Err(awaken_resource_contract::ResourcePurgeError::Storage(
-                "injected reference projection failure".into(),
-            ));
+            return Err(
+                awaken_resource_contract::ResourcePurgeError::Indeterminate {
+                    detail: "injected reference projection failure".into(),
+                },
+            );
         }
         let mut current = self.records.lock().unwrap();
         current.retain(|record| {

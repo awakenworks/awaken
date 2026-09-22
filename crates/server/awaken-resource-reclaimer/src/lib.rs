@@ -398,9 +398,9 @@ mod tests {
             target: &ResourceTarget,
         ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
             if self.fail_acquire.load(Ordering::SeqCst) {
-                return Err(ResourcePurgeError::Storage(
-                    "injected acquisition failure".into(),
-                ));
+                return Err(ResourcePurgeError::Indeterminate {
+                    detail: "injected acquisition failure".into(),
+                });
             }
             let mut fences = self.fences.lock().unwrap();
             let key = (target.kind, target.resource_id.clone());
@@ -422,9 +422,9 @@ mod tests {
             target: &ResourceTarget,
         ) -> Result<bool, ResourcePurgeError> {
             if self.fail_release.load(Ordering::SeqCst) {
-                return Err(ResourcePurgeError::Storage(
-                    "injected fence release failure".into(),
-                ));
+                return Err(ResourcePurgeError::Indeterminate {
+                    detail: "injected fence release failure".into(),
+                });
             }
             let mut fences = self.fences.lock().unwrap();
             let key = (target.kind, target.resource_id.clone());
@@ -493,9 +493,9 @@ mod tests {
             if intent.status == ResourcePurgeStatus::Completed
                 && self.fail_completed_save.load(Ordering::SeqCst)
             {
-                return Err(ResourcePurgeError::Storage(
-                    "injected completed save failure".into(),
-                ));
+                return Err(ResourcePurgeError::Indeterminate {
+                    detail: "injected completed save failure".into(),
+                });
             }
             let mut rows = self.intents.lock().unwrap();
             let current = rows
@@ -649,9 +649,9 @@ mod tests {
         ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
             let call = self.call.fetch_add(1, Ordering::SeqCst) + 1;
             if call == self.fail_on {
-                Err(ResourcePurgeError::Storage(
-                    format!("injected guard failure on call {call}").into(),
-                ))
+                Err(ResourcePurgeError::Indeterminate {
+                    detail: format!("injected guard failure on call {call}"),
+                })
             } else {
                 Ok(Vec::new())
             }
@@ -691,9 +691,9 @@ mod tests {
             _target: &ResourceTarget,
             _config_version: Option<u64>,
         ) -> Result<ResourcePurgeEvidence, ResourcePurgeError> {
-            Err(ResourcePurgeError::Storage(
-                "injected delete failure".into(),
-            ))
+            Err(ResourcePurgeError::Indeterminate {
+                detail: "injected delete failure".into(),
+            })
         }
     }
 

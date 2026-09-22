@@ -652,10 +652,8 @@ impl awaken_resource_contract::RepositoryCredentialValidator for HttpControlServ
                 },
             )
             .await
-            .map_err(|_| {
-                ResourceRegistryError::Unavailable(
-                    "Repository authorization service is unavailable".into(),
-                )
+            .map_err(|_| ResourceRegistryError::AuthorityUnavailable {
+                detail: "Repository authorization service is unavailable".into(),
             })?;
         match decision {
             RepositoryAdmission::Admitted => Ok(()),
@@ -784,9 +782,9 @@ mod tests {
                 .push((workspace.into(), source.into(), remote.into()));
             match source {
                 "allowed" => Ok(()),
-                "outage" => Err(ResourceRegistryError::Unavailable(
-                    "private storage detail".into(),
-                )),
+                "outage" => Err(ResourceRegistryError::AuthorityUnavailable {
+                    detail: "private storage detail".into(),
+                }),
                 _ => Err(ResourceRegistryError::Invalid(
                     "private credential detail".into(),
                 )),
@@ -901,7 +899,10 @@ mod tests {
             RepositoryCredentialValidator::validate(&client, "workspace-a", "outage", remote)
                 .await
                 .unwrap_err();
-        assert!(matches!(outage, ResourceRegistryError::Unavailable(_)));
+        assert!(matches!(
+            outage,
+            ResourceRegistryError::AuthorityUnavailable { .. }
+        ));
         assert!(!outage.to_string().contains("private storage detail"));
         assert_eq!(repository_admission.0.lock().unwrap().len(), 5);
         let unauthorized =

@@ -914,7 +914,8 @@ fn application_failure(error: &ResourcePurgeError) -> ArtifactFailure {
         | ResourcePurgeError::StaleClaim
         | ResourcePurgeError::StaleReclamationFence
         | ResourcePurgeError::ReclamationFenced { .. } => ArtifactFailure::Conflict {},
-        ResourcePurgeError::Catalog(FileCatalogError::CorruptData { .. })
+        ResourcePurgeError::CorruptData { .. }
+        | ResourcePurgeError::Catalog(FileCatalogError::CorruptData { .. })
         | ResourcePurgeError::Blob(FileStoreError::CorruptContent { .. }) => {
             ArtifactFailure::CorruptData {}
         }
@@ -1128,7 +1129,9 @@ mod tests {
             "V4"
         );
         assert_eq!(
-            application_error_status(&ResourcePurgeError::Storage("offline".into())),
+            application_error_status(&ResourcePurgeError::Indeterminate {
+                detail: "offline".into()
+            }),
             StatusCode::SERVICE_UNAVAILABLE,
             "V5"
         );

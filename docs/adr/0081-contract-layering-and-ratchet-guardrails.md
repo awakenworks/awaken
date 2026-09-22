@@ -249,6 +249,17 @@ explicit local skip; invalid configuration cannot become absence, and a
 configured connection or schema setup must succeed. The Skill fixture's former
 `.ok()?` paths are removed under this same policy.
 
+ArtifactHarvester now returns the existing ArtifactPublicationError directly;
+it no longer flattens publisher or Catalog failures into a purge-storage string.
+Resource Registry separates missing dependency authority from indeterminate
+repository outcomes, and both remain server availability failures at the Session
+and protocol boundaries. Purge codecs distinguish corrupt stored observations
+from caller validation and pre-write encoding failures. Incomplete reference
+observations cannot authorize reclamation. Purge phases require a complete
+claim/receipt frame, and checked generation, expiry and revision arithmetic is
+performed before mutating the in-memory intent. Rejected transitions therefore
+retain the exact old frame instead of leaving half-applied state behind.
+
 SessionRealizationLease and its authorization laws now share a domain module in
 the existing Session contract. Repository ports store that value; they no longer
 define it. Root mutation values and their observation-preservation kernel now
