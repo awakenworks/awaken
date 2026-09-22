@@ -14,9 +14,7 @@
 use awaken_provisioning_contract as pc;
 
 use crate::exec_attempts::DisposalSeal;
-use crate::{
-    ContainerRuntime, ContainerSandbox, ContainerState, RuntimeAgentProcess, RuntimeError,
-};
+use crate::{ContainerRuntime, ContainerSandbox, RuntimeAgentProcess};
 
 impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// Start an opaque stdio agent as an exec process in this Session environment.
@@ -160,7 +158,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// keeps the demand honest — a Session environment that never exec'd cannot
     /// be holding an orphan, so a runtime with no exec support is never asked
     /// to reap and its fail-closed inherited implementation stays unreachable.
-    pub(crate) async fn reap_exec_orphans(&self) -> Result<DisposalSeal, pc::SandboxError> {
+    pub(crate) async fn reap_exec_orphans(&self) -> DisposalSeal {
         // Closing and asking are one step. Closing must happen even when there
         // is nothing to reap, or an environment that never exec'd could
         // acquire its first process during its own cleanup. The seal is
@@ -168,26 +166,20 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         // are exactly what it makes sound.
         let seal = self.execs.seal();
         if !seal.any_started() {
-            return Ok(seal);
+            return seal;
         }
-        if let Err(error) = self.runtime.reap_exec_orphans(&self.container_id).await {
-            // A container that is no longer running has already stopped every
-            // exec it started, which is the whole of what reaping is for, so
-            // refusing to dispose it would strand the environment over an
-            // obligation already met. The tolerance is closed on purpose: only
-            // an observation proving the container is not running admits it,
-            // because a live container that refuses to reap may still be
-            // writing while the harvest below reads.
-            let already_stopped = match self.runtime.inspect(&self.container_id).await {
-                Ok(ContainerState::Running) => false,
-                Ok(_) | Err(RuntimeError::NotFound(_)) => true,
-                Err(_) => false,
-            };
-            if !already_stopped {
-                return Err(error.into());
+        match self.runtime.reap_exec_orphans(&self.container_id).await {
+            Ok(()) => {
+                self.execs.clear_orphans();
+                seal
             }
+            // Not an error here, and deliberately so. A container that cannot
+            // run the reaper — one whose cgroup is out of memory, say — also
+            // cannot be harvested, but it still has to be removed: leaving it
+            // costs a permanent host leak, while the harvest costs one round
+            // of bytes. The caller is told which it lost; what it must not do
+            // is read a workspace nothing was able to quiesce.
+            Err(error) => seal.with_unquiet_container(error.to_string()),
         }
-        self.execs.clear_orphans();
-        Ok(seal)
     }
 }

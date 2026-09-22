@@ -30,6 +30,7 @@ pub use checkpoint::{ContainerCheckpointAccess, ContainerCheckpointMutation};
 mod control;
 use control::ContainerControlPublicationRegistry;
 mod cgroup;
+mod disposal;
 mod egress;
 mod exec_attempts;
 mod files;
@@ -648,46 +649,6 @@ fn memory_snapshot_tar(root: &std::path::Path) -> Result<Vec<u8>, pc::SandboxErr
         .map_err(|error| pc::SandboxError::backend("append", error))
 }
 
-fn replace_memory_snapshot(
-    root: &std::path::Path,
-    files: &[EnvironmentFile],
-) -> Result<(), pc::SandboxError> {
-    if root.exists() {
-        std::fs::remove_dir_all(root)
-            .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
-    }
-    std::fs::create_dir_all(root)
-        .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
-    let mut total = 0_u64;
-    for file in files {
-        let relative = std::path::Path::new(&file.path);
-        if relative.is_absolute()
-            || file.path.is_empty()
-            || relative
-                .components()
-                .any(|component| !matches!(component, std::path::Component::Normal(_)))
-        {
-            return Err(pc::SandboxError::invalid(
-                "unsafe path in harvested Memory snapshot",
-            ));
-        }
-        total = total.saturating_add(file.bytes.len() as u64);
-        if total > MAX_MEMORY_SNAPSHOT_BYTES || files.len() > MAX_MEMORY_SNAPSHOT_FILES {
-            return Err(pc::SandboxError::invalid(
-                "harvested Memory snapshot exceeds the projection limit",
-            ));
-        }
-        let destination = root.join(relative);
-        if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
-        }
-        std::fs::write(destination, &file.bytes)
-            .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 fn make_memory_tree_accessible(
     root: &std::path::Path,
@@ -1249,74 +1210,6 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         self.id = scope.into();
         self
     }
-
-    async fn prepare_disposal(
-        &self,
-        effect_fence: Option<&pc::SandboxEffectFence>,
-        authorize: impl Fn() -> Result<(), pc::SandboxError> + Sync,
-    ) -> Result<(), pc::SandboxError> {
-        authorize()?;
-        // Before anything reads the workspace. An exec whose caller was
-        // cancelled is still running and still writing, so Secret write-back
-        // and the Memory harvest below would otherwise capture bytes a live
-        // orphan is mutating. This is the single gate both disposal edges pass
-        // through: `dispose` reaches `dispose_once` through it, and
-        // `prepare_disposal_for_effect` reaches `dispose_for_effect` through it.
-        let seal = self.reap_exec_orphans().await?;
-        authorize()?;
-        self.control_publication.close_for_dispose().await;
-        authorize()?;
-        // Writable durable credentials belong to the Session environment and
-        // are harvested when that environment terminates. Managed cleanup
-        // carries the root operation into the credential authority, whose
-        // WAL/CAS makes response-loss replay idempotent; the local flag is only
-        // an in-process fast path.
-        let handle = effect_fence.map(|_| pc::Sandbox::handle(self));
-        self.lifecycle
-            .write_back_secrets(
-                self.runtime.as_ref(),
-                &self.container_id,
-                effect_fence.zip(handle.as_ref()),
-                &authorize,
-                &seal,
-            )
-            .await?;
-        // Explicit effectless Sandbox disposal still owns its live RunV1 Memory
-        // claim. Managed terminal/continuation cleanup carries an effect
-        // fence and must use Host terminal-v2 reconciliation plus the explicit
-        // acknowledgement port instead of replaying this stale claim.
-        if effect_fence.is_none() {
-            self.harvest_memory_snapshots(&seal).await?;
-        }
-        Ok(())
-    }
-
-    /// Copy each writable native Memory mount back out of the container.
-    ///
-    /// Takes the seal because this is the read the seal exists for: a live
-    /// Session process would otherwise still be mutating these paths while
-    /// they are archived.
-    async fn harvest_memory_snapshots(
-        &self,
-        // Taken for its existence, not its contents: holding one is the proof
-        // that nothing new can be writing to what this reads.
-        _seal: &crate::exec_attempts::DisposalSeal,
-    ) -> Result<(), pc::SandboxError> {
-        let mut memory = self.lifecycle.memory.lock().await;
-        let Some(memory) = memory.as_mut() else {
-            return Ok(());
-        };
-        for mount in memory.iter_mut().filter(|mount| {
-            mount.native_runtime_volume
-                && mount.access == pc::MountAccess::ReadWrite
-                && !mount.writeback_prepared
-        }) {
-            let files = files::read_files(self, &mount.mount_path).await?;
-            replace_memory_snapshot(&mount.host_path, &files)?;
-            mount.writeback_prepared = true;
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -1536,6 +1429,13 @@ impl ContainerCleanupState {
             })?;
             for item in &self.secret_writebacks {
                 authorize()?;
+                // A read failure is NOT softened into the staged bytes. A
+                // durable credential rotates, so the copy in the container may
+                // be newer than anything on the host or in the broker; writing
+                // the stale one back would publish a credential that is no
+                // longer the truth. The environment is preserved instead, so
+                // the harvest can be retried — a rotated credential is not the
+                // one round of bytes a Memory snapshot is.
                 let bytes = match runtime
                     .read_live_file(container_id, &item.mount_path)
                     .await
@@ -1853,7 +1753,13 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
                     Ok(())
                 })
         })
-        .await?;
+        .await?
+        // This edge only *prepares*; the removal it authorizes is performed by
+        // its caller, in another crate. Until that caller can be told a
+        // harvest was skipped, an incomplete one still fails closed here. The
+        // unattached edge is where the two prices were separated; this one
+        // cannot be until its result can carry the answer.
+        .into_result()?;
         // Container/Kubernetes install their exact physical gate only at the
         // later disposal edge. This source-preparation boundary therefore
         // returns the caller's exact fence without claiming marker evidence.
@@ -1901,14 +1807,19 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     // are no longer a trait obligation or a reachable escape hatch. They stay
     // as this type's own implementation detail, used by its fenced edges.
     pub async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        self.prepare_disposal(None, || Ok(())).await?;
+        // Authorization still short-circuits: nothing may be removed without
+        // it. A harvest that could not run is a different thing, and is not
+        // allowed to keep the object alive — the two failures do not cost the
+        // same, so they no longer share one chain.
+        let harvest = self.prepare_disposal(None, || Ok(())).await?;
         self.lifecycle
             .dispose_once(
                 self.runtime.as_ref(),
                 &self.container_id,
                 self.runtime_handle.as_ref(),
             )
-            .await
+            .await?;
+        harvest.into_result()
     }
 }
 

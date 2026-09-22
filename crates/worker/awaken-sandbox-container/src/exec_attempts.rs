@@ -155,6 +155,10 @@ impl AdmittedExec {
 /// has nothing to pass, and one cannot be built from anywhere else.
 pub(crate) struct DisposalSeal {
     started: bool,
+    /// Why the container could not be made quiet, when it could not. Sealing
+    /// stops new work; only a completed reap stops what was already running,
+    /// and a container that cannot exec cannot be asked.
+    unquiet: Option<String>,
 }
 
 impl DisposalSeal {
@@ -162,6 +166,20 @@ impl DisposalSeal {
     /// must still be asked to forget them.
     pub(crate) const fn any_started(&self) -> bool {
         self.started
+    }
+
+    /// Why reads that run inside the container are not sound, when they are
+    /// not. `None` means the container was made quiet and they are.
+    pub(crate) fn unquiet(&self) -> Option<&str> {
+        self.unquiet.as_deref()
+    }
+
+    /// Record that the container could not be quiesced.
+    pub(crate) fn with_unquiet_container(self, why: impl Into<String>) -> Self {
+        Self {
+            unquiet: Some(why.into()),
+            ..self
+        }
     }
 }
 
@@ -262,6 +280,7 @@ impl ExecAttempts {
     pub(crate) fn seal(&self) -> DisposalSeal {
         DisposalSeal {
             started: self.state.fetch_or(SEALED, Ordering::SeqCst) & !SEALED > 0,
+            unquiet: None,
         }
     }
 
