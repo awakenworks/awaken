@@ -701,8 +701,13 @@ mod tests {
         use sqlx::Executor;
         use sqlx::postgres::PgPoolOptions;
 
-        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
-            return;
+        let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
+            Ok(url) => url,
+            Err(std::env::VarError::NotPresent) => {
+                eprintln!("[skip] AWAKEN_TEST_DATABASE_URL is not configured");
+                return;
+            }
+            Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
         };
         let admin = PgPool::connect(&url).await.unwrap();
         let _ = admin
@@ -750,8 +755,52 @@ mod tests {
         PostgresSandboxExecutionPolicyStore::with_pool(pool.clone())
             .await
             .unwrap();
-        PostgresSandboxExecutionPolicyStore::with_existing_pool(pool)
+        let store = PostgresSandboxExecutionPolicyStore::with_existing_pool(pool.clone())
             .await
             .unwrap();
+        // P1-P5 are the same port laws as memory and SQLite. P6 reconnect
+        // preserves the immutable old version and current head; migration-only
+        // success cannot substitute for exercising these behavior rules.
+        exact_version_decision_table(&store).await;
+        drop(store);
+        pool.close().await;
+        let reopened_pool = PgPoolOptions::new()
+            .after_connect(|connection, _| {
+                Box::pin(async move {
+                    connection
+                        .execute("SET search_path = t_sandbox_policy")
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("P6 reconnect");
+        let reopened = PostgresSandboxExecutionPolicyStore::with_existing_pool(reopened_pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .get_exact(&SandboxExecutionPolicyRef {
+                    id: SandboxExecutionPolicyId("strict".into()),
+                    version: SandboxExecutionPolicyVersion(1),
+                })
+                .await
+                .unwrap(),
+            policy("strict", 1, IsolationClass::Namespace),
+            "P6 exact old frame"
+        );
+        assert_eq!(
+            reopened
+                .get_exact(&SandboxExecutionPolicyRef {
+                    id: SandboxExecutionPolicyId("strict".into()),
+                    version: SandboxExecutionPolicyVersion(2),
+                })
+                .await
+                .unwrap()
+                .version,
+            SandboxExecutionPolicyVersion(2),
+            "P6 current head"
+        );
     }
 }
