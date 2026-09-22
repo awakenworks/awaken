@@ -215,12 +215,14 @@ whether its prompt or an MCP effect was dispatched, so the current claim owner
 commits the existing `EndCause::Indeterminate` and settles the dispatch without
 relaunching the prompt. No `AcpAttemptStage`, parallel protocol journal or new
 terminal variant is introduced. If that exact Run ends before its input Message
-is committed, the existing Session Event-batch coordinator anchors the accepted
-User receipt at the Run's durable terminal cursor, as it already does for a
-pre-input cancellation. Processing this receipt records the unknown outcome;
-it neither creates a Message nor converts Indeterminate to success. Other Runs,
-nonterminal states and System messages cannot supply this fallback. The existing
-terminal cleanup still requires physical quiescence and its aggregate authority.
+is committed, terminal Thread truth alone cannot mark the accepted User receipt
+processed. Only the typed post-settlement callback from an applied Dispatch CAS
+may join its exact commit anchor, activity removal and processed marker. An
+unconfirmed predecessor keeps the receipt accepted but unprocessed alongside
+the retained physical slot; it neither creates a Message nor converts
+Indeterminate to success. Other Runs, nonterminal states and System messages
+cannot supply this authority. The existing terminal cleanup still requires
+physical quiescence and its aggregate authority.
 A future resumable ACP path must be explicitly capability-gated by an official
 idempotent receipt.
 

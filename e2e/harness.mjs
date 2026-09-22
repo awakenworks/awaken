@@ -20,7 +20,7 @@ import {
   cargoExecutionBundle,
   cargoScenarioHostBundle,
 } from './cargo_binary.mjs';
-import { stringifyDurableJson } from './sqlite.mjs';
+import { sqliteRows, stringifyDurableJson } from './sqlite.mjs';
 import { withoutAmbientProviderKeys } from './process_environment.mjs';
 
 // The historical 38xxx defaults overlap Linux's ephemeral client-port range.
@@ -511,6 +511,71 @@ export async function waitForValue(
   // the product state with JSON.stringify's BigInt TypeError. Reuse the one
   // durable JSON encoder shared by fault-injection fixtures.
   throw new Error(`${description}; last observed value: ${stringifyDurableJson(value)}`);
+}
+
+export async function waitForRetainedUnknownExecution(
+  client,
+  sessionId,
+  inputReceiptId,
+  betas,
+  dispatchDatabase,
+  description,
+  { cancellationRequested = false } = {},
+) {
+  // Shared retained-unknown oracle for Native and ACP durable attempts.
+  // Causes: C1=accepted input has no applied Dispatch settlement; C2=committed
+  // Indeterminate Thread boundary; C3=occupied physical slot; C4=optional
+  // explicit cancellation intent. Effects: E1=input stays accepted/unprocessed;
+  // E2=terminal unknown is public but aggregate Idle is withheld; E3=the exact
+  // slot remains fenced; E4=C4 remains durable. Rules U1=C1+C2+C3=>E1-E3 and
+  // U2=U1+C4=>E4. One helper prevents Native/ACP tests from inventing different
+  // interpretations of the same Dispatch authority.
+  return waitForValue(
+    async () => {
+      const [session, events] = await Promise.all([
+        client.beta.sessions.retrieve(sessionId, { betas }),
+        (async () => {
+          const listed = [];
+          for await (const event of client.beta.sessions.events.list(sessionId, { betas })) {
+            listed.push(event);
+          }
+          return listed;
+        })(),
+      ]);
+      let dispatch = null;
+      try {
+        [dispatch] = sqliteRows(
+          dispatchDatabase,
+          `SELECT cancel_requested, active_attempt_owner, active_attempt_epoch, sandbox
+             FROM runtime_dispatch
+            WHERE thread_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1`,
+          sessionId,
+        );
+      } catch {
+        // The row may be between admission and its first physical claim.
+      }
+      return { session, events, dispatch };
+    },
+    ({ session, events, dispatch }) => {
+      const inputIndex = events.findIndex((event) => event.id === inputReceiptId);
+      if (inputIndex < 0 || events[inputIndex].processed_at !== null) return false;
+      const suffix = events.slice(inputIndex + 1);
+      return session.status === 'running'
+        && suffix.some((event) => event.type === 'session.error'
+          && event.error?.retry_status?.type === 'terminal'
+          && /execution result is unknown/iu.test(event.error?.message ?? ''))
+        && suffix.some((event) => event.type === 'session.thread_status_idle')
+        && !suffix.some((event) => event.type === 'session.status_idle')
+        && typeof dispatch?.active_attempt_owner === 'string'
+        && dispatch.active_attempt_epoch !== null
+        && dispatch.sandbox !== null
+        && (!cancellationRequested || Number(dispatch.cancel_requested) === 1);
+    },
+    description,
+    { timeoutMs: 30_000, pollMs: 25 },
+  );
 }
 
 // Canonical receipt-scoped observation for asynchronous Managed Event batches.
