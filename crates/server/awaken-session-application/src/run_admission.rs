@@ -255,16 +255,7 @@ impl SessionApplication {
             let projected_revision = self
                 .admit_run_session(owner_scope, session_id.as_str(), &agent_id)
                 .await?;
-            let reservation = self
-                .runtime()
-                .coordination()
-                .ok_or_else(|| {
-                    awaken_session_contract::RunError::unavailable(
-                        "CoordinationRuntime is unsupported by this runtime",
-                    )
-                })?
-                .reserve_session_run(command)
-                .await?;
+            let reservation = self.runtime().reserve_session_run(command).await?;
             let delivery = |session_activity_epoch| SessionRunDelivery {
                 session_id: session_id.clone(),
                 run_id: run_id.clone(),
@@ -328,12 +319,6 @@ impl SessionApplication {
         let admitted = Box::pin(self.admit_session_run(command)).await?;
         Box::pin(
             self.runtime()
-                .coordination()
-                .ok_or_else(|| {
-                    awaken_session_contract::RunError::unavailable(
-                        "CoordinationRuntime is unsupported by this runtime",
-                    )
-                })?
                 .activate_and_observe_session_run(admitted, input_message_ids, sink),
         )
         .await
@@ -352,12 +337,6 @@ impl SessionApplication {
         let admitted = Box::pin(self.admit_session_run_for_owner(owner_scope, command)).await?;
         Box::pin(
             self.runtime()
-                .coordination()
-                .ok_or_else(|| {
-                    awaken_session_contract::RunError::unavailable(
-                        "CoordinationRuntime is unsupported by this runtime",
-                    )
-                })?
                 .activate_and_observe_session_run(admitted, input_message_ids, sink),
         )
         .await
@@ -375,15 +354,7 @@ impl SessionApplication {
             AdmittedSessionRun::Reserved(delivery)
             | AdmittedSessionRun::AlreadyReserved(delivery)
             | AdmittedSessionRun::AlreadyActivated(delivery) => {
-                self.runtime()
-                    .coordination()
-                    .ok_or_else(|| {
-                        awaken_session_contract::RunError::unavailable(
-                            "CoordinationRuntime is unsupported by this runtime",
-                        )
-                    })?
-                    .activate_session_run(delivery)
-                    .await
+                self.runtime().activate_session_run(delivery).await
             }
             AdmittedSessionRun::RecoveryClaimed { .. } => {
                 Ok(awaken_session_contract::SessionRunActivation::RecoveryClaimed)

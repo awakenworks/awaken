@@ -588,6 +588,9 @@ mod tests {
     /// Credential-free candidates yield E0 (no binding). Every failed cause is
     /// terminal and yields its stable error; the credential contract's own
     /// decision table exhaustively covers the internals of C5.
+    /// Envelope liveness belongs to execution, not immutable claim identity:
+    /// B14 admits the binding but refuses direct use of the expired carrier.
+    /// The HTTP redelivery test owns fresh delivery or exact claim relinquish.
     ///
     /// | Rule | C0 | C1 | C2 | C3 | C4 | C5 | C6 | Result |
     /// |---|---|---|---|---|---|---|---|---|
@@ -604,7 +607,7 @@ mod tests {
     /// | B11 | T | T | T | T | valid | F(holder) | - | unsupported holder |
     /// | B12 | T | T | T | T | valid | F(source) | - | unsupported source |
     /// | B13 | T | T | T | T | valid | F(policy) | - | forbidden holder |
-    /// | B14 | T | T | T | T | valid | F(expiry) | - | expired envelope |
+    /// | B14 | T | T | T | T | valid | T | T | binding; expired carrier unusable |
     /// | B15 | T | T | T | T | valid | F(revision) | - | refresh mismatch |
     /// | B16 | T | T | T | T | valid | T | F | duplicate candidate |
     #[test]
@@ -707,9 +710,7 @@ mod tests {
                 id: "B14",
                 fixture: BindingFixture::EnvelopeExpired,
                 claim_epoch: 3,
-                expected: BindingExpected::Error(AttemptCredentialBindingError::Admission(
-                    CredentialAdmissionError::EnvelopeExpired,
-                )),
+                expected: BindingExpected::One(CredentialRealizationKind::WorkerProviderAdapter),
             },
             BindingRule {
                 id: "B15",
@@ -813,6 +814,16 @@ mod tests {
                     recipient: TrustDomainRef(selected_holder.trust_domain.0.clone()),
                     expires_at_unix_ms: 9,
                 });
+                assert_eq!(
+                    access.admit(
+                        &selected_holder,
+                        realization,
+                        &capabilities(&selected_holder, realization),
+                        10,
+                    ),
+                    Err(CredentialAdmissionError::EnvelopeExpired),
+                    "B14: claim admission must not make the expired carrier executable",
+                );
             }
             if matches!(rule.fixture, BindingFixture::RefreshRevisionMismatch) {
                 access = access.with_refresh(CredentialRefreshAccess::new(

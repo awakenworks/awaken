@@ -261,7 +261,10 @@ fn error_display_prefixes_are_stable() {
     assert_eq!(MemErr::Storage("disk".into()).to_string(), "storage: disk");
 
     assert_eq!(
-        FileStoreError("boom".into()).to_string(),
+        FileStoreError::Indeterminate {
+            detail: "boom".into()
+        }
+        .to_string(),
         "file store error: boom"
     );
     assert_eq!(SkillStoreError::Io("io".into()).to_string(), "io: io");

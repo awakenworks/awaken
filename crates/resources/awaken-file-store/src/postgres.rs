@@ -14,7 +14,9 @@ use crate::{
 };
 
 fn e(x: impl ToString) -> FileStoreError {
-    FileStoreError(x.to_string().into())
+    FileStoreError::Indeterminate {
+        detail: x.to_string(),
+    }
 }
 
 fn ce(x: impl ToString) -> FileCatalogError {
@@ -170,6 +172,11 @@ impl FileStore for PgFileStore {
         .execute(&self.pool)
         .await
         .map_err(e)?;
+        self.get(&id)
+            .await?
+            .ok_or_else(|| FileStoreError::Indeterminate {
+                detail: "content-addressed blob disappeared during idempotent put".into(),
+            })?;
         Ok(id)
     }
 
@@ -179,7 +186,11 @@ impl FileStore for PgFileStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(e)?;
-        Ok(row.map(|r| r.get::<Vec<u8>, _>("bytes")))
+        let bytes = row.map(|r| r.get::<Vec<u8>, _>("bytes"));
+        if let Some(bytes) = &bytes {
+            crate::verify_blob(id, bytes)?;
+        }
+        Ok(bytes)
     }
 
     async fn list(&self) -> Result<Vec<String>, FileStoreError> {

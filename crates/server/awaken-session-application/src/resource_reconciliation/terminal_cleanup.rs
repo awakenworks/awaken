@@ -5,8 +5,8 @@ use std::{future::Future, pin::Pin};
 
 use awaken_session_contract::{
     PersistedSession, RenewSessionRealization, RunError, SandboxRestoreRequest,
-    SessionRealizationControlFailure, SessionRealizationDriveError, SessionRuntime,
-    SessionTerminalCleanupAction, SessionTerminalCleanupAssignment,
+    SessionRealizationControlFailure, SessionRealizationDriveError, SessionTerminalCleanupAction,
+    SessionTerminalCleanupAssignment,
 };
 
 use super::{internal, mutation_failure, repository_preparation};
@@ -134,15 +134,18 @@ pub(super) fn terminal_cleanup_authorization_failure(
     }
 }
 
-async fn supervise_local_terminal_cleanup_lease<Drive, Renew, RenewFuture, Clock>(
+async fn supervise_local_terminal_cleanup_lease<Drive, Renew, RenewFuture, Clock, R>(
     session_id: &awaken_session_contract::SessionId,
     initial_assignment: &SessionTerminalCleanupAssignment,
-    runtime: &dyn SessionRuntime,
+    runtime: &R,
     drive: Drive,
     mut renew: Renew,
     now_unix_ms: Clock,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError>
 where
+    R: awaken_session_contract::RealizationRuntime
+        + awaken_session_contract::TerminalCleanupRuntime
+        + ?Sized,
     Drive:
         Future<Output = Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError>>,
     Renew: FnMut(RenewSessionRealization) -> RenewFuture,
@@ -196,12 +199,12 @@ where
                     asserted_lease: asserted_lease.clone(),
                     requested_expires_at_unix_ms: requested_expiry_unix_ms,
                 };
-                let request_started = runtime.realization().ok_or_else(|| awaken_session_contract::RunError::unavailable("RealizationRuntime is unsupported by this runtime"))?.observe_realization_request()?;
+                let request_started = runtime.observe_realization_request()?;
                 let receipt = renew(command)
                     .await
                     .map_err(SessionRealizationDriveError::Control)?;
                 let observed = receipt.clone().observed(request_started);
-                if observed.remaining_at(runtime.realization().ok_or_else(|| awaken_session_contract::RunError::unavailable("RealizationRuntime is unsupported by this runtime"))?.observe_realization_request()?).is_none() {
+                if observed.remaining_at(runtime.observe_realization_request()?).is_none() {
                     return Err(SessionRealizationDriveError::Control(SessionRealizationControlFailure::StaleOwnership));
                 }
                 let renewed_lease = observed.lease.clone();
@@ -227,8 +230,7 @@ where
                     projection: initial_assignment.projection.clone(),
                     authority: receipt,
                 };
-                runtime
-                    .terminal_cleanup().ok_or_else(|| awaken_session_contract::RunError::unavailable("TerminalCleanupRuntime is unsupported by this runtime"))?.install_terminal_cleanup_assignment(&renewed_assignment, observed)
+                runtime.install_terminal_cleanup_assignment(&renewed_assignment, observed)
                     .await
                     .map_err(SessionRealizationDriveError::Effect)?;
                 asserted_lease = renewed_lease;
@@ -360,14 +362,6 @@ impl SessionApplication {
                 if session.terminal_cleanup.is_fenced() {
                     let snapshot = self
                         .runtime()
-                        .coordination()
-                        .ok_or_else(|| {
-                            SessionPreparationError::Rejected(
-                                awaken_session_contract::RunError::unavailable(
-                                    "CoordinationRuntime is unsupported by this runtime",
-                                ),
-                            )
-                        })?
                         .quiesce_terminal_delegations(session_id)
                         .await
                         .map_err(SessionPreparationError::Rejected)?;
@@ -481,14 +475,6 @@ impl SessionApplication {
                 // projection without reconstructing the deleted one-stage
                 // per-thread effect registry.
                 self.runtime()
-                    .terminal_cleanup()
-                    .ok_or_else(|| {
-                        SessionPreparationError::Rejected(
-                            awaken_session_contract::RunError::unavailable(
-                                "TerminalCleanupRuntime is unsupported by this runtime",
-                            ),
-                        )
-                    })?
                     .acknowledge_completed_terminal_cleanup(
                         &awaken_session_contract::SessionId::from(session_id),
                         lease,
@@ -523,6 +509,7 @@ impl SessionApplication {
 mod tests {
     use super::*;
     use awaken_session_contract::SessionRealizationLease;
+    use awaken_session_contract::SessionRuntime;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},

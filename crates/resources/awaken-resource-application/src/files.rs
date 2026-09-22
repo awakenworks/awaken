@@ -146,7 +146,7 @@ impl FileApplication {
             .store
             .put(command.bytes)
             .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?;
+            .map_err(ResourcePurgeError::from)?;
         let candidate = FileRecord {
             id: format!("file_{}", uuid::Uuid::new_v4().simple()),
             workspace_id: command.workspace_id.to_string(),
@@ -314,7 +314,7 @@ impl FileApplication {
             .store
             .get(&record.blob_id)
             .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string().into()))?
+            .map_err(ResourcePurgeError::from)?
             .ok_or_else(|| {
                 ResourcePurgeError::Storage(
                     format!(

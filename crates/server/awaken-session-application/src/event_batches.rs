@@ -248,12 +248,6 @@ impl SessionApplication {
     ) -> Result<SessionEventProjectionAnchor, RunError> {
         let snapshot = self
             .runtime()
-            .thread_reads()
-            .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
-                    "ThreadReadRuntime is unsupported by this runtime",
-                )
-            })?
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
             .await?
             .ok_or_else(|| {
@@ -276,12 +270,6 @@ impl SessionApplication {
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
         self.runtime()
-            .thread_reads()
-            .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
-                    "ThreadReadRuntime is unsupported by this runtime",
-                )
-            })?
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
             .await?
             .filter(|snapshot| snapshot.runs.iter().any(|run| &run.id == run_id))
@@ -538,12 +526,6 @@ impl SessionApplication {
                 if plan == SessionEventBatchAdmissionPlan::AppendAccepted {
                     let source_commit_cursor = self
                         .runtime()
-                        .thread_reads()
-                        .ok_or_else(|| {
-                            awaken_session_contract::RunError::unavailable(
-                                "ThreadReadRuntime is unsupported by this runtime",
-                            )
-                        })?
                         .session_thread_recovery_snapshot(session_id, session_id.as_str())
                         .await?
                         .map_or(0, |snapshot| snapshot.store_cursor);
@@ -973,17 +955,7 @@ impl SessionApplication {
                             .unwrap_or(EventBatchProgress::Pending));
                     }
                 };
-                match self
-                    .runtime()
-                    .coordination()
-                    .ok_or_else(|| {
-                        awaken_session_contract::RunError::unavailable(
-                            "CoordinationRuntime is unsupported by this runtime",
-                        )
-                    })?
-                    .activate_session_run(delivery)
-                    .await?
-                {
+                match self.runtime().activate_session_run(delivery).await? {
                     SessionRunActivation::Activated
                     | SessionRunActivation::AlreadyActivated {
                         session_activity_epoch: _,
@@ -1003,12 +975,6 @@ impl SessionApplication {
                     MessageId::session_system(session.session_id.as_str(), &operation_id);
                 let committed = self
                     .runtime()
-                    .thread_reads()
-                    .ok_or_else(|| {
-                        awaken_session_contract::RunError::unavailable(
-                            "ThreadReadRuntime is unsupported by this runtime",
-                        )
-                    })?
                     .committed_messages(session.session_id.as_str())
                     .await?;
                 let Some(message) = committed.iter().find(|message| message.id == message_id)
@@ -1173,12 +1139,6 @@ impl SessionApplication {
                     let thread_id = target.thread_id(&session.session_id);
                     if let Some(snapshot) = self
                         .runtime()
-                        .thread_reads()
-                        .ok_or_else(|| {
-                            awaken_session_contract::RunError::unavailable(
-                                "ThreadReadRuntime is unsupported by this runtime",
-                            )
-                        })?
                         .session_thread_recovery_snapshot(&session.session_id, &thread_id.0)
                         .await?
                     {
@@ -1243,12 +1203,6 @@ impl SessionApplication {
     ) -> Result<Option<EventBatchProgress>, RunError> {
         let Some(state) = self
             .runtime()
-            .coordination()
-            .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
-                    "CoordinationRuntime is unsupported by this runtime",
-                )
-            })?
             .session_run_state(&session.session_id, run_id)
             .await?
         else {
@@ -1271,12 +1225,6 @@ impl SessionApplication {
             }
             let snapshot = self
                 .runtime()
-                .thread_reads()
-                .ok_or_else(|| {
-                    awaken_session_contract::RunError::unavailable(
-                        "ThreadReadRuntime is unsupported by this runtime",
-                    )
-                })?
                 .session_thread_run_recovery_snapshot(
                     &session.session_id,
                     session.session_id.as_str(),
@@ -1476,12 +1424,6 @@ impl SessionApplication {
     ) -> Result<bool, RunError> {
         let Some(snapshot) = self
             .runtime()
-            .thread_reads()
-            .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
-                    "ThreadReadRuntime is unsupported by this runtime",
-                )
-            })?
             .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await?
         else {

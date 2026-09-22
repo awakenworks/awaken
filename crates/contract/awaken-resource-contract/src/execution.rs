@@ -32,13 +32,27 @@ pub struct ResolvedFileContent {
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-#[error("file content source: {0}")]
-pub struct FileContentSourceError(ResourceErrorDetail);
+pub enum FileContentSourceError {
+    #[error("file content source: {0}")]
+    Resource(#[from] crate::ResourcePurgeError),
+    #[error("file content source: {detail}")]
+    Indeterminate { detail: String },
+    #[error(
+        "file content source: File `{file_id}` content digest mismatch: expected {expected}, received {actual}"
+    )]
+    Integrity {
+        file_id: String,
+        expected: String,
+        actual: String,
+    },
+}
 
 impl FileContentSourceError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self(ResourceErrorDetail::new(message))
+        Self::Indeterminate {
+            detail: message.into(),
+        }
     }
 }
 

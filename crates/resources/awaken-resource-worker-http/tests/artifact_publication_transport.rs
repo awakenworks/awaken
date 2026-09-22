@@ -328,7 +328,9 @@ impl awaken_session_contract::SessionCheckpointArtifactControl for ExactArtifact
 #[async_trait::async_trait]
 impl FileStore for FailingFileStore {
     async fn put(&self, _bytes: &[u8]) -> Result<String, FileStoreError> {
-        Err(FileStoreError("injected storage outage".into()))
+        Err(FileStoreError::Indeterminate {
+            detail: "injected storage outage".into(),
+        })
     }
 
     async fn get(&self, _id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {

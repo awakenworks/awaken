@@ -1,5 +1,5 @@
 use super::*;
-use awaken_dispatch_contract::{ControlDispatchQueue, SessionContinuationOutbox as _};
+use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_contract::SessionId;
 use awaken_session_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
@@ -1192,6 +1192,19 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
         _: awaken_provisioning_contract::MountAccess,
     ) -> Result<(), awaken_provisioning_contract::SandboxError> {
         Ok(())
+    }
+
+    async fn reconcile_recovered_copy(
+        &self,
+        reference: &str,
+        evidence: &awaken_provisioning_contract::MemoryMaterializationEvidence,
+        files: &[(String, Vec<u8>)],
+        access: awaken_provisioning_contract::MountAccess,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let _ = (reference, evidence, files, access);
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "recovered Memory copy reconciliation is outside this fixture",
+        ))
     }
 }
 
@@ -16803,6 +16816,8 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     let follow_up_admission =
         || ContinuationAdmission::SessionChild(SessionChildAdmission::new(24, Vec::new()));
     dispatch
+        .session_continuation()
+        .expect("CR5 Coordinator continuation capability")
         .relay_and_enqueue(
             follow_up_input.clone(),
             follow_up_request.clone(),
@@ -16811,6 +16826,8 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .await
         .expect("CR5 admit fresh ExistingThread follow-up");
     dispatch
+        .session_continuation()
+        .expect("CR6 Coordinator continuation capability")
         .relay_and_enqueue(
             follow_up_input.clone(),
             follow_up_request.clone(),
@@ -16825,6 +16842,8 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     };
     assert!(
         dispatch
+            .session_continuation()
+            .expect("CR6 Coordinator continuation capability")
             .relay_and_enqueue(
                 changed_follow_up,
                 follow_up_request.clone(),

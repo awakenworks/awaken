@@ -24,19 +24,27 @@ pub(crate) struct UnavailableWorkerExtractions;
 #[async_trait::async_trait]
 impl FileStore for UnavailableWorkerFiles {
     async fn put(&self, _bytes: &[u8]) -> Result<String, FileStoreError> {
-        Err(FileStoreError(FILE_UNAVAILABLE.into()))
+        Err(FileStoreError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn get(&self, _id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {
-        Err(FileStoreError(FILE_UNAVAILABLE.into()))
+        Err(FileStoreError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn list(&self) -> Result<Vec<String>, FileStoreError> {
-        Err(FileStoreError(FILE_UNAVAILABLE.into()))
+        Err(FileStoreError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 
     async fn delete(&self, _id: &str) -> Result<bool, FileStoreError> {
-        Err(FileStoreError(FILE_UNAVAILABLE.into()))
+        Err(FileStoreError::AuthorityUnavailable {
+            detail: FILE_UNAVAILABLE.into(),
+        })
     }
 }
 

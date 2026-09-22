@@ -391,90 +391,45 @@ impl DreamProcessStore for PostgresManagedSessionRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dream_policy(next_due_ms: u64) -> DreamPolicyRecord {
-        DreamPolicyRecord {
-            workspace_id: "workspace".into(),
-            memory_store_id: "store".into(),
-            config: awaken_session_contract::DreamPolicyConfig::default(),
-            next_due_ms,
-            last_completed_cutoff_ms: 0,
-        }
-    }
-
-    fn process(process_id: &str) -> DreamProcessRecord {
-        DreamProcessRecord {
-            process_id: process_id.into(),
-            workspace_id: "workspace".into(),
-            status: awaken_session_contract::DreamStatus::Pending,
-            source_memory_store_id: "store".into(),
-            output_behavior: awaken_session_contract::DreamOutputBehavior::CreateNew,
-            session_ids: vec!["session".into()],
-            model: awaken_session_contract::DreamModelConfig {
-                id: "claude-sonnet-5".into(),
-                speed: None,
-            },
-            request_guidance: None,
-            agent_id: "agent".into(),
-            result_memory_store_id: None,
-            session_id: None,
-            transcript_file_ids: Vec::new(),
-            cleanup_pending: false,
-            created_at: 1,
-            ended_at: None,
-            archived_at: None,
-            error: None,
-            policy_key: None,
-        }
-    }
+    use awaken_store_conformance::dream_store::{dream_store_conformance, process};
 
     #[test]
     fn sqlite_compare_and_swap_and_policy_claim_are_atomic() {
-        // Persistence decision table: R1 absent job/policy + insert -> accepted;
-        // R2 stale expected typed value -> rejected without mutation; R3 exact policy
-        // version + fresh job -> both commit; R4 stale policy + fresh job ->
-        // neither commits. These rules are the multi-replica Dream claim fence.
-        let repository = SqliteManagedSessionRepository::open_in_memory().unwrap();
-        let policy = dream_policy(1);
-        assert!(
-            repository
-                .compare_and_swap_dream_policy(None, policy.clone())
-                .unwrap()
-        );
-        assert!(
-            !repository
-                .compare_and_swap_dream_policy(
-                    Some(&dream_policy(0)),
-                    DreamPolicyRecord {
-                        next_due_ms: 999,
-                        ..policy.clone()
-                    },
-                )
-                .unwrap()
-        );
-        let policy_v2 = DreamPolicyRecord {
-            next_due_ms: 2,
-            ..policy.clone()
+        dream_store_conformance(&SqliteManagedSessionRepository::open_in_memory().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn postgres_dream_store_conforms_and_reopens() {
+        // R1-R6 execute the same suite against real PostgreSQL. R7 reopen
+        // preserves the complete process/policy frames. The synchronous port
+        // uses the documented multi-thread runtime bridge used by production.
+        let Some((url, admin)) = crate::tests::postgres_test_admin().await else {
+            return;
         };
-        assert!(
-            repository
-                .claim_dream_policy(&policy, policy_v2.clone(), process("dream-1"),)
-                .unwrap()
-        );
-        assert!(
-            !repository
-                .claim_dream_policy(
-                    &policy,
-                    DreamPolicyRecord {
-                        next_due_ms: 3,
-                        ..policy.clone()
-                    },
-                    process("dream-2"),
-                )
-                .unwrap()
-        );
-        assert_eq!(repository.dream_processes().unwrap().len(), 1);
-        assert_eq!(repository.dream_policies().unwrap()[0], policy_v2);
+        let schema = format!("t_dream_conformance_{}", std::process::id());
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let scoped = crate::tests::scoped_postgres_url(&url, &schema);
+        let repository = PostgresManagedSessionRepository::connect(&scoped)
+            .await
+            .unwrap();
+        dream_store_conformance(&repository);
+        let jobs = repository.dream_processes().unwrap();
+        let policies = repository.dream_policies().unwrap();
+        drop(repository);
+        let reopened = PostgresManagedSessionRepository::connect(&scoped)
+            .await
+            .unwrap();
+        assert_eq!(reopened.dream_processes().unwrap(), jobs);
+        assert_eq!(reopened.dream_policies().unwrap(), policies);
+        drop(reopened);
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
 
     #[test]

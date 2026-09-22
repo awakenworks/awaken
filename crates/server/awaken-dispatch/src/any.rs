@@ -24,8 +24,8 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt,
-    Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary,
+    CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt, Dispatch,
+    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary,
     DurableDispatch, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
     SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
     SessionRunReservationResolution, SettleOutcome, SubmitOptions,
@@ -40,6 +40,18 @@ use awaken_dispatch_contract::RunDispatch;
 /// The active durable-dispatch backend behind one concrete type. Both a SQLite
 /// and a Postgres store satisfy the full `Dispatch` bundle; this holds whichever
 /// was selected and forwards every call to it.
+///
+/// Capability rule C1: an erased queue may wrap a Worker transport. It must
+/// therefore fail to type-check as a Session continuation owner. C2, a genuine
+/// durable constructor, exposes its installed owner through
+/// [`Self::session_continuation`], covered by the construction test below.
+///
+/// ```compile_fail
+/// use awaken_dispatch::AnyDispatchStore;
+/// use awaken_dispatch_contract::SessionContinuationOutbox;
+/// fn requires_continuation<T: SessionContinuationOutbox>() {}
+/// requires_continuation::<AnyDispatchStore>();
+/// ```
 pub struct AnyDispatchStore {
     inner: Arc<dyn Dispatch>,
     continuation: Option<Arc<dyn awaken_dispatch_contract::SessionContinuationOutbox>>,
@@ -285,6 +297,14 @@ impl AnyDispatchStore {
     /// and remote transports persist through their claim-bound HTTP operations.
     pub fn stream_checkpoint_store(&self) -> Option<Arc<dyn StreamCheckpointStore>> {
         self.stream_checkpoint.clone()
+    }
+
+    /// Borrow the actual atomic Session continuation owner, when installed.
+    /// The erased Worker queue itself does not implement this capability.
+    pub fn session_continuation(
+        &self,
+    ) -> Option<&dyn awaken_dispatch_contract::SessionContinuationOutbox> {
+        self.continuation.as_deref()
     }
 }
 
@@ -709,49 +729,6 @@ impl Outbox for AnyDispatchStore {
     }
 }
 
-#[async_trait]
-impl awaken_dispatch_contract::SessionContinuationOutbox for AnyDispatchStore {
-    async fn stage_session_resume(
-        &self,
-        input: PendingInput,
-        session_thread_id: &ThreadId,
-        prior_session_activity_epoch: Option<u64>,
-        session_activity_epoch: Option<u64>,
-    ) -> Result<bool, DispatchError> {
-        self.continuation
-            .as_ref()
-            .ok_or_else(|| {
-                DispatchError::Rejected(
-                    "Dispatch composition has no Session continuation Outbox".into(),
-                )
-            })?
-            .stage_session_resume(
-                input,
-                session_thread_id,
-                prior_session_activity_epoch,
-                session_activity_epoch,
-            )
-            .await
-    }
-
-    async fn relay_and_enqueue(
-        &self,
-        input: PendingInput,
-        request: RunDispatch,
-        admission: ContinuationAdmission,
-    ) -> Result<(), DispatchError> {
-        self.continuation
-            .as_ref()
-            .ok_or_else(|| {
-                DispatchError::Rejected(
-                    "Dispatch composition has no Session continuation Outbox".into(),
-                )
-            })?
-            .relay_and_enqueue(input, request, admission)
-            .await
-    }
-}
-
 #[cfg(test)]
 mod capability_tests {
     use super::*;
@@ -769,7 +746,7 @@ mod capability_tests {
         let worker = AnyDispatchStore::from_dispatch(backend.clone());
         let coordinator = AnyDispatchStore::from_durable_dispatch(backend);
 
-        assert!(worker.continuation.is_none(), "C1/E1");
-        assert!(coordinator.continuation.is_some(), "C2/E2");
+        assert!(worker.session_continuation().is_none(), "C1/E1");
+        assert!(coordinator.session_continuation().is_some(), "C2/E2");
     }
 }

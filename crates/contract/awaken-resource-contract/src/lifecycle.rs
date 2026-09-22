@@ -210,6 +210,8 @@ pub struct ResourcePurgeIntent {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourcePurgeError {
+    #[error(transparent)]
+    Blob(#[from] crate::FileStoreError),
     #[error("invalid resource purge intent: {0}")]
     Invalid(crate::ResourceErrorDetail),
     #[error("resource purge intent `{0}` was not found")]

@@ -396,6 +396,19 @@ impl pc::MemoryMounter for FailedCreationMounter {
     ) -> Result<(), pc::SandboxError> {
         Ok(())
     }
+
+    async fn reconcile_recovered_copy(
+        &self,
+        reference: &str,
+        evidence: &awaken_provisioning_contract::MemoryMaterializationEvidence,
+        files: &[(String, Vec<u8>)],
+        access: awaken_provisioning_contract::MountAccess,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let _ = (reference, evidence, files, access);
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "recovered Memory copy reconciliation is outside this fixture",
+        ))
+    }
 }
 
 #[tokio::test]

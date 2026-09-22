@@ -18,7 +18,9 @@ use crate::{
 };
 
 fn e(x: impl ToString) -> FileStoreError {
-    FileStoreError(x.to_string().into())
+    FileStoreError::Indeterminate {
+        detail: x.to_string(),
+    }
 }
 
 fn ce(x: impl ToString) -> FileCatalogError {
@@ -129,6 +131,14 @@ impl FileStore for SqliteFileStore {
                 params![row_id, bytes, size],
             )
             .map_err(e)?;
+            let stored: Vec<u8> = conn
+                .query_row(
+                    &format!("SELECT bytes FROM {NS}_blob WHERE id = ?1"),
+                    params![row_id],
+                    |row| row.get(0),
+                )
+                .map_err(e)?;
+            crate::verify_blob(&row_id, &stored)?;
             Ok(())
         })
         .await?;
@@ -138,13 +148,18 @@ impl FileStore for SqliteFileStore {
     async fn get(&self, id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {
         let id = id.to_string();
         self.with_conn(move |conn| {
-            conn.query_row(
-                &format!("SELECT bytes FROM {NS}_blob WHERE id = ?1"),
-                params![id],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
-            .optional()
-            .map_err(e)
+            let bytes: Option<Vec<u8>> = conn
+                .query_row(
+                    &format!("SELECT bytes FROM {NS}_blob WHERE id = ?1"),
+                    params![id],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .optional()
+                .map_err(e)?;
+            if let Some(bytes) = &bytes {
+                crate::verify_blob(&id, bytes)?;
+            }
+            Ok(bytes)
         })
         .await
     }
@@ -476,6 +491,42 @@ impl FileCatalog for SqliteFileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn corrupted_identity_rejects_read_and_replay_without_repairing_bytes() {
+        // C1 stored bytes match their id => read/replay succeed. C2 external
+        // corruption retains the id but changes bytes => both return the exact
+        // CorruptContent identity; neither overwrites damaged evidence. The
+        // filesystem and object-store suites exercise the same partitions.
+        let store = SqliteFileStore::open_in_memory().unwrap();
+        let id = store.put(b"original").await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap(), Some(b"original".to_vec()));
+        assert_eq!(store.put(b"original").await.unwrap(), id);
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                &format!("UPDATE {NS}_blob SET bytes = ?1 WHERE id = ?2"),
+                params![b"damaged".as_slice(), &id],
+            )
+            .unwrap();
+        assert!(matches!(store.get(&id).await,
+            Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
+        assert!(matches!(store.put(b"original").await,
+            Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
+        let persisted: Vec<u8> = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                &format!("SELECT bytes FROM {NS}_blob WHERE id = ?1"),
+                params![&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, b"damaged");
+    }
 
     /// `over` wraps a connection but must NOT migrate: the store is unusable until
     /// the caller opts into the `file_store` scope via `ensure_schema` (or lets a

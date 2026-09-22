@@ -3,7 +3,6 @@
 
 use super::types::VerifiedStepProjection;
 use super::*;
-use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 
 mod projection;
@@ -941,6 +940,9 @@ impl SharedHost {
             ));
         }
         let store = self.dispatch_store()?;
+        store.session_continuation().ok_or_else(|| {
+            HostError::internal("foreground resume requires a continuation owner")
+        })?;
         let ctx = self.ctx_for(session_id, None).await?;
         let activation = ctx
             .resume_activation(ticket)
@@ -1133,6 +1135,10 @@ impl SharedHost {
             result: ResumeResult::Continue,
         };
         store
+            .session_continuation()
+            .ok_or_else(|| {
+                HostError::internal("Session budget resume requires a continuation owner")
+            })?
             .stage_session_resume(
                 input,
                 &ThreadId(delivery.session_id.into_string()),

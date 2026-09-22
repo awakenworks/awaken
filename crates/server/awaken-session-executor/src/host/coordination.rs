@@ -6,7 +6,7 @@
 //! registry, receipt map, mailbox, or background executor.
 
 use super::*;
-use awaken_dispatch_contract::{ControlDispatchQueue, SessionContinuationOutbox as _};
+use awaken_dispatch_contract::ControlDispatchQueue;
 
 mod agent_message_source;
 mod reads;
@@ -462,6 +462,10 @@ impl SharedHost {
         &self,
         command: &awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, HostError> {
+        // Resolve topology before SessionApplication opens a reply activity.
+        self.dispatch_store()?
+            .session_continuation()
+            .ok_or_else(|| HostError::internal("Session reply requires a continuation owner"))?;
         let (thread_id, _ticket) = match self.validated_session_thread_tool_reply(command).await {
             Ok(active) => active,
             Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
@@ -580,6 +584,8 @@ impl SharedHost {
             context_messages,
         };
         store
+            .session_continuation()
+            .ok_or_else(|| HostError::internal("Session reply requires a continuation owner"))?
             .stage_session_resume(
                 input,
                 &parent,

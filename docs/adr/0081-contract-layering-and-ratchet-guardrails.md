@@ -164,13 +164,47 @@ The gate runs in `lefthook` pre-commit and in the static group of
   They are named combinations of role traits used as `dyn` objects in about thirty
   places, and a blanket `impl<T>` adds no behaviour a caller could miss.
 
-### 9. September 2026 consolidation closure
+### 9. September 2026 consolidation and remaining qualification
 
-The follow-up audit is closed as one end-to-end correction, not as a collection
-of compatibility patches. The objective is that composition selects an exact
+The September 20 consolidation established the extracted owners and passed its
+Rust, static and public API checks. It did not establish complete semantic
+closure: optional capability erasure, string-only error wrappers, the remaining
+Session model size and complete backend conformance still require qualification.
+The objective is that composition selects an exact
 role before an effect, one aggregate remains authoritative for every durable
 fact, and a retry carries the same identity to an exact receipt or an explicitly
 indeterminate result.
+
+September 22 follow-up qualification is in progress:
+
+- SessionApplication uses the required Runtime supertraits directly. Its local
+  projection adapter requires RealizationRuntime, while terminal drivers require
+  RealizationRuntime plus TerminalCleanupRuntime. Optional discovery remains for
+  partial Runtime consumers and is no longer an application execution gate.
+- AnyDispatchStore no longer implements SessionContinuationOutbox unconditionally.
+  Callers obtain the installed owner explicitly; a compile-fail test refuses the
+  erased queue as a continuation implementation.
+- FileStoreError distinguishes corrupt content, invalid configuration, absent
+  authority, typed IO and indeterminate backend outcomes. Filesystem and SQL
+  adapters share content integrity validation; backend corruption tests must
+  reject both reads and idempotent puts without overwriting damaged evidence.
+- The contract scanner now follows local string wrappers and aliases. Remaining
+  opaque Resource error payloads are exposed again; they are not closed by
+  the former ResourceErrorDetail name. Their classification work remains open.
+  The corrected baseline records 13 pre-existing opaque payloads, the 33 lines
+  needed for typed File failures, and zero remaining missing-capability defaults
+  in Worker and Provisioning. This is measured debt, not a closure claim.
+- Remaining Session model extraction, the complete port/backend conformance
+  inventory, full formal execution and K3D execution are still open. Successful
+  focused tests or tool preflight do not close these obligations.
+- Resource registry dependency failures now retain server-failure classification
+  at the existing Session input-resolution boundary. Protocol File lowering
+  delegates to that same application operation.
+- Dream process/policy CAS assertions have one owner in store-conformance and
+  bindings for memory, SQLite and PostgreSQL. The new PostgreSQL binding passed
+  against an ephemeral real database after extraction, including reconnect and
+  exact process/policy frame preservation. The complete PostgreSQL/MinIO gate
+  also passed, including credential rotation and exact-prefix PITR recovery.
 
 #### Static structure
 
@@ -214,11 +248,11 @@ authoritative suites follow the owner and lifecycle they exercise:
 | Memory repository | `awaken-memory-store` shared conformance module | It owns path/generation/CAS/copy-conflict semantics and is already reused by its in-memory, filesystem, SQLite and Postgres adapters. |
 | Skill repository | `awaken-skill-store` shared conformance function | Its binary bundle/version/tombstone lifecycle is crate-local and shared by its implementations. |
 
-Therefore "five of twenty ports" was a location count, not evidence of missing
-coverage. Moving all suites into `awaken-store-conformance` would create a new
-parallel catalogue and invert ownership. A future port needs a suite when it has
-multiple implementations or a duplicated behavioral test; the suite belongs to
-the narrowest existing owner above.
+The existence of these suites does not establish coverage for every persistence
+port. Closure requires inspecting every port's implementations and binding each
+required behavior to an executed backend test, including failure and restart
+cases. Existing domain suites remain authoritative; missing shared cases extend
+the narrowest owner above instead of creating a competing conformance framework.
 
 `ContainerEnvironmentProvider` is also not a deprecated competitor to
 `SandboxProvider`. `ContainerProvider<R>` already implements the neutral

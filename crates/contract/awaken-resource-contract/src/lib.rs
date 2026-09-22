@@ -209,9 +209,34 @@ impl From<ResourceErrorDetail> for String {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("file store error: {0}")]
-pub struct FileStoreError(pub ResourceErrorDetail);
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FileStoreError {
+    #[error("file store error: invalid configuration: {detail}")]
+    InvalidConfiguration { detail: String },
+    #[error("file store error: corrupt content-addressed blob `{content_id}`")]
+    CorruptContent { content_id: String },
+    #[error("file store error: authority unavailable: {detail}")]
+    AuthorityUnavailable { detail: String },
+    #[error("file store error: {detail}")]
+    Io {
+        kind: std::io::ErrorKind,
+        detail: String,
+    },
+    /// The adapter could not determine the operation's result. This does not
+    /// prove absence, rejection or retry safety; reconciliation must inspect
+    /// the same content identity before repeating a mutation.
+    #[error("file store error: {detail}")]
+    Indeterminate { detail: String },
+}
+
+impl From<std::io::Error> for FileStoreError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io {
+            kind: error.kind(),
+            detail: error.to_string(),
+        }
+    }
+}
 
 /// A logical Files-API record. `id` is the public opaque `file_...` identity;
 /// `blob_id` is the private content-addressed identity in [`FileStore`]. Keeping

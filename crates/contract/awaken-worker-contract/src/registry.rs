@@ -565,11 +565,7 @@ pub trait WorkerDirectory: WorkerObservationSource {
         &self,
         _identity: &WorkerIdentity,
         _receipt: WorkerProcessExit,
-    ) -> Result<RegistryMutation, RegistryError> {
-        Err(RegistryError::Persistence(
-            "Worker directory does not persist process-exit receipts".into(),
-        ))
-    }
+    ) -> Result<RegistryMutation, RegistryError>;
 }
 
 impl WorkerSnapshot {
