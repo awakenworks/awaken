@@ -248,6 +248,106 @@ async fn unreviewed_publish_converges_after_one_concurrent_revision_advance() {
     );
 }
 
+#[tokio::test]
+async fn config_plane_preserves_publish_intent_during_source_race() {
+    // C1 public edge receives no fence / source fence / resource fence / both;
+    // C2 the real SQLite source advances after prepare's read, before its CAS.
+    // Rules: no fences -> re-prepare and install revision 2; any fence -> 409
+    // equivalent StaleRevision(2), no publication and no registrar effect.
+    // The resolver injects the causal cut deterministically without sleeps;
+    // the real scoped store owns source CAS and publication persistence.
+    struct AdvanceDuringResolution {
+        store: Arc<SqliteConfigStore>,
+        scope: ScopeId,
+        advanced: std::sync::atomic::AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for AdvanceDuringResolution {
+        async fn resolve_models(
+            &self,
+            workspace: &ScopeId,
+            selection: &ModelSelection,
+            candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+            if !self
+                .advanced
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                let mut next = agent_config("publish-race");
+                next.instructions = "current revision".into();
+                self.store
+                    .put_config_scoped(&self.scope, &next)
+                    .await
+                    .unwrap();
+            }
+            FakeResolver
+                .resolve_models(workspace, selection, candidates)
+                .await
+        }
+    }
+    for (source, resource) in [
+        (None, None),
+        (Some(1), None),
+        (None, Some(0)),
+        (Some(1), Some(0)),
+    ] {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let scope = ScopeId::from("publication-source");
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let service = ConfigService::new(
+            Arc::new(AdvanceDuringResolution {
+                store: store.clone(),
+                scope: scope.clone(),
+                advanced: std::sync::atomic::AtomicBool::new(false),
+            }),
+            Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+        );
+        let plane = ConfigPlane::new(
+            Arc::new(service),
+            store.clone(),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        plane
+            .put(&scope, &agent_config("publish-race"))
+            .await
+            .unwrap();
+        let result = plane
+            .publish_for_execution_workspace_at_revisions(
+                &scope,
+                "execution-workspace",
+                "publish-race",
+                source,
+                resource,
+            )
+            .await;
+        let stored = store.list_published_scoped(&scope).await.unwrap();
+        if source.is_none() && resource.is_none() {
+            let publication = result.expect("unreviewed current publication converges");
+            assert_eq!(publication.source_revision, 2);
+            assert_eq!(stored.len(), 1);
+            assert_eq!(
+                catalog
+                    .current("execution-workspace", "publish-race")
+                    .unwrap()
+                    .source_revision,
+                2
+            );
+        } else {
+            assert!(matches!(result, Err(PublishError::StaleRevision(Some(2)))));
+            assert!(stored.is_empty());
+            assert!(
+                catalog
+                    .current("execution-workspace", "publish-race")
+                    .is_none()
+            );
+        }
+        assert!(
+            catalog.current(scope.as_str(), "publish-race").is_none(),
+            "authoring scope cannot replace the requested execution Workspace"
+        );
+    }
+}
+
 // reconcile-a: a registry read failure on reconcile is a returned `Err`.
 #[tokio::test]
 async fn reconcile_propagates_a_registry_read_failure() {

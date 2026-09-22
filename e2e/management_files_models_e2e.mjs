@@ -20,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { FAKE_KEY, withScenarioServer, pass } from './harness.mjs';
+import { FAKE_KEY, withScenarioServer, pass, provisionProviderTestModel, publishManagementAgent } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const gaFilesMode = process.env.AWAKEN_MANAGED_SDK_HAS_GA_FILES ?? '1';
@@ -84,43 +84,23 @@ async function main() {
       // M3 an Agent publication freezes that catalog route into the Coordinator's
       // executable inventory -> `/v1/models` projects it. The shared fake provider
       // owns inference and discovery, avoiding a second model-server implementation.
-      const connected = await fetch(`${baseUrl}/v1/config/provider-connections`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          idempotency_key: `files-models-${process.pid}`,
-          workspace_id: 'default',
-          provider_id: 'anthropic',
-          display_name: 'Files Models E2E',
-          dialect: 'anthropic_messages',
-          base_url: `${upstream.url}/v1/`,
-          timeout_secs: 30,
-          secret: FAKE_KEY,
-        }),
+      // M2 requires the trusted edge Workspace, not a invented default. Reuse
+      // the canonical provisioning/publication helpers; M3 below observes the
+      // resulting executable inventory through both official SDK roots.
+      const context = await fetch(`${baseUrl}/v1/config/workspace-context`);
+      assert.equal(context.status, 200, 'trusted Workspace context');
+      const { workspace_id: workspace } = await context.json();
+      assert.ok(typeof workspace === 'string' && workspace.length > 0);
+      const selected = await provisionProviderTestModel(baseUrl, workspace, {
+        id: `files-models-${process.pid}`, provider_id: 'anthropic',
+        model_id: 'claude-opus-4-8', dialect: 'anthropic_messages',
+        base_url: `${upstream.url}/v1/`, timeout_secs: 30, secret: FAKE_KEY,
+      }, 'files-models-profile');
+      await publishManagementAgent(baseUrl, 'files-models-agent', {
+        id: 'files-models-agent', name: 'Files Models E2E',
+        system: 'Exercise the executable model directory.',
+        model: selected.model, tools: [],
       });
-      assert.equal(connected.status, 201, await connected.text());
-      const authored = await fetch(`${baseUrl}/v1/config/agents/files-models-agent`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          id: 'files-models-agent',
-          name: 'Files Models E2E',
-          instructions: 'Exercise the executable model directory.',
-          model: {
-            mode: 'pinned',
-            provider_identity_ref: 'anthropic',
-            model_ref: 'claude-opus-4-8',
-            backend_ref: 'genai',
-          },
-          tools: [],
-        }),
-      });
-      assert.equal(authored.status, 200, await authored.text());
-      const published = await fetch(
-        `${baseUrl}/v1/config/agents/files-models-agent/publish`,
-        { method: 'POST' },
-      );
-      assert.equal(published.status, 200, await published.text());
       const models = await drain(client.beta.models.list({ betas: BETAS }));
       assert.ok(models.length >= 1, 'models list is non-empty');
       assert.ok(

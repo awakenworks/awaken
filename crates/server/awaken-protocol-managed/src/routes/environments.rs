@@ -179,6 +179,13 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
 
 type WireError = (StatusCode, Json<ErrorResponse>);
 
+fn map_environment_projection_error(message: &'static str) -> WireError {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new("api_error", message)),
+    )
+}
+
 fn not_found(what: &str) -> WireError {
     (
         StatusCode::NOT_FOUND,
@@ -218,7 +225,9 @@ async fn create_env(
         })
         .await
         .map_err(map_environment_application_error)?;
-    Ok(Json(crate::env_registry::project_env(&item)))
+    Ok(Json(
+        crate::env_registry::project_env(&item).map_err(map_environment_projection_error)?,
+    ))
 }
 
 fn environment_command_id(headers: &HeaderMap) -> Result<String, WireError> {
@@ -298,13 +307,18 @@ async fn retrieve_env(
     State(state): State<Arc<EnvironmentAuthoringState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Environment>, WireError> {
+    if id == awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID {
+        return Err(not_found("environment"));
+    }
     let item = state
         .application
         .get(&id)
         .await
         .map_err(map_environment_application_error)?
         .ok_or_else(|| not_found("environment"))?;
-    Ok(Json(crate::env_registry::project_env(&item)))
+    Ok(Json(
+        crate::env_registry::project_env(&item).map_err(map_environment_projection_error)?,
+    ))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -333,8 +347,10 @@ async fn list_envs(
     .map_err(map_environment_application_error)?;
     let data: Vec<Environment> = definitions
         .iter()
+        .filter(|item| item.id != awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID)
         .map(crate::env_registry::project_env)
-        .collect();
+        .collect::<Result<_, _>>()
+        .map_err(map_environment_projection_error)?;
     Ok(Json(paginate(data, &query.page, |e| e.id.as_str())))
 }
 
@@ -365,7 +381,9 @@ async fn update_env(
         .update(&id, patch)
         .await
         .map_err(map_environment_application_error)?;
-    Ok(Json(crate::env_registry::project_env(&item)))
+    Ok(Json(
+        crate::env_registry::project_env(&item).map_err(map_environment_projection_error)?,
+    ))
 }
 
 fn environment_config_mutation(config: EnvironmentConfigUpdateParams) -> EnvironmentConfigMutation {
@@ -523,7 +541,9 @@ async fn archive_env(
         .archive(&id)
         .await
         .map_err(map_environment_application_error)?;
-    Ok(Json(crate::env_registry::project_env(&item)))
+    Ok(Json(
+        crate::env_registry::project_env(&item).map_err(map_environment_projection_error)?,
+    ))
 }
 
 #[cfg(test)]

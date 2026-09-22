@@ -95,9 +95,9 @@
       "operation_fingerprint": "701ee5399eb5cdc42aaa4606904862d73bed85a39de5e1fa5f1e9feb28050f8c",
       "role": "current_oracle",
       "runtime_file_count": 113,
-      "runtime_fingerprint": "736be5172fe3eebef2b1f011e8ca88113378663589b14a0de3ab2bc078187087",
-      "type_fingerprint": "4a04f3a4cec684fbf0e0168f9b63a1f194e3785c2caa17862e2ef5347c672eac",
-      "version": "0.125.0"
+      "runtime_fingerprint": "d855b9e88dcef7e747c835438f50565dce48a355b339a5e9c48996459088c4a0",
+      "type_fingerprint": "d17f259214475cc9ce04ca006290d875536a344de469e6163059045f5a80c9cc",
+      "version": "0.127.0"
     }
   ],
   "current": {
@@ -117,6 +117,7 @@
       "BetaCapabilitySupport",
       "BetaCloudConfig",
       "BetaCloudConfigParams",
+      "BetaCompactionCapability",
       "BetaContextManagementCapability",
       "BetaDeletedFile",
       "BetaDeletedSkill",
@@ -1987,9 +1988,9 @@
     ],
     "role": "current_oracle",
     "runtime_file_count": 113,
-    "runtime_fingerprint": "736be5172fe3eebef2b1f011e8ca88113378663589b14a0de3ab2bc078187087",
-    "type_fingerprint": "4a04f3a4cec684fbf0e0168f9b63a1f194e3785c2caa17862e2ef5347c672eac",
-    "version": "0.125.0",
+    "runtime_fingerprint": "d855b9e88dcef7e747c835438f50565dce48a355b339a5e9c48996459088c4a0",
+    "type_fingerprint": "d17f259214475cc9ce04ca006290d875536a344de469e6163059045f5a80c9cc",
+    "version": "0.127.0",
     "wire_contract": {
       "events": {
         "inbound": [

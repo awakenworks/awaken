@@ -283,6 +283,7 @@ impl CommittedEvidence {
         run_id: RunId,
         command: &awaken_session_contract::AdmitSessionRun,
         outcome: StepOutcome,
+        usage: &SessionUsage,
     ) -> awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
         let terminal_state = outcome.state().clone();
         // The Thread commit owns the exact input Message and its coordinate even
@@ -303,7 +304,7 @@ impl CommittedEvidence {
             outcome.new_messages.len(),
         ));
         messages.extend(outcome.new_messages);
-        let state = if matches!(self, Self::Compaction) {
+        let mut state = if matches!(self, Self::Compaction) {
             vec![
                 awaken_runtime_contract::compaction::RunCompactionMarker::command("other-run"),
                 awaken_runtime_contract::compaction::RunCompactionMarker::command(&run_id.0),
@@ -311,6 +312,22 @@ impl CommittedEvidence {
         } else {
             Vec::new()
         };
+        // C3 usage belongs to the same terminal commit as messages/lifecycle.
+        // Both Budget and recovery observations must describe this one tally;
+        // keeping it only on the old Budget port would contradict Host truth.
+        use awaken_agent_contract::agent::state::StateKey as _;
+        let mut tally = awaken_runtime_contract::llm::ThreadUsage::default();
+        tally.record(
+            "test-model",
+            awaken_runtime_contract::llm::TokenUsage {
+                prompt_tokens: usage.input_tokens,
+                completion_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
+            },
+        );
+        state.push(awaken_runtime_contract::llm::ThreadUsageKey::write(&tally));
+        let state_commit_cursors = vec![terminal_cursor; state.len()];
         awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
             commit_timestamps: Default::default(),
             thread_id: ThreadId(thread_id.into()),
@@ -324,11 +341,7 @@ impl CommittedEvidence {
             messages,
             message_commit_cursors,
             state,
-            state_commit_cursors: if matches!(self, Self::Compaction) {
-                vec![terminal_cursor, terminal_cursor]
-            } else {
-                Vec::new()
-            },
+            state_commit_cursors,
             events,
             resume_tickets: Vec::new(),
             thread_version: terminal_cursor,
@@ -631,6 +644,7 @@ impl awaken_session_contract::CoordinationRuntime for ScriptFake {
                     delivery.run_id.clone(),
                     &command,
                     outcome.clone(),
+                    &self.usage,
                 ),
                 lifecycle: profile.lifecycle(
                     delivery.session_id.as_str(),

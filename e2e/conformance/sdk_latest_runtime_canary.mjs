@@ -49,6 +49,8 @@ import {
 } from './official_sdk_candidate_delta.mjs';
 import { compileOfficialSdkChangePoints } from './official_sdk_change_point_compile.mjs';
 import { exerciseOfficialWebhookContract } from './official_webhook_contract.mjs';
+import { exerciseEnvironmentWorkerSecretToken as checkEnvironmentWorkerSecretToken } from './official_environment_worker_contract.mjs';
+import { exerciseNonReplayableTransport, exerciseRootSchemaReferences } from './official_sdk_transport_contract.mjs';
 import {
   assertOwnerOperationReceipts,
   recordingFetch,
@@ -174,6 +176,9 @@ const workspaceRuntimeModules = runtimeFiles
   .filter((path) => path.startsWith('resources/')
     && /\bworkspace_id\b/u.test(readFileSync(resolve(packageRoot, path), 'utf8')));
 const MISSING_FILE_ID = 'file_missing';
+const managedTypesV127 = /BetaCompactionCapability/u.test(
+  readFileSync(resolve(packageRoot, 'resources/beta/models.d.ts'), 'utf8'),
+);
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
 completeBehaviorOwner('candidate.webhook-helpers');
 compileOfficialSdkChangePoints(packageRoot, {
@@ -183,11 +188,13 @@ compileOfficialSdkChangePoints(packageRoot, {
   resolveSkillVersion: hasResolveSkillVersion,
   managedTypesV123,
   managedTypesV125,
+  managedTypesV127,
   workspaceRouting: workspaceRuntimeModules.length > 0,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
 if (managedTypesV123) completeBehaviorOwner('candidate.managed-type-change-points');
 if (managedTypesV125) completeBehaviorOwner('candidate.managed-type-change-points-v125');
+if (managedTypesV127) completeBehaviorOwner('candidate.managed-type-change-points-v127');
 
 async function drain(pagePromise) {
   const rows = [];
@@ -265,49 +272,12 @@ async function exerciseSdkCoreTransport() {
   pass(`registry SDK ${manifest.version} preserves exact transport identity`);
 }
 
-// 0.125: an Environment worker runs a work item on the sessions token carried
-// by the item's secret; the environment key is needed only when no token can
-// be extracted. Cause/effect graph: C1 the secret carries `sessions_token`;
-// C2 an environment key is configured. Effects: E1 the per-item client sends
-// exactly that token as its bearer; E2 the item is refused before any request.
-// | Rule | C1 | C2 | Effect |
-// | K1   | T  | F  | E1 (a host holding only the per-item secret runs) |
-// | K2   | F  | F  | E2 (never runs unauthenticated)                 |
 async function exerciseEnvironmentWorkerSecretToken() {
   if (!hasRuntime('lib/environments/worker.mjs')) return;
   const { EnvironmentWorker } = await import(
     pathToFileURL(resolve(packageRoot, 'lib/environments/worker.mjs'))
   );
-  const workSecretOf = (payload) => Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const observed = [];
-  const client = new Anthropic({
-    apiKey: 'environment-key-absent', // awaken-allow: secret
-    baseURL: 'https://managed.invalid',
-    maxRetries: 0,
-    fetch: async (input, init) => {
-      const request = new Request(input, init);
-      observed.push({ url: request.url, authorization: request.headers.get('authorization') });
-      throw new Error('worker-secret-token-probe: transport reached');
-    },
-  });
-  const worker = new EnvironmentWorker({ client, environmentId: 'env_candidate' });
-  const item = { workId: 'work_candidate', environmentId: 'env_candidate', sessionId: 'session_candidate' };
-  const ctrl = new AbortController();
-  const run = worker.handleItem({ ...item, workSecret: workSecretOf({ sessions_token: 'token_from_secret' }), signal: ctrl.signal }) // awaken-allow: secret
-    .then(() => 'completed', (error) => String(error));
-  const deadline = Date.now() + 10_000;
-  while (observed.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
-  ctrl.abort();
-  await run;
-  assert.ok(observed.length > 0, 'K1 the item reached transport without an environment key');
-  assert.equal(observed[0].authorization, 'Bearer token_from_secret', 'K1 exact per-item bearer');
-  assert.ok(observed.every(({ authorization }) => authorization === 'Bearer token_from_secret'), 'K1 no fallback credential');
-  await assert.rejects(
-    () => worker.handleItem({ ...item, workSecret: workSecretOf({ note: 'no token' }) }),
-    /no sessions token could be extracted/u,
-    'K2 a secret without a token and no key is refused',
-  );
-  assert.equal(observed.length, observed.length, 'K2 refusal happened before any request');
+  await checkEnvironmentWorkerSecretToken({ Anthropic, EnvironmentWorker });
   completeBehaviorOwner('candidate.environment-worker-secret-token');
   pass(`registry SDK ${manifest.version} runs work items on the secret-carried sessions token`);
 }
@@ -319,7 +289,7 @@ async function exerciseEnvironmentWorkerSecretToken() {
 async function exerciseGeneratedModuleLoadability() {
   const owned = runtimeFiles
     .map(({ path }) => path)
-    .filter((path) => /^(?:index|core\/(?:api-promise|error|pagination|resource)|internal\/(?:detect-platform|errors|headers|parse|request-options|shims|utils|utils\/(?:base64|env|log|query|uuid|values))|resources\/.+)\.mjs$/u.test(path));
+    .filter((path) => /^(?:index|core\/(?:api-promise|error|pagination|resource)|internal\/(?:detect-platform|errors|headers|parse|request-options|shims|utils|decoders\/line|utils\/(?:async-queue|base64|env|log|query|uuid|values))|lib\/(?:environments\/poller|tools\/(?:SessionToolRunner|ToolError))|resources\/.+)\.mjs$/u.test(path));
   assert.ok(owned.length > 0, 'L1 the package ships generated modules');
   for (const path of owned) {
     const namespace = await import(pathToFileURL(resolve(packageRoot, path)));
@@ -364,6 +334,9 @@ async function exerciseWorkspaceRequestRouting() {
         'W1 exact request-scoped Workspace header',
       );
       assert.equal(url.searchParams.has('workspace_id'), false, 'W1 no Workspace query leak');
+      const rawBody = await request.clone().text();
+      if (rawBody) assert.equal(Object.hasOwn(JSON.parse(rawBody), 'workspace_id'), false,
+        'W1 no Workspace body leak');
       observed.push(url.pathname);
       return new Response(JSON.stringify({
         data: [],
@@ -409,6 +382,8 @@ async function exerciseWorkspaceRequestRouting() {
     ['resources/skills/skills.mjs', () => client.skills.list({ workspace_id: workspaceID })],
     ['resources/skills/versions.mjs', () => client.skills.versions.list('skill_candidate', { workspace_id: workspaceID })],
   ]);
+  if (managedTypesV127) probes.set('resources/beta/user-profiles.mjs',
+    () => client.beta.userProfiles.list({ workspace_id: workspaceID }));
   assert.deepEqual(
     [...probes.keys()].sort(),
     [...workspaceRuntimeModules].sort(),
@@ -416,6 +391,13 @@ async function exerciseWorkspaceRequestRouting() {
   );
   for (const invoke of probes.values()) await invoke();
   assert.equal(observed.length, probes.size, 'W1 every probe reached transport once');
+  if (managedTypesV127) {
+    await client.beta.userProfiles.create({workspace_id:workspaceID});
+    await client.beta.userProfiles.retrieve('profile_candidate',{workspace_id:workspaceID});
+    await client.beta.userProfiles.update('profile_candidate',{workspace_id:workspaceID});
+    await client.beta.userProfiles.createEnrollmentURL('profile_candidate',{workspace_id:workspaceID});
+    assert.equal(observed.length,probes.size+4,'W2 all five UserProfile methods forward exact Workspace');
+  }
   completeBehaviorOwner('candidate.workspace-request-routing');
   pass(`registry SDK ${manifest.version} preserves request-scoped Workspace routing`);
 }
@@ -663,19 +645,25 @@ async function exerciseRefusalFallbackMiddleware() {
 
   const transformations = [{ type: 'candidate_input_transformation' }];
   let streamHop = 0;
+  let fallbackRequest;
   const streaming = betaRefusalFallbackMiddleware([{ model: 'fallback-model' }]);
   const spliced = await streaming(
     {
       headers: new Headers(),
       body: JSON.stringify({ model: 'primary-model', messages: [history[2]], stream: true }),
     },
-    async () => {
+    async (request) => {
       streamHop += 1;
       if (streamHop === 1) {
         return sseResponse([
           { type: 'message_start', message: {
             model: 'primary-model', usage: { input_tokens: 1, output_tokens: 0 },
           } },
+          ...(managedTypesV127 ? [
+            {type:'content_block_start',index:0,content_block:{type:'compaction',content:null}},
+            {type:'content_block_delta',index:0,delta:{type:'compaction_delta',content:'committed summary',encrypted_content:'opaque-compaction-fixture'}},
+            {type:'content_block_stop',index:0},
+          ] : []),
           { type: 'message_delta', delta: {
             stop_reason: 'refusal',
             stop_sequence: null,
@@ -683,12 +671,13 @@ async function exerciseRefusalFallbackMiddleware() {
               type: 'refusal',
               category: 'policy',
               fallback_credit_token: 'credit-streaming', // awaken-allow: secret (synthetic canary fixture)
-              fallback_has_prefill_claim: false,
+              fallback_has_prefill_claim: managedTypesV127,
             },
           }, usage: { output_tokens: 1 } },
           { type: 'message_stop' },
         ]);
       }
+      fallbackRequest = JSON.parse(request.body);
       return sseResponse([
         { type: 'message_start', message: {
           model: 'fallback-model',
@@ -722,6 +711,13 @@ async function exerciseRefusalFallbackMiddleware() {
     && event.delta?.stop_reason === 'end_turn');
   assert.deepEqual(terminal?.input_transformations, transformations, 'M2 spliced transformation');
   assert.equal(streamHop, 2, 'M2 exactly one streaming fallback request');
+  if (managedTypesV127) {
+    // M3 null start shell + final compaction delta + accepted prefill claim =>
+    // the next request receives exact final plaintext and opaque encrypted
+    // content. Losing either field or replaying the null shell fails here.
+    assert.deepEqual(fallbackRequest.messages.at(-1).content,
+      [{type:'compaction',content:'committed summary',encrypted_content:'opaque-compaction-fixture'}]);
+  }
   completeBehaviorOwner('candidate.refusal-fallback-middleware');
   pass(`registry SDK ${manifest.version} preserves refusal fallback history and stream metadata`);
 }
@@ -1382,6 +1378,12 @@ async function exerciseBetaGaRecovery() {
 }
 
 await exerciseSdkCoreTransport();
+if (managedTypesV127) {
+  await exerciseNonReplayableTransport({ Anthropic, packageRoot });
+  completeBehaviorOwner('candidate.non-replayable-transport');
+  await exerciseRootSchemaReferences(packageRoot);
+  completeBehaviorOwner('candidate.root-schema-references');
+}
 await exerciseEnvironmentWorkerSecretToken();
 await exerciseGeneratedModuleLoadability();
 await exerciseWorkspaceRequestRouting();

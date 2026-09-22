@@ -197,6 +197,7 @@ export function officialSdkChangePointFixture({
   resolveSkillVersion,
   managedTypesV123 = false,
   managedTypesV125 = false,
+  managedTypesV127 = false,
   workspaceRouting = false,
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
@@ -226,6 +227,19 @@ ${filesFixture(filesProjection)}
 ${skillsFixture(skillsProjection)}
 ${managedTypesFixture(managedTypesV123)}
 ${managedTypesV125Fixture(managedTypesV125)}
+${managedTypesV127 ? `
+  const compaction: import('@anthropic-ai/sdk/resources/beta/models').BetaCompactionCapability = {
+    supported: true, summarize: { supported: true },
+  };
+  const model = await client.beta.models.retrieve('model-compile');
+  const optionalCompaction: typeof compaction | null | undefined = model.capabilities?.compaction;
+  void optionalCompaction;
+  await client.beta.userProfiles.create({ workspace_id: 'workspace-compile' });
+  await client.beta.userProfiles.retrieve('profile-compile', { workspace_id: 'workspace-compile' });
+  await client.beta.userProfiles.update('profile-compile', { workspace_id: 'workspace-compile' });
+  await client.beta.userProfiles.list({ workspace_id: 'workspace-compile' });
+  await client.beta.userProfiles.createEnrollmentURL('profile-compile', { workspace_id: 'workspace-compile' });
+` : ''}
 ${workspaceRoutingFixture(workspaceRouting)}
   client.beta.webhooks.unwrap('{}', { headers: {
     'webhook-id': 'event_compile',

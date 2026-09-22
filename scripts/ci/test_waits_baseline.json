@@ -29,7 +29,6 @@
       "crates/worker/awaken-sandbox-container/tests/pod_process_termination/mod.rs": 1,
       "crates/worker/awaken-sandbox-memoryd/tests/kernel_vfs.rs": 3,
       "e2e/acp_runtime_memory_matrix_e2e.mjs": 1,
-      "e2e/conformance/sdk_latest_runtime_canary.mjs": 1,
       "e2e/durable_worker_cancel_e2e.mjs": 1,
       "e2e/durable_worker_supersede_e2e.mjs": 1,
       "e2e/fixtures/fake_anthropic_fixture.test.mjs": 1,

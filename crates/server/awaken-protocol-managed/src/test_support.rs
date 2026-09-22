@@ -325,6 +325,21 @@ impl Default for CoordinatedRuntimeFake {
 }
 
 impl CoordinatedRuntimeFake {
+    fn committed_usage(thread_id: &str) -> awaken_runtime_contract::llm::ThreadUsage {
+        let mut usage = awaken_runtime_contract::llm::ThreadUsage::default();
+        usage.record(
+            "test-model",
+            awaken_runtime_contract::llm::TokenUsage {
+                prompt_tokens: if thread_id == Self::CHILD_THREAD_ID {
+                    5
+                } else {
+                    10
+                },
+                ..Default::default()
+            },
+        );
+        usage
+    }
     pub const CHILD_THREAD_ID: &'static str = "sthr_projection_child";
 
     fn receipt() -> awaken_agent_contract::agent::content::ContentBlock {
@@ -1291,23 +1306,21 @@ impl awaken_session_contract::BudgetRuntime for CoordinatedRuntimeFake {
 
     async fn session_usage(
         &self,
-        _thread: &str,
+        thread: &str,
     ) -> Result<awaken_session_contract::SessionUsage, awaken_session_contract::RunError> {
-        Ok(awaken_session_contract::SessionUsage {
-            input_tokens: 10,
-            ..Default::default()
-        })
+        Ok(awaken_session_contract::session_usage_from_thread_usage(
+            Self::committed_usage(thread),
+        ))
     }
 
     async fn session_thread_usage(
         &self,
         _session_id: &awaken_session_contract::SessionId,
-        _thread_id: &str,
+        thread_id: &str,
     ) -> Result<awaken_session_contract::SessionUsage, awaken_session_contract::RunError> {
-        Ok(awaken_session_contract::SessionUsage {
-            input_tokens: 5,
-            ..Default::default()
-        })
+        Ok(awaken_session_contract::session_usage_from_thread_usage(
+            Self::committed_usage(thread_id),
+        ))
     }
 }
 
@@ -1491,7 +1504,7 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
             }
         }
         let disposition_key = (session_id.to_string(), thread_id.to_string());
-        let (state, state_commit_cursors) = {
+        let (mut state, mut state_commit_cursors) = {
             let dispositions = self.disposition_by_thread.lock().unwrap();
             let cursors = self.disposition_commit_cursors.lock().unwrap();
             if dispositions.get(&disposition_key)
@@ -1517,6 +1530,14 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
             .chain(state_commit_cursors.iter().copied())
             .max()
             .unwrap_or_default();
+        // M1-M2/E5: the root (10) and child (5) counters are committed Thread
+        // state, matching the Budget projection above. One shared fixture fact
+        // must survive either read path and repeated Session aggregation.
+        use awaken_agent_contract::agent::state::StateKey as _;
+        state.push(awaken_runtime_contract::llm::ThreadUsageKey::write(
+            &Self::committed_usage(thread_id),
+        ));
+        state_commit_cursors.push(store_cursor);
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
                 commit_timestamps: Default::default(),

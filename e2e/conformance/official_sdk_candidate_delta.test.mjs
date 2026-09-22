@@ -55,6 +55,12 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'lib/middleware.mjs' },
         { path: 'lib/sessions/accumulate.mjs' },
         { path: 'lib/environments/worker.mjs' },
+        { path: 'lib/environments/poller.mjs' },
+        { path: 'lib/tools/SessionToolRunner.mjs' },
+        { path: 'lib/tools/ToolError.mjs' },
+        { path: 'lib/transform-json-schema.mjs' },
+        { path: 'internal/decoders/line.mjs' },
+        { path: 'internal/utils/async-queue.mjs' },
         { path: 'core/pagination.mjs' },
         { path: 'internal/utils/uuid.mjs' },
         { path: 'resources/skills/index.mjs' },
@@ -82,7 +88,7 @@ test('candidate delta ownership fails closed outside exercised change points', (
     { ...owned, declarations: { ...empty(), added: [{ path: 'beta/files/new.d.ts' }] } },
     { ...owned, declarations: { ...empty(), changed: [{ path: 'organization/admin.d.ts' }] } },
     { ...owned, runtime: { ...empty(), added: [{ path: 'lib/new-helper.mjs' }] } },
-    { ...owned, runtime: { ...empty(), changed: [{ path: 'lib/tools/SessionToolRunner.mjs' }] } },
+    { ...owned, runtime: { ...empty(), changed: [{ path: 'lib/tools/UnreviewedToolRunner.mjs' }] } },
     { ...owned, runtime: { ...empty(), changed: [{ path: 'internal/utils/sleep.mjs' }] } },
     { ...owned, runtime: { ...empty(), changed: [{ path: 'lib/environments/index.mjs' }] } },
     { ...owned, declarations: { ...empty(), changed: [{ path: 'managed/lib/environments/index.d.ts' }] } },
@@ -266,11 +272,17 @@ test('same-version candidate evidence must be byte-equivalent to the current anc
     runtime: empty(),
     exports: empty(),
   };
+  const promoted = qualifyOfficialSdkCandidateDelta(same, []);
   assert.deepEqual(
-    qualifyOfficialSdkCandidateDelta(same, []),
-    { requiredBehaviorOwners: [] },
+    promoted,
+    { requiredBehaviorOwners: [], witnesses: [] },
     'S1',
   );
+  // S1 must survive the real post-promotion consumer, not merely return an
+  // empty owner list. There is no changed declaration to read or certify.
+  assertDeclarationWitnesses(promoted.witnesses, () => {
+    throw new Error('S1 identical package must not request a changed declaration');
+  });
   const changed = structuredClone(same);
   changed.runtime.changed.push({ path: 'core/middleware.mjs' });
   assert.throws(

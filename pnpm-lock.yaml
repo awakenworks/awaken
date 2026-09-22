@@ -18,11 +18,11 @@ importers:
         specifier: npm:@anthropic-ai/sdk@0.121.0
         version: '@anthropic-ai/sdk@0.121.0(zod@4.4.3)'
       '@anthropic-ai/sdk-candidate':
-        specifier: npm:@anthropic-ai/sdk@0.125.0
-        version: '@anthropic-ai/sdk@0.125.0(zod@4.4.3)'
+        specifier: npm:@anthropic-ai/sdk@0.127.0
+        version: '@anthropic-ai/sdk@0.127.0(zod@4.4.3)'
       '@anthropic-ai/sdk-current':
-        specifier: npm:@anthropic-ai/sdk@0.125.0
-        version: '@anthropic-ai/sdk@0.125.0(zod@4.4.3)'
+        specifier: npm:@anthropic-ai/sdk@0.127.0
+        version: '@anthropic-ai/sdk@0.127.0(zod@4.4.3)'
       '@anthropic-ai/sdk-oldest':
         specifier: npm:@anthropic-ai/sdk@0.105.0
         version: '@anthropic-ai/sdk@0.105.0(zod@4.4.3)'
@@ -183,8 +183,8 @@ packages:
       zod:
         optional: true
 
-  '@anthropic-ai/sdk@0.125.0':
-    resolution: {integrity: sha512-Hq5wYlXupzJ9M1Fzqjqa3hObcuigEXVZJqSYDgeZGM3wF4qrNERM5Z1OOAeoT9rlod8awJ3uYyJjbQXp1ckIGg==}
+  '@anthropic-ai/sdk@0.127.0':
+    resolution: {integrity: sha512-OKiVbG9LHCxjn4fBJZJFy/Bz3hqE1RYpwaeSEDNheQnvz0XNKmGT/Lhkz2Sf1a27Ldt3vVv+BkU81I0U/8EpoQ==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -1409,7 +1409,7 @@ snapshots:
     optionalDependencies:
       zod: 4.4.3
 
-  '@anthropic-ai/sdk@0.125.0(zod@4.4.3)':
+  '@anthropic-ai/sdk@0.127.0(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0

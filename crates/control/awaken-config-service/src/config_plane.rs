@@ -451,6 +451,20 @@ impl ConfigPlane {
         expected_source_revision: Option<u64>,
         expected_resource_revision: Option<i64>,
     ) -> Result<StoredPublication, PublishError> {
+        // No review fences means "publish current". Keep its bounded source-CAS
+        // retry in the service authority; an explicit fence on either mutable
+        // source must retain exact reviewed-publication semantics.
+        if expected_source_revision.is_none() && expected_resource_revision.is_none() {
+            return self
+                .service
+                .publish(
+                    &ScopeId::from(execution_workspace),
+                    &self.registry_for(configuration_scope),
+                    id,
+                    &self.catalog_for(configuration_scope),
+                )
+                .await;
+        }
         self.service
             .publish_at_revisions(
                 &ScopeId::from(execution_workspace),

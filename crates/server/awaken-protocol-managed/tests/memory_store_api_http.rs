@@ -708,6 +708,44 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(listed["content_sha256"], updated["content_sha256"]);
     assert_eq!(listed["memory_version_id"], updated_version_id);
 
+    // Wire-projection decision table: operation=create/retrieve/update/list,
+    // view=basic/full. Every observed partition below exposes the official
+    // Memory fields only. Internal generation stays in the store's CAS owner;
+    // the stale/current precondition rules above still exercise that authority.
+    // Exact field sets catch accidental exposure as well as required-field loss.
+    let expected_fields = std::collections::BTreeSet::from([
+        "id",
+        "type",
+        "created_at",
+        "updated_at",
+        "memory_store_id",
+        "memory_version_id",
+        "path",
+        "content",
+        "content_sha256",
+        "content_size_bytes",
+    ]);
+    for wire in [
+        &mem,
+        &got,
+        &got_basic,
+        &updated,
+        &updated_basic,
+        &full["data"][0],
+        &basic["data"][0],
+        listed,
+    ] {
+        assert_eq!(
+            wire.as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected_fields,
+            "one official Memory projection across operations and views",
+        );
+    }
+
     // The version log now carries a `created` then a `modified` row.
     let versions = call(
         &router,
