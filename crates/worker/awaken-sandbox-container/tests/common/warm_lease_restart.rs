@@ -68,20 +68,22 @@ const IMAGE_REPOSITORY: &str = "localhost/awaken-warmlease-it";
 /// carries it is safe to remove without racing a concurrent suite.
 const ABANDONED_AFTER: Duration = Duration::from_secs(3600);
 
-/// Removes every container carrying this run's label, and its private image,
-/// however the test ends.
-struct DaemonCleanup {
+/// Removes this run's private image however the test ends.
+///
+/// Only the image: the containers built from it carry the creating process's
+/// id like every other managed container, so [`super::residue::TestResidue`]
+/// already claims them by the one key that also reaches the capacity scopes
+/// this suite never names.
+struct PrivateImage {
     cli: &'static str,
     tag: String,
-    nonce: String,
 }
 
-impl Drop for DaemonCleanup {
+impl Drop for PrivateImage {
     fn drop(&mut self) {
-        for id in containers(self.cli, &self.nonce) {
-            let _ = Command::new(self.cli).args(["rm", "-f", &id]).output();
-        }
-        let _ = Command::new(self.cli).args(["rmi", &self.tag]).output();
+        let _ = Command::new(self.cli)
+            .args(["rmi", "-f", &self.tag])
+            .output();
     }
 }
 
@@ -226,10 +228,13 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
     );
     sweep_abandoned_runs(cli);
     let tag = format!("{IMAGE_REPOSITORY}-{nonce}:latest");
-    let _cleanup = DaemonCleanup {
+    let _residue = super::residue::TestResidue::for_this_process(match cli {
+        "podman" => super::residue::Backend::Podman,
+        _ => super::residue::Backend::Docker,
+    });
+    let _image = PrivateImage {
         cli,
         tag: tag.clone(),
-        nonce: nonce.clone(),
     };
     private_image(cli, base_image, &tag, &nonce);
     let root = tempfile::tempdir().expect("lease root");

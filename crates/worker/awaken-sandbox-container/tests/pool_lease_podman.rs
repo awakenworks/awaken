@@ -6,6 +6,8 @@
 //! `cargo test -p awaken-sandbox-container --features podman --test pool_lease_podman -- --test-threads=1`
 #![cfg(feature = "podman")]
 
+#[path = "common/residue.rs"]
+mod residue;
 #[path = "common/warm_lease_restart.rs"]
 mod warm_lease_restart;
 

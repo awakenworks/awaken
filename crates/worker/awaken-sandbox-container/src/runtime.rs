@@ -1743,9 +1743,15 @@ pub trait ContainerRuntime: Send + Sync {
         ))
     }
 
+    /// Start one detached process inside an admitted container.
+    ///
+    /// Takes [`AdmittedExec`] rather than a container id because a started
+    /// process is a host resource whose record disposal reads: an edge that
+    /// could pass a bare id could start one without leaving that record, which
+    /// is exactly how a whole spawn edge once went unreaped.
     async fn spawn(
         &self,
-        _container_id: &str,
+        _admitted: crate::AdmittedExec,
         _command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
         Err(RuntimeError::Backend(
@@ -1753,9 +1759,10 @@ pub trait ContainerRuntime: Send + Sync {
         ))
     }
 
+    /// The same obligation for an attached process.
     async fn spawn_agent(
         &self,
-        _container_id: &str,
+        _admitted: crate::AdmittedExec,
         _command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
         Err(RuntimeError::Backend(
@@ -1782,8 +1789,13 @@ pub trait ContainerRuntime: Send + Sync {
     /// cannot drift from its own naming; one that cannot exec never started an
     /// exec, so its inherited failure is unreachable rather than fail-open.
     async fn reap_exec_orphans(&self, container_id: &str) -> Result<(), RuntimeError> {
+        // The reaper's own exec is the sweep, not something the sweep must
+        // find, so it is admitted without a ledger entry of its own.
         let reaper = self
-            .spawn(container_id, crate::exec_orphan_reaper_command())
+            .spawn(
+                crate::AdmittedExec::unrecorded(container_id),
+                crate::exec_orphan_reaper_command(),
+            )
             .await?;
         let status = reaper
             .wait()

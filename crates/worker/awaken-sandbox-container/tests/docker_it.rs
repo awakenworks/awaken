@@ -75,7 +75,7 @@ async fn docker_ordinary_host_staging_survives_creator_replacement() {
         Arc::new(first),
         Arc::new(peer),
         "busybox:latest",
-        residue::docker,
+        residue::Backend::Docker,
     )
     .await;
 }
@@ -83,27 +83,28 @@ async fn docker_ordinary_host_staging_survives_creator_replacement() {
 #[tokio::test]
 async fn docker_full_lifecycle_against_a_real_daemon() {
     let Some(rt) = runtime().await else { return };
-    let scope = "it-life";
-    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
-
-    let id = rt
-        .create(scope, &plan(&["sleep", "30"]))
-        .await
-        .expect("create+start a real container");
+    let container = residue::create_owned(
+        &rt,
+        "it-life",
+        &plan(&["sleep", "30"]),
+        residue::Backend::Docker,
+    )
+    .await;
+    let id = container.id();
 
     // process-as-container: the sleep is the container's main process, running.
     assert!(matches!(
-        rt.inspect(&id).await.unwrap(),
+        rt.inspect(id).await.unwrap(),
         ContainerState::Running
     ));
-    assert!(rt.poll(&id).await.unwrap().is_none(), "still running");
+    assert!(rt.poll(id).await.unwrap().is_none(), "still running");
 
     // reap + teardown
-    rt.signal(&id, pc::Signal::Kill).await.unwrap();
-    rt.remove(&id).await.unwrap();
+    rt.signal(id, pc::Signal::Kill).await.unwrap();
+    rt.remove(id).await.unwrap();
     // once removed, inspect no longer finds it running
     assert!(
-        rt.inspect(&id).await.is_err() || matches!(rt.inspect(&id).await, Ok(ContainerState::Gone))
+        rt.inspect(id).await.is_err() || matches!(rt.inspect(id).await, Ok(ContainerState::Gone))
     );
 }
 
@@ -120,7 +121,7 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
         return;
     };
     let scope = format!("docker-restore-{}", std::process::id());
-    let _residue = residue::ScopeResidue::arm(&scope, residue::docker);
+    let _residue = residue::TestResidue::arm(&scope, residue::Backend::Docker);
     let spec = common::exact_restore_spec(&scope);
     let request = common::exact_restore_request(&scope);
     let authorization = disposal::disposal_authorization(&disposal::effect_fence(
@@ -208,26 +209,26 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
 async fn docker_open_channel_dials_the_published_agent_port() {
     let Some(rt) = runtime().await else { return };
     let scope = format!("it-chan-{}", std::process::id());
-    let _residue = residue::ScopeResidue::arm(&scope, residue::docker);
 
     // Cause/effect rules: D1 a real container publishes an ephemeral Host port
     // -> the provider resolves it and the canonical factory dials that address;
     // D2 successful writes alone are insufficient -> require exact echo bytes;
     // D3 terminal success/failure -> remove only this test's container and
     // require physical absence. Cold readiness retries remain provider-owned.
-    let id = rt
-        .create(
-            &scope,
-            &plan(&["sh", "-c", "while true; do nc -l -p 8080 -e cat; done"]),
-        )
-        .await
-        .expect("create listening container");
+    let container = residue::create_owned(
+        &rt,
+        &scope,
+        &plan(&["sh", "-c", "while true; do nc -l -p 8080 -e cat; done"]),
+        residue::Backend::Docker,
+    )
+    .await;
+    let id = container.id();
 
     // The published port is discovered via inspect and dialed via ConnectionPlan.
     // Retry while the in-container listener binds.
     let mut opened = None;
     for _ in 0..25 {
-        if let Ok(mut chan) = rt.open_channel(&id).await {
+        if let Ok(mut chan) = rt.open_channel(id).await {
             let exchange = async {
                 chan.write_all(b"ping").await?;
                 chan.flush().await?;
@@ -244,10 +245,10 @@ async fn docker_open_channel_dials_the_published_agent_port() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    rt.remove(&id)
+    rt.remove(id)
         .await
         .expect("D3 remove this test's container");
-    assert!(rt.inspect(&id).await.is_err(), "D3 physical absence");
+    assert!(rt.inspect(id).await.is_err(), "D3 physical absence");
     assert!(
         opened.is_some(),
         "open_channel must reach the container's published agent port"
@@ -257,12 +258,14 @@ async fn docker_open_channel_dials_the_published_agent_port() {
 #[tokio::test]
 async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     let Some(rt) = runtime().await else { return };
-    let scope = "it-exec";
-    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
-    let id = rt
-        .create(scope, &plan(&["sleep", "300"]))
-        .await
-        .expect("create Session container");
+    let container = residue::create_owned(
+        &rt,
+        "it-exec",
+        &plan(&["sleep", "300"]),
+        residue::Backend::Docker,
+    )
+    .await;
+    let id = container.id();
 
     let command = pc::Command {
         argv: vec![
@@ -281,7 +284,13 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     let command = pc::materialize_process_command(&[], command, None)
         .await
         .expect("materialize public exec environment");
-    let process = rt.spawn(&id, command).await.expect("spawn detached exec");
+    let process = rt
+        .spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(id),
+            command,
+        )
+        .await
+        .expect("spawn detached exec");
     let public_id = process.id().to_string();
 
     // What this asserts is that a handle recovered by public id signals and
@@ -300,7 +309,7 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     let mut established = false;
     // awaken-wait: settles on the exec's own committed in-container marker.
     for _ in 0..150 {
-        if container_holds(&rt, &id, EXEC_ESTABLISHED_MARKER).await {
+        if container_holds(&rt, id, EXEC_ESTABLISHED_MARKER).await {
             established = true;
             break;
         }
@@ -333,12 +342,25 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
         .await
         .expect("signalling a terminal handle is a no-op, not a failure");
     assert!(rt.process("wrong-container", &public_id).await.is_err());
-    process_lifecycle::verify_wait_cancellation_and_signal(&rt, &id).await;
+    process_lifecycle::verify_wait_cancellation_and_signal(&rt, id).await;
 
     let empty = pc::MaterializedCommand::new(Vec::<String>::new());
-    assert!(rt.spawn(&id, empty.clone()).await.is_err());
-    assert!(rt.spawn_agent(&id, empty).await.is_err());
-    let _ = rt.remove(&id).await;
+    assert!(
+        rt.spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(id),
+            empty.clone()
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        rt.spawn_agent(
+            awaken_sandbox_container::AdmittedExec::unrecorded(id),
+            empty
+        )
+        .await
+        .is_err()
+    );
 }
 
 /// Whether the container already holds `path` as a regular file, asked of the
@@ -350,13 +372,16 @@ async fn container_holds(rt: &DockerRuntime, container_id: &str, path: &str) -> 
     let probe = pc::materialize_process_command(&[], probe, None)
         .await
         .expect("materialize the establishment probe");
-    rt.spawn(container_id, probe)
-        .await
-        .expect("spawn the establishment probe")
-        .wait()
-        .await
-        .expect("await the establishment probe")
-        .code
+    rt.spawn(
+        awaken_sandbox_container::AdmittedExec::unrecorded(container_id),
+        probe,
+    )
+    .await
+    .expect("spawn the establishment probe")
+    .wait()
+    .await
+    .expect("await the establishment probe")
+    .code
         == Some(0)
 }
 
@@ -368,12 +393,14 @@ async fn reaping_stops_the_process_a_plain_spawn_started() {
     // through the plain `spawn` edge — the edge whose attempts disposal used
     // to miss entirely — before anything reads the workspace.
     let Some(rt) = runtime().await else { return };
-    let scope = "it-reap";
-    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
-    let id = rt
-        .create(scope, &plan(&["sleep", "300"]))
-        .await
-        .expect("create Session container");
+    let container = residue::create_owned(
+        &rt,
+        "it-reap",
+        &plan(&["sleep", "300"]),
+        residue::Backend::Docker,
+    )
+    .await;
+    let id = container.id();
 
     let command = pc::Command {
         argv: vec![
@@ -388,7 +415,13 @@ async fn reaping_stops_the_process_a_plain_spawn_started() {
     let command = pc::materialize_process_command(&[], command, None)
         .await
         .expect("materialize the reaped command");
-    let process = rt.spawn(&id, command).await.expect("spawn detached exec");
+    let process = rt
+        .spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(id),
+            command,
+        )
+        .await
+        .expect("spawn detached exec");
 
     // Same establishment precondition as the signal test: the wrapper records
     // the pid before it execs this command, so the marker is proof the record
@@ -396,7 +429,7 @@ async fn reaping_stops_the_process_a_plain_spawn_started() {
     let mut established = false;
     // awaken-wait: settles on the exec's own committed in-container marker.
     for _ in 0..150 {
-        if container_holds(&rt, &id, REAP_ESTABLISHED_MARKER).await {
+        if container_holds(&rt, id, REAP_ESTABLISHED_MARKER).await {
             established = true;
             break;
         }
@@ -408,7 +441,7 @@ async fn reaping_stops_the_process_a_plain_spawn_started() {
         "alive before reaping"
     );
 
-    rt.reap_exec_orphans(&id)
+    rt.reap_exec_orphans(id)
         .await
         .expect("the container forgets the execs it started");
 
@@ -420,5 +453,4 @@ async fn reaping_stops_the_process_a_plain_spawn_started() {
         stopped.code.is_some() || stopped.signaled,
         "the reaped process reached a terminal status: {stopped:?}"
     );
-    let _ = rt.remove(&id).await;
 }

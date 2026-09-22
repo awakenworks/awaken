@@ -56,6 +56,7 @@ pub use egress::{
     AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, EgressRealizationIdentity,
     ForwardProxy, NetworkMode, egress_plan, egress_plan_with_allowlist, normalize_hostname,
 };
+pub use exec_attempts::AdmittedExec;
 use exec_attempts::ExecAttempts;
 pub(crate) use exec_attempts::exec_orphan_reaper_command;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
@@ -1261,7 +1262,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         // orphan is mutating. This is the single gate both disposal edges pass
         // through: `dispose` reaches `dispose_once` through it, and
         // `prepare_disposal_for_effect` reaches `dispose_for_effect` through it.
-        self.reap_exec_orphans().await?;
+        let seal = self.reap_exec_orphans().await?;
         authorize()?;
         self.control_publication.close_for_dispose().await;
         authorize()?;
@@ -1277,6 +1278,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
                 &self.container_id,
                 effect_fence.zip(handle.as_ref()),
                 &authorize,
+                &seal,
             )
             .await?;
         // Explicit effectless Sandbox disposal still owns its live RunV1 Memory
@@ -1284,18 +1286,34 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         // fence and must use Host terminal-v2 reconciliation plus the explicit
         // acknowledgement port instead of replaying this stale claim.
         if effect_fence.is_none() {
-            let mut memory = self.lifecycle.memory.lock().await;
-            if let Some(memory) = memory.as_mut() {
-                for mount in memory.iter_mut().filter(|mount| {
-                    mount.native_runtime_volume
-                        && mount.access == pc::MountAccess::ReadWrite
-                        && !mount.writeback_prepared
-                }) {
-                    let files = files::read_files(self, &mount.mount_path).await?;
-                    replace_memory_snapshot(&mount.host_path, &files)?;
-                    mount.writeback_prepared = true;
-                }
-            }
+            self.harvest_memory_snapshots(&seal).await?;
+        }
+        Ok(())
+    }
+
+    /// Copy each writable native Memory mount back out of the container.
+    ///
+    /// Takes the seal because this is the read the seal exists for: a live
+    /// Session process would otherwise still be mutating these paths while
+    /// they are archived.
+    async fn harvest_memory_snapshots(
+        &self,
+        // Taken for its existence, not its contents: holding one is the proof
+        // that nothing new can be writing to what this reads.
+        _seal: &crate::exec_attempts::DisposalSeal,
+    ) -> Result<(), pc::SandboxError> {
+        let mut memory = self.lifecycle.memory.lock().await;
+        let Some(memory) = memory.as_mut() else {
+            return Ok(());
+        };
+        for mount in memory.iter_mut().filter(|mount| {
+            mount.native_runtime_volume
+                && mount.access == pc::MountAccess::ReadWrite
+                && !mount.writeback_prepared
+        }) {
+            let files = files::read_files(self, &mount.mount_path).await?;
+            replace_memory_snapshot(&mount.host_path, &files)?;
+            mount.writeback_prepared = true;
         }
         Ok(())
     }
@@ -1492,12 +1510,20 @@ impl ContainerCleanupState {
         })
     }
 
+    /// Harvest writable durable credentials out of the container.
+    ///
+    /// Takes the seal for the same reason the Memory harvest does: these bytes
+    /// are read out of a live filesystem, and only a sealed environment can
+    /// promise nothing new is writing to it.
     async fn write_back_secrets<R: ContainerRuntime>(
         &self,
         runtime: &R,
         container_id: &str,
         effect: Option<(&pc::SandboxEffectFence, &pc::SandboxHandle)>,
         authorize: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
+        // Taken for its existence, not its contents: holding one is the proof
+        // that nothing new can be writing to what this reads.
+        _seal: &crate::exec_attempts::DisposalSeal,
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.writeback_done.lock().await;
         authorize()?;
