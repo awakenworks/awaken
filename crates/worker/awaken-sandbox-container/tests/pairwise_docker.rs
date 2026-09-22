@@ -23,6 +23,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{ContainerProvider, ForwardProxy, command_of};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
@@ -149,11 +150,32 @@ async fn run_to_exit_disposing(
             None => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
+    let physical = sandbox
+        .handle()
+        .container_payload()
+        .expect("typed container handle")
+        .container_id
+        .clone();
     let disposed = sandbox.dispose_unattached().await;
-    if disposal == Disposal::MustSucceed {
-        disposed.expect("dispose");
+    match disposal {
+        Disposal::MustSucceed => disposed.expect("dispose"),
+        Disposal::MayFailUnderMemoryPressure => assert!(
+            !daemon_holds(&physical),
+            "an environment whose harvest was skipped is removed all the same",
+        ),
     }
     code
+}
+
+/// Whether the daemon still has this container, asked of the daemon rather
+/// than of the provider that just gave it up.
+fn daemon_holds(container_id: &str) -> bool {
+    std::process::Command::new("docker")
+        .args(["inspect", container_id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// `Some(0)` = had egress, `Some(1)` = confined.
