@@ -9,7 +9,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 #[cfg(feature = "authority")]
 use awaken_credential_vault::{SecretStore, repo::CredentialRepo};
-use awaken_runtime_contract::ModelBinding;
 use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
@@ -18,6 +17,7 @@ use awaken_runtime_contract::resolved::{
     Backend, ModelProvisioning, ProviderAccessKind, ResolvedModelCandidate,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::{ModelBinding, UnspecifiedReasoning};
 
 use crate::PinnedCredentialMaterializer;
 
@@ -35,6 +35,8 @@ pub enum ResolvedExecutorError {
     DialectAdapterMismatch { dialect: String, adapter: String },
     #[error("provider executor could not be constructed: {0}")]
     ExecutorBuild(String),
+    #[error("API dialect `{0}` cannot enforce the frozen reasoning policy")]
+    UnsupportedReasoningPolicy(String),
 }
 
 pub fn executor_from_materialized_endpoint(
@@ -49,6 +51,7 @@ pub fn executor_from_materialized_endpoint(
         adapter_kind,
         base_url,
         credential,
+        UnspecifiedReasoning::ProviderDefault,
     )
 }
 
@@ -61,6 +64,7 @@ pub fn executor_from_materialized_endpoint_for_provider(
     adapter_kind: &str,
     base_url: Option<&str>,
     credential: Option<&awaken_agent_contract::RedactedString>,
+    unspecified_reasoning: UnspecifiedReasoning,
 ) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
     let expected_adapter = match api_dialect {
         "anthropic_messages" => "anthropic",
@@ -80,6 +84,11 @@ pub fn executor_from_materialized_endpoint_for_provider(
         base_url.ok_or_else(|| ResolvedExecutorError::MissingBaseUrl(adapter_kind.to_string()))?;
     let credential = credential.ok_or(ResolvedExecutorError::MissingCredential)?;
     if api_dialect == "open_ai_responses" {
+        if unspecified_reasoning != UnspecifiedReasoning::ProviderDefault {
+            return Err(ResolvedExecutorError::UnsupportedReasoningPolicy(
+                api_dialect.to_string(),
+            ));
+        }
         return awaken_provider_genai::OpenAiResponsesExecutor::from_materialized_endpoint(
             provider_kind,
             base_url,
@@ -100,6 +109,7 @@ pub fn executor_from_materialized_endpoint_for_provider(
         adapter,
         base_url,
         credential.expose_secret(),
+        unspecified_reasoning,
     )
     .map(|executor| Arc::new(executor) as Arc<dyn LlmExecutor>)
     .map_err(|error| ResolvedExecutorError::ExecutorBuild(error.to_string()))
@@ -163,6 +173,7 @@ impl CredentialInferenceMaterializer {
             provider_ref,
             access_kind,
             endpoint,
+            unspecified_reasoning,
             ..
         } = candidate.provisioning()
         else {
@@ -183,8 +194,8 @@ impl CredentialInferenceMaterializer {
                     client,
                     provider_ref,
                     &candidate.binding().model_ref,
-                    &endpoint.api_dialect,
-                    &endpoint.adapter_kind,
+                    endpoint,
+                    *unspecified_reasoning,
                     local_run_correlation,
                     context.ownership.clone(),
                 )
@@ -214,6 +225,7 @@ impl CredentialInferenceMaterializer {
             &endpoint.adapter_kind,
             Some(&endpoint.base_url),
             secret.as_ref(),
+            *unspecified_reasoning,
         )
         .map_err(|error| error.to_string())?;
         Ok(Some(Arc::new(PinnedModelExecutor {
@@ -595,6 +607,38 @@ mod tests {
             ),
             Err(ResolvedExecutorError::MissingCredential)
         ));
+        // C6 the immutable publication selected Disabled for DeepSeek Chat;
+        // C7 the same policy reaches a Responses adapter that has no faithful
+        // projection. E3 Chat accepts the policy for the provider-wire gate;
+        // E4 Responses fails before any network I/O. Rules R3=C1..C5+C6=>E3;
+        // R4=C1..C5+C7=>E4. The HTTP-byte assertion lives in the genai
+        // compatibility suite and prevents an accepted but dropped override.
+        assert!(
+            executor_from_materialized_endpoint_for_provider(
+                "deepseek",
+                "open_ai_chat",
+                "openai",
+                Some("https://provider.invalid"),
+                Some(&credential),
+                UnspecifiedReasoning::Disabled,
+            )
+            .is_ok(),
+            "R3"
+        );
+        assert!(
+            matches!(
+                executor_from_materialized_endpoint_for_provider(
+                    "deepseek",
+                    "open_ai_responses",
+                    "openai",
+                    Some("https://provider.invalid"),
+                    Some(&credential),
+                    UnspecifiedReasoning::Disabled,
+                ),
+                Err(ResolvedExecutorError::UnsupportedReasoningPolicy(_))
+            ),
+            "R4"
+        );
     }
 
     #[cfg(feature = "brokered")]
@@ -717,6 +761,112 @@ mod tests {
         CredentialInferenceMaterializer::from_pinned(PinnedCredentialMaterializer::external_only(
             Arc::new(NoCredentialAccess),
         ))
+    }
+
+    #[cfg(feature = "brokered")]
+    #[tokio::test]
+    async fn published_reasoning_policy_survives_candidate_materialization() {
+        use crate::brokered_inference::{
+            BrokeredInferenceClient, BrokeredInferenceError, BrokeredInferenceLease,
+            BrokeredInferenceRequest,
+        };
+        use awaken_runtime_contract::model_operation::{
+            ModelExecutionEvidence, ModelOperation, ModelOperationContext, NoDispatchProof,
+            PreDispatchStage, with_model_operation_context,
+        };
+
+        // C1 the immutable brokered candidate freezes Disabled; C2 its
+        // Responses dialect cannot project that policy; C3 a grant succeeds.
+        // E1 the same policy reaches the provider factory and fails before
+        // Provider I/O; E2 the grant is closed. Rule P1=C1+C2+C3=>E1+E2.
+        // This seam catches policy loss in materialization; the genai HTTP
+        // compatibility test covers the supported Chat policy on the wire.
+        #[derive(Default)]
+        struct Grant(std::sync::Mutex<usize>);
+        #[async_trait]
+        impl BrokeredInferenceClient for Grant {
+            async fn create_grant(
+                &self,
+                _: BrokeredInferenceRequest,
+            ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
+                Ok(BrokeredInferenceLease {
+                    grant_id: "grant-policy".into(),
+                    gateway_base_url: "https://gateway.invalid".into(),
+                    capability: RedactedString::new("fixture-capability"),
+                    grant_expires_at: 1_800_000_000,
+                })
+            }
+
+            async fn close_grant(&self, _: &str) -> Result<(), BrokeredInferenceError> {
+                *self.0.lock().unwrap() += 1;
+                Ok(())
+            }
+
+            async fn renew_grant(
+                &self,
+                _: &str,
+            ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
+                panic!("one request never renews its grant")
+            }
+        }
+
+        let binding = ModelBinding::parse("deepseek", "deepseek-v4-pro", "genai").unwrap();
+        let candidate = ResolvedModelCandidate::try_brokered_provider_with_reasoning(
+            binding.clone(),
+            "deepseek",
+            "deepseek:open_ai_responses@1",
+            "workspace-a",
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "open_ai_responses".into(),
+                base_url: "https://gateway.invalid".into(),
+                upstream_model: "deepseek-v4-pro".into(),
+                processing_placement: None,
+            },
+            UnspecifiedReasoning::Disabled,
+        )
+        .unwrap();
+        let grant = Arc::new(Grant::default());
+        let executor = neutral_materializer()
+            .with_brokered_client(grant.clone())
+            .materialize_exact(
+                &candidate,
+                &RuntimeRunContext::new().with_ownership(Arc::new(CurrentOwnership)),
+                Some("run-policy".into()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let operation = ModelOperationContext::from_operation(
+            &awaken_agent_contract::agent::thread::Id("thread-policy".into()),
+            &awaken_agent_contract::agent::run::Id("run-policy".into()),
+            &ModelOperation::next(None, binding.clone()).unwrap(),
+        );
+        let error = with_model_operation_context(
+            Some(operation),
+            executor.infer(ChatRequest {
+                model_binding: binding,
+                inference: Default::default(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot enforce the frozen reasoning policy"),
+            "P1/E1: {error}"
+        );
+        assert_eq!(
+            error.execution_evidence(),
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::before_dispatch(
+                PreDispatchStage::ExecutorResolution
+            )),
+            "P1/E1"
+        );
+        assert_eq!(*grant.0.lock().unwrap(), 1, "P1/E2");
     }
 
     #[cfg(feature = "brokered")]
