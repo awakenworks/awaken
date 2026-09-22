@@ -52,6 +52,7 @@ test-support = ["durable"]
 nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
+awaken-store-conformance.workspace = true
 awaken-reliability-testkit.workspace = true
 awaken-dispatch-testkit = { workspace = true }
 awaken-store-inmem.workspace = true

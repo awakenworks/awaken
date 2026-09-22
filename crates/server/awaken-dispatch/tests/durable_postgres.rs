@@ -15,9 +15,7 @@ use std::sync::atomic::Ordering;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::observation::Observed;
-use awaken_agent_contract::stream::checkpoint::{
-    PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
-};
+use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
@@ -114,21 +112,6 @@ fn running_commit(run_id: &str) -> ThreadCommit {
         Vec::new(),
         Vec::new(),
     )
-}
-
-fn stream_checkpoint(run_id: &str, text: &str) -> StreamCheckpoint {
-    StreamCheckpoint {
-        run_id: run_id.to_owned(),
-        thread_id: "checkpoint-thread".to_owned(),
-        model: "provider/model".to_owned(),
-        partial_text: text.to_owned(),
-        partial_tools: vec![PartialToolCall {
-            call_id: "call-1".to_owned(),
-            tool_id: "tool-1".to_owned(),
-            raw_arguments: "{\"incomplete\":".to_owned(),
-        }],
-        retry_count: 0,
-    }
 }
 
 #[tokio::test]
@@ -238,31 +221,59 @@ async fn postgres_stream_checkpoint_survives_restart_overwrites_and_deletes() {
     let store = PostgresStreamCheckpointStore::with_pool(pool.clone())
         .await
         .expect("checkpoint store");
-    assert_eq!(store.get("run-checkpoint").await, Observed::Absent);
-
-    store
-        .put(stream_checkpoint("run-checkpoint", "partial-a"))
-        .await
-        .unwrap();
-    assert_eq!(
-        store.get("run-checkpoint").await,
-        Observed::Present(stream_checkpoint("run-checkpoint", "partial-a"))
-    );
-
+    // Shared R1-R7 run on PostgreSQL too; reconnect additionally verifies the
+    // exact acknowledged full frame, including retry_count and partial tools.
+    let expected =
+        awaken_store_conformance::stream_checkpoint::writes_are_exact(&store, "run-checkpoint")
+            .await;
     let restarted = PostgresStreamCheckpointStore::with_pool(pool)
         .await
-        .expect("restarted checkpoint store");
-    restarted
-        .put(stream_checkpoint("run-checkpoint", "partial-b"))
-        .await
-        .unwrap();
+        .expect("restart");
     assert_eq!(
         restarted.get("run-checkpoint").await,
-        Observed::Present(stream_checkpoint("run-checkpoint", "partial-b"))
+        Observed::Present(expected)
     );
-    restarted.delete("run-checkpoint").await.unwrap();
-    restarted.delete("run-checkpoint").await.unwrap();
-    assert_eq!(restarted.get("run-checkpoint").await, Observed::Absent);
+    awaken_store_conformance::stream_checkpoint::delete_is_idempotent(&restarted, "run-checkpoint")
+        .await;
+}
+
+/// R8 a stored row with undecodable checkpoint data is Unknown and remains
+/// unchanged; R9 an unavailable pool is Unknown, not Absent; R10 writes/deletes
+/// against that unavailable owner fail. These backend faults extend the shared
+/// register laws without adding fault switches to the production port.
+#[tokio::test]
+async fn postgres_stream_checkpoint_corruption_and_unavailability_stay_unknown() {
+    let Some(pool) = harness::schema_pool("t_pg_stream_checkpoint_faults").await else {
+        return;
+    };
+    let store = PostgresStreamCheckpointStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let checkpoint = awaken_store_conformance::stream_checkpoint::sample("fault-run");
+    store.put(checkpoint.clone()).await.unwrap();
+    sqlx::query("UPDATE runtime_stream_checkpoint SET checkpoint='{}'::jsonb WHERE run_id=$1")
+        .bind("fault-run")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        matches!(store.get("fault-run").await, Observed::Unknown(_)),
+        "R8"
+    );
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT checkpoint FROM runtime_stream_checkpoint WHERE run_id=$1")
+            .bind("fault-run")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, serde_json::json!({}), "R8 retain damaged evidence");
+    pool.close().await;
+    assert!(
+        matches!(store.get("missing").await, Observed::Unknown(_)),
+        "R9"
+    );
+    assert!(store.put(checkpoint).await.is_err(), "R10 put");
+    assert!(store.delete("fault-run").await.is_err(), "R10 delete");
 }
 
 /// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME

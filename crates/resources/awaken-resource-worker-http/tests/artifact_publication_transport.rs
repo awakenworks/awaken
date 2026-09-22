@@ -6,8 +6,8 @@ use std::sync::{
 };
 
 use awaken_resource_contract::{
-    ArtifactPublication, ArtifactPublisher as _, ArtifactRecovery, FileApplicationService,
-    FileRecord, FileStore, FileStoreError, ResourcePurgeError, content_id,
+    ArtifactPublication, ArtifactPublicationError, ArtifactPublisher as _, ArtifactRecovery,
+    FileApplicationService, FileRecord, FileStore, FileStoreError, ResourcePurgeError, content_id,
 };
 use awaken_resource_worker_http::{
     ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ArtifactPublicationRequest,
@@ -517,7 +517,13 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
             ))
             .await
             .expect_err(rule);
-        assert!(error.to_string().contains(status), "{rule}: {error}");
+        assert!(
+            match status {
+                "403" => matches!(error, ArtifactPublicationError::Denied { .. }),
+                _ => matches!(error, ArtifactPublicationError::InvalidRequest { .. }),
+            },
+            "{rule}: {error}"
+        );
     }
 
     let substituted_request = upstream
@@ -560,7 +566,10 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         ))
         .await
         .expect_err("A8");
-    assert!(stale_identity.to_string().contains("403"), "A8");
+    assert!(
+        matches!(stale_identity, ArtifactPublicationError::Denied { .. }),
+        "A8"
+    );
 
     let no_claim = publisher
         .publish(publication(
@@ -573,7 +582,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         .await
         .expect_err("A11");
     assert!(
-        no_claim.to_string().contains("requires an execution fence"),
+        matches!(no_claim, ArtifactPublicationError::InvalidRequest { .. }),
         "A11"
     );
 
@@ -596,7 +605,10 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         ))
         .await
         .expect_err("A5");
-    assert!(stale_claim.to_string().contains("409"), "A5");
+    assert!(
+        matches!(stale_claim, ArtifactPublicationError::Conflict { .. }),
+        "A5"
+    );
     assert_eq!(
         application
             .list("workspace-artifacts", Some("thread-session-artifacts"))
@@ -634,7 +646,13 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         ))
         .await
         .expect_err("A10");
-    assert!(unavailable_error.to_string().contains("503"), "A10");
+    assert!(
+        matches!(
+            unavailable_error,
+            ArtifactPublicationError::Indeterminate { .. }
+        ),
+        "A10"
+    );
     assert!(
         dispatch.lock_commit_epoch(&unavailable_claim).await.is_ok(),
         "A10: a dependency outage must not settle or invalidate the retryable claim"
@@ -904,7 +922,10 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
         ))
         .await
         .expect_err("T2 expired current root has no authority");
-    assert!(error.to_string().contains("409"), "T2: {error}");
+    assert!(
+        matches!(error, ArtifactPublicationError::Conflict { .. }),
+        "T2: {error}"
+    );
 
     let mut successor = asserted.clone();
     successor.lease.epoch += 1;
@@ -919,7 +940,10 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
         ))
         .await
         .expect_err("T3 a foreign epoch cannot use the renewed predecessor");
-    assert!(error.to_string().contains("409"), "T3: {error}");
+    assert!(
+        matches!(error, ArtifactPublicationError::Conflict { .. }),
+        "T3: {error}"
+    );
 
     let foreign =
         HttpArtifactPublisher::new(
@@ -937,7 +961,10 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
         ))
         .await
         .expect_err("T4 foreign terminal Worker");
-    assert!(error.to_string().contains("403"), "T4: {error}");
+    assert!(
+        matches!(error, ArtifactPublicationError::Denied { .. }),
+        "T4: {error}"
+    );
 
     // T5 capture read/replacement use the same current-root decision as
     // publication: renewed exact assertion passes; expired current root,
@@ -1132,18 +1159,19 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     let mut stale_operation = operation;
     stale_operation.effect_id.push_str("-stale");
     assert!(
-        publisher
-            .publish(checkpoint_release_publication(
-                "workspace-artifacts",
-                "session-checkpoint-artifact",
-                "reports/stale.txt",
-                b"must not publish",
-                stale_operation.clone(),
-            ))
-            .await
-            .expect_err("C5")
-            .to_string()
-            .contains("409"),
+        matches!(
+            publisher
+                .publish(checkpoint_release_publication(
+                    "workspace-artifacts",
+                    "session-checkpoint-artifact",
+                    "reports/stale.txt",
+                    b"must not publish",
+                    stale_operation.clone(),
+                ))
+                .await
+                .expect_err("C5"),
+            ArtifactPublicationError::Conflict { .. }
+        ),
         "C5"
     );
 
@@ -1373,7 +1401,10 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
         .await
         .expect_err("R4 current root expiry closes response-loss recovery");
     assert!(
-        expired_current_error.to_string().contains("409"),
+        matches!(
+            expired_current_error,
+            ArtifactPublicationError::Conflict { .. }
+        ),
         "R4 expired current: {expired_current_error}"
     );
 
@@ -1390,7 +1421,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
         .await
         .expect_err("R5 successor epoch");
     assert!(
-        successor_error.to_string().contains("409"),
+        matches!(successor_error, ArtifactPublicationError::Conflict { .. }),
         "R5 successor: {successor_error}"
     );
 
@@ -1409,7 +1440,10 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
         })
         .await
         .expect_err("R6 foreign");
-    assert!(foreign_error.to_string().contains("403"), "R6 foreign");
+    assert!(
+        matches!(foreign_error, ArtifactPublicationError::Denied { .. }),
+        "R6 foreign"
+    );
     assert_eq!(
         counting.recovery_lists.load(Ordering::SeqCst),
         reads_before_rejections,
@@ -1685,12 +1719,13 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     };
     lose_ack.store(true, Ordering::SeqCst);
     assert!(
-        publisher
-            .replace_capture(lost.clone(), Some(&fence))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("503"),
+        matches!(
+            publisher
+                .replace_capture(lost.clone(), Some(&fence))
+                .await
+                .unwrap_err(),
+            ArtifactPublicationError::Indeterminate { .. }
+        ),
         "R9 missing ACK"
     );
     let committed = app
@@ -1781,44 +1816,47 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     let replacements = counting.capture_replaces.load(Ordering::SeqCst);
     let parent_files = app.list(workspace, Some(session)).await.unwrap();
     assert!(
-        publisher
-            .publish(publication(
-                Some(child_claim),
-                workspace,
-                session,
-                "report.txt",
-                b"forbidden"
-            ))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("403"),
+        matches!(
+            publisher
+                .publish(publication(
+                    Some(child_claim),
+                    workspace,
+                    session,
+                    "report.txt",
+                    b"forbidden"
+                ))
+                .await
+                .unwrap_err(),
+            ArtifactPublicationError::Denied { .. }
+        ),
         "R11 parent publication"
     );
     assert!(
-        publisher
-            .capture(workspace, session, Some(&child_fence))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("403"),
+        matches!(
+            publisher
+                .capture(workspace, session, Some(&child_fence))
+                .await
+                .unwrap_err(),
+            ArtifactPublicationError::Denied { .. }
+        ),
         "R11 parent read"
     );
     assert!(
-        publisher
-            .replace_capture(
-                ReplaceArtifactCapture {
-                    workspace_id: workspace.into(),
-                    session_id: session.into(),
-                    expected_revision: 4,
-                    file_ids: vec![],
-                },
-                Some(&child_fence)
-            )
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("403"),
+        matches!(
+            publisher
+                .replace_capture(
+                    ReplaceArtifactCapture {
+                        workspace_id: workspace.into(),
+                        session_id: session.into(),
+                        expected_revision: 4,
+                        file_ids: vec![],
+                    },
+                    Some(&child_fence)
+                )
+                .await
+                .unwrap_err(),
+            ArtifactPublicationError::Denied { .. }
+        ),
         "R11 parent replacement"
     );
     assert_eq!(
@@ -1862,29 +1900,31 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     // The zero-duration renewal expires at the reading it was minted from.
     dispatch_clock.set(support::unix_now_ms().saturating_add(1));
     assert!(
-        publisher
-            .capture(workspace, session, Some(&fence))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("409"),
+        matches!(
+            publisher
+                .capture(workspace, session, Some(&fence))
+                .await
+                .unwrap_err(),
+            ArtifactPublicationError::Conflict { .. }
+        ),
         "R10"
     );
     assert!(
-        publisher
-            .replace_capture(
-                awaken_resource_contract::ReplaceArtifactCapture {
-                    workspace_id: workspace.into(),
-                    session_id: session.into(),
-                    expected_revision: 4,
-                    file_ids: vec![published[0].clone()],
-                },
-                Some(&fence)
-            )
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("409"),
+        matches!(
+            publisher
+                .replace_capture(
+                    awaken_resource_contract::ReplaceArtifactCapture {
+                        workspace_id: workspace.into(),
+                        session_id: session.into(),
+                        expected_revision: 4,
+                        file_ids: vec![published[0].clone()],
+                    },
+                    Some(&fence)
+                )
+                .await
+                .unwrap_err(),
+            ArtifactPublicationError::Conflict { .. }
+        ),
         "R10"
     );
     assert_eq!(

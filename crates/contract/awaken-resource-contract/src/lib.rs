@@ -292,12 +292,18 @@ impl CreateFileRecordOutcome {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FileCatalogError {
     #[error("invalid file record: {0}")]
     Invalid(ResourceErrorDetail),
-    #[error("file catalog storage error: {0}")]
-    Storage(ResourceErrorDetail),
+    #[error("file catalog contains corrupt data: {detail}")]
+    CorruptData { detail: String },
+    #[error("file catalog authority unavailable: {detail}")]
+    AuthorityUnavailable { detail: String },
+    /// No evidence that a write failed to commit. Reconcile using its original
+    /// identity before retrying; never lower an unread catalog to absence.
+    #[error("file catalog outcome is indeterminate: {detail}")]
+    Indeterminate { detail: String },
 }
 
 /// Durable logical Files-API catalog. It owns metadata, Workspace visibility,

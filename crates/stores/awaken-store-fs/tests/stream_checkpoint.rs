@@ -3,9 +3,7 @@
 //! this is what makes an interrupted inference step resumable in a new process.
 
 use awaken_agent_contract::observation::{Observed, UnknownCause};
-use awaken_agent_contract::stream::checkpoint::{
-    PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
-};
+use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_reliability_testkit::CrashProcess;
 use awaken_store_fs::FsStreamCheckpointStore;
 use std::sync::Arc;
@@ -26,20 +24,7 @@ fn present(observed: Observed<StreamCheckpoint>) -> StreamCheckpoint {
     }
 }
 
-fn sample(run_id: &str) -> StreamCheckpoint {
-    StreamCheckpoint {
-        run_id: run_id.to_string(),
-        thread_id: "t1".to_string(),
-        model: "m".to_string(),
-        partial_text: "the partial so far".to_string(),
-        partial_tools: vec![PartialToolCall {
-            call_id: "c1".to_string(),
-            tool_id: "search".to_string(),
-            raw_arguments: r#"{"q":"ru"#.to_string(),
-        }],
-        retry_count: 0,
-    }
-}
+use awaken_store_conformance::stream_checkpoint::{delete_is_idempotent, sample, writes_are_exact};
 
 #[tokio::test]
 async fn acknowledged_checkpoint_mutations_survive_real_process_kill()
@@ -115,20 +100,13 @@ async fn a_checkpoint_survives_a_fresh_instance_over_the_same_dir() {
     let dir = std::env::temp_dir().join("awaken_ckpt_reopen");
     let _ = std::fs::remove_dir_all(&dir);
 
-    {
+    let expected = {
         let store = FsStreamCheckpointStore::open(&dir).expect("open");
-        store.put(sample("run-1")).await.expect("durable put");
-        // dropped here — simulate a process restart
-    }
-
+        writes_are_exact(&store, "run-1").await
+    };
     let store = FsStreamCheckpointStore::open(&dir).expect("reopen");
-    let recovered = present(store.get("run-1").await);
-    assert_eq!(recovered, sample("run-1"));
-
-    store.delete("run-1").await.expect("delete");
-    assert_eq!(store.get("run-1").await, Observed::Absent);
-    // delete is idempotent.
-    store.delete("run-1").await.expect("idempotent delete");
+    assert_eq!(present(store.get("run-1").await), expected);
+    delete_is_idempotent(&store, "run-1").await;
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -4,14 +4,38 @@ pub awaken_resource_contract::AcquireResourceReclamationOutcome::Acquired
 pub awaken_resource_contract::AcquireResourceReclamationOutcome::AlreadyOwned
 pub awaken_resource_contract::AcquireResourceReclamationOutcome::Blocked(alloc::vec::Vec<awaken_resource_contract::ResourceReferenceRecord>)
 pub awaken_resource_contract::AcquireResourceReclamationOutcome::Contended
+pub enum awaken_resource_contract::ArtifactPublicationError
+pub awaken_resource_contract::ArtifactPublicationError::AuthorityUnavailable
+pub awaken_resource_contract::ArtifactPublicationError::AuthorityUnavailable::detail: alloc::string::String
+pub awaken_resource_contract::ArtifactPublicationError::Catalog(awaken_resource_contract::FileCatalogError)
+pub awaken_resource_contract::ArtifactPublicationError::Conflict
+pub awaken_resource_contract::ArtifactPublicationError::Conflict::detail: alloc::string::String
+pub awaken_resource_contract::ArtifactPublicationError::CorruptData
+pub awaken_resource_contract::ArtifactPublicationError::CorruptData::detail: alloc::string::String
+pub awaken_resource_contract::ArtifactPublicationError::Denied
+pub awaken_resource_contract::ArtifactPublicationError::Denied::detail: alloc::string::String
+pub awaken_resource_contract::ArtifactPublicationError::Indeterminate
+pub awaken_resource_contract::ArtifactPublicationError::Indeterminate::detail: alloc::string::String
+pub awaken_resource_contract::ArtifactPublicationError::InvalidRequest
+pub awaken_resource_contract::ArtifactPublicationError::InvalidRequest::detail: alloc::string::String
+pub awaken_resource_contract::ArtifactPublicationError::ReceiptMismatch
+pub awaken_resource_contract::ArtifactPublicationError::ReceiptMismatch::detail: alloc::string::String
+pub awaken_resource_contract::ArtifactPublicationError::Resource(awaken_resource_contract::ResourcePurgeError)
+impl awaken_resource_contract::ArtifactPublicationError
+pub fn awaken_resource_contract::ArtifactPublicationError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub enum awaken_resource_contract::CreateFileRecordOutcome
 pub awaken_resource_contract::CreateFileRecordOutcome::Existing(awaken_resource_contract::FileRecord)
 pub awaken_resource_contract::CreateFileRecordOutcome::Inserted(awaken_resource_contract::FileRecord)
 impl awaken_resource_contract::CreateFileRecordOutcome
 pub fn awaken_resource_contract::CreateFileRecordOutcome::record(&self) -> &awaken_resource_contract::FileRecord
 pub enum awaken_resource_contract::FileCatalogError
+pub awaken_resource_contract::FileCatalogError::AuthorityUnavailable
+pub awaken_resource_contract::FileCatalogError::AuthorityUnavailable::detail: alloc::string::String
+pub awaken_resource_contract::FileCatalogError::CorruptData
+pub awaken_resource_contract::FileCatalogError::CorruptData::detail: alloc::string::String
+pub awaken_resource_contract::FileCatalogError::Indeterminate
+pub awaken_resource_contract::FileCatalogError::Indeterminate::detail: alloc::string::String
 pub awaken_resource_contract::FileCatalogError::Invalid(awaken_resource_contract::ResourceErrorDetail)
-pub awaken_resource_contract::FileCatalogError::Storage(awaken_resource_contract::ResourceErrorDetail)
 pub enum awaken_resource_contract::FileContentSourceError
 pub awaken_resource_contract::FileContentSourceError::Indeterminate
 pub awaken_resource_contract::FileContentSourceError::Indeterminate::detail: alloc::string::String
@@ -109,6 +133,7 @@ pub awaken_resource_contract::ResourceKind::Repository
 pub awaken_resource_contract::ResourceKind::Skill
 pub enum awaken_resource_contract::ResourcePurgeError
 pub awaken_resource_contract::ResourcePurgeError::Blob(awaken_resource_contract::FileStoreError)
+pub awaken_resource_contract::ResourcePurgeError::Catalog(awaken_resource_contract::FileCatalogError)
 pub awaken_resource_contract::ResourcePurgeError::IdempotencyConflict(alloc::string::String)
 pub awaken_resource_contract::ResourcePurgeError::Invalid(awaken_resource_contract::ResourceErrorDetail)
 pub awaken_resource_contract::ResourcePurgeError::InvalidTransition
@@ -211,9 +236,6 @@ pub awaken_resource_contract::ArtifactPublication::workspace_id: alloc::string::
 impl<C> awaken_resource_contract::ArtifactPublication<C>
 pub fn awaken_resource_contract::ArtifactPublication<C>::into_file_application(self) -> awaken_resource_contract::ArtifactPublication<()>
 pub fn awaken_resource_contract::ArtifactPublication<C>::verify(&self) -> core::result::Result<(), awaken_resource_contract::ArtifactPublicationError>
-pub struct awaken_resource_contract::ArtifactPublicationError(_)
-impl awaken_resource_contract::ArtifactPublicationError
-pub fn awaken_resource_contract::ArtifactPublicationError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_resource_contract::ArtifactPublicationReceipt
 pub awaken_resource_contract::ArtifactPublicationReceipt::content_id: alloc::string::String
 pub awaken_resource_contract::ArtifactPublicationReceipt::effect_id: alloc::string::String

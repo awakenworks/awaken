@@ -955,6 +955,7 @@ dependencies = [
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
  "awaken-sqlite-pool",
+ "awaken-store-conformance",
  "awaken-store-inmem",
  "awaken-store-postgres",
  "awaken-store-sqlite",
