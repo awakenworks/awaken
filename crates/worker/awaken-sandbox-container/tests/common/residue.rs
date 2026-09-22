@@ -1,38 +1,208 @@
 //! Residue containment for the live-daemon suites.
 //!
-//! A live-daemon test owns physical objects the daemon keeps after the test
-//! process is gone, and a Sandbox's physical name is a pure function of its
-//! scope. So a test that dies before its own teardown does not merely leak: the
-//! *next* run of that same test meets its own leftover, and creation fails
-//! closed against an existing realization this attempt holds no fence for.
-//! That is how one rare flake became a permanent failure that only a manual
-//! `docker rm -f` could clear.
+//! # Why this is one module
 //!
-//! The guard closes both sides of that loop with the one removal that is
-//! addressable by scope alone. Arming it sweeps before the test creates
-//! anything, so leftovers from any earlier run are already gone; dropping it
-//! sweeps again, and Drop runs while a panic unwinds — precisely the path that
-//! used to leak.
+//! A live-daemon test makes a daemon create objects that outlive the test
+//! process, and cleanup written on the success path does not run when a test
+//! panics or is killed. Two different failures follow from that, and they need
+//! two different keys, which is why both live here rather than in two guards
+//! that each solve half.
+//!
+//! *Poisoning* is the worse one. A Sandbox's physical name is a pure function
+//! of its scope, so a fixed-scope test that dies meets its own leftover on the
+//! next run and fails closed against a realization it holds no fence for —
+//! one rare flake becoming a permanent failure only a manual `docker rm -f`
+//! could clear. The key for that is the scope, swept on the way in.
+//!
+//! *Leaking* is the broader one. A warm pool mints its own capacity scopes
+//! internally, and no test can name them, so a scope sweep cannot reach them.
+//! But every managed container carries the id of the runtime incarnation that
+//! created it, and that id starts with the creating process's pid — so a test
+//! can always name everything it caused, even what it cannot name directly.
+//! That is the key for the way out.
 
-/// Removes one scope's physical object when armed and again when dropped.
-pub(crate) struct ScopeResidue {
-    scope: String,
-    sweep: fn(&str),
+use std::process::Command;
+
+/// The label every managed container carries, used only to narrow the listing
+/// before the owner check below decides what actually belongs to this test.
+const MANAGED_LABEL: &str = "awaken.sandbox";
+
+/// The label naming the runtime incarnation that created a container. Its
+/// value is `{pid}-{epoch}-{sequence}`, so the creating process is a prefix.
+const OWNER_LISTING: &str = "{{.ID}} {{.Label \"awaken.sandbox.owner\"}}";
+
+/// Which daemon a suite is driving. Each test binary drives one, so the other
+/// variant is unconstructed there.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) enum Backend {
+    Docker,
+    Podman,
 }
 
-impl ScopeResidue {
-    /// Sweep `scope` now and again on drop. Arm this *after* the suite's daemon
-    /// readiness check so a machine without the daemon stays silent.
-    pub(crate) fn arm(scope: impl Into<String>, sweep: fn(&str)) -> Self {
-        let scope = scope.into();
-        sweep(&scope);
-        Self { scope, sweep }
+impl Backend {
+    const fn cli(self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Podman => "podman",
+        }
     }
 }
 
-impl Drop for ScopeResidue {
+/// One live suite's claim on everything it makes a daemon create.
+///
+/// Arming sweeps the scope, so a leftover from any earlier run is gone before
+/// this one creates anything. Dropping sweeps twice — the scope again, and
+/// then every container this process caused — and `Drop` runs while a panic
+/// unwinds, which is the path that leaked.
+pub(crate) struct TestResidue {
+    /// `None` for a suite whose scopes are minted where it cannot name them —
+    /// a warm pool's capacity, or a run under its own realization namespace.
+    /// Only the process key applies to those.
+    scope: Option<String>,
+    backend: Backend,
+}
+
+impl TestResidue {
+    /// Arm this *after* the suite's daemon readiness check, so a machine
+    /// without the daemon stays silent.
+    pub(crate) fn arm(scope: impl Into<String>, backend: Backend) -> Self {
+        let armed = Self {
+            scope: Some(scope.into()),
+            backend,
+        };
+        armed.sweep_scope();
+        armed
+    }
+
+    /// Claim everything this process causes, for a suite that cannot name its
+    /// own scopes. There is nothing to sweep on the way in: a scope this suite
+    /// cannot name is also one it cannot collide with.
+    #[allow(dead_code)]
+    pub(crate) fn for_this_process(backend: Backend) -> Self {
+        Self {
+            scope: None,
+            backend,
+        }
+    }
+
+    /// Remove the object this scope names, through the one removal that is
+    /// addressable by scope alone. Absence is success in both backends, so a
+    /// clean scope is silent.
+    fn sweep_scope(&self) {
+        let Some(scope) = self.scope.clone() else {
+            return;
+        };
+        let backend = self.backend;
+        swept_off_thread(move || {
+            use awaken_sandbox_container::ContainerRuntime as _;
+            let Some(runtime) = sweep_runtime(&scope) else {
+                return;
+            };
+            runtime.block_on(async {
+                let outcome = match backend {
+                    Backend::Docker => {
+                        match awaken_sandbox_container::docker::DockerRuntime::connect_local(
+                            RESIDUE_AGENT_PORT,
+                        ) {
+                            Ok(docker) => docker.remove_unreceipted_scope(&scope).await,
+                            Err(error) => {
+                                eprintln!("residue sweep for `{scope}` has no client: {error}");
+                                return;
+                            }
+                        }
+                    }
+                    Backend::Podman => {
+                        awaken_sandbox_container::podman::PodmanRuntime::new(RESIDUE_AGENT_PORT)
+                            .remove_unreceipted_scope(&scope)
+                            .await
+                    }
+                };
+                if let Err(error) = outcome {
+                    eprintln!("residue sweep for `{scope}` failed: {error}");
+                }
+            });
+        });
+    }
+
+    /// Remove every managed container this process caused, whatever scope it
+    /// was created at.
+    ///
+    /// Scoped to this process on purpose: a container some other process owns
+    /// may be a live Session, and no test may remove one of those. Under
+    /// nextest each test is its own process, so this is exactly the set one
+    /// test made.
+    fn sweep_this_process(&self) {
+        let cli = self.backend.cli();
+        let mine = format!("{}-", std::process::id());
+        let Ok(listed) = Command::new(cli)
+            .args([
+                "ps",
+                "-a",
+                "--no-trunc",
+                "--filter",
+                &format!("label={MANAGED_LABEL}"),
+                "--format",
+                OWNER_LISTING,
+            ])
+            .output()
+        else {
+            return;
+        };
+        for line in String::from_utf8_lossy(&listed.stdout).lines() {
+            let Some((id, owner)) = line.trim().split_once(' ') else {
+                continue;
+            };
+            if owner.starts_with(&mine) {
+                let _ = Command::new(cli).args(["rm", "-f", id]).output();
+            }
+        }
+    }
+}
+
+impl Drop for TestResidue {
     fn drop(&mut self) {
-        (self.sweep)(&self.scope);
+        self.sweep_scope();
+        self.sweep_this_process();
+    }
+}
+
+/// A container this test made the daemon create.
+///
+/// The factory hands this back rather than the bare id so a suite cannot own
+/// a host object without also owning its removal: the id is reachable only
+/// through the value that cleans it up.
+// Suites that create through a provider rather than the runtime port do not
+// reach these, so they are unused in those binaries.
+#[allow(dead_code)]
+pub(crate) struct OwnedContainer {
+    id: String,
+    _residue: TestResidue,
+}
+
+#[allow(dead_code)]
+impl OwnedContainer {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+/// Create one container at `scope` and keep it owned.
+#[allow(dead_code)]
+pub(crate) async fn create_owned<R: awaken_sandbox_container::ContainerRuntime>(
+    runtime: &R,
+    scope: &str,
+    plan: &awaken_sandbox_container::ContainerPlan,
+    backend: Backend,
+) -> OwnedContainer {
+    let residue = TestResidue::arm(scope, backend);
+    let id = runtime
+        .create(scope, plan)
+        .await
+        .expect("create the test's container");
+    OwnedContainer {
+        id,
+        _residue: residue,
     }
 }
 
@@ -51,48 +221,8 @@ fn swept_off_thread(body: impl FnOnce() + Send + 'static) {
 
 /// The published-agent port plays no part in a container's physical name, so
 /// any value addresses the same object the suite created.
-#[cfg(any(feature = "docker", feature = "podman"))]
 const RESIDUE_AGENT_PORT: u16 = 8080;
 
-/// Remove the Docker container this scope names, if the daemon still holds one.
-// A suite arms one backend, so the other's sweep is unreferenced in its binary.
-#[allow(dead_code)]
-#[cfg(feature = "docker")]
-pub(crate) fn docker(scope: &str) {
-    let scope = scope.to_string();
-    swept_off_thread(move || {
-        use awaken_sandbox_container::ContainerRuntime as _;
-        let Some(runtime) = sweep_runtime(&scope) else {
-            return;
-        };
-        runtime.block_on(async {
-            match awaken_sandbox_container::docker::DockerRuntime::connect_local(RESIDUE_AGENT_PORT)
-            {
-                Ok(docker) => report(&scope, docker.remove_unreceipted_scope(&scope).await),
-                Err(error) => {
-                    eprintln!("residue sweep for `{scope}` has no Docker client: {error}");
-                }
-            }
-        });
-    });
-}
-
-/// Remove the Podman container this scope names, if one still exists.
-#[allow(dead_code)]
-#[cfg(feature = "podman")]
-pub(crate) fn podman(scope: &str) {
-    let scope = scope.to_string();
-    swept_off_thread(move || {
-        use awaken_sandbox_container::ContainerRuntime as _;
-        let Some(runtime) = sweep_runtime(&scope) else {
-            return;
-        };
-        let podman = awaken_sandbox_container::podman::PodmanRuntime::new(RESIDUE_AGENT_PORT);
-        runtime.block_on(async { report(&scope, podman.remove_unreceipted_scope(&scope).await) });
-    });
-}
-
-#[cfg(any(feature = "docker", feature = "podman"))]
 fn sweep_runtime(scope: &str) -> Option<tokio::runtime::Runtime> {
     match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -103,14 +233,5 @@ fn sweep_runtime(scope: &str) -> Option<tokio::runtime::Runtime> {
             eprintln!("residue sweep for `{scope}` has no runtime: {error}");
             None
         }
-    }
-}
-
-/// A scope the daemon never held is already swept, so the backends report
-/// absence as success and only a real removal failure is worth printing.
-#[cfg(any(feature = "docker", feature = "podman"))]
-fn report(scope: &str, outcome: Result<(), awaken_sandbox_container::RuntimeError>) {
-    if let Err(error) = outcome {
-        eprintln!("residue sweep for `{scope}` failed: {error}");
     }
 }

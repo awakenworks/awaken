@@ -17,7 +17,7 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     image: &str,
     // This oracle mints its own scope, so only its caller can say which daemon
     // owns whatever a failure here would otherwise leave behind.
-    sweep_residue: fn(&str),
+    backend: super::residue::Backend,
 ) {
     /* Host-bind lifetime and recovery decision table. C1 ordinary creation has
      * completed; C2 all creator wrappers are dropped; C3 a fresh runtime reads
@@ -46,7 +46,7 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
             .unwrap()
             .as_nanos()
     );
-    let _residue = super::residue::ScopeResidue::arm(&scope, sweep_residue);
+    let _residue = super::residue::TestResidue::arm(&scope, backend);
     let spec = pc::SandboxSpec {
         // This shared Docker/Podman row qualifies bind retention, not the
         // separately probed process-tree supervision guarantee.

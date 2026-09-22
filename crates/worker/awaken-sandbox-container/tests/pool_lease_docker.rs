@@ -6,6 +6,8 @@
 //! `cargo test -p awaken-sandbox-container --features docker --test pool_lease_docker -- --test-threads=1`
 #![cfg(feature = "docker")]
 
+#[path = "common/residue.rs"]
+mod residue;
 #[path = "common/warm_lease_restart.rs"]
 mod warm_lease_restart;
 

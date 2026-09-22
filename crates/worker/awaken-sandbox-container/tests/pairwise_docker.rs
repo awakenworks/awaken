@@ -126,7 +126,7 @@ async fn run_to_exit_disposing(
     // Own this scope's container for the whole row: swept before creation so a
     // leftover from an aborted run cannot fail this one closed, and swept again
     // on the way out even if an assertion below unwinds past `dispose`.
-    let _residue = residue::ScopeResidue::arm(scope, residue::docker);
+    let _residue = residue::TestResidue::arm(scope, residue::Backend::Docker);
 
     let sandbox = provider.create(spec).await.expect("create real container");
     let command = command_of(spec);
