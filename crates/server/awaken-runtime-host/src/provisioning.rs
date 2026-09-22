@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::host::SharedHost;
 use awaken_provisioning_contract as pc;
-use awaken_resource_contract::ArtifactPublicationError;
+use awaken_resource_contract::{ArtifactPublicationError, RepositoryBindingVerifierError};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
 #[cfg(test)]
@@ -19,6 +19,26 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 pub(crate) enum RepositoryPublicationActivationError {
     Rejected(pc::RepositoryPublicationRejection),
     Failed(crate::host::HostError),
+}
+
+fn repository_binding_host_error(error: RepositoryBindingVerifierError) -> crate::host::HostError {
+    let message = error.to_string();
+    match error {
+        RepositoryBindingVerifierError::InvalidRequest { .. }
+        | RepositoryBindingVerifierError::Denied { .. } => {
+            crate::host::HostError::bad_request(message)
+        }
+        RepositoryBindingVerifierError::Conflict { .. } => {
+            crate::host::HostError::conflict(message)
+        }
+        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
+        | RepositoryBindingVerifierError::Indeterminate { .. } => {
+            crate::host::HostError::unavailable(message)
+        }
+        RepositoryBindingVerifierError::CorruptAuthority { .. } => {
+            crate::host::HostError::internal(message)
+        }
+    }
 }
 
 /// One physical-mount classifier shared by fresh-spec construction and live
@@ -899,7 +919,7 @@ impl SharedHost {
                             Some(fence),
                         )
                         .await
-                        .map_err(|error| crate::host::HostError::internal(error.to_string()))?,
+                        .map_err(repository_binding_host_error)?,
                 )
             }
             // Local topology already compiled this exact command through the
@@ -999,7 +1019,7 @@ impl SharedHost {
                                 authority,
                             )
                             .await
-                            .map_err(|error| crate::host::HostError::internal(error.to_string()))?
+                            .map_err(repository_binding_host_error)?
                     }
                 };
                 match transport {

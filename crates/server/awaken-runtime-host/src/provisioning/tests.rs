@@ -19,6 +19,30 @@ fn denies(spec: &pc::SandboxSpec) -> bool {
     spec.deny_tool_egress
 }
 
+#[test]
+fn repository_binding_failure_controls_host_retry_semantics() {
+    // Cause/effect table: malformed/denied binding -> caller BadRequest;
+    // concurrent authority -> Conflict; authority outage or unknown read ->
+    // Unavailable; corrupt authority response -> Internal. This is the final
+    // Host boundary, so the typed cause must survive without message parsing.
+    use crate::host::HostErrorKind as K;
+    use awaken_resource_contract::RepositoryBindingVerifierError as E;
+    let cases = [
+        (E::InvalidRequest { detail: "x".into() }, K::BadRequest),
+        (E::Denied { detail: "x".into() }, K::BadRequest),
+        (E::Conflict { detail: "x".into() }, K::Conflict),
+        (
+            E::AuthorityUnavailable { detail: "x".into() },
+            K::Unavailable,
+        ),
+        (E::Indeterminate { detail: "x".into() }, K::Unavailable),
+        (E::CorruptAuthority { detail: "x".into() }, K::Internal),
+    ];
+    for (error, expected) in cases {
+        assert_eq!(repository_binding_host_error(error).kind, expected);
+    }
+}
+
 struct NoLlm;
 #[async_trait::async_trait]
 impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {

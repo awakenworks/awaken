@@ -260,6 +260,14 @@ claim/receipt frame, and checked generation, expiry and revision arithmetic is
 performed before mutating the in-memory intent. Rejected transitions therefore
 retain the exact old frame instead of leaving half-applied state behind.
 
+Repository binding verification keeps caller-invalid, denied, concurrent,
+unavailable, corrupt-authority and indeterminate observations distinct from the
+Registry through the local and HTTP verifiers into Run and Host error
+classification. Memory materialization references likewise distinguish invalid
+encoder inputs, frozen-authority mismatch, encoding failure and corrupt wire
+values. Both changes extend the existing ports and adapters; they introduce no
+second binding or materialization authority.
+
 SessionRealizationLease and its authorization laws now share a domain module in
 the existing Session contract. Repository ports store that value; they no longer
 define it. Root mutation values and their observation-preservation kernel now

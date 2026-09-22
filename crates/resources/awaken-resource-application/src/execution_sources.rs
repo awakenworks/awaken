@@ -160,7 +160,47 @@ impl<C: Sync> RepositoryBindingVerifier<C> for RegistryRepositoryBindingVerifier
         self.verifier
             .verify_repository_binding(workspace_id, repository_id, config_version)
             .await
-            .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))?;
+            .map_err(|error| match error {
+                awaken_resource_contract::ResourceRegistryError::Invalid(detail) => {
+                    RepositoryBindingVerifierError::InvalidRequest {
+                        detail: detail.to_string(),
+                    }
+                }
+                awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(detail)
+                | awaken_resource_contract::ResourceRegistryError::NotFound(detail)
+                | awaken_resource_contract::ResourceRegistryError::ConcurrentModification(
+                    detail,
+                ) => RepositoryBindingVerifierError::Conflict { detail },
+                awaken_resource_contract::ResourceRegistryError::NotActive { id, state } => {
+                    RepositoryBindingVerifierError::Denied {
+                        detail: format!("resource `{id}` is not active ({state:?})"),
+                    }
+                }
+                awaken_resource_contract::ResourceRegistryError::ConfigConflict {
+                    id,
+                    expected,
+                    current,
+                } => RepositoryBindingVerifierError::Conflict {
+                    detail: format!(
+                        "resource `{id}` config changed (expected {expected:?}, current {current:?})"
+                    ),
+                },
+                awaken_resource_contract::ResourceRegistryError::ConfigNotFound {
+                    id,
+                    version,
+                } => RepositoryBindingVerifierError::Denied {
+                    detail: format!("resource `{id}` config version {version:?} was not found"),
+                },
+                awaken_resource_contract::ResourceRegistryError::CorruptData(detail) => {
+                    RepositoryBindingVerifierError::CorruptAuthority { detail }
+                }
+                awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable {
+                    detail,
+                } => RepositoryBindingVerifierError::AuthorityUnavailable { detail },
+                awaken_resource_contract::ResourceRegistryError::Indeterminate { detail } => {
+                    RepositoryBindingVerifierError::Indeterminate { detail }
+                }
+            })?;
         Ok(awaken_resource_contract::RepositoryTransport::Direct)
     }
 }
@@ -328,6 +368,104 @@ mod tests {
         ArtifactPublication, ArtifactPublisher as _, ArtifactRecovery, content_id,
         harvest_idempotency_key,
     };
+
+    struct FixedBindingFailure(awaken_resource_contract::ResourceRegistryError);
+
+    #[async_trait::async_trait]
+    impl awaken_resource_contract::LiveResourceBindingVerifier for FixedBindingFailure {
+        async fn verify_memory_binding(
+            &self,
+            _workspace_id: &str,
+            _id: &str,
+            _version: awaken_resource_contract::ConfigVersion,
+        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+            Err(self.0.clone())
+        }
+
+        async fn verify_repository_binding(
+            &self,
+            _workspace_id: &str,
+            _id: &str,
+            _version: awaken_resource_contract::ConfigVersion,
+        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+            Err(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn repository_verifier_preserves_registry_recovery_causes() {
+        // Cause/effect table: invalid command -> InvalidRequest; missing,
+        // duplicate, CAS/config races -> Conflict; inactive/missing selected
+        // version -> Denied; corrupt authority -> CorruptAuthority; authority
+        // outage -> AuthorityUnavailable; unknown repository result ->
+        // Indeterminate. No registry cause may collapse into a message-only
+        // verifier error.
+        use awaken_resource_contract::{
+            ConfigVersion, RepositoryBindingVerifier as _, RepositoryBindingVerifierError as E,
+            ResourceRegistryError as R, ResourceState,
+        };
+        let cases = [
+            (R::Invalid("bad".into()), "invalid"),
+            (R::AlreadyRegistered("id".into()), "conflict"),
+            (R::NotFound("id".into()), "conflict"),
+            (
+                R::NotActive {
+                    id: "id".into(),
+                    state: ResourceState::Archived,
+                },
+                "denied",
+            ),
+            (
+                R::ConfigConflict {
+                    id: "id".into(),
+                    expected: ConfigVersion(1),
+                    current: ConfigVersion(2),
+                },
+                "conflict",
+            ),
+            (
+                R::ConfigNotFound {
+                    id: "id".into(),
+                    version: ConfigVersion(2),
+                },
+                "denied",
+            ),
+            (R::ConcurrentModification("id".into()), "conflict"),
+            (R::CorruptData("bad row".into()), "corrupt"),
+            (
+                R::AuthorityUnavailable {
+                    detail: "offline".into(),
+                },
+                "unavailable",
+            ),
+            (
+                R::Indeterminate {
+                    detail: "unknown".into(),
+                },
+                "indeterminate",
+            ),
+        ];
+        for (cause, expected) in cases {
+            let verifier =
+                super::RegistryRepositoryBindingVerifier::new(Arc::new(FixedBindingFailure(cause)));
+            let error = verifier
+                .verify("workspace", "repository", ConfigVersion(1), None::<&()>)
+                .await
+                .expect_err(expected);
+            assert!(
+                matches!(
+                    (&error, expected),
+                    (E::InvalidRequest { .. }, "invalid")
+                        | (E::Conflict { .. }, "conflict")
+                        | (E::Denied { .. }, "denied")
+                        | (E::CorruptAuthority { .. }, "corrupt")
+                        | (E::AuthorityUnavailable { .. }, "unavailable")
+                        | (E::Indeterminate { .. }, "indeterminate")
+                ),
+                "{expected}: {error}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn corrupted_blob_type_survives_application_and_execution_source() {

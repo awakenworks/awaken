@@ -91,6 +91,15 @@ pub awaken_resource_contract::MemoryActor::SessionActor
 pub awaken_resource_contract::MemoryActor::SessionActor::session_id: alloc::string::String
 pub awaken_resource_contract::MemoryActor::UserActor
 pub awaken_resource_contract::MemoryActor::UserActor::user_id: alloc::string::String
+pub enum awaken_resource_contract::MemoryMaterializationReferenceError
+pub awaken_resource_contract::MemoryMaterializationReferenceError::AuthorityMismatch
+pub awaken_resource_contract::MemoryMaterializationReferenceError::AuthorityMismatch::detail: alloc::string::String
+pub awaken_resource_contract::MemoryMaterializationReferenceError::CorruptReference
+pub awaken_resource_contract::MemoryMaterializationReferenceError::CorruptReference::detail: alloc::string::String
+pub awaken_resource_contract::MemoryMaterializationReferenceError::EncodingFailure
+pub awaken_resource_contract::MemoryMaterializationReferenceError::EncodingFailure::detail: alloc::string::String
+pub awaken_resource_contract::MemoryMaterializationReferenceError::InvalidInput
+pub awaken_resource_contract::MemoryMaterializationReferenceError::InvalidInput::detail: alloc::string::String
 pub enum awaken_resource_contract::MemoryStoreApplicationError
 pub awaken_resource_contract::MemoryStoreApplicationError::Purge(awaken_resource_contract::ResourcePurgeError)
 pub awaken_resource_contract::MemoryStoreApplicationError::Registry(awaken_resource_contract::ResourceRegistryError)
@@ -116,6 +125,19 @@ pub enum awaken_resource_contract::ReplaceOutcome
 pub awaken_resource_contract::ReplaceOutcome::ConcurrentModification
 pub awaken_resource_contract::ReplaceOutcome::Replaced
 pub awaken_resource_contract::ReplaceOutcome::Replaced::revision: awaken_resource_contract::AggregateRevision
+pub enum awaken_resource_contract::RepositoryBindingVerifierError
+pub awaken_resource_contract::RepositoryBindingVerifierError::AuthorityUnavailable
+pub awaken_resource_contract::RepositoryBindingVerifierError::AuthorityUnavailable::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::Conflict
+pub awaken_resource_contract::RepositoryBindingVerifierError::Conflict::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::CorruptAuthority
+pub awaken_resource_contract::RepositoryBindingVerifierError::CorruptAuthority::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::Denied
+pub awaken_resource_contract::RepositoryBindingVerifierError::Denied::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::Indeterminate
+pub awaken_resource_contract::RepositoryBindingVerifierError::Indeterminate::detail: alloc::string::String
+pub awaken_resource_contract::RepositoryBindingVerifierError::InvalidRequest
+pub awaken_resource_contract::RepositoryBindingVerifierError::InvalidRequest::detail: alloc::string::String
 pub enum awaken_resource_contract::RepositoryTransport
 pub awaken_resource_contract::RepositoryTransport::Direct
 pub awaken_resource_contract::RepositoryTransport::GatewayMediated
@@ -392,9 +414,6 @@ impl awaken_resource_contract::CompleteGeneration for awaken_resource_contract::
 pub fn awaken_resource_contract::MemoryGeneration::content_digest(&self) -> &str
 pub fn awaken_resource_contract::MemoryGeneration::subject_id(&self) -> &str
 pub fn awaken_resource_contract::MemoryGeneration::version(&self) -> u64
-pub struct awaken_resource_contract::MemoryMaterializationReferenceError(_)
-impl awaken_resource_contract::MemoryMaterializationReferenceError
-pub fn awaken_resource_contract::MemoryMaterializationReferenceError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_resource_contract::MemoryPurgeSummary
 pub awaken_resource_contract::MemoryPurgeSummary::copy_conflicts_deleted: u64
 pub awaken_resource_contract::MemoryPurgeSummary::heads_deleted: u64
@@ -488,9 +507,6 @@ pub fn awaken_resource_contract::RepositoryAggregate::rehydrate(awaken_resource_
 pub fn awaken_resource_contract::RepositoryAggregate::resolve_for_execution(&self, &str) -> core::result::Result<awaken_resource_contract::RepositoryConfigVersion, awaken_resource_contract::ResourceRegistryError>
 pub fn awaken_resource_contract::RepositoryAggregate::validate_integrity(&self) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
 pub fn awaken_resource_contract::RepositoryAggregate::verify_live_binding(&self, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
-pub struct awaken_resource_contract::RepositoryBindingVerifierError(_)
-impl awaken_resource_contract::RepositoryBindingVerifierError
-pub fn awaken_resource_contract::RepositoryBindingVerifierError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_resource_contract::RepositoryConfigVersion
 pub awaken_resource_contract::RepositoryConfigVersion::clone_policy: awaken_resource_contract::ClonePolicy
 pub awaken_resource_contract::RepositoryConfigVersion::credential_binding: core::option::Option<alloc::string::String>
