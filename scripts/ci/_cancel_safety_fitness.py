@@ -69,7 +69,12 @@ EFFECT_METHODS: dict[str, str] = {
     "create_or_verify_with_status": "a Kubernetes object via Api::create",
     "create_or_verify_exact": "a Kubernetes object via Api::create",
     "create_or_verify_with_status_exact": "a Kubernetes object via Api::create",
-    "spawn_agent": "an agent process inside a sandbox",
+    # `spawn`/`spawn_agent` on the container runtime port are absent on
+    # purpose: they take an `AdmittedExec`, which can only be built by taking
+    # an attempt from an environment's ledger, so the compiler now states the
+    # obligation this registry used to. A name cannot be registered for the
+    # bare `spawn` anyway — it would match every `tokio::spawn` in the tree —
+    # which is exactly how that edge stayed invisible here until it was typed.
     "spawn_agent_process": "an agent process inside a container",
     "spawn_prepared": "a supervised child process inside a local sandbox",
     "prewarm": "warm containers created ahead of demand",
@@ -83,19 +88,6 @@ EFFECT_METHODS: dict[str, str] = {
 # despite matching none of the three shapes — name the owner that survives the
 # caller, so a later reader can retire the entry when the code changes.
 CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
-    # Also a detached task. The Staging projection is inserted into the host
-    # before the spawn, and McpStagingActivityGuard (Drop at session_slot.rs:190)
-    # is held inside the task, so a lost task still leaves the Session in a state
-    # the next attachment fails closed on.
-    "crates/server/awaken-session-executor/src/managed_host_mcp_attachment.rs::stage_mcp_attachment": (
-        "detached task; the Staging projection plus McpStagingActivityGuard's Drop own it"
-    ),
-    # One-line trait wrappers over a callee that now mints the claim. The rule
-    # attributes the await to the lexically enclosing fn, so a claimed leaf is
-    # still reported at every level that forwards to it.
-    "crates/worker/awaken-sandbox-container/src/lib.rs::spawn_agent_process": (
-        "delegates to ContainerSandbox::spawn_agent, which claims the exec attempt"
-    ),
     "crates/worker/awaken-sandbox-container/src/pool.rs::prewarm_to": (
         "delegates to WarmContainerPool::prewarm, which claims the warm scope"
     ),
@@ -117,7 +109,7 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
 # pure predicates were admitting five real Kubernetes creations — the Sandbox
 # Pod among them — and the podman backend had no registered leaf at all. A
 # number that falls because the rule stopped looking is not progress.
-CANCEL_SAFETY_BASELINE = 61
+CANCEL_SAFETY_BASELINE = 54
 
 FN_HEAD = re.compile(r"\bfn\s+([A-Za-z_]\w*)\s*")
 IMPL_HEAD = re.compile(r"\bimpl\b")
@@ -360,6 +352,36 @@ def _ratcheted(
     return errors
 
 
+# An `AdmittedExec` is the proof that a container process was written into an
+# environment's ledger before it started. `unrecorded` builds one without a
+# ledger, and exactly one production caller may: the reaper's own exec IS the
+# sweep, not something the sweep must later find. Every other one would be a
+# spawn edge with no record — the defect the type exists to make impossible —
+# so the bypass is counted rather than trusted. This is what replaces the
+# `spawn`/`spawn_agent` rows that used to sit in EFFECT_METHODS: the registry
+# could never name the bare `spawn` without matching every `tokio::spawn`, and
+# a name it cannot state is a name it cannot guard.
+UNRECORDED_ADMISSION = re.compile(r"AdmittedExec::unrecorded\s*\(")
+UNRECORDED_ADMISSION_BASELINE = 1
+
+
+def unrecorded_admissions(crates: Path, repo_root: Path) -> list[tuple[str, str]]:
+    """Every production site that starts a process with no ledger behind it."""
+    found: list[tuple[str, str]] = []
+    for path, text in _production_sources(crates).items():
+        for number, line in enumerate(text.splitlines(), start=1):
+            if line.lstrip().startswith(("//", "#")):
+                continue
+            if UNRECORDED_ADMISSION.search(line):
+                key = f"{path.relative_to(repo_root).as_posix()}::{number}"
+                found.append((
+                    key,
+                    f"{key}: admits an exec no environment ledger records. Only the "
+                    "reaper's own sweep may; take the attempt from ExecAttempts instead",
+                ))
+    return found
+
+
 def live_findings(repo_root: Path, crates: Path) -> list[tuple[str, str]]:
     """Every unexempted finding on the tree, for triage and for the baseline."""
     found = unowned_effects(_production_sources(crates), repo_root)
@@ -373,6 +395,12 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
         CANCEL_SAFETY_BASELINE,
         "awaited physical effects with no owner surviving the caller",
         "CANCEL_SAFETY_EXEMPTIONS",
+    ) + _ratcheted(
+        unrecorded_admissions(crates, repo_root),
+        {},
+        UNRECORDED_ADMISSION_BASELINE,
+        "production execs admitted with no ledger behind them",
+        "the reaper's own sweep",
     )
 
 

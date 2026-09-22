@@ -2139,6 +2139,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-runtime-contract",
+ "awaken-sandbox-container",
  "awaken-sandbox-control",
  "awaken-sandbox-control-transport",
  "awaken-sandbox-memoryd",

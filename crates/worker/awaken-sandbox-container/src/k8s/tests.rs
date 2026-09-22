@@ -1084,11 +1084,18 @@ async fn exec_admission_and_argv_materialization_cover_all_command_boundaries() 
     let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
     let mut piped = pc::MaterializedCommand::new(["echo", "value"]);
     piped.stdio = pc::Stdio::Piped;
-    assert!(rt.spawn("pod", piped).await.is_err());
     assert!(
-        rt.spawn_agent("pod", pc::MaterializedCommand::new(Vec::<String>::new()))
+        rt.spawn(crate::AdmittedExec::unrecorded("pod"), piped)
             .await
             .is_err()
+    );
+    assert!(
+        rt.spawn_agent(
+            crate::AdmittedExec::unrecorded("pod"),
+            pc::MaterializedCommand::new(Vec::<String>::new())
+        )
+        .await
+        .is_err()
     );
 }
 

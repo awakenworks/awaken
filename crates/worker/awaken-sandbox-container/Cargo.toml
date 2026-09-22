@@ -52,11 +52,19 @@ docker = ["dep:bollard", "dep:futures-util", "connection"]
 # Real Kubernetes ContainerRuntime (kube). Process-as-container Pod + native-GC.
 # Compile-verified; running needs a cluster.
 k8s = ["dep:kube", "dep:k8s-openapi", "dep:awaken-outbound-http", "connection"]
+# Lets a caller outside this crate admit an exec that no environment ledger
+# records. Only a harness driving the runtime port directly needs it — a
+# Session environment always has a ledger — so it stays off for dependants.
+unrecorded-exec = []
 # Rootless Podman ContainerRuntime (daemonless CLI fork-exec). Honors the rootfs
 # plan (Image / IsolatedRoot). Compile-verified; running needs the `podman` binary.
 podman = ["connection", "tokio/process"]
 
 [dev-dependencies]
+# Self dev-dependency so the integration suites — which drive the runtime port
+# directly and own their containers — can admit an exec no environment ledger
+# records. Dependants never see this feature.
+awaken-sandbox-container = { path = ".", features = ["unrecorded-exec"] }
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time", "test-util"] }
 awaken-runtime-contract.workspace = true

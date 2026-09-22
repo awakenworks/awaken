@@ -97,7 +97,7 @@ impl crate::ContainerRuntime for ExecRuntime {
 
     async fn spawn(
         &self,
-        _container_id: &str,
+        _admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
         self.execs.lock().unwrap().push(command.argv);
@@ -108,7 +108,7 @@ impl crate::ContainerRuntime for ExecRuntime {
 
     async fn spawn_agent(
         &self,
-        _container_id: &str,
+        _admitted: crate::AdmittedExec,
         _command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
         self.spawn_agent_started.notify_waiters();

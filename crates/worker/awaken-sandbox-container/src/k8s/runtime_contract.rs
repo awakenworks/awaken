@@ -616,9 +616,10 @@ impl ContainerRuntime for K8sRuntime {
 
     async fn spawn(
         &self,
-        container_id: &str,
+        admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        let container_id = admitted.container_id();
         if command.stdio == pc::Stdio::Piped {
             return Err(backend(
                 "piped container exec requires the agent-channel capability",
@@ -683,9 +684,10 @@ impl ContainerRuntime for K8sRuntime {
 
     async fn spawn_agent(
         &self,
-        container_id: &str,
+        admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        let container_id = admitted.container_id();
         let id = format!(
             "k8s-agent-exec-{}-{}",
             std::process::id(),

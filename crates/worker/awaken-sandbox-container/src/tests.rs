@@ -3846,9 +3846,10 @@ impl ContainerRuntime for FakeRuntime {
     }
     async fn spawn(
         &self,
-        container_id: &str,
+        admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        let container_id = admitted.container_id();
         if !self.st.lock().unwrap().alive.contains_key(container_id) {
             return Err(RuntimeError::NotFound(container_id.into()));
         }
@@ -3891,15 +3892,18 @@ impl ContainerRuntime for FakeRuntime {
 
     async fn spawn_agent(
         &self,
-        container_id: &str,
+        admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        let container_id = admitted.container_id();
         let memory_archive = if command.argv.iter().any(|arg| arg == "read-tree-nofollow") {
             self.st.lock().unwrap().memory_archive.clone()
         } else {
             Vec::new()
         };
-        let process = self.spawn(container_id, command).await?;
+        let process = self
+            .spawn(crate::AdmittedExec::unrecorded(container_id), command)
+            .await?;
         let capacity = memory_archive.len().max(64);
         let (ours, mut peer) = tokio::io::duplex(capacity);
         tokio::spawn(async move {

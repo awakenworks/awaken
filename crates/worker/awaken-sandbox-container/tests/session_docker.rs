@@ -31,7 +31,7 @@ async fn native_acp_and_hand_share_one_production_container() {
     runtime.ping().await.expect("reachable Docker daemon");
     let provider = ContainerProvider::new(runtime.clone(), image);
     let scope = format!("session-real-{}", std::process::id());
-    let _residue = residue::ScopeResidue::arm(scope.as_str(), residue::docker);
+    let _residue = residue::TestResidue::arm(scope.as_str(), residue::Backend::Docker);
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
         scope,

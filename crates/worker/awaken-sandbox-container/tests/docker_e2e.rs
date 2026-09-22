@@ -71,7 +71,7 @@ async fn a_containerized_agent_speaks_the_wire_over_a_published_port() {
     // name, and a guard that removes this scope's container now and again on
     // the way out, including while a panic unwinds.
     let scope = format!("docker-e2e-{}", std::process::id());
-    let _residue = residue::ScopeResidue::arm(scope.as_str(), residue::docker);
+    let _residue = residue::TestResidue::arm(scope.as_str(), residue::Backend::Docker);
 
     let runtime = DockerRuntime::connect_local(port).expect("docker client");
     let provider = ContainerProvider::new(Arc::new(runtime), "busybox:latest");
