@@ -33,15 +33,6 @@ impl LiveInboxApplication for SessionApplication {
             .await?;
         Ok(self
             .runtime()
-            .live_inbox()
-            .ok_or_else(|| {
-                LiveInboxApplicationError::Unavailable(format!(
-                    "{}",
-                    awaken_session_contract::RunError::unavailable(
-                        "LiveInboxRuntime is unsupported by this runtime"
-                    )
-                ))
-            })?
             .live_inbox_snapshot(session_id.as_str())
             .await)
     }
@@ -55,15 +46,6 @@ impl LiveInboxApplication for SessionApplication {
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
         self.runtime()
-            .live_inbox()
-            .ok_or_else(|| {
-                LiveInboxApplicationError::Unavailable(format!(
-                    "{}",
-                    awaken_session_contract::RunError::unavailable(
-                        "LiveInboxRuntime is unsupported by this runtime"
-                    )
-                ))
-            })?
             .live_inbox_queue(session_id.as_str(), content)
             .await
             .map_err(Into::into)
@@ -78,15 +60,6 @@ impl LiveInboxApplication for SessionApplication {
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
         self.runtime()
-            .live_inbox()
-            .ok_or_else(|| {
-                LiveInboxApplicationError::Unavailable(format!(
-                    "{}",
-                    awaken_session_contract::RunError::unavailable(
-                        "LiveInboxRuntime is unsupported by this runtime"
-                    )
-                ))
-            })?
             .live_inbox_remove(session_id.as_str(), message_id)
             .await
             .map_err(Into::into)
@@ -102,15 +75,6 @@ impl LiveInboxApplication for SessionApplication {
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
         self.runtime()
-            .live_inbox()
-            .ok_or_else(|| {
-                LiveInboxApplicationError::Unavailable(format!(
-                    "{}",
-                    awaken_session_contract::RunError::unavailable(
-                        "LiveInboxRuntime is unsupported by this runtime"
-                    )
-                ))
-            })?
             .live_inbox_replace(session_id.as_str(), message_id, content)
             .await
             .map_err(Into::into)
@@ -125,15 +89,6 @@ impl LiveInboxApplication for SessionApplication {
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
         self.runtime()
-            .live_inbox()
-            .ok_or_else(|| {
-                LiveInboxApplicationError::Unavailable(format!(
-                    "{}",
-                    awaken_session_contract::RunError::unavailable(
-                        "LiveInboxRuntime is unsupported by this runtime"
-                    )
-                ))
-            })?
             .live_inbox_reorder(session_id.as_str(), order)
             .await
             .map_err(Into::into)

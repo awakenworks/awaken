@@ -506,12 +506,6 @@ impl SessionApplication {
             && (outcome.changes.tools || !outcome.command_applied)
             && let Err(source) = self
                 .runtime()
-                .environment()
-                .ok_or_else(|| {
-                    SessionUpdateError::Rejected(awaken_session_contract::RunError::unavailable(
-                        "EnvironmentRuntime is unsupported by this runtime",
-                    ))
-                })?
                 .replace_session_tools(
                     outcome.session.session_id.as_str(),
                     outcome.session.tools.clone(),
@@ -540,12 +534,6 @@ impl SessionApplication {
         let session_id = outcome.session.session_id.clone();
         let tickets = self
             .runtime()
-            .budget()
-            .ok_or_else(|| {
-                SessionUpdateError::Rejected(awaken_session_contract::RunError::unavailable(
-                    "BudgetRuntime is unsupported by this runtime",
-                ))
-            })?
             .session_budget_resume_tickets(&session_id)
             .await
             .map_err(|source| SessionUpdateError::ProjectionAfterCommit {
@@ -579,12 +567,6 @@ impl SessionApplication {
                 })?;
             let disposition = match self
                 .runtime()
-                .budget()
-                .ok_or_else(|| {
-                    SessionUpdateError::Rejected(awaken_session_contract::RunError::unavailable(
-                        "BudgetRuntime is unsupported by this runtime",
-                    ))
-                })?
                 .resume_budget_reached(SessionBudgetResumeDelivery {
                     session_id: session_id.clone(),
                     thread_id: ticket.thread_id,

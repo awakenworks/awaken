@@ -791,6 +791,16 @@ impl WorkerDirectory for TestWorkerDirectory {
     ) -> Result<RegistryMutation, RegistryError> {
         Ok(RegistryMutation::InvalidTransition)
     }
+
+    async fn record_process_exit(
+        &self,
+        _identity: &WorkerIdentity,
+        _receipt: awaken_dispatch::WorkerProcessExit,
+    ) -> Result<RegistryMutation, RegistryError> {
+        Err(RegistryError::Persistence(
+            "process-exit persistence is outside this read-oriented fixture".into(),
+        ))
+    }
 }
 
 fn activation() -> RunActivation {

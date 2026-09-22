@@ -41,9 +41,8 @@
     },
     "awaken-provisioning-contract": {
       "depth": 1,
-      "production_lines": 4426,
+      "production_lines": 4422,
       "catch_all_errors": 3,
-      "capability_defaults": 1,
       "growth_reasons": {
         "production_lines": "single-source the realization-lease laws: SandboxEffectFence::for_operation and fence_is_live_at join the fence kernel in provisioning (+23); session-contract lease/generation rules now call that kernel instead of repeating the field comparison (+12 at three call sites, -6 projection)",
         "catch_all_errors": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)"
@@ -51,9 +50,11 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 2998,
+      "production_lines": 3031,
+      "catch_all_errors": 13,
       "growth_reasons": {
-        "production_lines": "extract Session identity, Budget, Dream, Event, MCP, and Work owners behind the existing facade; replace unsupported capability defaults with required or exact role ports; type Resource error detail while preserving category variants"
+        "production_lines": "September 22: 13 pre-existing opaque Resource wrappers are newly visible to the strengthened scanner, not resolved debt (ADR-0081 section 9); 33 production lines add typed FileStore and FileContentSource failure categories with preserved error provenance.",
+        "catch_all_errors": "September 22: 13 pre-existing opaque Resource wrappers are newly visible to the strengthened scanner, not resolved debt (ADR-0081 section 9); 33 production lines add typed FileStore and FileContentSource failure categories with preserved error provenance."
       }
     },
     "awaken-dispatch-contract": {
@@ -113,8 +114,7 @@
     },
     "awaken-worker-contract": {
       "depth": 3,
-      "catch_all_errors": 1,
-      "capability_defaults": 1
+      "catch_all_errors": 1
     }
   }
 }

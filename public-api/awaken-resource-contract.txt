@@ -12,10 +12,34 @@ pub fn awaken_resource_contract::CreateFileRecordOutcome::record(&self) -> &awak
 pub enum awaken_resource_contract::FileCatalogError
 pub awaken_resource_contract::FileCatalogError::Invalid(awaken_resource_contract::ResourceErrorDetail)
 pub awaken_resource_contract::FileCatalogError::Storage(awaken_resource_contract::ResourceErrorDetail)
+pub enum awaken_resource_contract::FileContentSourceError
+pub awaken_resource_contract::FileContentSourceError::Indeterminate
+pub awaken_resource_contract::FileContentSourceError::Indeterminate::detail: alloc::string::String
+pub awaken_resource_contract::FileContentSourceError::Integrity
+pub awaken_resource_contract::FileContentSourceError::Integrity::actual: alloc::string::String
+pub awaken_resource_contract::FileContentSourceError::Integrity::expected: alloc::string::String
+pub awaken_resource_contract::FileContentSourceError::Integrity::file_id: alloc::string::String
+pub awaken_resource_contract::FileContentSourceError::Resource(awaken_resource_contract::ResourcePurgeError)
+impl awaken_resource_contract::FileContentSourceError
+pub fn awaken_resource_contract::FileContentSourceError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub enum awaken_resource_contract::FileReadPurpose
 pub awaken_resource_contract::FileReadPurpose::ModelContent
 pub awaken_resource_contract::FileReadPurpose::ModelContent::thread_id: alloc::string::String
 pub awaken_resource_contract::FileReadPurpose::SessionResource
+pub enum awaken_resource_contract::FileStoreError
+pub awaken_resource_contract::FileStoreError::AuthorityUnavailable
+pub awaken_resource_contract::FileStoreError::AuthorityUnavailable::detail: alloc::string::String
+pub awaken_resource_contract::FileStoreError::CorruptContent
+pub awaken_resource_contract::FileStoreError::CorruptContent::content_id: alloc::string::String
+pub awaken_resource_contract::FileStoreError::Indeterminate
+pub awaken_resource_contract::FileStoreError::Indeterminate::detail: alloc::string::String
+pub awaken_resource_contract::FileStoreError::InvalidConfiguration
+pub awaken_resource_contract::FileStoreError::InvalidConfiguration::detail: alloc::string::String
+pub awaken_resource_contract::FileStoreError::Io
+pub awaken_resource_contract::FileStoreError::Io::detail: alloc::string::String
+pub awaken_resource_contract::FileStoreError::Io::kind: core::io::error::ErrorKind
+impl core::convert::From<core::io::error::Error> for awaken_resource_contract::FileStoreError
+pub fn awaken_resource_contract::FileStoreError::from(core::io::error::Error) -> Self
 pub enum awaken_resource_contract::InputResourceId
 pub awaken_resource_contract::InputResourceId::File(awaken_resource_contract::FileId)
 pub awaken_resource_contract::InputResourceId::MemoryStore(awaken_resource_contract::MemoryStoreId)
@@ -84,6 +108,7 @@ pub awaken_resource_contract::ResourceKind::MemoryStore
 pub awaken_resource_contract::ResourceKind::Repository
 pub awaken_resource_contract::ResourceKind::Skill
 pub enum awaken_resource_contract::ResourcePurgeError
+pub awaken_resource_contract::ResourcePurgeError::Blob(awaken_resource_contract::FileStoreError)
 pub awaken_resource_contract::ResourcePurgeError::IdempotencyConflict(alloc::string::String)
 pub awaken_resource_contract::ResourcePurgeError::Invalid(awaken_resource_contract::ResourceErrorDetail)
 pub awaken_resource_contract::ResourcePurgeError::InvalidTransition
@@ -250,9 +275,6 @@ pub awaken_resource_contract::CreateRepositoryCommand::initial_commit: core::opt
 pub awaken_resource_contract::CreateRepositoryCommand::name: alloc::string::String
 pub awaken_resource_contract::CreateRepositoryCommand::remote_url: alloc::string::String
 pub awaken_resource_contract::CreateRepositoryCommand::workspace_id: alloc::string::String
-pub struct awaken_resource_contract::FileContentSourceError(_)
-impl awaken_resource_contract::FileContentSourceError
-pub fn awaken_resource_contract::FileContentSourceError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_resource_contract::FileId(_)
 impl awaken_resource_contract::FileId
 pub fn awaken_resource_contract::FileId::as_str(&self) -> &str
@@ -281,7 +303,6 @@ pub awaken_resource_contract::FileRecord::mime_type: alloc::string::String
 pub awaken_resource_contract::FileRecord::scope_id: core::option::Option<alloc::string::String>
 pub awaken_resource_contract::FileRecord::size_bytes: u64
 pub awaken_resource_contract::FileRecord::workspace_id: alloc::string::String
-pub struct awaken_resource_contract::FileStoreError(pub awaken_resource_contract::ResourceErrorDetail)
 pub struct awaken_resource_contract::InputBinding
 pub awaken_resource_contract::InputBinding::access: awaken_resource_contract::ResourceAccess
 pub awaken_resource_contract::InputBinding::binding_id: awaken_resource_contract::BindingId

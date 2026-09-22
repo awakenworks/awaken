@@ -57,15 +57,12 @@ impl ManagedState {
             binding,
             replaces: None,
         };
-        let (mut inputs, _) = awaken_session_contract::SessionInputResolver::resolve_inputs(
-            owner_scope,
-            None,
-            &[],
-            &[attachment],
-        )
-        .await
-        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?
-        .into_parts();
+        let (mut inputs, _) = self
+            .application
+            .resolve_session_inputs(owner_scope, &[], &[attachment])
+            .await
+            .map_err(StateError::Run)?
+            .into_parts();
         inputs
             .pop()
             .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))

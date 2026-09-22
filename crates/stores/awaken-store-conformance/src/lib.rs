@@ -6,6 +6,7 @@
 //! from their own test crate, each with a freshly constructed store, so the suite
 //! stays backend-agnostic and the media (inmem/fs/postgres/sqlite) cannot diverge.
 
+pub mod dream_store;
 pub mod env_registry;
 pub mod resource_registry;
 pub mod session_store;

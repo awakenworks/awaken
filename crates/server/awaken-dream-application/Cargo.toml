@@ -24,3 +24,6 @@ tracing = "0.1"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+awaken-store-conformance.workspace = true
