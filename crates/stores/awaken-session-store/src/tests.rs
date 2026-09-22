@@ -1031,7 +1031,7 @@ async fn postgres_normalization_and_index_repair_share_one_crash_boundary() {
     }
 }
 
-async fn postgres_test_admin() -> Option<(String, sqlx::postgres::PgPool)> {
+pub(super) async fn postgres_test_admin() -> Option<(String, sqlx::postgres::PgPool)> {
     /* Postgres fixture admission decision table. Causes: C1 the caller
      * explicitly configured AWAKEN_TEST_DATABASE_URL; C2 that database is
      * reachable. Effects: E1 return the live pool; E2 allow an ordinary local
@@ -1058,7 +1058,7 @@ async fn postgres_test_admin() -> Option<(String, sqlx::postgres::PgPool)> {
     }
 }
 
-fn scoped_postgres_url(base: &str, schema: &str) -> String {
+pub(super) fn scoped_postgres_url(base: &str, schema: &str) -> String {
     let separator = if base.contains('?') { '&' } else { '?' };
     format!("{base}{separator}options=-c%20search_path%3D{schema}")
 }

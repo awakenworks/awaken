@@ -202,9 +202,8 @@ impl SessionApplication {
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn awaken_agent_contract::clock::Clock>) -> Self {
         self.clock = clock;
-        if let Some(role) = self.runtime.realization() {
-            role.install_environment_binding_sink(self.environment_binding_sink());
-        }
+        self.runtime
+            .install_environment_binding_sink(self.environment_binding_sink());
         self
     }
 
@@ -243,25 +242,9 @@ impl SessionApplication {
         let lifecycle_outbox: Arc<dyn awaken_session_contract::LifecycleOutbox> =
             sessions_repo.clone();
         let sessions_repo: Arc<dyn SessionRepository> = sessions_repo;
-        assert!(
-            runtime.realization().is_some()
-                && runtime.coordination().is_some()
-                && runtime.budget().is_some()
-                && runtime.streaming_runs().is_some()
-                && runtime.environment().is_some()
-                && runtime.thread_reads().is_some()
-                && runtime.terminal_cleanup().is_some()
-                && runtime.outcomes().is_some()
-                && runtime.live_inbox().is_some()
-                && runtime.capability().is_some(),
-            "CompleteSessionRuntime must expose every role at composition"
-        );
-        runtime
-            .realization()
-            .expect("complete runtime realization role")
-            .install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
-                sessions_repo.clone(),
-            )));
+        runtime.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
+            sessions_repo.clone(),
+        )));
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
@@ -356,12 +339,6 @@ impl SessionApplication {
             &layout.environment.idle_retention,
         )?;
         self.runtime
-            .realization()
-            .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
-                    "RealizationRuntime is unsupported by this runtime",
-                )
-            })?
             .validate_session_sandbox_layout(session_id, layout)
     }
 
@@ -586,9 +563,8 @@ impl SessionApplication {
     pub fn replace_repository(&mut self, repo: Arc<dyn awaken_session_contract::SessionStore>) {
         self.lifecycle_outbox = repo.clone();
         self.sessions_repo = repo;
-        if let Some(role) = self.runtime.realization() {
-            role.install_environment_binding_sink(self.environment_binding_sink());
-        }
+        self.runtime
+            .install_environment_binding_sink(self.environment_binding_sink());
     }
 
     pub fn replace_environment_source(&mut self, source: Arc<dyn SessionEnvironmentSource>) {

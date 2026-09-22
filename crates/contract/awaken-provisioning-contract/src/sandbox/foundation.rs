@@ -187,11 +187,7 @@ pub trait MemoryMounter: Send + Sync {
         _evidence: &MemoryMaterializationEvidence,
         _files: &[(String, Vec<u8>)],
         _access: MountAccess,
-    ) -> Result<(), SandboxError> {
-        Err(SandboxError::unsupported(
-            "recovered Memory copy reconciliation is unsupported",
-        ))
-    }
+    ) -> Result<(), SandboxError>;
 }
 
 /// Typed result of the Memory effect boundary. A plain error is insufficient:

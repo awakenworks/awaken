@@ -1274,27 +1274,11 @@ impl SessionApplication {
                     .await?;
                 if let Err(error) = self
                     .runtime()
-                    .environment()
-                    .ok_or_else(|| {
-                        SessionPreparationError::Rejected(
-                            awaken_session_contract::RunError::unavailable(
-                                "EnvironmentRuntime is unsupported by this runtime",
-                            ),
-                        )
-                    })?
                     .apply_session_inputs(session_id.as_str(), &transition)
                     .await
                 {
                     let settlement = match self
                         .runtime()
-                        .environment()
-                        .ok_or_else(|| {
-                            SessionPreparationError::Rejected(
-                                awaken_session_contract::RunError::unavailable(
-                                    "EnvironmentRuntime is unsupported by this runtime",
-                                ),
-                            )
-                        })?
                         .apply_session_inputs(session_id.as_str(), &transition.reversed())
                         .await
                     {
@@ -1368,14 +1352,6 @@ impl SessionApplication {
                 awaken_session_contract::SessionResourceTransition::new(active.clone(), active)
                     .map_err(internal)?;
             self.runtime()
-                .environment()
-                .ok_or_else(|| {
-                    SessionPreparationError::Rejected(
-                        awaken_session_contract::RunError::unavailable(
-                            "EnvironmentRuntime is unsupported by this runtime",
-                        ),
-                    )
-                })?
                 .apply_session_inputs(session_id.as_str(), &transition)
                 .await
                 .map_err(SessionPreparationError::Rejected)?;

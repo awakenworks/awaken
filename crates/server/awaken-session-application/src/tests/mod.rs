@@ -777,7 +777,10 @@ impl SessionRuntime for NoopRuntime {
     }
 
     fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
-        Some(self)
+        // R1: the complete runtime implements the role but the legacy optional
+        // discovery path does not expose it. Application construction, rebinding
+        // and execution must use the implemented role directly.
+        None
     }
 
     fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
@@ -5006,6 +5009,26 @@ fn application_with_runtime(
     environments: Arc<dyn SessionEnvironmentSource>,
 ) -> SessionApplication {
     SessionApplication::new(runtime, Arc::new(NoopMcpRealizer), repo, environments)
+}
+
+#[test]
+fn complete_runtime_composition_does_not_require_optional_role_discovery() {
+    // Causes: C1 all required role traits are implemented; C2 the old
+    // realization accessor returns None; C3 clock or repository is replaced.
+    // Effects: construction and both binding updates succeed through the real
+    // role. R1=C1+C2 => construct; R2=R1+C3 => rebind. Missing C1 is excluded by
+    // the CompleteSessionRuntime constructor parameter at compile time.
+    let runtime = Arc::new(NoopRuntime);
+    assert!(SessionRuntime::realization(runtime.as_ref()).is_none());
+    let repository =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let mut app = application_with_runtime(
+        runtime,
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    )
+    .with_clock(Arc::new(awaken_agent_contract::clock::SystemClock));
+    app.replace_repository(repository);
 }
 
 fn application_with_configuration(

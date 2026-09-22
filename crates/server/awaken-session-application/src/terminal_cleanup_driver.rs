@@ -7,7 +7,7 @@
 
 use awaken_session_contract::{
     RunError, SessionRealizationControlFailure, SessionRealizationDriveError,
-    SessionRepositoryPublicationEffect, SessionRuntime, SessionTerminalCleanupAction,
+    SessionRepositoryPublicationEffect, SessionTerminalCleanupAction,
     SessionTerminalCleanupControl, SessionTerminalCleanupDisposalEffect,
     SessionTerminalCleanupEffect, SessionTerminalCleanupWork,
     realization_lease_generation_authorizes,
@@ -37,9 +37,9 @@ fn workspace_matches(expected: &str, authorized: &str) -> Result<(), SessionReal
     }
 }
 
-async fn next_work(
+async fn next_work<R: awaken_session_contract::RealizationRuntime + ?Sized>(
     control: &dyn SessionTerminalCleanupControl,
-    runtime: &dyn SessionRuntime,
+    runtime: &R,
     session_id: &awaken_session_contract::SessionId,
     lease: &awaken_session_contract::SessionRealizationLease,
 ) -> Result<
@@ -49,14 +49,7 @@ async fn next_work(
     )>,
     SessionRealizationDriveError,
 > {
-    let started = runtime
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_contract::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })?
-        .observe_realization_request()?;
+    let started = runtime.observe_realization_request()?;
     match control.terminal_cleanup_work(session_id, lease).await {
         Ok(work) => Ok(work.map(|work| (work, started))),
         Err(SessionRealizationControlFailure::NotFound) => Ok(None),
@@ -71,22 +64,21 @@ async fn next_work(
 /// asserted lease identifies an already-admitted terminal assignment;
 /// every action is re-read through `control` after the preceding receipt is
 /// durable.
-pub async fn drive_session_terminal_cleanup(
+pub async fn drive_session_terminal_cleanup<R>(
     session_id: &awaken_session_contract::SessionId,
     asserted_lease: &awaken_session_contract::SessionRealizationLease,
     control: &dyn SessionTerminalCleanupControl,
-    runtime: &dyn SessionRuntime,
-) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
+    runtime: &R,
+) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError>
+where
+    R: awaken_session_contract::RealizationRuntime
+        + awaken_session_contract::TerminalCleanupRuntime
+        + ?Sized,
+{
     let mut lease = asserted_lease.clone();
     'drive: for _ in 0..8 {
         let Some((work, started)) = next_work(control, runtime, session_id, &lease).await? else {
             runtime
-                .terminal_cleanup()
-                .ok_or_else(|| {
-                    awaken_session_contract::RunError::unavailable(
-                        "TerminalCleanupRuntime is unsupported by this runtime",
-                    )
-                })?
                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                 .await;
             return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -97,12 +89,6 @@ pub async fn drive_session_terminal_cleanup(
             ));
         }
         runtime
-            .terminal_cleanup()
-            .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime",
-                )
-            })?
             .install_terminal_cleanup_assignment(
                 &work.assignment,
                 work.assignment.authority.clone().observed(started),
@@ -120,12 +106,6 @@ pub async fn drive_session_terminal_cleanup(
                     Ok(projection) => projection,
                     Err(SessionRealizationControlFailure::NotFound) => {
                         runtime
-                            .terminal_cleanup()
-                            .ok_or_else(|| {
-                                awaken_session_contract::RunError::unavailable(
-                                    "TerminalCleanupRuntime is unsupported by this runtime",
-                                )
-                            })?
                             .acknowledge_completed_terminal_cleanup(session_id, &lease)
                             .await;
                         return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -148,12 +128,6 @@ pub async fn drive_session_terminal_cleanup(
                 }
                 let current_lease = projection.current_lease;
                 let effect = runtime
-                    .terminal_cleanup()
-                    .ok_or_else(|| {
-                        awaken_session_contract::RunError::unavailable(
-                            "TerminalCleanupRuntime is unsupported by this runtime",
-                        )
-                    })?
                     .execute_terminal_repository_publication_for_lease(
                         projection.command,
                         &current_lease,
@@ -183,12 +157,6 @@ pub async fn drive_session_terminal_cleanup(
                     Ok(()) => {}
                     Err(SessionRealizationControlFailure::NotFound) => {
                         runtime
-                            .terminal_cleanup()
-                            .ok_or_else(|| {
-                                awaken_session_contract::RunError::unavailable(
-                                    "TerminalCleanupRuntime is unsupported by this runtime",
-                                )
-                            })?
                             .acknowledge_completed_terminal_cleanup(session_id, &lease)
                             .await;
                         return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -215,12 +183,6 @@ pub async fn drive_session_terminal_cleanup(
                             Ok(authorization) => authorization,
                             Err(SessionRealizationControlFailure::NotFound) => {
                                 runtime
-                                    .terminal_cleanup()
-                                    .ok_or_else(|| {
-                                        awaken_session_contract::RunError::unavailable(
-                                            "TerminalCleanupRuntime is unsupported by this runtime",
-                                        )
-                                    })?
                                     .acknowledge_completed_terminal_cleanup(session_id, &lease)
                                     .await;
                                 return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -235,12 +197,6 @@ pub async fn drive_session_terminal_cleanup(
                     authorization.verify_for(&effect)?;
                     workspace_matches(&expected_workspace, authorization.workspace_id())?;
                     let preparation = match runtime
-                        .terminal_cleanup()
-                        .ok_or_else(|| {
-                            awaken_session_contract::RunError::unavailable(
-                                "TerminalCleanupRuntime is unsupported by this runtime",
-                            )
-                        })?
                         .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
                         .await
                     {
@@ -256,32 +212,14 @@ pub async fn drive_session_terminal_cleanup(
                     {
                         Ok(()) => {
                             runtime
-                                .terminal_cleanup()
-                                .ok_or_else(|| {
-                                    awaken_session_contract::RunError::unavailable(
-                                        "TerminalCleanupRuntime is unsupported by this runtime",
-                                    )
-                                })?
                                 .acknowledge_terminal_cleanup_preparation(&effect)
                                 .await;
                         }
                         Err(SessionRealizationControlFailure::NotFound) => {
                             runtime
-                                .terminal_cleanup()
-                                .ok_or_else(|| {
-                                    awaken_session_contract::RunError::unavailable(
-                                        "TerminalCleanupRuntime is unsupported by this runtime",
-                                    )
-                                })?
                                 .acknowledge_terminal_cleanup_preparation(&effect)
                                 .await;
                             runtime
-                                .terminal_cleanup()
-                                .ok_or_else(|| {
-                                    awaken_session_contract::RunError::unavailable(
-                                        "TerminalCleanupRuntime is unsupported by this runtime",
-                                    )
-                                })?
                                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                                 .await;
                             return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -310,12 +248,6 @@ pub async fn drive_session_terminal_cleanup(
                         Ok(workspace) => workspace,
                         Err(SessionRealizationControlFailure::NotFound) => {
                             runtime
-                                .terminal_cleanup()
-                                .ok_or_else(|| {
-                                    awaken_session_contract::RunError::unavailable(
-                                        "TerminalCleanupRuntime is unsupported by this runtime",
-                                    )
-                                })?
                                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                                 .await;
                             return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -324,12 +256,6 @@ pub async fn drive_session_terminal_cleanup(
                     };
                 workspace_matches(&expected_workspace, &authorized_workspace)?;
                 let receipt = runtime
-                    .terminal_cleanup()
-                    .ok_or_else(|| {
-                        awaken_session_contract::RunError::unavailable(
-                            "TerminalCleanupRuntime is unsupported by this runtime",
-                        )
-                    })?
                     .dispose_terminal_cleanup_for_effect(effect.clone())
                     .await?;
                 match control
@@ -337,22 +263,8 @@ pub async fn drive_session_terminal_cleanup(
                     .await
                 {
                     Ok(()) | Err(SessionRealizationControlFailure::NotFound) => {
+                        runtime.acknowledge_terminal_cleanup_disposal(&effect).await;
                         runtime
-                            .terminal_cleanup()
-                            .ok_or_else(|| {
-                                awaken_session_contract::RunError::unavailable(
-                                    "TerminalCleanupRuntime is unsupported by this runtime",
-                                )
-                            })?
-                            .acknowledge_terminal_cleanup_disposal(&effect)
-                            .await;
-                        runtime
-                            .terminal_cleanup()
-                            .ok_or_else(|| {
-                                awaken_session_contract::RunError::unavailable(
-                                    "TerminalCleanupRuntime is unsupported by this runtime",
-                                )
-                            })?
                             .acknowledge_completed_terminal_cleanup(session_id, &lease)
                             .await;
                         return Ok(SessionTerminalCleanupDriveOutcome::Completed);
@@ -365,12 +277,6 @@ pub async fn drive_session_terminal_cleanup(
     match next_work(control, runtime, session_id, &lease).await? {
         None => {
             runtime
-                .terminal_cleanup()
-                .ok_or_else(|| {
-                    awaken_session_contract::RunError::unavailable(
-                        "TerminalCleanupRuntime is unsupported by this runtime",
-                    )
-                })?
                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                 .await;
             Ok(SessionTerminalCleanupDriveOutcome::Completed)
@@ -383,6 +289,7 @@ pub async fn drive_session_terminal_cleanup(
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_session_contract::SessionRuntime;
     use awaken_session_contract::{
         FrozenSessionProjection, SessionCleanupCommand, SessionCleanupDisposalReceipt,
         SessionCleanupOperation, SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,

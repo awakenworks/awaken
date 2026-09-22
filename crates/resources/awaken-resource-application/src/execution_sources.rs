@@ -38,16 +38,17 @@ impl<C: Sync> FileContentSource<C> for ApplicationFileContentSource {
             .application
             .bytes(workspace_id, file_id)
             .await
-            .map_err(|error| FileContentSourceError::new(error.to_string()))?
+            .map_err(FileContentSourceError::from)?
         else {
             return Ok(None);
         };
         let actual = content_id(&bytes);
         if actual != record.blob_id {
-            return Err(FileContentSourceError::new(format!(
-                "File `{file_id}` content digest mismatch: expected {}, received {actual}",
-                record.blob_id
-            )));
+            return Err(FileContentSourceError::Integrity {
+                file_id: file_id.into(),
+                expected: record.blob_id,
+                actual,
+            });
         }
         Ok(Some(ResolvedFileContent {
             file_id: record.id,
@@ -327,6 +328,59 @@ mod tests {
         ArtifactPublication, ArtifactPublisher as _, ArtifactRecovery, content_id,
         harvest_idempotency_key,
     };
+
+    #[tokio::test]
+    async fn corrupted_blob_type_survives_application_and_execution_source() {
+        // R1 valid bytes -> exact File content. R2 external corruption under
+        // the same immutable id -> preserve CorruptContent through FileStore,
+        // FileApplication and FileContentSource. R3 foreign Workspace -> absent
+        // before blob access. The error cannot turn into absence or an
+        // undifferentiated retry signal at either adapter boundary.
+        let root = tempfile::tempdir().unwrap();
+        let blobs = Arc::new(
+            awaken_file_store::FsFileStore::open(root.path())
+                .await
+                .unwrap(),
+        );
+        let catalog = Arc::new(awaken_file_store::InMemoryFileStore::new());
+        let application = Arc::new(crate::FileApplication::new(
+            blobs,
+            catalog,
+            Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+        ));
+        let file = application
+            .create(crate::CreateFileCommand {
+                workspace_id: "workspace",
+                filename: "proof.txt".into(),
+                mime_type: "text/plain".into(),
+                bytes: b"original",
+                downloadable: true,
+                expires_at: None,
+                scope_id: None,
+                logical_path: None,
+                idempotency_key: None,
+            })
+            .await
+            .unwrap();
+        let source = super::ApplicationFileContentSource::new(application);
+        let read =
+            |workspace| {
+                <super::ApplicationFileContentSource as
+            awaken_resource_contract::FileContentSource<()>>::read(
+                &source, workspace, &file.id,
+                &awaken_resource_contract::FileReadPurpose::SessionResource, None,
+            )
+            };
+        assert_eq!(read("workspace").await.unwrap().unwrap().bytes, b"original");
+        std::fs::write(root.path().join(&file.blob_id), b"damaged").unwrap();
+        assert!(matches!(read("workspace").await,
+            Err(awaken_resource_contract::FileContentSourceError::Resource(
+                awaken_resource_contract::ResourcePurgeError::Blob(
+                    awaken_resource_contract::FileStoreError::CorruptContent { content_id }
+                )
+            )) if content_id == file.blob_id));
+        assert!(read("foreign").await.unwrap().is_none());
+    }
 
     #[tokio::test]
     async fn missing_file_application_fails_closed() {

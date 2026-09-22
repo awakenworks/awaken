@@ -2,6 +2,16 @@
   "version": 1,
   "exclusions": [
     {
+      "path": "crates/stores/awaken-store-conformance/src/dream_store.rs",
+      "boundary": "test_support_crate",
+      "reason": "Shared Dream process and policy CAS assertions in the existing tooling crate, called by the in-memory application fixture and both durable Session stores. This module verifies adapters and owns no production state or effect.",
+      "evidence": [
+        "crates/stores/awaken-store-conformance/Cargo.toml",
+        "crates/stores/awaken-session-store/src/dream.rs",
+        "crates/server/awaken-dream-application/src/lib.rs"
+      ]
+    },
+    {
       "path": "crates/worker/awaken-sandbox-container/src/runtime/realization_tests/rebuild.rs",
       "boundary": "test_only",
       "reason": "Child of the existing cfg(test) realization_tests module. It owns the source/result decision-table regression cases and reuses the parent test fixtures; production Rebuild admission remains in runtime/realization.rs and the shared existing_realization_decision. This test module is not a production safety implementation.",

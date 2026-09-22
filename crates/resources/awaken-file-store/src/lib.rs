@@ -34,8 +34,19 @@ pub use awaken_resource_contract::{
     FileStoreError, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome, content_id,
 };
 
-fn e(x: impl ToString) -> FileStoreError {
-    FileStoreError(x.to_string().into())
+fn e(x: std::io::Error) -> FileStoreError {
+    x.into()
+}
+
+/// One integrity decision for every content-addressed adapter.
+fn verify_blob(id: &str, bytes: &[u8]) -> Result<(), FileStoreError> {
+    if content_id(bytes) == id {
+        Ok(())
+    } else {
+        Err(FileStoreError::CorruptContent {
+            content_id: id.into(),
+        })
+    }
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -100,9 +111,7 @@ impl FileStore for FsFileStore {
         let path = self.path(&id);
         if tokio::fs::try_exists(&path).await.map_err(e)? {
             let existing = tokio::fs::read(&path).await.map_err(e)?;
-            if existing != bytes || content_id(&existing) != id {
-                return Err(e(format!("corrupt content-addressed blob `{id}`")));
-            }
+            verify_blob(&id, &existing)?;
             return Ok(id); // immutable + deduplicating: already present
         }
         // Atomic publish: write a per-process-unique temp file, then rename onto
@@ -139,8 +148,10 @@ impl FileStore for FsFileStore {
             return Ok(None); // a crafted id resolves to nothing; it cannot escape base
         }
         match tokio::fs::read(self.path(id)).await {
-            Ok(bytes) if content_id(&bytes) == id => Ok(Some(bytes)),
-            Ok(_) => Err(e(format!("corrupt content-addressed blob `{id}`"))),
+            Ok(bytes) => {
+                verify_blob(id, &bytes)?;
+                Ok(Some(bytes))
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(e(err)),
         }
@@ -1011,8 +1022,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store.get(&id).await.is_err());
-        assert!(store.put(b"expected bytes").await.is_err());
+        // C4 corrupt bytes under an existing identity => CorruptContent with
+        // that exact identity on both read and replay. A transient/unknown I/O
+        // category would erase the evidence that retry cannot repair the bytes.
+        assert!(matches!(store.get(&id).await,
+            Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
+        assert!(matches!(store.put(b"expected bytes").await,
+            Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
     }
 
     /// The contract's ascending-sort guarantee, exercised with several distinct blobs
@@ -1146,6 +1162,29 @@ mod tests {
             store.put(b"portable").await.unwrap(),
             InMemoryFileStore::new().put(b"portable").await.unwrap()
         );
+        // C4: corrupt one real PostgreSQL row under its retained content id.
+        // Read and idempotent put must report that exact corruption, with no
+        // replacement of the damaged bytes. This runs on the same isolated
+        // substrate and lifecycle as the canonical backend round-trip.
+        let id = store.put(b"integrity-probe").await.unwrap();
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        sqlx::query("UPDATE file_store_blob SET bytes=$1 WHERE id=$2")
+            .bind(b"damaged".as_slice())
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(store.get(&id).await,
+            Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
+        assert!(matches!(store.put(b"integrity-probe").await,
+            Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
+        let retained: Vec<u8> = sqlx::query_scalar("SELECT bytes FROM file_store_blob WHERE id=$1")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(retained, b"damaged");
+        pool.close().await;
     }
 
     /// Live upgrade proof for the portable-integer renderer transition. The

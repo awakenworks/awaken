@@ -1389,6 +1389,14 @@ fn valid_model_reference_shape(model: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn in_memory_process_store_obeys_the_shared_dream_cas_rules() {
+        // R1-R6 are owned by the shared suite and exercised by both durable
+        // adapters too; this binding keeps the reference backend on those laws.
+        awaken_store_conformance::dream_store::dream_store_conformance(
+            &super::InMemoryDreamProcessStore::default(),
+        );
+    }
     use super::*;
     use std::sync::atomic::AtomicUsize;
 

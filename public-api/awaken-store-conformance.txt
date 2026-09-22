@@ -1,4 +1,8 @@
 pub mod awaken_store_conformance
+pub mod awaken_store_conformance::dream_store
+pub fn awaken_store_conformance::dream_store::dream_policy(u64) -> awaken_session_dream_contract::DreamPolicyRecord
+pub fn awaken_store_conformance::dream_store::dream_store_conformance(&dyn awaken_session_dream_contract::DreamProcessStore)
+pub fn awaken_store_conformance::dream_store::process(&str) -> awaken_session_dream_contract::DreamProcessRecord
 pub mod awaken_store_conformance::env_registry
 pub async fn awaken_store_conformance::env_registry::archive_preserves_authoritative_history<R: awaken_environment_contract::EnvRegistry>(&R)
 pub async fn awaken_store_conformance::env_registry::environment_instants_are_the_injected_clock<R: awaken_environment_contract::EnvRegistry>(&R, &awaken_agent_contract::clock::ManualClock)

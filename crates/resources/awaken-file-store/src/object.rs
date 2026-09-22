@@ -79,18 +79,21 @@ impl ObjectFileStoreConfig {
                 .is_some_and(|value| !value.trim().is_empty()),
             self.endpoint.is_some(),
         );
+        let invalid = |detail: &str| FileStoreError::InvalidConfiguration {
+            detail: detail.into(),
+        };
         match decision {
             ObjectStoreConfigDecision::Accept => Ok(()),
             ObjectStoreConfigDecision::MissingBucketOrPrefix => {
-                Err(e("object bucket and prefix must be non-empty"))
+                Err(invalid("object bucket and prefix must be non-empty"))
             }
             ObjectStoreConfigDecision::InvalidPrefix => {
-                Err(e("object prefix must be a normalized relative path"))
+                Err(invalid("object prefix must be a normalized relative path"))
             }
             ObjectStoreConfigDecision::MissingS3Region => {
-                Err(e("S3 object backing requires a region"))
+                Err(invalid("S3 object backing requires a region"))
             }
-            ObjectStoreConfigDecision::GcsHasS3Coordinates => Err(e(
+            ObjectStoreConfigDecision::GcsHasS3Coordinates => Err(invalid(
                 "GCS object backing does not accept S3 region or endpoint fields",
             )),
         }
@@ -136,7 +139,9 @@ mod kani_proofs {
 }
 
 fn e(x: impl ToString) -> FileStoreError {
-    FileStoreError(x.to_string().into())
+    FileStoreError::Indeterminate {
+        detail: x.to_string(),
+    }
 }
 
 /// An object-store-backed [`FileStore`]. `prefix` namespaces the keys (e.g. `blobs`).
@@ -160,10 +165,11 @@ impl ObjectFileStore {
         config.validate()?;
         let store: Arc<dyn ObjectStore> = match config.provider {
             ObjectStoreProvider::S3 => {
-                let region = config
-                    .region
-                    .as_deref()
-                    .ok_or_else(|| e("S3 object backing requires a region"))?;
+                let region = config.region.as_deref().ok_or_else(|| {
+                    FileStoreError::InvalidConfiguration {
+                        detail: "S3 object backing requires a region".into(),
+                    }
+                })?;
                 let mut builder = object_store::aws::AmazonS3Builder::from_env()
                     .with_bucket_name(&config.bucket)
                     .with_region(region);
@@ -209,9 +215,7 @@ impl FileStore for ObjectFileStore {
                 if existing == bytes {
                     Ok(id)
                 } else {
-                    Err(e(
-                        "content-addressed object does not match its immutable id",
-                    ))
+                    Err(FileStoreError::CorruptContent { content_id: id })
                 }
             }
             Err(error) => Err(e(error)),
@@ -225,9 +229,7 @@ impl FileStore for ObjectFileStore {
         match self.store.get(&self.key(id)).await {
             Ok(result) => {
                 let bytes = result.bytes().await.map_err(e)?.to_vec();
-                if content_id(&bytes) != id {
-                    return Err(e("content-addressed object failed integrity verification"));
-                }
+                crate::verify_blob(id, &bytes)?;
                 Ok(Some(bytes))
             }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -332,8 +334,12 @@ mod tests {
                 PutPayload::from_static(b"corrupt"),
             )
             .await?;
-        assert!(store.get(&id).await.is_err());
-        assert!(store.put(bytes).await.is_err());
+        // C4/E4 preserves the exact corrupted identity across both adapters;
+        // unknown transport failure must not substitute for observed corruption.
+        assert!(matches!(store.get(&id).await,
+            Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
+        assert!(matches!(store.put(bytes).await,
+            Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
 
         backend.delete(&partial).await?;
         assert!(store.delete(&id).await?);

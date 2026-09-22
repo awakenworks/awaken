@@ -912,10 +912,9 @@ mod tests {
                 vec![invalid],
                 std::sync::Arc::new(Recorder),
             );
-            if result.is_ok() {
+            if let Ok(realization) = result {
                 assert!(
-                    result
-                        .unwrap()
+                    realization
                         .delivered_access_for(&candidate, &published)
                         .is_err(),
                     "R2 changed authority rejects at lookup"

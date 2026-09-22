@@ -237,12 +237,6 @@ impl SessionApplication {
                 let expected_mcp_generations = expected_mcp_generations(&session)?;
                 let receipt = self
                     .runtime()
-                    .environment()
-                    .ok_or_else(|| {
-                        awaken_session_contract::RunError::unavailable(
-                            "EnvironmentRuntime is unsupported by this runtime",
-                        )
-                    })?
                     .quiesce_session_environment(
                         session_id.as_str(),
                         &operation,
@@ -288,12 +282,6 @@ impl SessionApplication {
                 let receipt = tokio::time::timeout(
                     std::time::Duration::from_secs(policy.max_checkpoint_duration_secs),
                     self.runtime()
-                        .environment()
-                        .ok_or_else(|| {
-                            awaken_session_contract::RunError::unavailable(
-                                "EnvironmentRuntime is unsupported by this runtime",
-                            )
-                        })?
                         .checkpoint_session_environment(session_id.as_str(), request),
                 )
                 .await
@@ -326,12 +314,6 @@ impl SessionApplication {
                     })?;
                 let receipt = self
                     .runtime()
-                    .environment()
-                    .ok_or_else(|| {
-                        awaken_session_contract::RunError::unavailable(
-                            "EnvironmentRuntime is unsupported by this runtime",
-                        )
-                    })?
                     .prepare_checkpoint_source_disposal(
                         session_id.as_str(),
                         &preparation,
@@ -369,12 +351,6 @@ impl SessionApplication {
                 })?;
                 let receipt = self
                     .runtime()
-                    .environment()
-                    .ok_or_else(|| {
-                        awaken_session_contract::RunError::unavailable(
-                            "EnvironmentRuntime is unsupported by this runtime",
-                        )
-                    })?
                     .dispose_prepared_checkpoint_source(session_id.as_str(), &disposal)
                     .await?;
                 session.environment.complete_suspend(&receipt)?;
@@ -453,12 +429,6 @@ impl SessionApplication {
                     // failed delete retains the reference for retry; a crash after
                     // delete replays the same delete before the CAS.
                     self.runtime()
-                        .environment()
-                        .ok_or_else(|| {
-                            awaken_session_contract::RunError::unavailable(
-                                "EnvironmentRuntime is unsupported by this runtime",
-                            )
-                        })?
                         .delete_session_checkpoint(session_id.as_str(), &checkpoint)
                         .await?;
                     session.environment = SessionEnvironmentState::Unmaterialized;
@@ -490,12 +460,6 @@ impl SessionApplication {
                         .ok_or(SessionEnvironmentTransitionError::NotRestoring)?;
                     let receipt = self
                         .runtime()
-                        .environment()
-                        .ok_or_else(|| {
-                            awaken_session_contract::RunError::unavailable(
-                                "EnvironmentRuntime is unsupported by this runtime",
-                            )
-                        })?
                         .restore_checkpointed_session_environment(request)
                         .await?;
                     session.environment.complete_restore(&receipt)?;

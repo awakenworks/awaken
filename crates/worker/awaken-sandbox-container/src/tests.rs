@@ -797,6 +797,19 @@ impl pc::MemoryMounter for UncertainMemoryMounter {
             Ok(())
         }
     }
+
+    async fn reconcile_recovered_copy(
+        &self,
+        reference: &str,
+        evidence: &awaken_provisioning_contract::MemoryMaterializationEvidence,
+        files: &[(String, Vec<u8>)],
+        access: awaken_provisioning_contract::MountAccess,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let _ = (reference, evidence, files, access);
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "recovered Memory copy reconciliation is outside this fixture",
+        ))
+    }
 }
 
 #[tokio::test]
@@ -2802,6 +2815,19 @@ impl pc::MemoryMounter for FakeMemoryMounter {
     ) -> Result<(), pc::SandboxError> {
         Ok(())
     }
+
+    async fn reconcile_recovered_copy(
+        &self,
+        reference: &str,
+        evidence: &awaken_provisioning_contract::MemoryMaterializationEvidence,
+        files: &[(String, Vec<u8>)],
+        access: awaken_provisioning_contract::MountAccess,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let _ = (reference, evidence, files, access);
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "recovered Memory copy reconciliation is outside this fixture",
+        ))
+    }
 }
 
 #[async_trait]
@@ -2874,6 +2900,19 @@ impl pc::MemoryMounter for OrderedCopyMounter {
     ) -> Result<(), pc::SandboxError> {
         self.recovery_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    async fn reconcile_recovered_copy(
+        &self,
+        reference: &str,
+        evidence: &awaken_provisioning_contract::MemoryMaterializationEvidence,
+        files: &[(String, Vec<u8>)],
+        access: awaken_provisioning_contract::MountAccess,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let _ = (reference, evidence, files, access);
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "recovered Memory copy reconciliation is outside this fixture",
+        ))
     }
 }
 
@@ -4050,6 +4089,19 @@ impl<T: pc::MemoryMounter> pc::MemoryMounter for PausedCreationInput<T> {
         access: pc::MountAccess,
     ) -> Result<(), pc::SandboxError> {
         self.inner.recover_unknown_mount(store, path, access).await
+    }
+
+    async fn reconcile_recovered_copy(
+        &self,
+        reference: &str,
+        evidence: &awaken_provisioning_contract::MemoryMaterializationEvidence,
+        files: &[(String, Vec<u8>)],
+        access: awaken_provisioning_contract::MountAccess,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let _ = (reference, evidence, files, access);
+        self.inner
+            .reconcile_recovered_copy(reference, evidence, files, access)
+            .await
     }
 }
 

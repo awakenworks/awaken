@@ -923,6 +923,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-session-contract",
+ "awaken-store-conformance",
  "chrono",
  "serde",
  "thiserror",

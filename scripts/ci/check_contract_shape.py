@@ -168,6 +168,27 @@ def _line(text: str, offset: int) -> int:
 
 def measure_sources(sources: dict[str, str]) -> Measurement:
     measurement = Measurement()
+    # Follow local scalar wrappers to a fixed point. Giving an opaque string a
+    # name does not give callers an error category. Structured payloads retain
+    # their own semantics and are not collapsed by this syntactic ratchet.
+    carriers = {"String"}
+    declarations = "\n".join(workspace.rust_syntax(text) for text in sources.values())
+    wrappers = re.findall(
+        r"\bstruct\s+([A-Z]\w*)\s*\(\s*(?:pub\s+)?([\w:]+)\s*,?\s*\)\s*;",
+        declarations,
+    ) + re.findall(r"\btype\s+([A-Z]\w*)\s*=\s*([\w:]+)\s*;", declarations)
+    while True:
+        found = {name for name, wrapped in wrappers if wrapped.split("::")[-1] in carriers}
+        if found <= carriers:
+            break
+        carriers.update(found)
+
+    def opaque_string(payload: str) -> bool:
+        if STRING_PAYLOAD.match(payload) or STRING_FIELD.match(payload):
+            return True
+        match = re.fullmatch(r"\(\s*(?:pub\s+)?([\w:]+)\s*,?\s*\)", payload)
+        return bool(match and match.group(1).split("::")[-1] in carriers)
+
     for relpath, production in sorted(sources.items()):
         syntax = workspace.rust_syntax(production)
         measurement.production_lines += sum(1 for line in production.splitlines() if line.strip())
@@ -205,12 +226,12 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
                 if (
                     name.endswith("Error")
                     and variant_name in CATCH_ALL_VARIANTS
-                    and (STRING_PAYLOAD.match(payload) or STRING_FIELD.match(payload))
+                    and opaque_string(payload)
                 ):
                     measurement.catch_all_errors.append(f"{location}: {name}::{variant_name}(String)")
 
         for newtype in re.finditer(r"\bstruct\s+([A-Z]\w*Error)\s*(\([^()]*\))\s*;", syntax):
-            if STRING_PAYLOAD.match(newtype.group(2)):
+            if opaque_string(newtype.group(2)):
                 measurement.catch_all_errors.append(
                     f"{relpath}:{_line(syntax, newtype.start())}: {newtype.group(1)}(String)"
                 )
@@ -609,6 +630,17 @@ def self_test() -> None:
     assert sorted(entry.split(": ", 1)[1] for entry in catch_all) == [
         "SandboxError(String)", "StoreError::Backend(String)", "StoreError::Storage(String)",
     ], f"E1/E2/E3 {catch_all}"
+
+    # E4/E5: direct, wrapped, and alias-of-wrapper strings have the same debt;
+    # E6: a structured failure with an independent kind must not be counted as
+    # string-only. This catches the old ResourceErrorDetail metric loophole.
+    wrapped = project(
+        "struct Detail(String); type Alias = Detail; struct Twice(Alias);"
+        "struct Structured { kind: u8, detail: String }"
+        "enum WrappedError { Storage(Twice), Invalid(Structured) }"
+        "struct BoundaryError(Detail);"
+    )
+    assert len(measure_sources({"wrapped.rs": wrapped}).catch_all_errors) == 2, "E4-E6"
 
     defaults = project(
         "pub trait Capable {\n"
