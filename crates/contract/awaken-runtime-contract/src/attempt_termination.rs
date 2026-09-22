@@ -244,7 +244,9 @@ mod tests {
         // T4 unknown model => unknown; T5 model before marker => unknown;
         // T6 tool batch after marker => unknown; T7 NotDispatched => stopped;
         // T8 legacy missing coordinates => unknown; T9 duplicate marker,
-        // T10 missing exact Run and T11 unaligned coordinates => error.
+        // T10 missing exact Run and T11 unaligned coordinates => error;
+        // T12 a crashed tool-bearing Run whose last model entry remains
+        // Entered/Unknown stays unknown even after a local Worker exit.
         let coverage = bind(ActiveNativeAttemptCoverage::write(
             &NativeAttemptCoverage::ModelOnlyV1,
         ));
@@ -310,11 +312,30 @@ mod tests {
         assert_eq!(
             classify_native_attempt_termination(&snapshot(vec![
                 coverage.clone(),
-                bind(ActiveToolBatch::write(&Some(batch))),
+                bind(ActiveToolBatch::write(&Some(batch.clone()))),
             ]))
             .unwrap(),
             NativeAttemptTermination::Unknown,
             "T6"
+        );
+        // T12 combines the two unresolved facts observed in a historical
+        // terminal Run. Neither an earlier successful model call nor a local
+        // process-exit receipt can fill in this missing remote/tool proof.
+        let entered_unknown = bind(ActiveModelOperation::write(&Some(ModelOperation {
+            ordinal: NonZeroU64::MIN,
+            binding: ModelBinding::parse("provider", "model", "genai").unwrap(),
+            phase: ModelOperationPhase::Entered,
+            execution: ModelExecutionEvidence::Unknown,
+        })));
+        assert_eq!(
+            classify_native_attempt_termination(&snapshot(vec![
+                coverage.clone(),
+                bind(ActiveToolBatch::write(&Some(batch))),
+                entered_unknown,
+            ]))
+            .unwrap(),
+            NativeAttemptTermination::Unknown,
+            "T12"
         );
         assert_eq!(
             classify_native_attempt_termination(&snapshot(vec![
