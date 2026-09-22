@@ -65,6 +65,20 @@ use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// One committed-state predicate shared by Session terminal cleanup and child
+/// Thread archive. Neither observer may mistake an occupied execution row for
+/// quiescence; their different time budgets and completion owners stay separate.
+const fn dispatch_remains_unsettled(state: awaken_run_ingress::DispatchState) -> bool {
+    matches!(
+        state,
+        awaken_run_ingress::DispatchState::Reserved
+            | awaken_run_ingress::DispatchState::ReservationLeased
+            | awaken_run_ingress::DispatchState::Pending
+            | awaken_run_ingress::DispatchState::Leased
+            | awaken_run_ingress::DispatchState::Awaiting
+    )
+}
+
 /// Application wrapper applied to each Session's authoritative
 /// Native/ACP/A2A attempt router.
 pub type AttemptExecutorDecorator = Arc<
