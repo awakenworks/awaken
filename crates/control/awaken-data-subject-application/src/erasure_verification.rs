@@ -258,7 +258,22 @@ fn check_successor(
     // regressive candidates or exhaustion. Admission never mutates either row.
     let current = present.then(|| checkpoint(old.0, old.1, old.2, old.3));
     let candidate = checkpoint(new.0, new.1, new.2, new.3);
-    let before = (current.clone(), candidate.clone());
+    // The inputs contain at most two rows. Capture every field and ordered row
+    // without cloning heap allocations solely for the frame assertion. This
+    // retains exact duplicate/order checks, and real input allocation/Drop.
+    let frame = |row: &ErasureProgress| {
+        assert!(row.completed_targets.len() <= 2);
+        (
+            row.revision,
+            row.records_removed,
+            row.accountability_stamped,
+            row.complete,
+            row.completed_targets.len(),
+            row.completed_targets.first().copied(),
+            row.completed_targets.get(1).copied(),
+        )
+    };
+    let before = (current.as_ref().map(&frame), frame(&candidate));
     let old_members = [
         old.0[0] == Some(Coordinator) || old.0[1] == Some(Coordinator),
         old.0[0] == Some(Resources) || old.0[1] == Some(Resources),
@@ -281,7 +296,7 @@ fn check_successor(
         assert!(preserves);
         assert!(new.1 > old.1);
     }
-    assert_eq!((current, candidate), before);
+    assert_eq!((current.as_ref().map(&frame), frame(&candidate)), before);
 }
 
 #[test]
@@ -324,9 +339,14 @@ fn erasure_checkpoint_successor_decision_table() {
     }
 }
 
+// S1-S3 retain every symbolic list/revision/presence/frame input. At most
+// two target rows and two flags need three loop steps including exit. Keep
+// unwinding assertions and real allocation/Drop enabled: insufficient bounds
+// must fail, not silently remove paths. Full-frame capture above avoids copies
+// made only for the oracle; production follows is unchanged.
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(32)]
+#[kani::unwind(3)]
 fn erasure_checkpoint_successor_preserves_all_completed_targets() {
     check_successor(
         (
