@@ -1070,7 +1070,8 @@ impl SessionApplication {
         additional_thread: Option<&str>,
         observed_links: Option<&[awaken_session_contract::CoordinatedThreadLink]>,
     ) -> Result<SessionUsage, RunError> {
-        let mut usage = self.runtime.session_usage(thread).await?;
+        let usage = self.runtime.session_usage(thread).await?;
+        let mut thread_usages = vec![usage];
         let links = match observed_links {
             Some(links) => std::borrow::Cow::Borrowed(links),
             None => std::borrow::Cow::Owned(
@@ -1096,7 +1097,7 @@ impl SessionApplication {
                     &link.thread_id.0,
                 )
                 .await?;
-            merge_session_usage(&mut usage, child);
+            thread_usages.push(child);
         }
         if let Some(additional_thread) = additional_thread
             && included.insert(additional_thread.to_string())
@@ -1108,16 +1109,31 @@ impl SessionApplication {
                     additional_thread,
                 )
                 .await?;
-            merge_session_usage(&mut usage, current);
+            thread_usages.push(current);
         }
         let session = self
             .session_repository()
             .get(&awaken_session_contract::SessionId::from(thread))
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
+        Ok(Self::project_session_usage(&session, thread_usages))
+    }
+
+    /// Aggregate already observed, distinct logical Threads using the same
+    /// accounting rule as live budget reads. Callers own scope and prefix
+    /// validation; this projection creates no usage cache or authority.
+    /// Active time belongs to the Session root, never the sum of child clocks.
+    pub fn project_session_usage(
+        session: &awaken_session_contract::PersistedSession,
+        threads: impl IntoIterator<Item = SessionUsage>,
+    ) -> SessionUsage {
+        let mut usage = SessionUsage::default();
+        for thread in threads {
+            merge_session_usage(&mut usage, thread);
+        }
         usage.active_seconds =
             session.effective_runtime_active_millis(super::activity::now_unix_ms()) / 1_000;
-        Ok(usage)
+        usage
     }
 
     #[must_use]

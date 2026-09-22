@@ -7,6 +7,54 @@ import {
   latestCanaryPlan,
 } from './sdk_latest_canary_lib.mjs';
 import { requestContractInternals } from './managed_sdk_request_contract.mjs';
+import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
+import { exerciseEnvironmentWorkerSecretToken } from './official_environment_worker_contract.mjs';
+import { exerciseNonReplayableTransport, exerciseRootSchemaReferences } from './official_sdk_transport_contract.mjs';
+
+test('candidate transport and schema change points reject the old behavior', async () => {
+  // T1-T7/S1-S3 are owned by the shared runtime oracle. The pinned historical
+  // anchor is the negative control: stream replay and lost root definitions
+  // must be rejected, while the exact candidate passes the same observations.
+  for (const [module, accepts] of [['@anthropic-ai/sdk-candidate', true], ['@anthropic-ai/sdk-user-profiles-legacy', false]]) {
+    const packageRoot = resolveSdkPackage(module).root;
+    const { default: Anthropic } = await import(pathToFileURL(resolve(packageRoot, 'index.mjs')));
+    if (accepts) {
+      await exerciseNonReplayableTransport({ Anthropic, packageRoot });
+      await exerciseRootSchemaReferences(packageRoot);
+    } else {
+      await assert.rejects(exerciseNonReplayableTransport({ Anthropic, packageRoot }), /T1-T4/u);
+      await assert.rejects(exerciseRootSchemaReferences(packageRoot), /S1 definitions survive root ref/u);
+    }
+  }
+});
+
+test('worker secret oracle rejects a request made before a matching refusal', async () => {
+  // K1 actual pinned Worker + valid token -> exact bearer observed. K2 absent
+  // token -> matching refusal AND no extra request. M1 performs a request and
+  // then emits the expected refusal; the old self-comparison accepted it.
+  // Reuse the canary's sole oracle, so its mutation witness cannot drift from
+  // the release consumer. Both invocations use the real SDK transport.
+  const root = resolveSdkPackage('@anthropic-ai/sdk-current').root;
+  const { default: Anthropic } = await import(pathToFileURL(resolve(root, 'index.mjs')));
+  const { EnvironmentWorker } = await import(pathToFileURL(resolve(root, 'lib/environments/worker.mjs')));
+  await exerciseEnvironmentWorkerSecretToken({ Anthropic, EnvironmentWorker });
+  class RequestBeforeRefusal extends EnvironmentWorker {
+    constructor(options) { super(options); this.probeClient = options.client; }
+    async handleItem(item) {
+      if (JSON.parse(Buffer.from(item.workSecret, 'base64url')).note === 'no token') {
+        try { await this.probeClient.models.list(); } catch { /* injected transport failure */ }
+        throw new Error('no sessions token could be extracted');
+      }
+      return super.handleItem(item);
+    }
+  }
+  await assert.rejects(
+    exerciseEnvironmentWorkerSecretToken({ Anthropic, EnvironmentWorker: RequestBeforeRefusal }),
+    /K2 refusal happened before any request/u,
+  );
+});
 
 const candidateQualification = Object.freeze({
   baseline_version: '0.120.0',

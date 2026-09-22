@@ -109,7 +109,6 @@ struct MemoryObject {
     memory_store_id: String,
     memory_version_id: String,
     path: String,
-    generation: awaken_resource_contract::MemoryGeneration,
     content: Option<String>,
     content_sha256: String,
     content_size_bytes: u64,
@@ -373,7 +372,6 @@ fn project_memory(
         memory_store_id: store_id.to_string(),
         memory_version_id: memory_version_id.to_string(),
         path: mem.path.clone(),
-        generation: mem.generation(),
         content,
         content_sha256: mem.content_sha256.clone(),
         content_size_bytes: mem.content_size,
@@ -818,32 +816,18 @@ async fn list_memories(
             rolled_up.insert(format!("{prefix}{directory}/"));
             continue;
         }
-        let generation = entry.generation();
-        // `basic` elides content (metadata only); `full` fetches the head content.
-        let content = if view.includes_content() {
-            entry.content
-        } else {
-            None
-        };
         let Some(memory_version_id) = current_version_id(&versions, &entry.id) else {
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("memory `{}` has no atomic current version", entry.id),
             );
         };
-        data.push(MemoryListItem::Memory(MemoryObject {
-            id: entry.id,
-            kind: "memory",
-            created_at: timestamp(entry.created_unix_nanos),
-            updated_at: timestamp(entry.updated_unix_nanos),
-            memory_store_id: id.clone(),
-            memory_version_id: memory_version_id.to_string(),
-            path: entry.path,
-            generation,
-            content,
-            content_sha256: entry.content_sha256,
-            content_size_bytes: entry.content_size,
-        }));
+        data.push(MemoryListItem::Memory(project_memory(
+            &entry,
+            &id,
+            memory_version_id,
+            view,
+        )));
     }
     data.extend(rolled_up.into_iter().map(|path| {
         MemoryListItem::Prefix(MemoryPrefix {
@@ -1401,7 +1385,7 @@ mod tests {
     #[test]
     fn memory_list_union_and_delete_receipts_have_closed_wire_shapes() {
         // Cause/effect decision table: M1 stored memory -> full typed memory
-        // fields plus the immutable-id/version/content generation token; M2
+        // fields without the internal complete-generation CAS token; M2
         // depth rollup -> prefix-only fields; M3 deletion -> id/type receipt.
         // The untagged enum selects one DTO and never merges the two variants
         // or relies on object indexing.
@@ -1413,17 +1397,16 @@ mod tests {
             memory_store_id: "memstore_1".into(),
             memory_version_id: "memver_1".into(),
             path: "/notes.md".into(),
-            generation: awaken_resource_contract::MemoryGeneration {
-                memory_id: "mem_1".into(),
-                version: 1,
-                content_sha256: "0".repeat(64),
-            },
             content: None,
             content_sha256: "0".repeat(64),
             content_size_bytes: 0,
         }))
         .unwrap();
         assert_eq!(memory["type"], "memory", "M1");
+        assert!(
+            memory.get("generation").is_none(),
+            "M1 internal CAS is not wire data"
+        );
         assert!(memory["content"].is_null(), "M1 basic view");
         let prefix = serde_json::to_value(MemoryListItem::Prefix(MemoryPrefix {
             kind: "memory_prefix",

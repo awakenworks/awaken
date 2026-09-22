@@ -16,6 +16,66 @@ fn app() -> Router {
     environment_authoring_router(authoring).merge(environment_work_router(execution))
 }
 
+#[tokio::test]
+async fn official_inventory_excludes_the_unregistered_execution_default() {
+    // Causes: C1 built-in / authored definition; C2 active / archived inventory;
+    // C3 list / retrieve / archive. Rules: built-in -> absent from either page,
+    // retrieve 404; authored -> immutable creation timestamp and string update
+    // timestamp through every projection. Filtering precedes pagination.
+    // Session use of env_local is owned by tests/session_environment.rs; this
+    // protocol distinction must not mutate the application definition/catalog.
+    let app = app();
+    for suffix in ["", "?include_archived=true"] {
+        let page = call(&app, "GET", &format!("/v1/environments{suffix}"), None)
+            .await
+            .expect(StatusCode::OK);
+        assert!(page["data"].as_array().unwrap().is_empty());
+    }
+    call(&app, "GET", "/v1/environments/env_local", None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let created = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({"name":"authored"})),
+    )
+    .await
+    .expect(StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+    let page = call(&app, "GET", "/v1/environments?limit=1", None)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(page["data"].as_array().unwrap().len(), 1);
+    assert_eq!(page["data"][0]["id"], id);
+    let retrieved = call(&app, "GET", &format!("/v1/environments/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
+    let archived = call(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/archive"),
+        None,
+    )
+    .await
+    .expect(StatusCode::OK);
+    let all = call(&app, "GET", "/v1/environments?include_archived=true", None)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(all["data"].as_array().unwrap().len(), 1);
+    for wire in [
+        &created,
+        &page["data"][0],
+        &retrieved,
+        &archived,
+        &all["data"][0],
+    ] {
+        assert!(wire["created_at"].is_string());
+        assert!(wire["updated_at"].is_string());
+        assert_eq!(wire["created_at"], created["created_at"]);
+    }
+}
+
 async fn call(
     app: &Router,
     method: &str,
@@ -305,11 +365,9 @@ async fn environment_config_admission_follows_the_official_union_decision_table(
     let page = call(&app, "GET", "/v1/environments", None)
         .await
         .expect(StatusCode::OK);
-    assert_eq!(page["data"].as_array().unwrap().len(), 1);
-    assert_eq!(page["data"][0]["id"], "env_local");
-    assert_eq!(
-        page["data"][0]["name"], "Local",
-        "A3-A5 persist no authored Environment; the immutable built-in remains"
+    assert!(
+        page["data"].as_array().unwrap().is_empty(),
+        "A3-A5 persist no authored Environment; the built-in is an execution default"
     );
 
     let cloud = call(

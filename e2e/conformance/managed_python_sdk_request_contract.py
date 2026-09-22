@@ -4,6 +4,7 @@ import asyncio
 import collections.abc
 import datetime
 import enum
+import functools
 import importlib
 import io
 import inspect
@@ -41,6 +42,7 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.3.0",
     "1.4.0",
     "1.5.0",
+    "1.7.0",
 })
 CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
 ENVIRONMENT_HELPER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0", "0.100.0"}
@@ -87,7 +89,9 @@ UNICODE_WORKER_HEADER_REJECTING_VERSIONS = frozenset(
         "0.125.0",
     }
 )
-MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"})
+MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.7.0"})
+ASYNC_CREDENTIAL_PROVIDER_VERSIONS = frozenset({"1.7.0"})
+FULL_RETRY_AFTER_VERSIONS = frozenset({"1.7.0"})
 HTTP_FIELD_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
 
@@ -976,6 +980,30 @@ async def _exercise_error_and_retry_contract_for_mode(
     *,
     asynchronous: bool,
 ) -> None:
+    # R-delay: server Retry-After=120 seconds must no longer fall back to the
+    # short client backoff; an extreme delay is capped at the documented
+    # platform sleep bound. Inspect the calculated delay without sleeping or
+    # weakening the real request/retry decision table below. Older anchors
+    # deliberately retain their prior <=60-second admission boundary.
+    options_type = importlib.import_module("anthropic._models").FinalRequestOptions
+    client_type = anthropic_module.AsyncAnthropic if asynchronous else anthropic_module.Anthropic
+    delay_client = client_type(api_key="delay-fixture", max_retries=0)  # awaken-allow: secret
+    try:
+        options = options_type.construct(method="get", url="/v1/sessions")
+        for seconds in (120, 5_000_000):
+            delay = delay_client._calculate_retry_timeout(
+                remaining_retries=0, options=options,
+                response_headers=transport_module.Headers({"retry-after": str(seconds)}),
+            )
+            if anthropic_module.__version__ in FULL_RETRY_AFTER_VERSIONS:
+                assert delay == min(seconds, 4_294_967.0), "R-delay current"
+            else:
+                assert 0 <= delay <= 60, "R-delay historical"
+    finally:
+        if asynchronous:
+            await delay_client.close()
+        else:
+            delay_client.close()
     # Transport decision table shared across the exact Python version matrix:
     # C1=one canonical Managed error envelope and request-id header; C2=status
     # is 400/401/403/404/409/413/422/429/500/529; C3=max_retries=0. Effects: E1=the
@@ -1231,6 +1259,12 @@ async def _exercise_credential_provider_contract_for_mode(
     # provider. This is deliberately part of the existing transport contract,
     # not a second credential inventory.
     credential_module = importlib.import_module("anthropic.lib.credentials")
+    supports_async_credentials = hasattr(credential_module, "AsyncAccessTokenProvider")
+    assert supports_async_credentials is (version in ASYNC_CREDENTIAL_PROVIDER_VERSIONS)
+    if supports_async_credentials:
+        await _exercise_async_credential_change_point(
+            anthropic_module, transport_module, asynchronous=asynchronous,
+        )
     provider_calls = []
     requests = []
 
@@ -1678,6 +1712,157 @@ async def _exercise_middleware_contract_for_mode(
     else:
         raise AssertionError("Python SDK accepted a rejected middleware request")
     assert rejected_transports == []
+
+
+async def _exercise_async_credential_change_point(
+    anthropic_module: Any, transport_module: Any, *, asynchronous: bool,
+) -> None:
+    # Causes: provider=legacy sync/async callable/partial; client=sync/async;
+    # response=401 then 200; cache=empty/cached/invalidated; leader=returns/cancels.
+    # Rules: A1 legacy no-arg provider -> one request; A2 sync+async provider or
+    # async close -> refusal before HTTP; A3 async+partial -> awaited refresh,
+    # exact Bearer, and awaited cleanup; A4 concurrent cold reads -> one leader;
+    # A5 cancellation -> waiter released; A6 invalidation -> forced refresh.
+    # Existing static/provider/config/profile tests retain the older branches.
+    credentials = importlib.import_module("anthropic.lib.credentials")
+    legacy_calls = []
+    def legacy() -> object:
+        legacy_calls.append(True)
+        return credentials.AccessToken(token="legacy-provider", expires_at=None)  # awaken-allow: secret
+    legacy_requests = []
+    def accept_legacy(request: object) -> object:
+        legacy_requests.append(request)
+        return transport_module.Response(200, request=request, json={})
+    await _call_session_create(anthropic_module, transport_module, accept_legacy,
+        asynchronous=asynchronous, max_retries=0,
+        client_options={"api_key": None, "auth_token": None, "credentials": legacy})
+    assert legacy_calls == [True] and len(legacy_requests) == 1, "A1"
+
+    class AsyncCredentials:
+        def __init__(self) -> None:
+            self.calls = []
+            self.closed = False
+        async def __call__(self, *, force_refresh: bool = False) -> object:
+            self.calls.append(force_refresh)
+            return credentials.AccessToken(
+                token="async-fresh" if force_refresh else "async-stale", expires_at=None)  # awaken-allow: secret
+        async def aclose(self) -> None:
+            self.closed = True
+    provider = AsyncCredentials()
+    wrapped = functools.partial(provider)
+    if not asynchronous:
+        class AsyncClose:
+            def __call__(self, *, force_refresh: bool = False) -> object:
+                raise AssertionError("A2 provider must not be called")
+            async def close(self) -> None:
+                raise AssertionError("A2 close must not be called")
+        for refused in (provider, wrapped, AsyncClose()):
+            try:
+                anthropic_module.Anthropic(credentials=refused)
+            except TypeError as error:
+                assert "AsyncAnthropic" in str(error), "A2"
+            else:
+                raise AssertionError("A2 sync client admitted an async provider")
+        assert provider.calls == [] and not provider.closed
+        return
+
+    observed = []
+    def respond(request: object) -> object:
+        observed.append(request)
+        status = 401 if len(observed) == 1 else 200
+        return transport_module.Response(status, request=request,
+            json=canonical_error(401, "authentication_error") if status == 401 else {},
+            headers={"retry-after-ms": "0"})
+    await _call_session_create(anthropic_module, transport_module, respond,
+        asynchronous=True, max_retries=1,
+        client_options={"api_key": None, "auth_token": None, "credentials": wrapped})
+    assert provider.calls == [False, True] and provider.closed, "A3"
+    assert [r.headers["authorization"] for r in observed] == [
+        "Bearer async-stale", "Bearer async-fresh"], "A3"
+    assert all("x-api-key" not in r.headers for r in observed)
+
+    cache_module = importlib.import_module("anthropic.lib.credentials._cache")
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def blocked(*, force_refresh: bool = False) -> object:
+        calls.append(force_refresh)
+        if len(calls) == 1:
+            entered.set()
+            await release.wait()
+        return credentials.AccessToken(token="cache-token", expires_at=None)  # awaken-allow: secret
+    cache = cache_module.TokenCache(blocked)
+    leader = asyncio.create_task(cache.async_get_token())
+    await asyncio.wait_for(entered.wait(), 2)
+    waiters = [asyncio.create_task(cache.async_get_token()) for _ in range(3)]
+    release.set()
+    assert await asyncio.wait_for(asyncio.gather(leader, *waiters), 2) == ["cache-token"] * 4
+    assert calls == [False], "A4"
+    cache.invalidate()
+    assert await cache.async_get_token() == "cache-token"
+    assert calls == [False, True], "A6"
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    cache = cache_module.TokenCache(blocked)
+    leader = asyncio.create_task(cache.async_get_token())
+    await asyncio.wait_for(entered.wait(), 2)
+    waiter_entered = asyncio.Event()
+    async def wait_for_leader() -> str:
+        waiter_entered.set()
+        return await cache.async_get_token()
+    waiter = asyncio.create_task(wait_for_leader())
+    await asyncio.wait_for(waiter_entered.wait(), 2)
+    leader.cancel()
+    result = await asyncio.gather(leader, return_exceptions=True)
+    assert isinstance(result[0], asyncio.CancelledError), "A5 cancelled leader"
+    assert await asyncio.wait_for(waiter, 2) == "cache-token", "A5 waiter released"
+    assert calls == [False, False], "A5 new leader"
+
+    # A7 expiry=0 delegates caching to the provider, so every read invokes it.
+    # A8 invalidation during an already-running per-request call prevents that
+    # old result from repopulating the cache; the next read must force refresh.
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def per_request(*, force_refresh: bool = False) -> object:
+        calls.append(force_refresh)
+        if len(calls) == 1:
+            return credentials.AccessToken(token="seed-token", expires_at=0)  # awaken-allow: secret
+        if len(calls) == 2:
+            entered.set()
+            await release.wait()
+            return credentials.AccessToken(token="old-token", expires_at=0)  # awaken-allow: secret
+        return credentials.AccessToken(token="fresh-token", expires_at=None)  # awaken-allow: secret
+    cache = cache_module.TokenCache(per_request)
+    assert await cache.async_get_token() == "seed-token", "A7"
+    old = asyncio.create_task(cache.async_get_token())
+    await asyncio.wait_for(entered.wait(), 2)
+    cache.invalidate()
+    release.set()
+    assert await old == "old-token", "A8 already in flight may finish"
+    assert await cache.async_get_token() == "fresh-token", "A8 next request refreshes"
+    assert await cache.async_get_token() == "fresh-token", "A8 real expiry restores caching"
+    assert calls == [False, False, True], "A7-A8"
+
+    # A9 a failed forced refresh must leave the force request pending. No old
+    # token is served, and the next caller retries as a forced leader.
+    calls = []
+    failure = anthropic_module.AnthropicError("fixture refresh failure")
+    async def fails_once(*, force_refresh: bool = False) -> object:
+        calls.append(force_refresh)
+        if len(calls) == 2:
+            raise failure
+        return credentials.AccessToken(token="retry-token", expires_at=None)  # awaken-allow: secret
+    cache = cache_module.TokenCache(fails_once)
+    assert await cache.async_get_token() == "retry-token"
+    cache.invalidate()
+    try:
+        await cache.async_get_token()
+    except anthropic_module.AnthropicError as error:
+        assert error is failure, "A9"
+    else:
+        raise AssertionError("A9 failed refresh was silently accepted")
+    assert await cache.async_get_token() == "retry-token"
+    assert calls == [False, True, True], "A9 failure retains forced refresh"
 
 
 def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:

@@ -229,11 +229,30 @@ impl ManagedState {
             Self::assistant_response_coordinates(messages, &root_run_ids);
         let durable_inbound_projections =
             durable_inbound_projections(session_id, &persisted.event_batches);
-        let usage = self
-            .application
-            .session_usage(session_id, Some(&links))
-            .await
-            .map_err(StateError::Run)?;
+        // The same frozen snapshots already own per-Thread usage below. Avoid
+        // reopening every Thread and the Session root for the aggregate, which
+        // would read a second accounting prefix only to validate it away later.
+        // Child snapshots are keyed by distinct Thread; root is counted once.
+        // Final source validation and the existing publication CAS still fence
+        // the entire candidate, including this aggregate.
+        let usage = awaken_session_application::SessionApplication::project_session_usage(
+            &persisted,
+            root_snapshot
+                .iter()
+                .chain(
+                    child_snapshots
+                        .iter()
+                        .filter(|(id, _)| id.as_str() != session_id)
+                        .map(|(_, snapshot)| snapshot),
+                )
+                .map(|snapshot| {
+                    awaken_session_contract::session_usage_from_thread_usage(
+                        awaken_runtime_contract::llm::ThreadUsage::from_committed_state(
+                            &snapshot.state,
+                        ),
+                    )
+                }),
+        );
         let primary_thread_usage = usage_projection::project_committed_thread_usage(
             root_snapshot.as_ref(),
             price_snapshot.as_ref(),
