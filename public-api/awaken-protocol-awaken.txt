@@ -12,7 +12,7 @@ pub enum awaken_protocol_awaken::ProfiledSessionMode
 pub awaken_protocol_awaken::ProfiledSessionMode::Interactive
 pub awaken_protocol_awaken::ProfiledSessionMode::WorkUnit
 impl awaken_protocol_awaken::ProfiledSessionMode
-pub const fn awaken_protocol_awaken::ProfiledSessionMode::mutation_policy(self) -> awaken_session_contract::baseline::SessionMutationPolicy
+pub const fn awaken_protocol_awaken::ProfiledSessionMode::mutation_policy(self) -> awaken_session_resource_contract::resource::SessionMutationPolicy
 pub struct awaken_protocol_awaken::CreateRepository
 pub awaken_protocol_awaken::CreateRepository::clone_policy: awaken_resource_contract::registry::ClonePolicy
 pub awaken_protocol_awaken::CreateRepository::credential_binding: core::option::Option<alloc::string::String>
@@ -45,7 +45,7 @@ pub awaken_protocol_awaken::ProfiledSessionCreate::mounts: alloc::vec::Vec<awake
 pub awaken_protocol_awaken::ProfiledSessionCreate::network_restriction: core::option::Option<awaken_session_contract::network_policy::SessionNetworkPolicy>
 pub awaken_protocol_awaken::ProfiledSessionCreate::prompts: alloc::vec::Vec<alloc::string::String>
 pub awaken_protocol_awaken::ProfiledSessionCreate::repositories: alloc::vec::Vec<awaken_protocol_awaken::ProfiledSessionRepository>
-pub awaken_protocol_awaken::ProfiledSessionCreate::resource_inputs: alloc::vec::Vec<awaken_session_contract::resource::SessionInputAttachment>
+pub awaken_protocol_awaken::ProfiledSessionCreate::resource_inputs: alloc::vec::Vec<awaken_session_resource_contract::resource::SessionInputAttachment>
 pub awaken_protocol_awaken::ProfiledSessionCreate::session_id: alloc::string::String
 pub awaken_protocol_awaken::ProfiledSessionCreate::source_revision: core::option::Option<u64>
 pub awaken_protocol_awaken::ProfiledSessionCreate::title: core::option::Option<alloc::string::String>

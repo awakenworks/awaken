@@ -66,7 +66,13 @@ EXCLUDED_PARTS = frozenset({"node_modules", "target", "__pycache__", ".git"})
 
 # Crates that reference a Postgres URL but legitimately need no gate entry.
 # Key: crate directory name. Value: why its tests do not require a database.
-PG_GATE_EXEMPTIONS: dict[str, str] = {}
+PG_GATE_EXEMPTIONS: dict[str, str] = {
+    "awaken-reliability-testkit": (
+        "Owns only the pure three-state AWAKEN_TEST_DATABASE_URL admission helper. "
+        "Its five database-owning consumers remain individually listed in pg_tests.sh; "
+        "the testkit has no schema, driver, connection, or Postgres test to run."
+    ),
+}
 
 # A skip whose dependency the Postgres gate supplies needs no entry here: R1
 # is what makes "CI sets the variable" true, so R2 may rely on it. This registry

@@ -83,7 +83,7 @@
     },
     "awaken-session-contract": {
       "depth": 3,
-      "production_lines": 13234,
+      "production_lines": 12411,
       "catch_all_errors": 7,
       "growth_reasons": {
         "production_lines": "Keep one typed FileCatalog/Artifact error projection and separate existing Session mutation and realization models from ports inside the same crate; no dependency-depth or capability-default increase."
@@ -96,6 +96,9 @@
       "depth": 1
     },
     "awaken-session-mcp-contract": {
+      "depth": 2
+    },
+    "awaken-session-resource-contract": {
       "depth": 2
     },
     "awaken-session-types": {

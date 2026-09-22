@@ -622,7 +622,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness failed_resource_replacement_never_promotes_the_pending_manifest \
     --harness resource_retry_reuses_exact_pending_revision \
     --harness terminal_execution_never_reopens \
-    --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
     --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \
     --harness runtime_intervals_open_once_and_never_close_before_start \
     --harness managed_toolset_default_resolution_is_source_exact_and_configurable \
@@ -644,6 +643,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-session-contract --checked-loop-profile activity-admission-height-v1 \
     --harness activity_next_epoch_inserts_exact_checked_successor \
     --harness activity_exact_epoch_inserts_only_fresh_positive_member
+  run_kani awaken-session-resource-contract \
+    --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority
   # The two-admission partitions run the reducer over the two-slot member
   # model: no B-tree loops, so no checked loop profile applies to them.
   run_kani awaken-session-contract \
