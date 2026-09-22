@@ -14,15 +14,13 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::{
-    RunLifecycleCursor, RunLifecycleEvent, RunLifecyclePage, encode_run_lifecycle_cursor,
-};
+use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, encode_run_lifecycle_cursor};
 use awaken_runtime_contract::tool_batch::ToolBatch;
 use awaken_session_contract::{Pending, RunError, SessionRuntime, ToolPermissionDecision};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt as _;
 
@@ -1219,7 +1217,6 @@ struct LifecycleRuntime {
     /// projection is observed, modeling a commit between the projection and
     /// root-snapshot reads without manufacturing a partial transaction.
     outcome_commit_on_read: Arc<Mutex<Vec<(awaken_agent_contract::agent::state::Command, u64)>>>,
-    include_runs_in_snapshot: Arc<AtomicBool>,
     /// Pause one existing Runtime read so a real root CAS can win while the
     /// original transport has already begun cold recovery. No receipt is faked.
     reads: crate::state::test_support::ReadControl,
@@ -1872,7 +1869,7 @@ impl awaken_session_contract::ThreadReadRuntime for LifecycleRuntime {
             )
             .into_iter()
             .collect();
-        let runs = if self.include_runs_in_snapshot.load(Ordering::SeqCst) {
+        let runs = {
             let mut runs = Vec::<awaken_agent_contract::agent::run::Record>::new();
             for event in lifecycle
                 .iter()
@@ -1889,8 +1886,6 @@ impl awaken_session_contract::ThreadReadRuntime for LifecycleRuntime {
                 }
             }
             runs
-        } else {
-            Vec::new()
         };
         let messages = self.messages.lock().unwrap().clone();
         let message_commit_cursors = self.message_cursors.lock().unwrap().clone();
@@ -1903,6 +1898,24 @@ impl awaken_session_contract::ThreadReadRuntime for LifecycleRuntime {
             .chain(state_commit_cursors.iter().copied())
             .max()
             .unwrap_or_default();
+        // One fixture commit owns transitions and enriched audit payloads.
+        // An explicit row supplies details such as an historical await target
+        // at that exact coordinate; it cannot exist only on a second feed.
+        let mut audit = crate::test_support::lifecycle_audit_records(
+            lifecycle
+                .iter()
+                .filter(|event| event.thread_id.0 == thread_id),
+        );
+        for explicit in self.audit_events.lock().unwrap().iter().cloned() {
+            if let Some(existing) = audit.iter_mut().find(|record| {
+                record.sequence == explicit.sequence && record.run_id == explicit.run_id
+            }) {
+                *existing = explicit;
+            } else {
+                audit.push(explicit);
+            }
+        }
+        audit.sort_by_key(|record| record.sequence);
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
                 commit_timestamps: Default::default(),
@@ -1914,7 +1927,7 @@ impl awaken_session_contract::ThreadReadRuntime for LifecycleRuntime {
                 message_commit_cursors,
                 state,
                 state_commit_cursors,
-                events: self.audit_events.lock().unwrap().clone(),
+                events: audit,
                 resume_tickets,
                 thread_version: lifecycle.len() as u64
                     + read_index.min(self.projection_version_changes.load(Ordering::SeqCst)) as u64,
@@ -1955,27 +1968,6 @@ impl awaken_session_contract::ThreadReadRuntime for LifecycleRuntime {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        _thread: &str,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunError> {
-        let events = self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|event| event.cursor > cursor)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(RunLifecyclePage {
-            next_cursor: events.last().map_or(cursor, |event| event.cursor),
-            events,
-        })
     }
 
     // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -2598,9 +2590,6 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
     // | P2 | 1 | E2 |
     // | P3 | 2, exact audit target | strict E3; exact rebuild |
     let runtime = LifecycleRuntime::default();
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
     let thread_id = "sthr-single-ticket";
     let run_id = RunId("run-single-ticket".into());
     runtime.lifecycle.lock().unwrap().push(lifecycle(
@@ -2783,9 +2772,6 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
     // existing non-2xx Events response is the Web projection-health seam; no
     // second pending store or browser-only damage flag is introduced.
     let runtime = LifecycleRuntime::default();
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
     let state = Arc::new(ManagedState::new(runtime.clone()));
     let session = state
         .create_session(
@@ -3019,9 +3005,6 @@ async fn pending_without_transcript_uses_awaiting_lifecycle_anchor() {
     // the global unanchored-event fail-closed guard and acquires no guessed
     // cursor.
     let runtime = LifecycleRuntime::default();
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
     let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
         FrozenToolFamilyProfiles::uniform(
             "coder",
@@ -6530,9 +6513,6 @@ async fn late_compaction_uses_its_state_commit_and_preserves_an_issued_prefix() 
     // commit_sequence is the only marker anchor; lifecycle opening is never a
     // fallback.
     let runtime = LifecycleRuntime::default();
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
     let repository = Arc::new(ephemeral_session_repo());
     let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
     let session = warm
@@ -6726,9 +6706,6 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
     // O3=C1+C2+C3=>E1+E3; O4=C1+C3+C4=>E4. The state-command commit_sequence is the only
     // evaluation anchor; DefineOutcome admission is not reused as a fallback.
     let runtime = LifecycleRuntime::default();
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
     let repository = Arc::new(ephemeral_session_repo());
     let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
     let session = warm
@@ -6887,9 +6864,6 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
     // test-only anchor; exercise the real application CAS and existing projector
     // together. Neither GET nor recovery executes a model or invents a Message.
     let runtime = LifecycleRuntime::default();
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
     let repository = Arc::new(ephemeral_session_repo());
     let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
     let session = warm
@@ -7043,9 +7017,6 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
     // session.updated remains explicitly out of scope; this test preserves the
     // pre-existing same-process behavior without minting another durable log.
     let runtime = LifecycleRuntime::default();
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
     let repository = Arc::new(ephemeral_session_repo());
     let state = ManagedState::new(runtime.clone()).with_session_repo(repository);
     let session = state
@@ -10780,9 +10751,10 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
     // later relationship read; C3 the root fence and link catch up; C4 an
     // root Run terminates; C5 a later unknown internal/other-Session lifecycle
     // is inside the root fence but remains absent from that relationship
-    // snapshot. Effects: E1 C1+C2 retain the unknown cursor and
+    // snapshot. Effects: E1 C1+C2 exclude the unknown Thread and
     // create no false Thread; E2 C3 replays the same lifecycle into the real
-    // advisor Thread; E3 C5 advances without a public Thread; E4 C4 still
+    // advisor Thread; E3 C5 neither advances this Session's cursor nor creates
+    // a public Thread; E4 C4 still
     // projects the root terminal bracket before C5; E5 aggregate Usage/Idle
     // identity remains owned by C4's terminal cursor, never by C5's unrelated
     // feed high-water. No Thread-id spelling or separate legacy-delegation
@@ -10906,7 +10878,7 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
     state.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         state.lifecycle_cursor(&session.id).unwrap(),
-        lifecycle_cursor(5),
+        lifecycle_cursor(4),
         "L3/E3/E4"
     );
     assert!(
@@ -11537,7 +11509,7 @@ async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
                     .into();
                 runtime.audit_events.lock().unwrap().push(
                     awaken_agent_contract::audit::record::Record {
-                        sequence: 2,
+                        sequence: lifecycle_cursor(2).0,
                         run_id: run.clone(),
                         kind: draft.kind,
                         payload: draft.payload,
@@ -11577,9 +11549,6 @@ async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
                         RunState::Ended(terminal),
                     ),
                 ]);
-                runtime
-                    .include_runs_in_snapshot
-                    .store(true, Ordering::SeqCst);
                 if observed_before_close {
                     let terminal = runtime.lifecycle.lock().unwrap().pop().unwrap();
                     *runtime.pending.lock().unwrap() = Some(Pending {
@@ -11692,7 +11661,7 @@ async fn closed_remote_wait_projects_its_answerable_event_before_terminal_histor
         .lock()
         .unwrap()
         .push(awaken_agent_contract::audit::record::Record {
-            sequence: 2,
+            sequence: lifecycle_cursor(2).0,
             run_id: run.clone(),
             kind: draft.kind,
             payload: draft.payload,
@@ -11722,9 +11691,6 @@ async fn closed_remote_wait_projects_its_answerable_event_before_terminal_histor
             RunState::Ended(EndCause::Cancelled),
         ),
     ]);
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
 
     state.refresh_committed_events(&session.id).await.unwrap();
     let events = state
@@ -11969,7 +11935,7 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
         input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
         client_executed: true,
     };
-    // R4/C8 race partition: the resumed opening is consumed while the durable
+    // R4/C8 legacy-history partition: a later opening is consumed while the durable
     // aggregate is still Idle, then the terminal/ticket prefix catches up in a
     // later refresh. The terminal projector must recover the opening from the
     // complete accepted lifecycle prefix; the process-local cursor may not make
@@ -11979,7 +11945,7 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
         70,
         &thread,
         &local_run,
-        RunLifecycleEventKind::Resumed,
+        RunLifecycleEventKind::Running,
         RunState::Running,
     ));
     state.refresh_committed_events(&thread).await.unwrap();
@@ -12047,11 +12013,15 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
         ),
     ]);
     state.sessions.lock().unwrap().remove(&thread);
-    state.refresh_committed_events(&thread).await.unwrap();
-    assert_eq!(
-        state.lifecycle_cursor(&thread).unwrap(),
-        lifecycle_cursor(90),
-        "R5/E6 cold lifecycle waits behind the missing exact ticket"
+    // A real atomic prefix includes the current Run record. Awaiting without
+    // its answerable ticket is a recovery-required failure, not a valid partial
+    // snapshot with its Run metadata omitted by a separate fixture feed.
+    let error = state.refresh_committed_events(&thread).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Awaiting Run without its answerable ticket"),
+        "R5/E6"
     );
     let before_ticket =
         serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
@@ -12195,7 +12165,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         .lock()
         .unwrap()
         .push(awaken_agent_contract::audit::record::Record {
-            sequence: 1,
+            sequence: lifecycle_cursor(2).0,
             run_id: run.clone(),
             kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
             payload: serde_json::json!({
@@ -12314,7 +12284,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         client_executed: false,
     });
     runtime.audit_events.lock().unwrap().push(awaken_agent_contract::audit::record::Record {
-        sequence: 2,
+        sequence: lifecycle_cursor(4).0,
         run_id: run.clone(),
         kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
         payload: serde_json::json!({
@@ -13121,9 +13091,6 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 ),
             ] {
                 let runtime = LifecycleRuntime::default();
-                runtime
-                    .include_runs_in_snapshot
-                    .store(true, Ordering::SeqCst);
                 let repository = Arc::new(ephemeral_session_repo());
                 let state =
                     ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
@@ -13195,7 +13162,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     ),
                 );
                 runtime.audit_events.lock().unwrap().push(awaken_agent_contract::audit::record::Record {
-                    sequence: 2, run_id: run.clone(), kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+                    sequence: lifecycle_cursor(2).0, run_id: run.clone(), kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
                     payload: serde_json::json!({"state":"Awaiting","await_target":{"ToolCall":{
                         "reason":"Permission", "call_id":"test-call", "tool":{"tool_id":"write","arguments":{"file_path":"first.txt","content":"first"}}, "authority":"RuntimeToolBatch"
                     }}}),
@@ -13307,7 +13274,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     if terminal == 1 {
                         if terminal_kind == RunLifecycleEventKind::Awaiting {
                             runtime.audit_events.lock().unwrap().push(awaken_agent_contract::audit::record::Record {
-                                sequence: terminal_cursor, run_id: run.clone(), kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+                                sequence: lifecycle_cursor(terminal_cursor).0, run_id: run.clone(), kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
                                 payload: serde_json::json!({"state":"Awaiting","await_target":{"ToolCall":{
                                     "reason":"Permission", "call_id":"second-call", "tool":{"tool_id":"write","arguments":{"file_path":"second.txt","content":"second"}}, "authority":"RuntimeToolBatch"
                                 }}}),

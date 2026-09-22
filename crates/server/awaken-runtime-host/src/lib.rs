@@ -1038,22 +1038,6 @@ impl awaken_session_contract::ThreadReadRuntime for ManagedHost {
             .then_some(snapshot))
     }
 
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
-        let feed = self
-            .host
-            .run_lifecycle_feed(thread)
-            .await
-            .map_err(to_run_error)?;
-        awaken_agent_contract::RunLifecycleFeed::events_after(feed.as_ref(), cursor, limit)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))
-    }
-
     async fn session_thread_disposition(
         &self,
         session_id: &awaken_session_contract::SessionId,

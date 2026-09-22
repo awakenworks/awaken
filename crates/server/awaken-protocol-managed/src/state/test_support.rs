@@ -1585,7 +1585,11 @@ impl awaken_session_contract::ThreadReadRuntime for RehydrateFake {
             message_commit_cursors,
             state,
             state_commit_cursors,
-            events: Vec::new(),
+            events: crate::test_support::lifecycle_audit_records(lifecycle.iter().filter(
+                |event| {
+                    event.thread_id.0 == thread_id && event.source_commit_cursor <= store_cursor
+                },
+            )),
             resume_tickets,
             thread_version: lifecycle.len() as u64,
             store_cursor,
@@ -1626,31 +1630,6 @@ impl awaken_session_contract::ThreadReadRuntime for RehydrateFake {
         }
         snapshot.claimed_run_id = run_id.clone();
         Ok(Some(snapshot))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        _thread: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
-        self.reads
-            .on_read("lifecycle")
-            .await
-            .map_err(scripted_read_failure)?;
-        let events = self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|event| event.cursor > cursor)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(awaken_agent_contract::RunLifecyclePage {
-            next_cursor: events.last().map_or(cursor, |event| event.cursor),
-            events,
-        })
     }
 
     async fn session_thread_disposition(

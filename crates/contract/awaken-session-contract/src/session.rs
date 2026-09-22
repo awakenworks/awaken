@@ -20,7 +20,6 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
-use awaken_agent_contract::{RunLifecycleCursor, RunLifecyclePage};
 
 // Keep StepOutcome's public defining path at `session::StepOutcome` while its
 // implementation remains physically split below the repository file limit.

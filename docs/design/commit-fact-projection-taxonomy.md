@@ -121,17 +121,24 @@ repeated recovery read without weakening the closing consistency fences. The
 query-policy counter and old-prefix/new-commit decision table verify this scope;
 existing publication proofs do not prove query performance or SQL isolation.
 
-Usage aggregation also borrows that candidate's initial relationship set rather
-than querying it again. Ordinary accounting and model admission still discover
-current links, and the executing Thread is included even before its link appears.
-The existing Thread identity set now skips repeated links and the already counted
-primary, so a cumulative Thread counter is read and charged once across multiple
-Run observations. All link scopes are checked before child reads; per-model,
-cache and web counters retain the same aggregation owner, and elapsed activity
-still comes from the Session root. The final fresh relation/Thread checks remain
-mandatory before a Managed candidate may publish. The read-cut test derives its
-44 failure rules from both complete actual traces, including competing writers;
-removing the redundant query removes only its now-unreachable failure cuts.
+Usage aggregation and lifecycle classification consume the candidate's already
+observed atomic Thread snapshots. Usage retains the Session application's one
+aggregation rule and root-owned active clock; lifecycle shares the checkpoint
+reader's canonical classifier and cursor codec. Admission and history projection
+therefore do not reopen a database-wide lifecycle feed. Root and coordinated
+children contribute only their own retained audit facts, merged in durable event
+order. Ordinary accounting and model admission still discover current links and
+include the executing Thread exactly once.
+
+Agent-boundary settlement derives its terminal observation from the exact Run
+recovery snapshot it already validated. The redundant Session-level lifecycle
+forwarding port is removed; the generic store feed remains available to genuine
+partition-wide consumers. No new store, cache, or durable cursor is introduced.
+Full source-prefix validation and publication CAS remain mandatory. The read-cut
+test covers 32 actual read/failure/competing-writer schedules after removing the
+independent usage and lifecycle reads. Bounded independent trace enumeration,
+scope/corruption tests and the four-backend recovery conformance suite cover the
+pure projection; they do not establish database isolation or unbounded liveness.
 
 Event pagination uses derived ID positions and primary action references owned
 by the published `SessionRecord`. The constructor creates its initial index;

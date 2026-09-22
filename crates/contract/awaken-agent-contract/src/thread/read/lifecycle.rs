@@ -237,8 +237,57 @@ where
         });
     }
     let records = reader.list_events(&EventScope::All, None, usize::MAX);
+    project_lifecycle_records(records.iter(), cursor, limit, |run_id| {
+        reader.run(run_id).map(|run| run.thread_id)
+    })
+}
+
+impl crate::thread::read::recovery::RunRecoverySnapshot {
+    /// Derive lifecycle from this same atomic Thread prefix. Consumers already
+    /// holding recovery evidence must not reopen the global lifecycle feed and
+    /// combine another observation with its messages, state, and tickets.
+    pub fn lifecycle_events_after(
+        &self,
+        cursor: RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
+        if limit == 0 {
+            return Ok(RunLifecyclePage {
+                events: Vec::new(),
+                next_cursor: cursor,
+            });
+        }
+        let runs = self
+            .runs
+            .iter()
+            .map(|run| (&run.id, run))
+            .collect::<HashMap<_, _>>();
+        let page = project_lifecycle_records(self.events.iter(), cursor, limit, |run_id| {
+            runs.get(run_id)
+                .filter(|run| run.thread_id == self.thread_id)
+                .map(|run| run.thread_id.clone())
+        })?;
+        if page
+            .events
+            .iter()
+            .any(|event| event.source_commit_cursor > self.store_cursor)
+        {
+            return Err(RunLifecycleFeedError::Rejected(
+                "lifecycle event exceeds its atomic recovery prefix".into(),
+            ));
+        }
+        Ok(page)
+    }
+}
+
+fn project_lifecycle_records<'a>(
+    records: impl Iterator<Item = &'a crate::audit::record::Record>,
+    cursor: RunLifecycleCursor,
+    limit: usize,
+    mut thread_for_run: impl FnMut(&RunId) -> Option<ThreadId>,
+) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
     let mut previous = HashMap::<RunId, RunState>::new();
-    let mut events = Vec::with_capacity(limit.min(records.len()));
+    let mut events = Vec::with_capacity(limit.min(records.size_hint().0));
     for record in records {
         if !matches!(
             record.kind,
@@ -272,17 +321,16 @@ where
         if record.sequence <= cursor.0 {
             continue;
         }
-        let run = reader
-            .run(&record.run_id)
-            .ok_or(RunLifecycleFeedError::UnknownRun {
+        let thread_id =
+            thread_for_run(&record.run_id).ok_or(RunLifecycleFeedError::UnknownRun {
                 sequence: record.sequence,
             })?;
         events.push(RunLifecycleEvent {
             cursor: RunLifecycleCursor(record.sequence),
             source_commit_cursor: decode_run_lifecycle_cursor(RunLifecycleCursor(record.sequence))
                 .0,
-            thread_id: run.thread_id,
-            run_id: record.run_id,
+            thread_id,
+            run_id: record.run_id.clone(),
             kind,
             state,
             await_reason,
@@ -387,6 +435,186 @@ mod tests {
                 "state": state,
                 "claim_epoch": claim_epoch,
             }),
+        }
+    }
+
+    fn recovery_fixture(
+        events: Vec<EventRecord>,
+        runs: Vec<RunRecord>,
+        fence: u64,
+    ) -> crate::thread::read::recovery::RunRecoverySnapshot {
+        crate::thread::read::recovery::RunRecoverySnapshot {
+            thread_id: ThreadId("lifecycle-thread".into()),
+            claimed_run_id: RunId("r0".into()),
+            latest_run_id: events.last().map(|event| event.run_id.clone()),
+            runs,
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            commit_timestamps: Default::default(),
+            state: Vec::new(),
+            state_commit_cursors: Vec::new(),
+            events,
+            resume_tickets: Vec::new(),
+            thread_version: fence,
+            store_cursor: fence,
+            next_commit_ordinal: 0,
+        }
+    }
+
+    #[test]
+    fn recovery_lifecycle_exhaustively_preserves_run_local_history_and_page_boundaries() {
+        // Causes: two interleaved Run identities; Running/Awaiting/Completed;
+        // lengths 0..=4; every exclusive cursor position; limits 0..=3.
+        // E1 Running is Resumed iff that Run's preceding state was Awaiting;
+        // E2 other Runs cannot supply its predecessor; E3 cursor/limit preserve
+        // order and exact next_cursor, including empty pages. Decision rules
+        // cover the Cartesian product above. The independent oracle searches
+        // backwards per position rather than sharing the production forward fold.
+        let states = [
+            RunState::Running,
+            RunState::Awaiting,
+            RunState::Ended(EndCause::NaturalEnd),
+        ];
+        for length in 0..=4_u32 {
+            for mut code in 0..6_usize.pow(length) {
+                let symbols = (0..length)
+                    .map(|_| {
+                        let value = code % 6;
+                        code /= 6;
+                        value
+                    })
+                    .collect::<Vec<_>>();
+                let events = symbols
+                    .iter()
+                    .enumerate()
+                    .map(|(index, symbol)| {
+                        state_event(
+                            encode_run_lifecycle_cursor(index as u64 + 1, 0).unwrap().0,
+                            &RunId(format!("r{}", symbol / 3)),
+                            states[symbol % 3].clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let runs = (0..2)
+                    .filter_map(|run| {
+                        let symbol = symbols.iter().rev().find(|symbol| **symbol / 3 == run)?;
+                        Some(RunRecord {
+                            id: RunId(format!("r{run}")),
+                            thread_id: ThreadId("lifecycle-thread".into()),
+                            state: states[symbol % 3].clone(),
+                        })
+                    })
+                    .collect();
+                let snapshot = recovery_fixture(events, runs, u64::from(length));
+                for after in 0..=length {
+                    let cursor = encode_run_lifecycle_cursor(u64::from(after), 0).unwrap();
+                    for limit in 0..=3 {
+                        let expected = symbols
+                            .iter()
+                            .enumerate()
+                            .skip(after as usize)
+                            .take(limit)
+                            .map(|(index, symbol)| {
+                                let previous = symbols[..index]
+                                    .iter()
+                                    .rev()
+                                    .find(|prior| **prior / 3 == symbol / 3);
+                                let kind = match symbol % 3 {
+                                    0 if previous.is_some_and(|prior| prior % 3 == 1) => {
+                                        RunLifecycleEventKind::Resumed
+                                    }
+                                    0 => RunLifecycleEventKind::Running,
+                                    1 => RunLifecycleEventKind::Awaiting,
+                                    _ => RunLifecycleEventKind::Completed,
+                                };
+                                (
+                                    encode_run_lifecycle_cursor(index as u64 + 1, 0).unwrap(),
+                                    RunId(format!("r{}", symbol / 3)),
+                                    kind,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let page = snapshot.lifecycle_events_after(cursor, limit).unwrap();
+                        assert_eq!(
+                            page.events
+                                .iter()
+                                .map(|event| (event.cursor, event.run_id.clone(), event.kind))
+                                .collect::<Vec<_>>(),
+                            expected
+                        );
+                        assert_eq!(
+                            page.next_cursor,
+                            expected.last().map_or(cursor, |event| event.0)
+                        );
+                        assert!(
+                            page.events
+                                .iter()
+                                .all(|event| event.thread_id == snapshot.thread_id
+                                    && decode_run_lifecycle_cursor(event.cursor).0
+                                        == event.source_commit_cursor)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_lifecycle_preserves_reschedule_and_rejects_corrupt_or_foreign_facts() {
+        // R1 Awaiting -> Rescheduled -> Running after a cursor still means
+        // Resumed: rescheduling is not the preceding RunStateChanged fact.
+        // R2 missing/foreign Run owner, malformed state/reason, or a fact beyond
+        // the snapshot fence -> error, never a partial page. R3 limit zero ->
+        // no materialization, even for each corrupt input. No global feed exists
+        // in this value-level adapter, so unrelated Session history cannot enter.
+        let id = RunId("r0".into());
+        let events = vec![
+            state_event(1000, &id, RunState::Awaiting),
+            rescheduled_event(2000, &id, RunState::Running, 2),
+            state_event(3000, &id, RunState::Running),
+        ];
+        let snapshot = recovery_fixture(
+            events,
+            vec![RunRecord {
+                id,
+                thread_id: ThreadId("lifecycle-thread".into()),
+                state: RunState::Running,
+            }],
+            3,
+        );
+        let page = snapshot
+            .lifecycle_events_after(RunLifecycleCursor(1000), 2)
+            .unwrap();
+        assert_eq!(
+            page.events
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                RunLifecycleEventKind::Rescheduled,
+                RunLifecycleEventKind::Resumed
+            ]
+        );
+        for cause in 0..5 {
+            let mut corrupt = snapshot.clone();
+            match cause {
+                0 => corrupt.runs.clear(),
+                1 => corrupt.runs[0].thread_id = ThreadId("foreign".into()),
+                2 => corrupt.events[0].payload["state"] = serde_json::json!("invalid"),
+                3 => corrupt.events[0].payload["await_reason"] = serde_json::json!("invalid"),
+                _ => corrupt.store_cursor = 0,
+            }
+            assert!(
+                corrupt
+                    .lifecycle_events_after(RunLifecycleCursor(0), usize::MAX)
+                    .is_err(),
+                "R2 cause={cause}"
+            );
+            let empty = corrupt
+                .lifecycle_events_after(RunLifecycleCursor(9), 0)
+                .unwrap();
+            assert!(empty.events.is_empty(), "R3 cause={cause}");
+            assert_eq!(empty.next_cursor, RunLifecycleCursor(9));
         }
     }
 

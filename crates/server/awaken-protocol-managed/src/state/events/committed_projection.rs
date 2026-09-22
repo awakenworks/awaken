@@ -161,17 +161,15 @@ impl ManagedState {
         let (links, child_snapshots) = self
             .coordinated_projection_prefix(session_id, root_snapshot.as_ref())
             .await?;
-        // The lifecycle feed may advance after the snapshots. Each event carries
-        // its source commit cursor, so the recovery snapshot's store cursor can
-        // fence it to the exact prefix whose transcript, ticket and disposition
-        // were read atomically. A terminal can therefore never close SSE before
-        // that same prefix exposes its final output; opaque lifecycle event
-        // cursors are never compared with commit-sequence cursors.
+        // Lifecycle is derived from these exact atomic prefixes, alongside their
+        // transcript, tickets and disposition. Reopening the global feed would
+        // scan unrelated Sessions and introduce a second observation to fence.
         // The disposable cursor is only a live-delivery optimization. Canonical
         // list reconstruction always folds the complete retained lifecycle so a
         // cold replica and a warm replica derive the same interval buckets.
         let snapshots_done = started.elapsed();
-        let lifecycle_events = self.committed_lifecycle_prefix(session_id).await?;
+        let lifecycle_events =
+            Self::committed_lifecycle_prefix(root_snapshot.iter().chain(child_snapshots.values()))?;
         let lifecycle_done = started.elapsed();
         let mut transcripts = child_snapshots
             .iter()

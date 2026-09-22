@@ -1032,53 +1032,39 @@ impl SessionApplication {
         Err(SessionActivityError::Conflict)
     }
 
-    /// Resolve one exact terminal Runtime lifecycle coordinate from the existing
-    /// committed feed. `source_commit_fence` is the recovery snapshot boundary
-    /// used for child settlement; direct steps select the latest matching commit
-    /// observed after their synchronous Runtime result.
-    pub(crate) async fn runtime_interval_observation(
-        &self,
-        session_id: &str,
+    /// Resolve an exact terminal coordinate from the same prefix used to settle
+    /// this Run. The activity clock must not reopen a global lifecycle history.
+    pub(crate) fn runtime_interval_observation(
         activity_epoch: u64,
         thread_id: &ThreadId,
         run_id: &RunId,
         state: &RunState,
-        source_commit_fence: Option<u64>,
+        snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<Option<SessionRuntimeIntervalObservation>, RunError> {
-        const PAGE_SIZE: usize = 256;
-        let mut cursor = RunLifecycleCursor::default();
         let mut selected = None;
-        loop {
-            let page = self
-                .committed_run_lifecycle(session_id, cursor, PAGE_SIZE)
-                .await?;
-            let count = page.events.len();
-            for event in page.events {
-                if &event.thread_id == thread_id
-                    && &event.run_id == run_id
-                    && &event.state == state
-                    && matches!(
-                        event.kind,
-                        RunLifecycleEventKind::Awaiting
-                            | RunLifecycleEventKind::Completed
-                            | RunLifecycleEventKind::Failed
-                            | RunLifecycleEventKind::Cancelled
-                    )
-                    && source_commit_fence.is_none_or(|fence| event.source_commit_cursor <= fence)
-                {
-                    selected = Some(SessionRuntimeIntervalObservation {
-                        activity_epoch,
-                        thread_id: event.thread_id,
-                        run_id: event.run_id,
-                        lifecycle_cursor: event.cursor,
-                        source_commit_cursor: event.source_commit_cursor,
-                    });
-                }
+        let page = snapshot
+            .lifecycle_events_after(RunLifecycleCursor::default(), usize::MAX)
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        for event in page.events {
+            if &event.thread_id == thread_id
+                && &event.run_id == run_id
+                && &event.state == state
+                && matches!(
+                    event.kind,
+                    RunLifecycleEventKind::Awaiting
+                        | RunLifecycleEventKind::Completed
+                        | RunLifecycleEventKind::Failed
+                        | RunLifecycleEventKind::Cancelled
+                )
+            {
+                selected = Some(SessionRuntimeIntervalObservation {
+                    activity_epoch,
+                    thread_id: event.thread_id,
+                    run_id: event.run_id,
+                    lifecycle_cursor: event.cursor,
+                    source_commit_cursor: event.source_commit_cursor,
+                });
             }
-            if page.next_cursor == cursor || count < PAGE_SIZE {
-                break;
-            }
-            cursor = page.next_cursor;
         }
         Ok(selected)
     }

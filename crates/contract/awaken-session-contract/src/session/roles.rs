@@ -472,16 +472,6 @@ pub trait ThreadReadRuntime: Send + Sync {
         run_id: &RunId,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>;
 
-    /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-    /// the sole authority; Managed uses this projection to observe Runs accepted
-    /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
-    async fn committed_run_lifecycle(
-        &self,
-        thread: &str,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunError>;
-
     /// Read the durable disposition of one logical child Thread through its
     /// parent Session's physical commit partition. Legacy Threads without the
     /// state cell remain Active.

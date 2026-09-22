@@ -687,26 +687,6 @@ macro_rules! neutral_role {
                 Ok(Some(snapshot))
             }
 
-            /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-            /// the sole authority; Managed uses this projection to observe Runs accepted
-            /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
-            async fn committed_run_lifecycle(
-                &self,
-                _thread: &str,
-                cursor: $crate::__macro_support::awaken_agent_contract::RunLifecycleCursor,
-                _limit: usize,
-            ) -> Result<
-                $crate::__macro_support::awaken_agent_contract::RunLifecyclePage,
-                $crate::RunError,
-            > {
-                Ok(
-                    $crate::__macro_support::awaken_agent_contract::RunLifecyclePage {
-                        events: Vec::new(),
-                        next_cursor: cursor,
-                    },
-                )
-            }
-
             /// Read the durable disposition of one logical child Thread through its
             /// parent Session's physical commit partition. Legacy Threads without the
             /// state cell remain Active.

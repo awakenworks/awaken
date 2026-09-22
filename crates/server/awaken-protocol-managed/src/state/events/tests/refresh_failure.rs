@@ -262,11 +262,12 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
     // the complete frame. The first repository cut precedes candidate cloning;
     // all others follow it. The separate orphan test owns private-reducer errors
     // and the exhaustion test owns the final publisher error.
-    // Bounds: these two actual topologies, one lifecycle page, one retained
+    // Bounds: these two actual topologies, one retained
     // Outcome or one child, every listed read ordinal, both writer schedules.
     // This covers control-flow cuts, not arbitrary topology/SQL refinement.
-    // Usage now reuses the already selected root/child snapshots. Independent
-    // usage reads and their extra Session read are absent. Final validation selects its fresh root before the
+    // Usage and lifecycle reuse the already selected root/child snapshots.
+    // Independent usage/lifecycle reads and the extra Session read are absent.
+    // Final validation selects its fresh root before the
     // relation query: root-only projection reuses that exact fence, while a
     // child prefix retains the later root read after its child snapshot. Every
     // remaining actual cut is exercised, and an unexpected read fails R0.
@@ -278,7 +279,6 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                 "root_snapshot",
                 "coordination",
                 "child_snapshot",
-                "lifecycle",
                 "root_snapshot",
                 "coordination",
                 "child_snapshot",
@@ -291,7 +291,6 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                 "outcome",
                 "root_snapshot",
                 "coordination",
-                "lifecycle",
                 "root_snapshot",
                 "coordination",
                 "session",
@@ -409,7 +408,7 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
         }
     }
     assert_eq!(
-        checked_rules, 36,
+        checked_rules, 32,
         "R1-R2 every read cut and competing-writer schedule executes"
     );
 }
