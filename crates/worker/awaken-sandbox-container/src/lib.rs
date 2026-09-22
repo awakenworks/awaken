@@ -56,6 +56,7 @@ pub use egress::{
     AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, EgressRealizationIdentity,
     ForwardProxy, NetworkMode, egress_plan, egress_plan_with_allowlist, normalize_hostname,
 };
+pub use exec_attempts::AdmittedExec;
 use exec_attempts::ExecAttempts;
 pub(crate) use exec_attempts::exec_orphan_reaper_command;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]

@@ -284,7 +284,13 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     let command = pc::materialize_process_command(&[], command, None)
         .await
         .expect("materialize public exec environment");
-    let process = rt.spawn(id, command).await.expect("spawn detached exec");
+    let process = rt
+        .spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(id),
+            command,
+        )
+        .await
+        .expect("spawn detached exec");
     let public_id = process.id().to_string();
 
     // What this asserts is that a handle recovered by public id signals and
@@ -339,8 +345,22 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     process_lifecycle::verify_wait_cancellation_and_signal(&rt, id).await;
 
     let empty = pc::MaterializedCommand::new(Vec::<String>::new());
-    assert!(rt.spawn(id, empty.clone()).await.is_err());
-    assert!(rt.spawn_agent(id, empty).await.is_err());
+    assert!(
+        rt.spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(id),
+            empty.clone()
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        rt.spawn_agent(
+            awaken_sandbox_container::AdmittedExec::unrecorded(id),
+            empty
+        )
+        .await
+        .is_err()
+    );
 }
 
 /// Whether the container already holds `path` as a regular file, asked of the
@@ -352,13 +372,16 @@ async fn container_holds(rt: &DockerRuntime, container_id: &str, path: &str) -> 
     let probe = pc::materialize_process_command(&[], probe, None)
         .await
         .expect("materialize the establishment probe");
-    rt.spawn(container_id, probe)
-        .await
-        .expect("spawn the establishment probe")
-        .wait()
-        .await
-        .expect("await the establishment probe")
-        .code
+    rt.spawn(
+        awaken_sandbox_container::AdmittedExec::unrecorded(container_id),
+        probe,
+    )
+    .await
+    .expect("spawn the establishment probe")
+    .wait()
+    .await
+    .expect("await the establishment probe")
+    .code
         == Some(0)
 }
 
@@ -392,7 +415,13 @@ async fn reaping_stops_the_process_a_plain_spawn_started() {
     let command = pc::materialize_process_command(&[], command, None)
         .await
         .expect("materialize the reaped command");
-    let process = rt.spawn(id, command).await.expect("spawn detached exec");
+    let process = rt
+        .spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(id),
+            command,
+        )
+        .await
+        .expect("spawn detached exec");
 
     // Same establishment precondition as the signal test: the wrapper records
     // the pid before it execs this command, so the marker is proof the record

@@ -49,13 +49,14 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         &self,
         command: pc::MaterializedCommand,
     ) -> Result<pc::ClaimedEffect<'_, RuntimeAgentProcess>, pc::SandboxError> {
-        let attempt = self.admit_exec_attempt()?;
+        let admitted = self.admit_exec_attempt()?;
+        let attempt = admitted.attempt().to_string();
         let execs = self.execs.clone();
         Ok(pc::ClaimedEffect::new(
             pc::EffectClaim::in_process(move || execs.retain_orphan(attempt)),
             async move {
                 self.runtime
-                    .spawn_agent(&self.container_id, command)
+                    .spawn_agent(admitted, command)
                     .await
                     .map_err(pc::SandboxError::from)
             },
@@ -72,13 +73,14 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         &self,
         command: pc::MaterializedCommand,
     ) -> Result<pc::ClaimedEffect<'_, Box<dyn pc::ProcessHandle>>, pc::SandboxError> {
-        let attempt = self.admit_exec_attempt()?;
+        let admitted = self.admit_exec_attempt()?;
+        let attempt = admitted.attempt().to_string();
         let execs = self.execs.clone();
         Ok(pc::ClaimedEffect::new(
             pc::EffectClaim::in_process(move || execs.retain_orphan(attempt)),
             async move {
                 self.runtime
-                    .spawn(&self.container_id, command)
+                    .spawn(admitted, command)
                     .await
                     .map_err(pc::SandboxError::from)
             },
@@ -93,8 +95,8 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// its reaper enumerates the container once, so a process admitted after
     /// that sweep would still be running — and still writing — when Secret
     /// write-back and the Memory harvest read the workspace.
-    fn admit_exec_attempt(&self) -> Result<String, pc::SandboxError> {
-        self.execs.begin().ok_or_else(|| {
+    fn admit_exec_attempt(&self) -> Result<crate::AdmittedExec, pc::SandboxError> {
+        self.execs.admit(&self.container_id).ok_or_else(|| {
             pc::SandboxError::Gone(format!(
                 "Sandbox `{}` is being disposed and cannot start another exec",
                 self.id
@@ -114,13 +116,14 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         command: pc::Command,
     ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
         let command = self.materialize_command(command).await?;
-        let attempt = self.execs.begin_for_machinery();
+        let admitted = self.execs.admit_machinery(&self.container_id);
+        let attempt = admitted.attempt().to_string();
         let execs = self.execs.clone();
         pc::ClaimedEffect::new(
             pc::EffectClaim::in_process(move || execs.retain_orphan(attempt)),
             async move {
                 self.runtime
-                    .spawn_agent(&self.container_id, command)
+                    .spawn_agent(admitted, command)
                     .await
                     .map_err(pc::SandboxError::from)
             },

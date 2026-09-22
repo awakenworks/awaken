@@ -1480,17 +1480,26 @@ async fn spawn_and_attached_spawn_cover_stdio_cwd_and_inline_environment() {
         visibility: pc::EnvVisibility::Process,
     });
     let inherited = materialized(inherited).await;
-    let inherited = rt.spawn("cid", inherited).await.unwrap();
+    let inherited = rt
+        .spawn(crate::AdmittedExec::unrecorded("cid"), inherited)
+        .await
+        .unwrap();
     assert_eq!(inherited.wait().await.unwrap().code, Some(0));
 
     let mut null = pc::MaterializedCommand::new(["echo", "discarded"]);
     null.stdio = pc::Stdio::Null;
-    let null = rt.spawn("cid", null).await.unwrap();
+    let null = rt
+        .spawn(crate::AdmittedExec::unrecorded("cid"), null)
+        .await
+        .unwrap();
     assert_eq!(null.wait().await.unwrap().code, Some(0));
 
     let mut piped = pc::MaterializedCommand::new(["agent", "--stdio"]);
     piped.stdio = pc::Stdio::Piped;
-    let attached = rt.spawn_agent("cid", piped).await.unwrap();
+    let attached = rt
+        .spawn_agent(crate::AdmittedExec::unrecorded("cid"), piped)
+        .await
+        .unwrap();
     assert_eq!(attached.process.wait().await.unwrap().code, Some(0));
 }
 
@@ -1530,7 +1539,10 @@ async fn process_secret_is_forwarded_by_alias_without_entering_podman_argv() {
     let command = pc::materialize_process_command(&[], command, Some(&broker))
         .await
         .unwrap();
-    let process = rt.spawn("cid", command).await.unwrap();
+    let process = rt
+        .spawn(crate::AdmittedExec::unrecorded("cid"), command)
+        .await
+        .unwrap();
     assert_eq!(process.wait().await.unwrap().code, Some(0));
 }
 

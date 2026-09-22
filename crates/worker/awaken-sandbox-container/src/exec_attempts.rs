@@ -93,6 +93,59 @@ pub(crate) fn exec_orphan_reaper_command() -> pc::MaterializedCommand {
 /// to slip a process past a sweep that had already decided what to stop.
 const SEALED: u64 = 1 << 63;
 
+/// The admission one exec needs before any runtime will start it.
+///
+/// A container process is a host resource, and the record that it exists is
+/// what disposal reads. Making the runtime port take this instead of a bare
+/// container id is what stops an edge from starting a process without leaving
+/// that record: the value cannot be built except by taking an attempt from an
+/// environment's own ledger, and the ledger refuses once disposal has sealed
+/// it. That is the same obligation a registry of method names used to state,
+/// except a type cannot forget a name it never heard of.
+pub struct AdmittedExec {
+    container_id: String,
+    attempt: String,
+}
+
+impl AdmittedExec {
+    /// The container this exec was admitted into. Backends address it the way
+    /// they always did; what changed is that they cannot be reached without
+    /// one of these.
+    #[must_use]
+    pub fn container_id(&self) -> &str {
+        &self.container_id
+    }
+
+    /// The ledger name this attempt was taken under.
+    pub(crate) fn attempt(&self) -> &str {
+        &self.attempt
+    }
+
+    /// Admit an exec that owes no ledger, because no environment owns it.
+    ///
+    /// Two callers: a test driving the runtime port directly, which manages
+    /// its own containers and has no disposal to read a record; and the
+    /// reaper, whose own exec is the sweep rather than something the sweep
+    /// must find. Gated so that production code outside this crate cannot
+    /// reach it, which is the whole point of the type.
+    #[cfg(any(test, feature = "unrecorded-exec"))]
+    #[must_use]
+    pub fn unrecorded(container_id: impl Into<String>) -> Self {
+        Self {
+            container_id: container_id.into(),
+            attempt: String::new(),
+        }
+    }
+
+    #[cfg(not(any(test, feature = "unrecorded-exec")))]
+    pub(crate) fn unrecorded(container_id: impl Into<String>) -> Self {
+        Self {
+            container_id: container_id.into(),
+            attempt: String::new(),
+        }
+    }
+}
+
 /// Evidence that one environment is closed to new Session work.
 ///
 /// Cleanup reads the workspace — Secret write-back, the Memory harvest — and
@@ -144,7 +197,26 @@ impl ExecAttempts {
     /// gate rather than a hint: a caller that observes an open environment has
     /// already taken its number, so no attempt can be admitted after the sweep
     /// that was supposed to stop it decided what it was stopping.
-    pub(crate) fn begin(&self) -> Option<String> {
+    /// Admit one Session exec into `container_id`, or refuse because disposal
+    /// has sealed this environment.
+    pub(crate) fn admit(&self, container_id: &str) -> Option<AdmittedExec> {
+        self.begin().map(|attempt| AdmittedExec {
+            container_id: container_id.to_string(),
+            attempt,
+        })
+    }
+
+    /// Admit one exec belonging to the environment's own machinery. See
+    /// [`ExecAttempts::begin_for_machinery`] for why this one bypasses the
+    /// gate but still takes a number.
+    pub(crate) fn admit_machinery(&self, container_id: &str) -> AdmittedExec {
+        AdmittedExec {
+            container_id: container_id.to_string(),
+            attempt: self.begin_for_machinery(),
+        }
+    }
+
+    fn begin(&self) -> Option<String> {
         let mut observed = self.state.load(Ordering::SeqCst);
         loop {
             if observed & SEALED != 0 {

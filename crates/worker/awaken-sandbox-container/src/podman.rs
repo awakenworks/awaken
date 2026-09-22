@@ -1173,9 +1173,10 @@ impl ContainerRuntime for PodmanRuntime {
 
     async fn spawn(
         &self,
-        container_id: &str,
+        admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        let container_id = admitted.container_id();
         let (id, pid_file, child) = self.exec_process(container_id, command, false)?;
         Ok(Box::new(PodmanExecProcess {
             id,
@@ -1191,9 +1192,10 @@ impl ContainerRuntime for PodmanRuntime {
 
     async fn spawn_agent(
         &self,
-        container_id: &str,
+        admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        let container_id = admitted.container_id();
         let (id, pid_file, mut child) = self.exec_process(container_id, command, true)?;
         let stdin = child
             .stdin

@@ -22,7 +22,7 @@ pub(crate) async fn verify_wait_cancellation_and_signal(
     ] {
         let stopped = runtime
             .spawn_agent(
-                container_id,
+                awaken_sandbox_container::AdmittedExec::unrecorded(container_id),
                 pc::MaterializedCommand::new(["sh", "-c", script]),
             )
             .await

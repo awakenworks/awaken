@@ -170,7 +170,7 @@ mod tests {
 
         async fn spawn_agent(
             &self,
-            _container_id: &str,
+            _admitted: crate::AdmittedExec,
             command: pc::MaterializedCommand,
         ) -> Result<crate::RuntimeAgentProcess, crate::RuntimeError> {
             self.commands.lock().unwrap().push(command.argv);
