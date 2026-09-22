@@ -13,6 +13,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
+use awaken_runtime_contract::{InferenceEndpoint, UnspecifiedReasoning};
 
 use crate::executor_from_materialized_endpoint_for_provider;
 
@@ -702,6 +703,7 @@ pub(crate) struct BrokeredCandidateExecutor {
     model: String,
     api_dialect: String,
     adapter_kind: String,
+    unspecified_reasoning: UnspecifiedReasoning,
     native_protocol: String,
     local_run_correlation: Option<String>,
     ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
@@ -712,8 +714,8 @@ impl BrokeredCandidateExecutor {
         client: Arc<dyn BrokeredInferenceClient>,
         provider_ref: &str,
         model: &str,
-        api_dialect: &str,
-        adapter_kind: &str,
+        endpoint: &InferenceEndpoint,
+        unspecified_reasoning: UnspecifiedReasoning,
         local_run_correlation: Option<String>,
         ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
     ) -> Result<Self, String> {
@@ -721,11 +723,16 @@ impl BrokeredCandidateExecutor {
             .split_once('@')
             .map_or(provider_ref, |(provider, _)| provider)
             .trim();
-        let native_protocol = match api_dialect {
+        let native_protocol = match endpoint.api_dialect.as_str() {
             "anthropic_messages" => "anthropic_messages",
             "open_ai_chat" => "openai_chat_completions",
             "open_ai_responses" => "openai_responses",
-            _ => return Err(format!("unsupported brokered API dialect `{api_dialect}`")),
+            _ => {
+                return Err(format!(
+                    "unsupported brokered API dialect `{}`",
+                    endpoint.api_dialect
+                ));
+            }
         };
         if provider.is_empty() || model.trim().is_empty() {
             return Err("brokered publication has an incomplete public target".into());
@@ -734,8 +741,9 @@ impl BrokeredCandidateExecutor {
             client,
             provider: provider.into(),
             model: model.into(),
-            api_dialect: api_dialect.into(),
-            adapter_kind: adapter_kind.into(),
+            api_dialect: endpoint.api_dialect.clone(),
+            adapter_kind: endpoint.adapter_kind.clone(),
+            unspecified_reasoning,
             native_protocol: native_protocol.into(),
             local_run_correlation,
             ownership,
@@ -801,6 +809,7 @@ impl BrokeredCandidateExecutor {
             &self.adapter_kind,
             Some(&lease.gateway_base_url),
             Some(&lease.capability),
+            self.unspecified_reasoning,
         )
         .map_err(|error| LlmError::Binding(error.to_string()))
     }
@@ -1222,12 +1231,22 @@ mod tests {
             client,
             "openai@3",
             "gpt-5",
-            "open_ai_responses",
-            "openai",
+            &wire_endpoint("open_ai_responses", "openai"),
+            UnspecifiedReasoning::ProviderDefault,
             Some("run-7".into()),
             ownership,
         )
         .unwrap()
+    }
+
+    fn wire_endpoint(api_dialect: &str, adapter_kind: &str) -> InferenceEndpoint {
+        InferenceEndpoint {
+            adapter_kind: adapter_kind.into(),
+            api_dialect: api_dialect.into(),
+            base_url: "https://gateway.invalid".into(),
+            upstream_model: "gpt-5".into(),
+            processing_placement: None,
+        }
     }
 
     fn model_operation(
@@ -1517,8 +1536,8 @@ mod tests {
                 client,
                 "gemini@1",
                 "gemini-pro",
-                "gemini",
-                "gemini",
+                &wire_endpoint("gemini", "gemini"),
+                UnspecifiedReasoning::ProviderDefault,
                 None,
                 Some(Arc::new(CurrentOwnership)),
             )

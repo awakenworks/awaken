@@ -687,6 +687,7 @@ fn deepseek_executor() -> (Arc<dyn LlmExecutor>, String) {
         awaken_provider_genai::AdapterKind::OpenAI,
         "https://api.deepseek.com/v1",
         key,
+        awaken_runtime_contract::UnspecifiedReasoning::ProviderDefault,
     )
     .unwrap();
     (Arc::new(executor), model)

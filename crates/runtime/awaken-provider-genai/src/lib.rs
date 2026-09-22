@@ -169,8 +169,14 @@ impl GenaiExecutor {
         adapter: genai::adapter::AdapterKind,
         base_url: impl Into<String>,
         authentication: impl Into<String>,
+        unspecified_reasoning: awaken_runtime_contract::UnspecifiedReasoning,
     ) -> Result<Self> {
-        let mut executor = Self::from_materialized_endpoint(adapter, base_url, authentication)?;
+        let mut executor = Self::from_materialized_endpoint_with_reasoning(
+            adapter,
+            base_url,
+            authentication,
+            unspecified_reasoning,
+        )?;
         executor.provider_kind = Some(provider_kind.into());
         Ok(executor)
     }
