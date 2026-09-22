@@ -15,23 +15,25 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_dispatch::{
-    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, DispatchState,
+    AnyDispatchStore, CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, DispatchState,
     FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
     WorkerIdentity,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::resolved::{
+    CatalogFingerprint, ModelBinding, ResolvedModelCandidate, ResolvedSpec,
+};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::{
-    AttemptCredentialDelivery, AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
-    CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
-    CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
-    InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
-    SealedCredentialEnvelopeRef,
+    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
+    AttemptCredentialDeliverySource, CredentialAccess, CredentialEnvelope,
+    CredentialExecutionPolicy, CredentialMaterialSource, CredentialRealizationCapabilities,
+    CredentialRealizationKind, CredentialRef, CredentialUsage, InferenceEndpoint,
+    ModelExposurePolicy, PlaintextBoundary, PlaintextHolder, SealedCredentialEnvelopeRef,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_coordinator_client::HttpDispatchQueue;
@@ -155,6 +157,61 @@ struct FreshClaimDelivery {
     fail: bool,
 }
 
+struct BlockingSecondDelivery {
+    calls: std::sync::atomic::AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl BlockingSecondDelivery {
+    fn delivery(request: AttemptCredentialDeliveryRequest) -> AttemptCredentialDelivery {
+        let access =
+            awaken_runtime_contract::credential_access_without_delivery(&request.published_access)
+                .with_envelope(CredentialEnvelope::SealedForWorker {
+                    envelope_ref: SealedCredentialEnvelopeRef {
+                        id: format!("claim-{}", request.claim_epoch),
+                        payload_fingerprint: "fresh-payload".into(),
+                    },
+                    recipient: request.selected_plaintext_holder.trust_domain,
+                    expires_at_unix_ms: u64::MAX,
+                });
+        AttemptCredentialDelivery {
+            candidate_fingerprint: request.candidate_fingerprint,
+            access,
+            claim_epoch: request.claim_epoch,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AttemptCredentialDeliverySource for BlockingSecondDelivery {
+    async fn deliver(
+        &self,
+        request: AttemptCredentialDeliveryRequest,
+    ) -> Result<AttemptCredentialDelivery, String> {
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        Ok(Self::delivery(request))
+    }
+}
+
+fn refresh_request(
+    binding: &AttemptCredentialBinding,
+    candidate: &ResolvedModelCandidate,
+) -> AttemptCredentialDeliveryRequest {
+    let (published_access, material_binding) =
+        awaken_runtime_contract::candidate_credential_material_binding(candidate).unwrap();
+    AttemptCredentialDeliveryRequest {
+        candidate_fingerprint: binding.candidate_fingerprint.clone(),
+        published_access: published_access.clone(),
+        selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
+        binding: material_binding,
+        claim_epoch: binding.claim_epoch,
+    }
+}
+
 #[async_trait::async_trait]
 impl AttemptCredentialDeliverySource for FreshClaimDelivery {
     async fn deliver(
@@ -183,6 +240,73 @@ impl AttemptCredentialDeliverySource for FreshClaimDelivery {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
+    /* Mid-issuance race table. C1 the exact claim is live at the first binding
+     * read; C2 the independent signer is still producing the carrier; C3 the
+     * Dispatch lease expires before the second binding read. E1 return no
+     * delivery to the old Worker, while preserving the row for ordinary
+     * recovery. Rule R5=C1+C2+C3=>E1. This is the response-loss/late-response
+     * window that a single pre-sign ownership check cannot close. */
+    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10));
+    let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
+    let source = Arc::new(BlockingSecondDelivery {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let (dispatch, capabilities) =
+        expired_credential_dispatch("delivery-race", "delivery-race-thread");
+    let service = Arc::new(
+        WorkerDispatchService::new(
+            mem,
+            Arc::new(HeaderWorkerAuthenticator),
+            Arc::new(ManualWorkerClock::new(10)),
+            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        )
+        .with_local_credential_capabilities(capabilities)
+        .with_credential_delivery_source(source.clone()),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, dispatch_transport_router_with_service(service))
+            .await
+            .unwrap();
+    });
+    let queue = Arc::new(HttpDispatchQueue::new(
+        format!("http://{addr}"),
+        WorkerIdentity::new("worker-1", "boot-1", 1),
+    ));
+    queue.enqueue(dispatch).await.unwrap();
+    let claimed = queue
+        .claim("ignored", 30_000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let claim = RunClaim::from(&claimed.lease);
+    let candidate = claimed
+        .request
+        .activation
+        .snapshot
+        .resolved_spec
+        .model_binding
+        .clone();
+    let delivery_request = refresh_request(&claimed.credential_bindings[0], &candidate);
+    let refresh_queue = queue.clone();
+    let refresh = tokio::spawn(async move {
+        refresh_queue
+            .claimed_credential_delivery_transport()
+            .unwrap()
+            .refresh_credential_delivery(&claim, delivery_request)
+            .await
+    });
+    source.entered.notified().await;
+    dispatch_clock.set(claimed.lease.expires_ms);
+    source.release.notify_one();
+    assert!(refresh.await.unwrap().unwrap().is_none(), "R5/E1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_http_claim() {
     // Claim redelivery cause/effect table: C1 immutable publication envelope is
     // expired; C2 exact claim selects holder/credential/epoch; C3 trusted source
@@ -190,10 +314,12 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
     // returned with one response-local delivery and the stored request remains
     // expired. R2 C1+C2+!C3 => HTTP fails and the exact mutation claim is
     // relinquished to Pending. Foreign epoch/authority is covered by the shared
-    // Runtime-contract table.
+    // Runtime-contract table. R3 a second request under the same live claim
+    // receives a fresh carrier with the same authority/epoch. R4 expiry before
+    // or during refresh returns no carrier to the stale owner.
     for fail in [false, true] {
         let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10));
-        let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock));
+        let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
         let clock = Arc::new(ManualWorkerClock::new(10));
         let run_id = if fail {
             "delivery-fail"
@@ -218,10 +344,10 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
                 .await
                 .unwrap();
         });
-        let queue = HttpDispatchQueue::new(
+        let queue = Arc::new(HttpDispatchQueue::new(
             format!("http://{addr}"),
             WorkerIdentity::new("worker-1", "boot-1", 1),
-        );
+        ));
         queue.enqueue(dispatch).await.unwrap();
         let result = queue.claim("ignored", 30_000, &Default::default()).await;
         if fail {
@@ -263,6 +389,40 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
                 published_access,
             ),
             "R1 immutable authority"
+        );
+        let candidate = &claimed
+            .request
+            .activation
+            .snapshot
+            .resolved_spec
+            .model_binding;
+        let delivery_request = refresh_request(&claimed.credential_bindings[0], candidate);
+        let worker_dispatch = AnyDispatchStore::from_dispatch(queue.clone());
+        let refreshed = worker_dispatch
+            .claimed_credential_delivery_transport()
+            .unwrap()
+            .refresh_credential_delivery(&RunClaim::from(&claimed.lease), delivery_request.clone())
+            .await
+            .expect("R3 transport")
+            .expect("R3 current claim receives delivery");
+        assert_eq!(refreshed.claim_epoch, claimed.lease.epoch, "R3");
+        assert!(
+            awaken_runtime_contract::credential_access_has_same_authority(
+                &refreshed.access,
+                published_access,
+            ),
+            "R3"
+        );
+        dispatch_clock.set(claimed.lease.expires_ms);
+        assert!(
+            worker_dispatch
+                .claimed_credential_delivery_transport()
+                .unwrap()
+                .refresh_credential_delivery(&RunClaim::from(&claimed.lease), delivery_request)
+                .await
+                .expect("R4 transport")
+                .is_none(),
+            "R4 an expired claim receives no carrier"
         );
     }
 }

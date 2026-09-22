@@ -930,6 +930,8 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
 /// | R1 | current | exact | applied and exact replay applied |
 /// | R2 | current | wrong mechanism | rejected |
 /// | R3 | stale after recovery | formerly exact | fenced |
+/// | R4 | current/live | exact candidate | return persisted binding |
+/// | R5 | expired/stale/foreign candidate | any | return no binding |
 async fn attempt_credentials_are_atomic_and_epoch_fenced(
     store: &dyn ControlDispatchQueue,
     ns: &str,
@@ -994,6 +996,28 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         first_binding.selected_realization_kind,
         CredentialRealizationKind::WorkerProviderAdapter
     );
+    assert_eq!(
+        store
+            .current_credential_binding(
+                &RunClaim::from(&first.lease),
+                &first_binding.candidate_fingerprint,
+            )
+            .await
+            .expect("R4 binding query"),
+        Some(first_binding.clone()),
+        "R4 current claim reads only its persisted binding"
+    );
+    assert!(
+        store
+            .current_credential_binding(
+                &RunClaim::from(&first.lease),
+                &awaken_runtime_contract::CandidateFingerprint("foreign".into()),
+            )
+            .await
+            .expect("R5 foreign candidate query")
+            .is_none(),
+        "R5 a foreign candidate cannot select another binding"
+    );
     let receipt = CredentialRealizationReceipt::new(
         first_binding,
         CredentialRealizationKind::WorkerProviderAdapter,
@@ -1025,6 +1049,17 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
 
     clock.advance_past(first.lease.expires_ms).await;
     clock.set(first.lease.expires_ms.saturating_add(1));
+    assert!(
+        store
+            .current_credential_binding(
+                &RunClaim::from(&first.lease),
+                &first_binding.candidate_fingerprint,
+            )
+            .await
+            .expect("R5 expired query")
+            .is_none(),
+        "R5 an expired claim cannot obtain a new carrier"
+    );
     let recovered = store
         .claim_run(
             &local_id,
@@ -1040,6 +1075,17 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
     assert_eq!(
         recovered.credential_bindings[0].claim_epoch, recovered.lease.epoch,
         "A6 the binding set is replaced under the new claim epoch"
+    );
+    assert_eq!(
+        store
+            .current_credential_binding(
+                &RunClaim::from(&recovered.lease),
+                &recovered.credential_bindings[0].candidate_fingerprint,
+            )
+            .await
+            .expect("R4 recovered binding query"),
+        Some(recovered.credential_bindings[0].clone()),
+        "R4 the successor reads only its new epoch binding"
     );
     assert_eq!(
         store

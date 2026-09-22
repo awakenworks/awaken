@@ -43,19 +43,20 @@ pub use claimed_session::{
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBindingError, CasOutcome, ClaimCredentialOperation, Claimed,
-    ClaimedCheckpointTransport, ClaimedCommitCommand, CommitEpochAdmission, CommitEpochBoundary,
-    CommitEpochCompletion, CommitEpochGuard, ContinuationAdmission, ControlDispatch,
-    ControlDispatchQueue, Dispatch, DispatchCompletion, DispatchCredentialAdmissionError,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchSettlementError,
-    DispatchSettlementObserver, DispatchState, DispatchSummary, DurableControlDispatch,
-    DurableDispatch, Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord,
-    RunClaim, SessionChildAdmission, SessionContinuationOutbox, SessionRunAdmissionObserver,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
-    classify_commit_epoch_admission, compile_attempt_credential_bindings,
-    compile_claim_credential_bindings, deadline_has_passed, decide_lease_renewal,
-    session_run_replacement_candidate_is_safe, verify_attempt_credential_bindings,
-    verify_claim_credential_bindings, worker_credential_realization_capabilities,
+    ClaimedCheckpointTransport, ClaimedCommitCommand, ClaimedCredentialDeliveryTransport,
+    CommitEpochAdmission, CommitEpochBoundary, CommitEpochCompletion, CommitEpochGuard,
+    ContinuationAdmission, ControlDispatch, ControlDispatchQueue, Dispatch, DispatchCompletion,
+    DispatchCredentialAdmissionError, DispatchError, DispatchOutcome, DispatchQueue,
+    DispatchSettlementError, DispatchSettlementObserver, DispatchState, DispatchSummary,
+    DurableControlDispatch, DurableDispatch, Inbox, Lease, LeaseRenewalOutcome, Outbox,
+    PendingInput, PendingRecord, RunClaim, SessionChildAdmission, SessionContinuationOutbox,
+    SessionRunAdmissionObserver, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, SubmitOptions, can_admit_claim_credentials,
+    claim_credential_operation, classify_commit_epoch_admission,
+    compile_attempt_credential_bindings, compile_claim_credential_bindings, deadline_has_passed,
+    decide_lease_renewal, session_run_replacement_candidate_is_safe,
+    verify_attempt_credential_bindings, verify_claim_credential_bindings,
+    worker_credential_realization_capabilities,
 };
 pub use dispatch_transition::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
@@ -73,11 +74,12 @@ pub use run_dispatch::{
 };
 pub use worker_transport::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
-    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialRealizationRequest,
-    DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest, RecoveryRequest,
-    RegisterWorkerRequest, RelinquishRequest, RenewRequest, SessionRunReservationResolutionRequest,
-    SettleRequest, StreamEventRequest, StreamObservationRequest, WorkerHeartbeatReceipt,
-    WorkerIdentityRequest, WorkerRegistrationReceipt,
+    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialDeliveryRefreshRequest,
+    CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest,
+    RecoveryRequest, RegisterWorkerRequest, RelinquishRequest, RenewRequest,
+    SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
+    StreamObservationRequest, WorkerHeartbeatReceipt, WorkerIdentityRequest,
+    WorkerRegistrationReceipt,
 };
 
 /// The one closed fencing vocabulary for Runtime-authored Resource effects.

@@ -24,11 +24,11 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt, Dispatch,
-    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary,
-    DurableDispatch, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
-    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed, CommitEpochGuard,
+    CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchSummary, DurableDispatch, Inbox, LeaseRenewalOutcome, Outbox,
+    PendingInput, PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 #[cfg(feature = "durable")]
 use crate::postgres::PostgresDispatchStore;
@@ -328,6 +328,12 @@ impl DispatchQueue for AnyDispatchStore {
         self.inner.owns_local_maintenance()
     }
 
+    fn claimed_credential_delivery_transport(
+        &self,
+    ) -> Option<&dyn awaken_dispatch_contract::ClaimedCredentialDeliveryTransport> {
+        self.inner.claimed_credential_delivery_transport()
+    }
+
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -581,6 +587,14 @@ macro_rules! delegate_control {
 
 #[async_trait]
 impl ControlDispatchQueue for AnyDispatchStore {
+    async fn current_credential_binding(
+        &self,
+        claim: &RunClaim,
+        candidate: &CandidateFingerprint,
+    ) -> Result<Option<AttemptCredentialBinding>, DispatchError> {
+        delegate_control!(self, current_credential_binding(claim, candidate))
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,

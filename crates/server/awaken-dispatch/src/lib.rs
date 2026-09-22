@@ -78,23 +78,25 @@ pub use awaken_dispatch_contract::{
 };
 pub use awaken_dispatch_contract::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
-    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialRealizationRequest,
-    DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest, RecoveryRequest,
-    RegisterWorkerRequest, RelinquishRequest, RenewRequest, SessionRunReservationResolutionRequest,
-    SettleRequest, StreamEventRequest, StreamObservationRequest, WorkerIdentityRequest,
+    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialDeliveryRefreshRequest,
+    CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest,
+    RecoveryRequest, RegisterWorkerRequest, RelinquishRequest, RenewRequest,
+    SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
+    StreamObservationRequest, WorkerIdentityRequest,
 };
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
-    CasOutcome, Claimed, ClaimedCheckpointTransport, CommitEpochGuard, ContinuationAdmission,
-    ControlDispatch, ControlDispatchQueue, CredentialRealizationReceipt, Dispatch,
-    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSettlementError,
-    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, Lease, LeaseRenewalOutcome,
-    Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim, SessionChildAdmission,
-    SessionRunAdmissionObserver, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport,
+    CommitEpochGuard, ContinuationAdmission, ControlDispatch, ControlDispatchQueue,
+    CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchSettlementError, DispatchSettlementObserver, DispatchState,
+    DispatchSummary, Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord,
+    PhysicalAttempt, RunClaim, SessionChildAdmission, SessionRunAdmissionObserver,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]

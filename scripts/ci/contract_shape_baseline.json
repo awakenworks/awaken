@@ -59,18 +59,18 @@
     },
     "awaken-dispatch-contract": {
       "depth": 4,
-      "production_lines": 2352,
+      "production_lines": 2379,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "split Dispatch value-model and aggregate roles into cohesive modules to satisfy the source-file hard limit without moving or weakening tests; claim-scoped recipient delivery adds one response-local field so an exact claim can receive a fresh envelope without persisting transport material"
+        "production_lines": "claim-fenced carrier redelivery adds one Worker transport capability and one attempt-local source without new durable state"
       }
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7539,
+      "production_lines": 7576,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "runtime-contract retains the cancellation and attached-channel capability supertraits plus the advisor de-duplication kernel; claim-scoped recipient delivery adds the minimum neutral Runtime types and validation kernel so expired publication envelopes can be reissued without another contract dependency layer"
+        "production_lines": "claim-fenced carrier redelivery adds one Worker transport capability and one attempt-local source without new durable state"
       }
     },
     "awaken-sandbox-control": {

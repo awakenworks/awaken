@@ -198,7 +198,7 @@ pub struct AttemptCredentialDelivery {
 
 /// Exact request to the deployment-owned delivery authority. It contains no
 /// plaintext and cannot select another credential or execution mechanism.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptCredentialDeliveryRequest {
     pub candidate_fingerprint: CandidateFingerprint,
     pub published_access: CredentialAccess,
@@ -227,6 +227,8 @@ pub enum AttemptCredentialDeliveryError {
     DuplicateCandidate,
     #[error("credential delivery candidate fingerprint failed: {0}")]
     Fingerprint(String),
+    #[error("credential delivery refresh failed: {0}")]
+    Refresh(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -597,6 +599,7 @@ pub struct CredentialRealizationRecordError(pub String);
 pub struct AttemptCredentialRealization {
     bindings: std::sync::Arc<[AttemptCredentialBinding]>,
     deliveries: std::sync::Arc<[AttemptCredentialDelivery]>,
+    refresh: Option<std::sync::Arc<dyn AttemptCredentialDeliverySource>>,
     recorder: std::sync::Arc<dyn CredentialRealizationRecorder>,
 }
 
@@ -609,6 +612,7 @@ impl AttemptCredentialRealization {
         Self {
             bindings: bindings.into(),
             deliveries: std::sync::Arc::from([]),
+            refresh: None,
             recorder,
         }
     }
@@ -639,8 +643,18 @@ impl AttemptCredentialRealization {
         Ok(Self {
             bindings: bindings.into(),
             deliveries: deliveries.into(),
+            refresh: None,
             recorder,
         })
+    }
+
+    #[must_use]
+    pub fn with_delivery_refresh(
+        mut self,
+        refresh: std::sync::Arc<dyn AttemptCredentialDeliverySource>,
+    ) -> Self {
+        self.refresh = Some(refresh);
+        self
     }
 
     #[must_use]
@@ -661,13 +675,42 @@ impl AttemptCredentialRealization {
 
     /// Select the exact ephemeral delivery and prove it changes no publication
     /// authority before any plaintext resolver sees it.
-    pub fn delivered_access_for(
+    pub async fn delivered_access_for(
         &self,
         candidate: &ResolvedModelCandidate,
         published_access: &CredentialAccess,
-    ) -> Result<Option<&CredentialAccess>, AttemptCredentialDeliveryError> {
+    ) -> Result<Option<CredentialAccess>, AttemptCredentialDeliveryError> {
         let fingerprint = candidate_fingerprint(candidate)
             .map_err(|error| AttemptCredentialDeliveryError::Fingerprint(error.to_string()))?;
+        let binding = self
+            .bindings
+            .iter()
+            .find(|binding| binding.candidate_fingerprint == fingerprint)
+            .ok_or(AttemptCredentialDeliveryError::BindingMismatch)?;
+        if let Some(refresh) = &self.refresh {
+            let Some((candidate_access, material_binding)) =
+                candidate_credential_material_binding(candidate)
+            else {
+                return Err(AttemptCredentialDeliveryError::BindingMismatch);
+            };
+            if !credential_access_has_same_authority(candidate_access, published_access)
+                || binding.credential != candidate_access.credential
+            {
+                return Err(AttemptCredentialDeliveryError::BindingMismatch);
+            }
+            let delivery = refresh
+                .deliver(AttemptCredentialDeliveryRequest {
+                    candidate_fingerprint: fingerprint,
+                    published_access: published_access.clone(),
+                    selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
+                    binding: material_binding,
+                    claim_epoch: binding.claim_epoch,
+                })
+                .await
+                .map_err(AttemptCredentialDeliveryError::Refresh)?;
+            verify_attempt_credential_delivery(binding, published_access, &delivery)?;
+            return Ok(Some(delivery.access));
+        }
         let Some(delivery) = self
             .deliveries
             .iter()
@@ -675,13 +718,8 @@ impl AttemptCredentialRealization {
         else {
             return Ok(None);
         };
-        let binding = self
-            .bindings
-            .iter()
-            .find(|binding| binding.candidate_fingerprint == fingerprint)
-            .ok_or(AttemptCredentialDeliveryError::BindingMismatch)?;
         verify_attempt_credential_delivery(binding, published_access, delivery)?;
-        Ok(Some(&delivery.access))
+        Ok(Some(delivery.access.clone()))
     }
 
     pub async fn record(
@@ -792,9 +830,11 @@ mod tests {
     async fn attempt_delivery_is_exact_epoch_bound_and_authority_preserving() {
         // Delivery decision table: C1 candidate/binding/epoch exact; C2 access
         // changes only envelope; C3 duplicate, foreign epoch or changed policy.
-        // R1 C1+C2 => select fresh access. R2 C3(any) => reject construction or
-        // lookup. This keeps ephemeral transport outside publication identity
-        // without allowing it to widen credential authority.
+        // C4 a claim-bound refresh returns another exact carrier; C5 it fails or
+        // changes the epoch. R1 C1+C2 => select fresh access. R2 C3(any) =>
+        // reject construction or lookup. R3 C1+C4 => use the refreshed carrier;
+        // R4 C5 => fail before materialization. This keeps ephemeral transport
+        // outside publication identity without allowing it to widen authority.
         struct Recorder;
         #[async_trait]
         impl CredentialRealizationRecorder for Recorder {
@@ -803,6 +843,16 @@ mod tests {
                 _: CredentialRealizationReceipt,
             ) -> Result<(), CredentialRealizationRecordError> {
                 Ok(())
+            }
+        }
+        struct Refresh(Result<AttemptCredentialDelivery, String>);
+        #[async_trait]
+        impl AttemptCredentialDeliverySource for Refresh {
+            async fn deliver(
+                &self,
+                _: AttemptCredentialDeliveryRequest,
+            ) -> Result<AttemptCredentialDelivery, String> {
+                self.0.clone()
             }
         }
         let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
@@ -886,9 +936,58 @@ mod tests {
         assert_eq!(
             realization
                 .delivered_access_for(&candidate, &published)
+                .await
                 .expect("R1")
                 .unwrap(),
-            &fresh
+            fresh
+        );
+        let mut newer = delivery.clone();
+        newer.access.envelope = Some(CredentialEnvelope::SealedForWorker {
+            envelope_ref: SealedCredentialEnvelopeRef {
+                id: "newer".into(),
+                payload_fingerprint: "newer".into(),
+            },
+            recipient: holder.trust_domain.clone(),
+            expires_at_unix_ms: 30,
+        });
+        let refreshed = AttemptCredentialRealization::new_with_deliveries(
+            bindings.clone(),
+            vec![delivery.clone()],
+            std::sync::Arc::new(Recorder),
+        )
+        .expect("R3")
+        .with_delivery_refresh(std::sync::Arc::new(Refresh(Ok(newer.clone()))));
+        assert_eq!(
+            refreshed
+                .delivered_access_for(&candidate, &published)
+                .await
+                .expect("R3"),
+            Some(newer.access.clone()),
+            "R3 refresh replaces only the carrier"
+        );
+        let failed = AttemptCredentialRealization::new_with_deliveries(
+            bindings.clone(),
+            vec![delivery.clone()],
+            std::sync::Arc::new(Recorder),
+        )
+        .expect("R4")
+        .with_delivery_refresh(std::sync::Arc::new(Refresh(Err("unavailable".into()))));
+        assert!(matches!(
+            failed.delivered_access_for(&candidate, &published).await,
+            Err(AttemptCredentialDeliveryError::Refresh(_))
+        ));
+        newer.claim_epoch += 1;
+        let stale = AttemptCredentialRealization::new_with_deliveries(
+            bindings.clone(),
+            vec![delivery.clone()],
+            std::sync::Arc::new(Recorder),
+        )
+        .expect("R4")
+        .with_delivery_refresh(std::sync::Arc::new(Refresh(Ok(newer))));
+        assert_eq!(
+            stale.delivered_access_for(&candidate, &published).await,
+            Err(AttemptCredentialDeliveryError::BindingMismatch),
+            "R4 changed epoch is rejected"
         );
         for invalid in [
             AttemptCredentialDelivery {
@@ -916,6 +1015,7 @@ mod tests {
                 assert!(
                     realization
                         .delivered_access_for(&candidate, &published)
+                        .await
                         .is_err(),
                     "R2 changed authority rejects at lookup"
                 );
