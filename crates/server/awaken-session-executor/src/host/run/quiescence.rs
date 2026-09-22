@@ -31,6 +31,20 @@ const fn terminal_dispatch_action(
     }
 }
 
+fn expired_claim_for_fast_pending(
+    claim: awaken_dispatch::RunClaim,
+    was_current: Option<bool>,
+) -> Option<awaken_dispatch::RunClaim> {
+    (was_current == Some(false)).then_some(claim)
+}
+
+fn exact_expired_slot_remains(
+    expected: &awaken_dispatch::RunClaim,
+    observed: Option<&awaken_dispatch::PhysicalAttempt>,
+) -> bool {
+    observed.is_some_and(|physical| physical.claim == *expected)
+}
+
 impl SharedHost {
     pub async fn quiesce_terminal_delegations(
         &self,
@@ -56,6 +70,7 @@ impl SharedHost {
                     .list_dispatches()
                     .await
                     .map_err(|error| HostError::internal(error.to_string()))?;
+                let mut expired_physical = Vec::new();
                 for dispatch in dispatches.iter().filter(|dispatch| {
                     dispatch.thread_id == thread_id
                         || dispatch.session_thread_id.as_ref() == Some(&thread_id)
@@ -73,6 +88,39 @@ impl SharedHost {
                     let action = terminal_dispatch_action(dispatch.state);
                     if action == TerminalDispatchAction::Ignore {
                         continue;
+                    }
+                    // Capture expiry BEFORE cancellation revokes even a live
+                    // Claim. The frozen physical slot is checked again after
+                    // cancellation; this observation never clears it.
+                    if dispatch.physical_attempt_active {
+                        let expired_claim = match store
+                            .load_physical_attempt(&dispatch.run_id)
+                            .await
+                        {
+                            Ok(Some(physical)) => {
+                                let was_current = match store
+                                    .claim_is_current(&physical.claim)
+                                    .await
+                                {
+                                    Ok(current) => Some(current),
+                                    Err(error) => {
+                                        tracing::warn!(run_id = %dispatch.run_id.0, %error,
+                                            "terminal quiescence expiry probe unavailable; retaining ordinary wait");
+                                        None
+                                    }
+                                };
+                                expired_claim_for_fast_pending(physical.claim, was_current)
+                            }
+                            Ok(None) => None,
+                            Err(error) => {
+                                tracing::warn!(run_id = %dispatch.run_id.0, %error,
+                                    "terminal quiescence physical probe unavailable; retaining ordinary wait");
+                                None
+                            }
+                        };
+                        if let Some(claim) = expired_claim {
+                            expired_physical.push((dispatch.run_id.clone(), claim));
+                        }
                     }
                     // The root's resident attempt receives the same post-intent
                     // accelerator as an explicit interrupt. Child/cold/remote
@@ -133,26 +181,44 @@ impl SharedHost {
                 // Worker settles all root/parent-affined runnable rows. A local
                 // root join does not cover recovered child Workers.
                 let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                let mut inspect_expired_physical = !expired_physical.is_empty();
                 loop {
-                    let still_active = store
+                    let dispatches = store
                         .list_dispatches()
                         .await
-                        .map_err(|error| HostError::internal(error.to_string()))?
-                        .into_iter()
-                        .any(|dispatch| {
-                            (dispatch.thread_id == thread_id
-                                || dispatch.session_thread_id.as_ref() == Some(&thread_id))
-                                && matches!(
-                                    dispatch.state,
-                                    awaken_dispatch_contract::DispatchState::Reserved
-                                        | awaken_dispatch_contract::DispatchState::ReservationLeased
-                                        | awaken_dispatch_contract::DispatchState::Pending
-                                        | awaken_dispatch_contract::DispatchState::Leased
-                                        | awaken_dispatch_contract::DispatchState::Awaiting
-                                )
-                        });
-                    if !still_active {
+                        .map_err(|error| HostError::internal(error.to_string()))?;
+                    let active_here = |dispatch: &awaken_dispatch::DispatchSummary| {
+                        (dispatch.thread_id == thread_id
+                            || dispatch.session_thread_id.as_ref() == Some(&thread_id))
+                            && dispatch_remains_unsettled(dispatch.state)
+                    };
+                    if !dispatches.iter().any(&active_here) {
                         break;
+                    }
+                    if inspect_expired_physical {
+                        for (run_id, claim) in &expired_physical {
+                            if dispatches.iter().any(|dispatch| {
+                                active_here(dispatch)
+                                    && dispatch.run_id == *run_id
+                                    && dispatch.physical_attempt_active
+                            }) {
+                                match store.load_physical_attempt(run_id).await {
+                                    Ok(Some(physical))
+                                        if exact_expired_slot_remains(claim, Some(&physical)) =>
+                                    {
+                                        return Err(HostError::internal(format!(
+                                            "terminal dispatch quiescence awaits exact retirement of an expired physical attempt for Session `{thread}`"
+                                        )));
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(run_id = %run_id.0, %error,
+                                            "terminal quiescence physical recheck unavailable; retaining ordinary wait");
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        inspect_expired_physical = false;
                     }
                     if tokio::time::Instant::now() >= deadline {
                         return Err(HostError::internal(format!(
@@ -236,4 +302,51 @@ fn terminal_quiescence_rejects_only_unstarted_reservations() {
         action == TerminalDispatchAction::Ignore,
         state == awaken_dispatch_contract::DispatchState::Superseded
     );
+}
+
+#[cfg(test)]
+mod fast_pending_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_pre_cancel_expired_and_still_exact_slot_can_skip_the_normal_wait() {
+        // C1 the pre-cancel Claim is current/expired/unavailable; C2 the
+        // post-cancel slot is exact/missing/replaced or its read is unavailable.
+        // E1 only expired+exact permits prompt pending; E2 all other cases
+        // retain the ordinary bounded wait. Rules P1=(expired,exact)=>E1;
+        // P2=(current|unknown,any)|(expired,missing|replaced|unknown)=>E2.
+        // Probe failure is an optimization miss, never a reason to skip
+        // durable cancellation or to accept physical quiescence.
+        let claim = awaken_dispatch::RunClaim {
+            run_id: RunId("fast-pending-run".into()),
+            owner: "worker-a".into(),
+            epoch: 1,
+        };
+        for (current, expected) in [(Some(false), true), (Some(true), false), (None, false)] {
+            assert_eq!(
+                expired_claim_for_fast_pending(claim.clone(), current).is_some(),
+                expected,
+                "P1/P2 pre-cancel {current:?}"
+            );
+        }
+        let exact = awaken_dispatch::PhysicalAttempt {
+            claim: claim.clone(),
+            binding: None,
+            thread_id: None,
+            session_thread_id: None,
+        };
+        let replacement = awaken_dispatch::PhysicalAttempt {
+            claim: awaken_dispatch::RunClaim {
+                epoch: 2,
+                ..claim.clone()
+            },
+            ..exact.clone()
+        };
+        assert!(exact_expired_slot_remains(&claim, Some(&exact)), "P1/E1");
+        assert!(!exact_expired_slot_remains(&claim, None), "P2/E2");
+        assert!(
+            !exact_expired_slot_remains(&claim, Some(&replacement)),
+            "P2/E2"
+        );
+    }
 }

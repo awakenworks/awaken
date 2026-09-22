@@ -932,16 +932,7 @@ impl SharedHost {
                     .coordinated_thread_dispatches(session_id, thread_id)
                     .await?
                     .into_iter()
-                    .any(|dispatch| {
-                        matches!(
-                            dispatch.state,
-                            awaken_dispatch::DispatchState::Reserved
-                                | awaken_dispatch::DispatchState::ReservationLeased
-                                | awaken_dispatch::DispatchState::Pending
-                                | awaken_dispatch::DispatchState::Leased
-                                | awaken_dispatch::DispatchState::Awaiting
-                        )
-                    });
+                    .any(|dispatch| dispatch_remains_unsettled(dispatch.state));
                 if !active {
                     return Ok(());
                 }
