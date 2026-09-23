@@ -556,10 +556,13 @@ ephemeral PostgreSQL instance so the case cannot silently self-skip.
 ## Amendment: Kubernetes drain and hard-crash evidence are distinct (2026-08-12)
 
 Normal Kubernetes scale-in invokes the Worker's existing `/admin/drain` before
-SIGTERM. The hook closes process-local claim admission, and the Pod termination
-grace exceeds the Worker's bounded in-flight drain. The hook is an HTTP lifecycle
-action rather than an in-image shell command, so a distroless production image
-does not need curl, wget, or a shell.
+SIGTERM. The hook closes process-local claim admission. The Pod termination
+grace must cover the configured in-flight drain, the bounded cancellation/return
+observer used when that drain expires, and lifecycle publication/withdrawal;
+covering only the first drain window can hard-kill the sole observer after it has
+recorded an external operation as entered but before it records the return. The
+hook is an HTTP lifecycle action rather than an in-image shell command, so a
+distroless production image does not need curl, wget, or a shell.
 
 A hard-crash conformance test must instead stop the exact CRI container process.
 Deleting the Pod object first can withdraw networking while userspace briefly

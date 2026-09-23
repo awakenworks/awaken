@@ -446,7 +446,10 @@ spec:
     metadata: { labels: { app: worker } }
     spec:
       serviceAccountName: worker-runtime
-      terminationGracePeriodSeconds: 20
+      # The Worker may spend 15s draining and then up to 20s obtaining exact
+      # cancellation/return evidence. Keep Kubernetes from hard-killing the
+      # sole observer while it commits quiescence and deregisters.
+      terminationGracePeriodSeconds: 60
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -467,7 +470,8 @@ spec:
           ports: [{ containerPort: 9090 }]
           lifecycle:
             # Normal scale-in closes local claim admission before SIGTERM and
-            # leaves the existing 15s Worker drain inside the 20s Pod grace.
+            # leaves the existing drain and cancellation-return observation
+            # inside the 60s Pod grace.
             # This HTTP hook needs no shell/client in a distroless image.
             preStop:
               httpGet: { path: /admin/drain, port: 9090, scheme: HTTP }
