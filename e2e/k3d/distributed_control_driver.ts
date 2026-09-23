@@ -742,9 +742,10 @@ async function load(base: string) {
   //
   // | Rule | Resource Pod resident | Concurrent load | Effect |
   // |---|---|---|---|
-  // | L1 | no | one per Session | complete once within cold-start bound |
-  // | L2 | yes + public reads not responsive | read-only public probes |
-  // |    | expose recovery latency; never start the steady-state timer |
+  // | L2 | no + public reads not responsive | read-only public probes |
+  // |    | establish post-failover recovery before the cold timer starts |
+  // | L1 | no + public reads responsive | one turn per Session completes |
+  // |    | within the unchanged cold-start bound |
   // | L3 | yes + public reads responsive | bounded receipt-scoped turns | zero
   // |    | errors and marker+idle completion p95 <= configured limit |
   // | L4 | yes | bounded + active/active | every full-history marker exactly once |
@@ -756,10 +757,20 @@ async function load(base: string) {
   const coldStartLimit = Number(process.env.ADR71_COLD_START_MAX_MS ?? 30_000);
   const managed = clientFor(base);
   const sessions = await createFleetSessions(managed, concurrency);
+  // L2 must precede L1's timer after a database promotion: these GETs neither
+  // materialize a Resource Pod nor execute a turn, but establish that the
+  // public read path has recovered before measuring fresh Pod realization.
+  await awaitResponsivePublicReads(managed, sessions);
   const coldMarkers = sessions.map((_, index) => `ADR71-COLD-${Date.now()}-${index}`);
   const coldObservations = await Promise.all(sessions.map((sessionId, index) =>
     sendAndWaitForAgentMarker(managed, sessionId, coldMarkers[index], coldStartLimit)));
   const coldElapsed = Math.max(...coldObservations.map((observation) => observation.elapsed));
+  console.log(`COLD AUDIT ${JSON.stringify(coldObservations.map((observation, index) => ({
+    session: index,
+    elapsedMs: observation.elapsed,
+    admissionMs: observation.admissionMs,
+    observationMs: observation.observationMs,
+  })))}`);
   assert.ok(
     coldElapsed <= coldStartLimit,
     `parallel Resource Pod cold start ${coldElapsed.toFixed(1)}ms > ${coldStartLimit}ms`,
@@ -769,9 +780,7 @@ async function load(base: string) {
     assertProviderResponseCount(observation.events, coldMarkers[index]);
     assertProviderResponsesAreUnique(observation.events);
   });
-  // Keep cold start and observed read recovery outside the steady-state timer.
-  // These public probes intentionally make no per-replica coverage claim.
-  await awaitResponsivePublicReads(managed, sessions);
+  // The completed cold turns leave these exact Resource Pods resident for L3.
   // L6 repeats use these same resident Sessions and the same per-window gate.
   // No averaging or best-of selection can hide a failed window; an assertion
   // stops later writes, retaining every prior audit and the failed evidence.
