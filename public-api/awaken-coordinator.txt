@@ -202,7 +202,7 @@ pub awaken_coordinator::CoordinatorDependencies::worker_execution_bindings: core
 pub awaken_coordinator::CoordinatorDependencies::worker_execution_stops: core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::application::WorkerExecutionStopSource>>
 pub awaken_coordinator::CoordinatorDependencies::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
 pub awaken_coordinator::CoordinatorDependencies::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>>
-pub awaken_coordinator::CoordinatorDependencies::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_dispatch_contract::dispatch::model::RunClaim>>
+pub awaken_coordinator::CoordinatorDependencies::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_configuration_contract::skill_execution::SkillBundleSource<awaken_dispatch_contract::dispatch::model::RunClaim>>
 pub struct awaken_coordinator::CoordinatorPersistence
 pub awaken_coordinator::CoordinatorPersistence::postgres_pool: core::option::Option<sqlx_postgres::PgPool>
 pub awaken_coordinator::CoordinatorPersistence::run_lifecycle: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>>
@@ -227,7 +227,7 @@ pub awaken_coordinator::ManagedRoutingExtensions::worker_execution_bindings: cor
 pub awaken_coordinator::ManagedRoutingExtensions::worker_execution_stops: core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::application::WorkerExecutionStopSource>>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>>
-pub awaken_coordinator::ManagedRoutingExtensions::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_dispatch_contract::dispatch::model::RunClaim>>
+pub awaken_coordinator::ManagedRoutingExtensions::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_configuration_contract::skill_execution::SkillBundleSource<awaken_dispatch_contract::dispatch::model::RunClaim>>
 pub struct awaken_coordinator::ReferenceIndexedMemoryExtractions
 impl awaken_coordinator::ReferenceIndexedMemoryExtractions
 pub fn awaken_coordinator::ReferenceIndexedMemoryExtractions::new(alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReferenceIndex>) -> Self

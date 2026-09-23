@@ -13,8 +13,6 @@
 #[cfg(feature = "test-support")]
 pub mod realization_observation;
 
-mod agent_config;
-mod baseline;
 mod coordination;
 mod environment;
 mod event_admission;
@@ -24,16 +22,12 @@ pub use event_admission::{
     event_admission_closed, event_admission_conflict,
 };
 mod lifecycle;
-mod mcp_probe;
-mod model_resolution;
-mod network_policy;
 mod resource_activation;
 mod run_admission;
 mod run_application;
 mod session;
 mod session_realization;
 mod session_repo;
-mod skill_execution;
 mod terminal_cleanup;
 mod tool_configuration;
 pub mod work_queue {
@@ -69,15 +63,6 @@ pub mod resource_plane {
     pub use awaken_resource_contract::*;
 }
 
-pub use agent_config::{
-    AGENT_TOOLSET_TOOL_IDS, AgentPermissionPreset, AgentPermissionPresetTarget, AgentTool,
-    AgentToolConfig, AgentToolDefaultConfig, AgentToolPermissionPolicy, AgentToolsetMember,
-    AgentWebSearchUserLocation, AgentWebSearchUserLocationKind, CustomToolInputSchema,
-    ObjectSchemaKind, agent_toolset_members, apply_agent_permission_preset,
-    ensure_typed_mcp_toolset_policies, is_agent_toolset_member, is_controlled_modification_member,
-    preserve_runtime_agent_overrides, resolved_toolsets, toolset_policies, validate_agent_tools,
-    validate_mcp_toolset_pairing,
-};
 pub use awaken_agent_contract::{
     CanonicalJsonHashError, canonical_json_sha256, stable_fingerprint,
 };
@@ -88,13 +73,25 @@ pub use awaken_session_budget_contract::{
     ManagedModelUsageCursor, ManagedRuntimeListRates, ManagedTokenListRates, SessionBudgetState,
     SessionModelUsage, SessionUsage,
 };
-pub use baseline::{
-    CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentCheckpointExpiryBehavior,
-    EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,
-    EnvironmentSnapshot, SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint,
-    SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionRuntimePlacement,
-    SessionSystemPromptSelection, resolved_environment_snapshot_is_exact,
+pub use awaken_session_configuration_contract::{
+    AGENT_TOOLSET_TOOL_IDS, AgentPermissionPreset, AgentPermissionPresetTarget, AgentTool,
+    AgentToolConfig, AgentToolDefaultConfig, AgentToolPermissionPolicy, AgentToolsetMember,
+    AgentWebSearchUserLocation, AgentWebSearchUserLocationKind, CompiledSessionCreation,
+    ControlSessionCreationInputs, CredentialRefreshExchange, CustomToolInputSchema,
+    EnvironmentCheckpointExpiryBehavior, EnvironmentFingerprint, EnvironmentIdleRetentionMode,
+    EnvironmentIdleRetentionPolicy, EnvironmentSnapshot, EnvironmentWarmupSource, McpInspection,
+    McpProbe, McpProbeFailure, McpProbeStatus, McpProbeTool, ObjectSchemaKind,
+    PROBE_HTTP_BODY_LIMIT, ProbeHttpResponse, RefreshExchangeOutcome, RefreshExchangeStatus,
+    SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs,
+    SessionBaselineState, SessionCreationFinalizeError, SessionCreationIntent,
+    SessionMcpAuthoringContext, SessionModelOverride, SessionModelOverrideDecision,
+    SessionModelPublication, SessionModelPublicationResolver, SessionModelResolutionError,
+    SessionNetworkPolicy, SessionRuntimePlacement, SessionSystemPromptSelection, SkillBundleSource,
+    SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin, agent_toolset_members,
+    apply_agent_permission_preset, ensure_typed_mcp_toolset_policies, is_agent_toolset_member,
+    is_controlled_modification_member, preserve_runtime_agent_overrides,
+    resolved_environment_snapshot_is_exact, resolved_toolsets, session_model_override_decision,
+    toolset_policies, validate_agent_tools, validate_mcp_toolset_pairing, validate_skill_bundle,
 };
 pub use coordination::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
@@ -113,15 +110,6 @@ pub use executable_projection::{
     ExecutableProjectionAdmission, ExecutableProjectionRefresh,
     process_local_executable_projection_admission,
 };
-pub use network_policy::SessionNetworkPolicy;
-
-/// Rebuildable desired Environment capacity exported by Coordinator. The
-/// executable Environment catalog remains the sole source of desired state;
-/// implementations must not persist a parallel warmup queue.
-#[async_trait::async_trait]
-pub trait EnvironmentWarmupSource: Send + Sync {
-    async fn current_environment_warmups(&self) -> Result<Vec<EnvironmentSnapshot>, String>;
-}
 
 pub use awaken_session_dream_contract::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
@@ -176,15 +164,6 @@ pub use lifecycle::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
     ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
     SessionRuntimeIntervalStart,
-};
-pub use mcp_probe::{
-    CredentialRefreshExchange, McpInspection, McpProbe, McpProbeFailure, McpProbeStatus,
-    McpProbeTool, PROBE_HTTP_BODY_LIMIT, ProbeHttpResponse, RefreshExchangeOutcome,
-    RefreshExchangeStatus,
-};
-pub use model_resolution::{
-    SessionModelOverride, SessionModelOverrideDecision, SessionModelPublication,
-    SessionModelPublicationResolver, SessionModelResolutionError, session_model_override_decision,
 };
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,
@@ -245,10 +224,6 @@ pub use session_repo::{
     SessionRecoveryQuarantine, SessionRepository, SessionRepositoryConflict,
     SessionRepositoryError, SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor,
     SessionScanQuery, SessionStore, SessionTombstone, VisibleMcpServer,
-};
-pub use skill_execution::{
-    SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin,
-    validate_skill_bundle,
 };
 pub use terminal_cleanup::{
     SessionCleanupCommand, SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt,

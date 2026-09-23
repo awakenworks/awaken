@@ -27,6 +27,7 @@ awaken-resource-contract.workspace = true
 # application provisioning port. No dispatch claim or transport type crosses it.
 awaken-runtime-contract.workspace = true
 awaken-session-types.workspace = true
+awaken-session-configuration-contract.workspace = true
 awaken-session-mcp-contract.workspace = true
 awaken-session-resource-contract.workspace = true
 awaken-session-budget-contract.workspace = true
