@@ -22,6 +22,16 @@
       ]
     },
     {
+      "path": "crates/stores/awaken-store-conformance/src/resource_lifecycle.rs",
+      "boundary": "test_support_crate",
+      "reason": "The existing store-conformance tooling crate owns one backend-neutral Resource purge and reverse-reference decision table, moved from the SQLite unit test and now executed by SQLite and PostgreSQL. It performs assertions against the Resource contract but owns no production authorization, persistence, or reclamation effect.",
+      "evidence": [
+        "crates/stores/awaken-store-conformance/Cargo.toml",
+        "crates/stores/awaken-resource-store/src/lib.rs",
+        "crates/stores/awaken-resource-store/tests/postgres_registry.rs"
+      ]
+    },
+    {
       "path": "crates/worker/awaken-sandbox-container/src/runtime/realization_tests/rebuild.rs",
       "boundary": "test_only",
       "reason": "Child of the existing cfg(test) realization_tests module. It owns the source/result decision-table regression cases and reuses the parent test fixtures; production Rebuild admission remains in runtime/realization.rs and the shared existing_realization_decision. This test module is not a production safety implementation.",

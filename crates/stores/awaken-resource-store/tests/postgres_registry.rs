@@ -3,47 +3,42 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use awaken_resource_contract::ResourceRegistryRepository;
+use awaken_resource_contract::{
+    ResourceKind, ResourcePurgeRepository, ResourcePurgeStatus, ResourceReferenceIndex,
+    ResourceRegistryRepository,
+};
 use awaken_resource_store::PostgresResourceStore;
 use sqlx::Executor;
 use sqlx::postgres::PgPool;
 
-fn base_url() -> String {
-    std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_owned()
-    })
-}
-
-async fn isolated_url() -> Option<String> {
-    let admin = match PgPool::connect(&base_url()).await {
-        Ok(pool) => pool,
-        Err(error) => {
-            println!("[skip] no Postgres reachable: {error}");
-            return None;
-        }
-    };
+async fn isolated_url(prefix: &str) -> Option<String> {
+    let base_url = awaken_reliability_testkit::postgres_fixture_url()?;
+    let admin = PgPool::connect(&base_url)
+        .await
+        .expect("configured Postgres must connect");
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_nanos();
-    let schema = format!("t_resource_registry_{}_{}", std::process::id(), nonce);
+    let schema = format!("{prefix}_{}_{}", std::process::id(), nonce);
     admin
         .execute(format!("CREATE SCHEMA {schema}").as_str())
         .await
         .expect("create isolated schema");
     admin.close().await;
-    let separator = if base_url().contains('?') { '&' } else { '?' };
+    let separator = if base_url.contains('?') { '&' } else { '?' };
     Some(format!(
         "{}{}options=-c%20search_path%3D{}",
-        base_url(),
-        separator,
-        schema
+        base_url, separator, schema
     ))
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resource_registry_repository_conforms_and_survives_restart() {
-    let Some(url) = isolated_url().await else {
+    // Fixture rule: absent configuration -> explicit local skip; configured
+    // database -> connection/schema failure is a failed test, then the shared
+    // CAS suite and fresh-connection readback must both pass.
+    let Some(url) = isolated_url("t_resource_registry").await else {
         return;
     };
     // The shared suite owns the CAS, duplicate-insert and partitioning laws;
@@ -74,5 +69,43 @@ async fn resource_registry_repository_conforms_and_survives_restart() {
             .expect("durable load")
             .is_some(),
         "reopen shows the suite's repository"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resource_lifecycle_repository_conforms_and_survives_restart() {
+    // Causes: L1 no configured fixture vs an explicit configured database;
+    // L2 fresh lifecycle state; L3 a new connection after the shared suite.
+    // Effects: L1 skips only when absent and fails on bad configuration; L2
+    // applies every purge/CAS/reference/fence rule; L3 sees the exact claimed
+    // intent and remaining reference. Rules: absent->named skip;
+    // configured+L2->suite; configured+L2+L3->durable readback.
+    let Some(url) = isolated_url("t_resource_lifecycle").await else {
+        return;
+    };
+    let store = PostgresResourceStore::connect(&url)
+        .await
+        .expect("open Resources lifecycle store");
+    awaken_store_conformance::resource_lifecycle::run_suite(&store).await;
+    drop(store);
+    let reopened = PostgresResourceStore::connect_existing(&url)
+        .await
+        .expect("verify and reopen lifecycle store");
+    assert_eq!(
+        reopened
+            .get("purge-1")
+            .await
+            .expect("durable intent")
+            .expect("suite inserted intent")
+            .status,
+        ResourcePurgeStatus::Claimed
+    );
+    assert_eq!(
+        reopened
+            .references_for_resource(ResourceKind::File, "hash-1")
+            .await
+            .expect("durable reverse references")
+            .len(),
+        1
     );
 }

@@ -356,6 +356,22 @@ required behavior to an executed backend test, including failure and restart
 cases. Existing domain suites remain authoritative; missing shared cases extend
 the narrowest owner above instead of creating a competing conformance framework.
 
+The residual store list was rechecked against actual implementations after the
+facade removal. The former numeric denominator mixed backend stores with
+injected effect ports, so the executable binding is the useful measure:
+
+| Residual family | Executable authority and backend binding |
+|---|---|
+| Dream, stream checkpoint, image build | Existing store-conformance Dream/stream suites and the image-build crate's RecordBackend lifecycle table run on their in-repository memory and durable adapters; backend-specific restart and conflict cases remain beside each adapter. |
+| File, Skill, Memory | FileStore's one set/empty-byte/round-trip law set runs on memory, FS, SQLite, PostgreSQL, and the object adapter; Skill and Memory keep their crate-local shared lifecycle suites across their implemented media. Object corruption and incomplete-upload cases remain specific to that medium. |
+| Sandbox execution policy | The policy-store crate's exact-version table runs on memory, SQLite, and PostgreSQL; SQL migration and reconnect checks stay at the adapters. |
+| Resource purge and reclamation | One `awaken-store-conformance::resource_lifecycle` table now runs on SQLite and PostgreSQL. The PostgreSQL binding also reopens a fresh connection to check the committed intent and reference; its configured connection cannot be treated as an absent fixture. |
+| Sandbox checkpoint, terminal cleanup queue | `SandboxCheckpointStore` has no in-repository production backend to bind; it is an injected provider effect exercised through provider/Host tests. `SessionTerminalCleanupQueue` is implemented by SessionApplication, with its lifecycle tests there, and is not a separate persistence backend. Neither calls for an empty generic store suite. |
+
+This inventory records the actual backends and executable laws. It does not
+claim that a local test run without configured PostgreSQL or MinIO exercised
+those media, nor that formal or K3D execution is complete.
+
 `ContainerEnvironmentProvider` is also not a deprecated competitor to
 `SandboxProvider`. `ContainerProvider<R>` already implements the neutral
 `SandboxProvider` and its restore-target rung. The container projection exists
