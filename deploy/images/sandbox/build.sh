@@ -168,7 +168,8 @@ runtime_ids=${2-all}
 engine=${CONTAINER_ENGINE:-docker}
 build_timeout_seconds=${AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS:-1800}
 operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
-rust_toolchain_image=${AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:-docker.io/library/rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663}
+default_rust_toolchain_image=docker.io/library/rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663
+rust_toolchain_image=${AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:-$default_rust_toolchain_image}
 [[ $build_timeout_seconds =~ ^[1-9][0-9]*$ ]] || {
   echo "AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
@@ -339,11 +340,28 @@ if [[ $ensure_existing == current ]]; then
   prepare_current_inputs
 fi
 
-if { [[ $ensure_existing == full ]] && image_exists && accept_image; } \
+accepted_image=0
+if image_exists && accept_image; then
+  accepted_image=1
+fi
+if { [[ $ensure_existing == full ]] && [[ $accepted_image == 1 ]]; } \
   || { [[ $ensure_existing == hand ]] && image_exists && accept_hand; } \
-  || { [[ $ensure_existing == current ]] && image_exists && accept_image && current_inputs_match; }; then
+  || { [[ $ensure_existing == current ]] && [[ $accepted_image == 1 ]] && current_inputs_match; }; then
   echo "reusing accepted sandbox image: $image"
   exit 0
+fi
+
+# Current-source rebuild decision table. C1 the target image passed the full
+# production admission above; C2 current binary/contract bytes differ; C3 the
+# caller did/did not explicitly select a toolchain seed. Effects: C1+C2+!C3
+# reuses that accepted image's already verified Rust/Clippy/Rustfmt bytes;
+# C3 retains the explicit seed; !C1 uses the one digest-pinned public default.
+# The output still rebuilds and revalidates every current-source input. There is
+# no mirror fallback and an unaccepted image can never become a toolchain owner.
+if [[ $ensure_existing == current ]] \
+  && [[ $accepted_image == 1 ]] \
+  && [[ -z ${AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:-} ]]; then
+  rust_toolchain_image=$image
 fi
 
 cd "$repo"
