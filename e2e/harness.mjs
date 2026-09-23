@@ -513,6 +513,139 @@ export async function waitForValue(
   throw new Error(`${description}; last observed value: ${stringifyDurableJson(value)}`);
 }
 
+// One official-SDK owner for complete Managed Session history. Callers that
+// need a durable audit snapshot reuse this pagination loop instead of assuming
+// one SDK page is the whole history.
+export async function listManagedSessionEvents(client, sessionId, betas, listParams = {}) {
+  const params = betas === undefined ? { ...listParams } : { ...listParams, betas };
+  const events = [];
+  for await (const event of client.beta.sessions.events.list(sessionId, params)) {
+    events.push(event);
+  }
+  return events;
+}
+
+function receiptScopedObservation(events, receiptId) {
+  const receiptIndex = events.findIndex((event) => event.id === receiptId);
+  const receiptEvent = receiptIndex < 0 ? undefined : events[receiptIndex];
+  return {
+    events,
+    receiptEvent,
+    delta: receiptEvent?.processed_at ? events.slice(receiptIndex + 1) : [],
+  };
+}
+
+function mergeManagedSessionEvent(events, positions, event) {
+  if (typeof event?.id !== 'string') return;
+  const position = positions.get(event.id);
+  if (position === undefined) {
+    positions.set(event.id, events.length);
+    events.push(event);
+  } else {
+    // The accepted User Event first appears with processed_at=null and later
+    // reappears under the same id after commit. Replace that exact occurrence;
+    // id-only dedupe would permanently retain the pending receipt.
+    const current = events[position];
+    if (current?.processed_at && !event.processed_at) return;
+    events[position] = event;
+  }
+}
+
+function reconcileManagedSessionHistory(events, positions, history) {
+  const live = new Map(events.map((event) => [event.id, event]));
+  events.length = 0;
+  positions.clear();
+  for (const event of history) {
+    const observed = live.get(event.id);
+    // A stale replica may still list the accepted receipt as pending after the
+    // stream delivered its committed form. Preserve monotonic processed_at
+    // while taking canonical ordering from durable history.
+    mergeManagedSessionEvent(
+      events,
+      positions,
+      observed?.processed_at && !event.processed_at ? observed : event,
+    );
+    live.delete(event.id);
+  }
+  // Events already delivered live but not yet visible to this history replica
+  // form the newest suffix until a later reconciliation places them exactly.
+  for (const event of live.values()) mergeManagedSessionEvent(events, positions, event);
+}
+
+async function waitForSessionEventReceiptStream(
+  client,
+  sessionId,
+  receiptId,
+  betas,
+  predicate,
+  description,
+  {
+    timeoutMs = 20_000,
+    pollMs = 100,
+    retryReadError,
+    listParams = {},
+    streamParams = {},
+  },
+) {
+  const deadline = performance.now() + timeoutMs;
+  const events = [];
+  const positions = new Map();
+  let lastObservation = receiptScopedObservation(events, receiptId);
+  let lastRetryableReadError;
+  const streamRequest = betas === undefined
+    ? { ...streamParams }
+    : { ...streamParams, betas };
+
+  const accept = async () => {
+    lastObservation = receiptScopedObservation(events, receiptId);
+    return Boolean(lastObservation.receiptEvent?.processed_at)
+      && await predicate(lastObservation);
+  };
+
+  while (performance.now() < deadline) {
+    const controller = new AbortController();
+    const remaining = Math.max(1, deadline - performance.now());
+    const timer = setTimeout(() => controller.abort(), remaining);
+    try {
+      const stream = await client.beta.sessions.events.stream(
+        sessionId,
+        streamRequest,
+        { signal: controller.signal },
+      );
+      for await (const event of stream) {
+        mergeManagedSessionEvent(events, positions, event);
+        if (await accept()) return lastObservation;
+      }
+      lastRetryableReadError = undefined;
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        if (retryReadError?.(error) !== true) throw error;
+        lastRetryableReadError = error;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // Streams are turn-bounded and preview delivery is best effort. Reconcile
+    // every closed/dropped connection with the persisted record, replacing
+    // same-id pending receipts with their committed forms before reconnecting.
+    try {
+      const history = await listManagedSessionEvents(client, sessionId, betas, listParams);
+      reconcileManagedSessionHistory(events, positions, history);
+      lastRetryableReadError = undefined;
+      if (await accept()) return lastObservation;
+    } catch (error) {
+      if (retryReadError?.(error) !== true || performance.now() >= deadline) throw error;
+      lastRetryableReadError = error;
+    }
+    if (performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  }
+  if (lastRetryableReadError !== undefined) throw lastRetryableReadError;
+  throw new Error(`${description}; last observed value: ${stringifyDurableJson(lastObservation)}`);
+}
+
 export async function waitForRetainedUnknownExecution(
   client,
   sessionId,
@@ -586,13 +719,16 @@ export async function waitForRetainedUnknownExecution(
 // E1=return the full last history, the exact committed receipt event, and only
 // the later delta; E2=never let older history satisfy C3; E3=forward C4 without
 // manufacturing a beta field.
-// Constraint: this adapter only reads the official SDK history and delegates
-// bounded coordination to waitForValue; it owns no terminal predicate and never
-// drives the Session/Run lifecycle. Decision rules: W1 !C1=>reject; W2 C1&&!C2
+// Constraint: this adapter owns no terminal predicate and never drives the
+// Session/Run lifecycle. History polling remains the compatibility default;
+// stream-first observation uses the same receipt scope and reconciles every
+// closed/dropped stream with authoritative history. Decision rules: W1 !C1=>reject; W2 C1&&!C2
 // =>retry; W3 C1+C2&&!C3=>retry; W4 C1+C2+C3=>E1+E2; W5 deadline=>surface the
 // last observation through waitForValue; W6 C4=>E3; W7 a caller-classified
 // transient history-read failure retries only list; W8 any other read failure
-// surfaces immediately.
+// surfaces immediately; W9 stream events update by id and may satisfy the
+// predicate without polling; W10 a closed/dropped stream backfills history and
+// reconnects without replaying the accepted command.
 export async function waitForSessionEventReceipt(
   client,
   sessionId,
@@ -605,23 +741,25 @@ export async function waitForSessionEventReceipt(
   if (typeof receiptId !== 'string' || receiptId.length === 0) {
     throw new TypeError('an exact Managed Event receipt id is required');
   }
-  const { listParams = {}, ...waitOptions } = options ?? {};
+  const { listParams = {}, preferStream = false, streamParams = {}, ...waitOptions } = options ?? {};
+  if (preferStream && typeof client.beta.sessions.events.stream === 'function') {
+    return waitForSessionEventReceiptStream(
+      client,
+      sessionId,
+      receiptId,
+      betas,
+      predicate,
+      description,
+      { ...waitOptions, listParams, streamParams },
+    );
+  }
   const sdkListParams = betas === undefined
     ? { ...listParams }
     : { ...listParams, betas };
   return waitForValue(
     async () => {
-      const events = [];
-      for await (const event of client.beta.sessions.events.list(sessionId, sdkListParams)) {
-        events.push(event);
-      }
-      const receiptIndex = events.findIndex((event) => event.id === receiptId);
-      const receiptEvent = receiptIndex < 0 ? undefined : events[receiptIndex];
-      return {
-        events,
-        receiptEvent,
-        delta: receiptEvent?.processed_at ? events.slice(receiptIndex + 1) : [],
-      };
+      const events = await listManagedSessionEvents(client, sessionId, undefined, sdkListParams);
+      return receiptScopedObservation(events, receiptId);
     },
     async (observation) => Boolean(observation.receiptEvent?.processed_at)
       && await predicate(observation),
