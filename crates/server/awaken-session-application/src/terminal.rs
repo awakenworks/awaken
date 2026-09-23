@@ -2,10 +2,11 @@
 
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::{BindingId, ResourceAccess};
-use awaken_session_contract::{
-    ManagedLifecycleFact, PersistedSession, ResolvedInput, ResolvedInputSource, RunError,
-    SessionDisposition, SessionExecutionState, SessionRepositoryPublicationIntent,
-    SessionRepositoryPublicationReceipt,
+use awaken_session_error_contract::RunError;
+use awaken_session_resource_contract::{ResolvedInput, ResolvedInputSource};
+use awaken_session_state_contract::{
+    ManagedLifecycleFact, PersistedSession, SessionDisposition, SessionExecutionState,
+    SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
 };
 
 use super::{
@@ -28,7 +29,7 @@ use super::{
 /// ```compile_fail,E0451
 /// use awaken_session_application::SessionDispositionMutation;
 ///
-/// fn fabricate(session: awaken_session_contract::PersistedSession) {
+/// fn fabricate(session: awaken_session_state_contract::PersistedSession) {
 ///     let _ = SessionDispositionMutation {
 ///         owner_scope: "workspace".into(),
 ///         session,
@@ -92,7 +93,7 @@ pub struct SessionRepositoryPublicationSelector {
 #[derive(Clone, Debug)]
 pub struct SessionArchiveWithRepositoryPublicationCommand {
     pub owner_scope: String,
-    pub session_id: awaken_session_contract::SessionId,
+    pub session_id: awaken_session_types::SessionId,
     pub archived_at: String,
     pub lifecycle_fact: ManagedLifecycleFact,
     pub repository: SessionRepositoryPublicationSelector,
@@ -145,13 +146,13 @@ fn pending_event_batch_error() -> SessionPreparationError {
 /// Application code, not an edge adapter, derives the canonical lifecycle fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionDeleteCommand {
-    session_id: awaken_session_contract::SessionId,
+    session_id: awaken_session_types::SessionId,
     requested_at_unix_s: i64,
 }
 
 impl SessionDeleteCommand {
     #[must_use]
-    pub fn new(session_id: impl Into<awaken_session_contract::SessionId>) -> Self {
+    pub fn new(session_id: impl Into<awaken_session_types::SessionId>) -> Self {
         let requested_at_unix_s = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
@@ -295,10 +296,10 @@ impl SessionApplication {
             let changed = session
                 .archive_with_repository_publication(&command.archived_at, intent)
                 .map_err(|error| match error {
-                    awaken_session_contract::SessionArchiveWithRepositoryPublicationError::Disposition(_) => {
+                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(_) => {
                         SessionArchiveWithRepositoryPublicationError::NotFound
                     }
-                    awaken_session_contract::SessionArchiveWithRepositoryPublicationError::Cleanup(_) => {
+                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Cleanup(_) => {
                         SessionArchiveWithRepositoryPublicationError::Conflict
                     }
                 })?;
@@ -422,7 +423,7 @@ impl SessionApplication {
             .map(|_| ())
             .map_err(|error| {
                 SessionPreparationError::Rejected(
-                    awaken_session_contract::RunError::unavailable_classified(
+                    awaken_session_error_contract::RunError::unavailable_classified(
                         "session_work_retire_failed",
                         format!("Session Work could not be retired: {error}"),
                     ),
@@ -442,7 +443,7 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         self.terminate_session_with_admission(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             archived_at,
             fact,
             ArchiveAdmission::IdleOnly,
@@ -464,7 +465,7 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         self.terminate_session_with_admission(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             archived_at,
             fact,
             ArchiveAdmission::ForceTerminal,
@@ -485,7 +486,7 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         self.terminate_session_with_admission(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             archived_at,
             fact,
             ArchiveAdmission::TerminalOnly,
@@ -496,7 +497,7 @@ impl SessionApplication {
 
     async fn terminate_session_with_admission(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         archived_at: &str,
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
@@ -579,7 +580,7 @@ impl SessionApplication {
     /// An exact Archived replay is absorbing and precedes admission validation.
     async fn commit_archive(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         archived_at: &str,
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
@@ -589,14 +590,14 @@ impl SessionApplication {
             ArchiveAdmission::TerminalOnly => "terminal_only",
             ArchiveAdmission::ForceTerminal => "force_terminal",
         };
-        let command_hash = awaken_session_contract::stable_fingerprint(&(
+        let command_hash = awaken_agent_contract::stable_fingerprint(&(
             "session-archive-v1",
             session_id,
             archived_at,
             &fact,
             admission_name,
         ));
-        let command_record = awaken_session_contract::IdempotencyRecord {
+        let command_record = awaken_session_state_contract::IdempotencyRecord {
             key: format!("session:archive:{session_id}:{}", fact.id),
             payload_hash: command_hash,
         };
@@ -690,12 +691,12 @@ impl SessionApplication {
         let session_id = command.session_id.as_str();
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
-                .owner(&awaken_session_contract::SessionId::from(session_id))
+                .owner(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(mutation_failure)?;
             let mut session = self
                 .session_repository()
-                .get(&awaken_session_contract::SessionId::from(session_id))
+                .get(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_failure)?;

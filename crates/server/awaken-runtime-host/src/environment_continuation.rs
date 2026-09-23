@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use awaken_session_contract::RunError;
+use awaken_session_error_contract::RunError;
 
 use crate::{ManagedHost, to_run_error};
 
@@ -15,7 +15,7 @@ use crate::{ManagedHost, to_run_error};
 /// provider byte-custody input. Ordinary suspension and terminal takeover both
 /// call this projection so metadata, expiry, and effect identity cannot drift.
 pub(super) fn provisioning_checkpoint_request(
-    request: &awaken_session_contract::SandboxCheckpointRequest,
+    request: &awaken_session_state_contract::SandboxCheckpointRequest,
 ) -> awaken_provisioning_contract::SandboxCheckpointRequest {
     awaken_provisioning_contract::SandboxCheckpointRequest {
         workspace_id: request.workspace_id.clone(),
@@ -38,9 +38,9 @@ impl ManagedHost {
     fn continuation_current_lease(
         &self,
         thread: &str,
-        asserted: &awaken_session_contract::SessionRealizationLease,
+        asserted: &awaken_session_resource_contract::SessionRealizationLease,
         stale_code: &'static str,
-    ) -> Result<awaken_session_contract::SessionRealizationLease, RunError> {
+    ) -> Result<awaken_session_resource_contract::SessionRealizationLease, RunError> {
         let (current, live) = self
             .host
             .session_slots
@@ -75,7 +75,7 @@ impl ManagedHost {
     fn continuation_effect_fence(
         &self,
         thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, RunError> {
         let asserted = operation.realization.as_ref().ok_or_else(|| {
             RunError::unavailable_classified(
@@ -100,7 +100,7 @@ impl ManagedHost {
     fn continuation_preparation_effect_fence(
         &self,
         thread: &str,
-        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, RunError> {
         self.continuation_current_lease(
             thread,
@@ -123,7 +123,7 @@ impl ManagedHost {
     fn continuation_source_disposal_authorization(
         &self,
         thread: &str,
-        disposal: &awaken_session_contract::SourceReleaseDisposal,
+        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
     ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, RunError> {
         self.continuation_current_lease(
             thread,
@@ -143,12 +143,12 @@ impl ManagedHost {
     pub(super) async fn quiesce_environment_continuation(
         &self,
         thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_contract::McpGenerationRef],
-    ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
+        generation: &awaken_session_state_contract::SandboxGeneration,
+        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
         self.continuation_effect_fence(thread, operation)?;
         let _realization = self.host.session_slots.acquire_realization(thread).await;
         let lifecycle = self
@@ -248,7 +248,7 @@ impl ManagedHost {
         self.host
             .session_slots
             .modify(thread, |slot| slot.runtime = None);
-        Ok(awaken_session_contract::QuiescenceReceipt {
+        Ok(awaken_session_state_contract::QuiescenceReceipt {
             effect_id: operation.effect_id.clone(),
             generation_id: generation.id.clone(),
             activity_epoch: operation.activity_epoch,
@@ -260,8 +260,8 @@ impl ManagedHost {
     pub(super) async fn checkpoint_environment_continuation(
         &self,
         thread: &str,
-        request: awaken_session_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_contract::CheckpointReceipt, RunError> {
+        request: awaken_session_state_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
         if request.session_id != thread {
             return Err(RunError::internal(
                 "checkpoint request does not belong to its Session",
@@ -316,7 +316,7 @@ impl ManagedHost {
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         awaken_provisioning_contract::with_current_sandbox_effect(&effect_fence, &authority, |_| {
-            Ok(awaken_session_contract::CheckpointReceipt {
+            Ok(awaken_session_state_contract::CheckpointReceipt {
                 effect_id: provider_request.effect_id,
                 generation_id: provider_request.generation_id,
                 checkpoint,
@@ -328,10 +328,10 @@ impl ManagedHost {
     pub(super) async fn prepare_environment_continuation_source_release(
         &self,
         thread: &str,
-        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_contract::SandboxGeneration,
+        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, RunError> {
+    ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let resources = self.host.thread_resource_manifest(thread).ok_or_else(|| {
             RunError::unavailable_classified(
@@ -370,7 +370,7 @@ impl ManagedHost {
         // pure step precedes provider observation and every externally visible
         // source-dependent effect.
         let acknowledged_materializations =
-            awaken_session_contract::validate_continuation_memory_materializations(
+            awaken_session_state_contract::validate_continuation_memory_materializations(
                 resources.resources.inputs(),
                 materializations,
             )
@@ -466,7 +466,7 @@ impl ManagedHost {
                 )
             })?;
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let receipt = awaken_session_contract::SourceReleasePreparedReceipt::try_new(
+        let receipt = awaken_session_state_contract::SourceReleasePreparedReceipt::try_new(
             preparation.clone(),
             provider_prepared_effect_fence,
             generation,
@@ -493,8 +493,8 @@ impl ManagedHost {
     pub(super) async fn dispose_prepared_environment_continuation_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
+        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
         let operation = disposal.operation();
         let generation = disposal.generation();
         let source_binding = disposal.source_binding();
@@ -517,7 +517,7 @@ impl ManagedHost {
             .await
             .map_err(to_run_error)?;
         self.continuation_source_disposal_authorization(thread, disposal)?;
-        Ok(awaken_session_contract::SourceDisposedReceipt {
+        Ok(awaken_session_state_contract::SourceDisposedReceipt {
             effect_id: operation.effect_id.clone(),
             generation_id: generation.id.clone(),
             source_binding: source_binding.to_string(),
@@ -527,8 +527,8 @@ impl ManagedHost {
 
     pub(super) async fn restore_environment_continuation(
         &self,
-        request: awaken_session_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
+        request: awaken_session_state_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
         request
             .validate()
             .map_err(|error| RunError::unavailable(error.to_string()))?;
@@ -579,7 +579,7 @@ impl ManagedHost {
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let binding = serde_json::to_string(&handle)
             .map_err(|error| RunError::internal(error.to_string()))?;
-        Ok(awaken_session_contract::RestoreReceipt {
+        Ok(awaken_session_state_contract::RestoreReceipt {
             effect_id: request.effect_id,
             generation_id: request.generation_id,
             checkpoint_id: request.checkpoint.id,
@@ -589,7 +589,7 @@ impl ManagedHost {
 
     pub(super) async fn delete_environment_continuation_checkpoint(
         &self,
-        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
     ) -> Result<(), RunError> {
         let store = self
             .host
@@ -616,7 +616,8 @@ mod tests {
     #[test]
     fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
         use crate::session_slot::SessionRealizationAuthority as Authority;
-        use awaken_session_contract::{SessionRealizationLease, SessionRealizationLeaseReceipt};
+        use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
+        use awaken_session_resource_contract::SessionRealizationLease;
         // F1 exact live receipt with Control expiry older than local wall time
         // -> return the unchanged Control fence. F2 missing root, F3 expired
         // observation, F4 closed root, F5 replaced incarnation -> reject before
@@ -657,16 +658,16 @@ mod tests {
             host.session_slots
                 .update(rule, |slot| slot.realization_authority = authority);
             let managed = ManagedHost::new(host);
-            let generation = awaken_session_contract::SandboxGeneration::new(
-                &awaken_session_contract::SessionId::from(rule),
+            let generation = awaken_session_state_contract::SandboxGeneration::new(
+                &awaken_session_types::SessionId::from(rule),
                 1,
                 30_000,
                 "env",
                 "image",
             );
-            let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+            let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
                 "workspace",
-                &awaken_session_contract::SessionId::from(rule),
+                &awaken_session_types::SessionId::from(rule),
                 "suspend",
                 &generation,
                 1,

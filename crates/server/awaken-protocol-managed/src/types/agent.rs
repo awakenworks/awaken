@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use awaken_session_contract::AgentTool;
+use awaken_session_configuration_contract::AgentTool;
 
 use crate::types::{ModelConfig, ModelConfigParams};
 
@@ -120,7 +120,7 @@ impl AgentSkill {
     /// mutable Skill catalog.
     #[must_use]
     pub(crate) fn from_resolved_binding(
-        binding: &awaken_session_contract::ResolvedSkillBinding,
+        binding: &awaken_session_resource_contract::ResolvedSkillBinding,
     ) -> Self {
         Self::from_binding(awaken_agent_contract::AgentSkillBinding {
             kind: binding.kind,

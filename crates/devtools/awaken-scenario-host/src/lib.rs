@@ -482,7 +482,7 @@ fn build_router_and_host_from(platform: deployment::ScenarioPlatform) -> (Router
 pub(crate) fn build_router_and_host_with_model_publication_resolver(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+    resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> (Router, Arc<SharedHost>) {
     let platform = resource_host(llm, model_ref);
     let (host, resources) = platform.into_parts();

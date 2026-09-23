@@ -24,7 +24,7 @@
 ///
 /// It is `pub` (and `#[doc(hidden)]`) rather than private because complete
 /// witnesses are owned by the bounded context whose aggregate they fence —
-/// `MemoryGeneration` here, `McpGeneration` in `awaken-session-contract` — and
+/// `MemoryGeneration` here, `McpGeneration` in `awaken-session-mcp-contract` — and
 /// those contexts sit downstream of this crate. Naming it is therefore possible
 /// but never accidental: an implementation has to reach into a hidden module of
 /// a contract crate, which is greppable and reviewable, and it still has to

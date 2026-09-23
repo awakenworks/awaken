@@ -52,10 +52,10 @@ impl ManagedState {
             .await
             .map_err(|error| match error {
                 crate::InferenceGeoPolicyError::Denied { .. } => super::StateError::Run(
-                    awaken_session_contract::RunError::bad_request(error.to_string()),
+                    awaken_session_error_contract::RunError::bad_request(error.to_string()),
                 ),
                 crate::InferenceGeoPolicyError::Unavailable(_) => super::StateError::Run(
-                    awaken_session_contract::RunError::unavailable(error.to_string()),
+                    awaken_session_error_contract::RunError::unavailable(error.to_string()),
                 ),
             })
     }

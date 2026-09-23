@@ -9,10 +9,12 @@ impl ManagedState {
     pub(super) fn append_activation_failure_error_projection(
         &self,
         record: &mut SessionRecord,
-        persisted: &awaken_session_contract::PersistedSession,
+        persisted: &awaken_session_state_contract::PersistedSession,
         lifecycle_events: &[RunLifecycleEvent],
     ) -> Result<(), StateError> {
-        if persisted.execution != awaken_session_contract::SessionExecutionState::ActivationFailed {
+        if persisted.execution
+            != awaken_session_state_contract::SessionExecutionState::ActivationFailed
+        {
             return Ok(());
         }
         if persisted

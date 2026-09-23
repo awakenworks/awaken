@@ -65,7 +65,7 @@ fn mount_parts_on_lifecycle(
 pub(super) fn mount_parts_with_model_publication_resolver(
     host: Arc<SharedHost>,
     resources: awaken_resource_application::ResourcesApplication,
-    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+    resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> Router {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_model_publication_resolver(
@@ -81,7 +81,7 @@ pub(super) fn mount_parts_with_model_publication_resolver(
 }
 
 struct ScenarioDreamModelReadiness {
-    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+    resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 }
 
 #[async_trait::async_trait]
@@ -93,7 +93,7 @@ impl awaken_dream_application::DreamModelReadiness for ScenarioDreamModelReadine
             .await
         {
             Ok(publication) => publication,
-            Err(awaken_session_contract::SessionModelResolutionError::Invalid(_)) => {
+            Err(awaken_session_configuration_contract::SessionModelResolutionError::Invalid(_)) => {
                 return Ok(false);
             }
             Err(error) => return Err(error.to_string()),

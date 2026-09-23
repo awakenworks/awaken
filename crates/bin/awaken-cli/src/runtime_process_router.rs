@@ -472,7 +472,7 @@ pub(super) async fn prepare_runtime_routers(
     // Dream, extraction work and the lifecycle outbox. The application issuer
     // and PEP share the exact durable store opened above; split Control neither
     // mirrors it nor owns a fallback token directory.
-    let webhook_delivery: Arc<dyn awaken_session_contract::LifecycleFactDelivery> =
+    let webhook_delivery: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery> =
         match local_webhook_stores {
             Some((webhook_store, secrets)) => {
                 awaken_webhook_managed::config_plane_lifecycle_delivery(

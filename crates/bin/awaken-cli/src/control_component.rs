@@ -323,7 +323,7 @@ pub(super) async fn prepare_control_routers(
     if let Some(target) = credential_rollout_target {
         component.vault_state.set_rollout_target(target);
     }
-    let webhook_delivery: Arc<dyn awaken_session_contract::LifecycleFactDelivery> = {
+    let webhook_delivery: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery> = {
         let control = stores
             .control
             .as_ref()
@@ -335,7 +335,7 @@ pub(super) async fn prepare_control_routers(
         );
         match process.additional_lifecycle_delivery {
             Some(additional) => Arc::new(
-                awaken_session_contract::CompositeLifecycleFactDelivery::new(vec![
+                awaken_session_application_contract::CompositeLifecycleFactDelivery::new(vec![
                     additional, webhook,
                 ]),
             ),

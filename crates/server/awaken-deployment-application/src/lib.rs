@@ -41,7 +41,7 @@ fn now_ms() -> u64 {
 }
 
 fn timestamp(milliseconds: u64) -> String {
-    awaken_session_contract::epoch_millis_to_rfc3339(milliseconds)
+    awaken_session_application_contract::epoch_millis_to_rfc3339(milliseconds)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -75,11 +75,12 @@ pub struct DeploymentApplication {
     deployments: Mutex<BTreeMap<String, DeploymentRecord>>,
     runs: Mutex<BTreeMap<String, DeploymentRunRecord>>,
     launcher: Mutex<Option<Arc<dyn DeploymentSessionLauncher>>>,
-    lifecycle_notifier: Mutex<Option<Arc<dyn awaken_session_contract::LifecycleFactNotifier>>>,
+    lifecycle_notifier:
+        Mutex<Option<Arc<dyn awaken_session_application_contract::LifecycleFactNotifier>>>,
     repository: Option<Arc<dyn DeploymentRepository>>,
     executable_agents: Mutex<Option<Arc<dyn ExecutableAgentRegistrationSource>>>,
     executable_projection_refresh:
-        Mutex<Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>>,
+        Mutex<Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>>,
     scheduled_limit: usize,
 }
 
@@ -134,7 +135,7 @@ impl DeploymentApplication {
     /// the periodic reconciliation interval after a successful transaction.
     pub fn bind_lifecycle_notifier(
         &self,
-        notifier: Arc<dyn awaken_session_contract::LifecycleFactNotifier>,
+        notifier: Arc<dyn awaken_session_application_contract::LifecycleFactNotifier>,
     ) {
         *self
             .lifecycle_notifier
@@ -162,7 +163,7 @@ impl DeploymentApplication {
 
     pub fn bind_executable_projection_refresh(
         &self,
-        refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
+        refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
     ) {
         *self
             .executable_projection_refresh
@@ -172,8 +173,10 @@ impl DeploymentApplication {
 
     async fn refresh_executable_projections(
         &self,
-    ) -> Result<awaken_session_contract::ExecutableProjectionAdmission, DeploymentApplicationError>
-    {
+    ) -> Result<
+        awaken_session_application_contract::ExecutableProjectionAdmission,
+        DeploymentApplicationError,
+    > {
         let refresh = self
             .executable_projection_refresh
             .lock()
@@ -184,7 +187,10 @@ impl DeploymentApplication {
                 .refresh()
                 .await
                 .map_err(DeploymentApplicationError::Unavailable),
-            None => Ok(awaken_session_contract::process_local_executable_projection_admission()),
+            None => Ok(
+                awaken_session_application_contract::process_local_executable_projection_admission(
+                ),
+            ),
         }
     }
 
@@ -1485,10 +1491,11 @@ mod tests {
             1,
             "D1/D3"
         );
-        let facts =
-            awaken_session_contract::LifecycleOutbox::pending_lifecycle(repository.as_ref())
-                .await
-                .expect("Session lifecycle outbox");
+        let facts = awaken_session_repository_contract::LifecycleOutbox::pending_lifecycle(
+            repository.as_ref(),
+        )
+        .await
+        .expect("Session lifecycle outbox");
         assert!(
             facts
                 .iter()

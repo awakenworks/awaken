@@ -1,6 +1,6 @@
 //! Real aggregate transitions and publication collections, without assumed uniqueness.
 use super::*;
-use awaken_session_contract::{
+use awaken_session_mcp_contract::{
     McpAttachmentDraft, McpAttachmentOrigin, McpRealizationClaim, McpTarget,
     SessionMcpAttachmentSet,
 };
@@ -60,12 +60,12 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
     assert_ne!(old_generation, new_generation);
     set.claim_realization(&new_generation, claim("b")).unwrap();
     let old_receipt = projection::mcp_generation_ref(
-        &awaken_session_contract::SessionId::from("a"),
+        &awaken_session_types::SessionId::from("a"),
         &set.attachments[0],
     )
     .unwrap();
     let new_receipt = projection::mcp_generation_ref(
-        &awaken_session_contract::SessionId::from("a"),
+        &awaken_session_types::SessionId::from("a"),
         &set.attachments[1],
     )
     .unwrap();
@@ -94,8 +94,8 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
         6 => actual_new.runtime_incarnation = "b".into(),
         7 => actual_new.lease_epoch = 2,
         8 => {
-            actual_new.generation = awaken_session_contract::McpGeneration::new(
-                awaken_session_contract::McpAttachmentId("b".into()),
+            actual_new.generation = awaken_session_mcp_contract::McpGeneration::new(
+                awaken_session_mcp_contract::McpAttachmentId("b".into()),
                 actual_new.generation.version(),
                 actual_new.generation.digest().clone(),
             );

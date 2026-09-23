@@ -1,6 +1,6 @@
 //! Durable Dream job and automatic-policy adapters.
 
-use awaken_session_contract::{
+use awaken_session_dream_contract::{
     DreamPolicyRecord, DreamProcessRecord, DreamProcessStore, DreamProcessStoreError,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
@@ -463,7 +463,7 @@ mod tests {
         let loaded = repository.dream_processes().unwrap().remove(0);
         assert_eq!(loaded, original, "R1");
         let candidate = DreamProcessRecord {
-            status: awaken_session_contract::DreamStatus::Running,
+            status: awaken_session_dream_contract::DreamStatus::Running,
             ..loaded.clone()
         };
         assert!(

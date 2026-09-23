@@ -10,7 +10,7 @@ use awaken_session_application::{McpAttachmentCandidate, McpAttachmentCandidateT
 
 pub(crate) fn agent_mcp_candidate(
     server: AgentMcpServer,
-    origin: awaken_session_contract::McpAttachmentOrigin,
+    origin: awaken_session_mcp_contract::McpAttachmentOrigin,
 ) -> McpAttachmentCandidate {
     McpAttachmentCandidate {
         name: server.name,
@@ -35,7 +35,10 @@ pub(super) fn initial_mcp_candidates(
     let mut candidates = Vec::with_capacity(agent_len);
     if let Some(agent_override) = agent_override {
         candidates.extend(agent_override.iter().cloned().map(|server| {
-            agent_mcp_candidate(server, awaken_session_contract::McpAttachmentOrigin::Agent)
+            agent_mcp_candidate(
+                server,
+                awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+            )
         }));
     } else if let Some(agent) = agent {
         candidates.extend(agent.mcp_servers.iter().map(|server| {
@@ -47,7 +50,7 @@ pub(super) fn initial_mcp_candidates(
                     .credential_source_id
                     .clone()
                     .zip(server.credential_revision),
-                origin: awaken_session_contract::McpAttachmentOrigin::Agent,
+                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
             }
         }));
     }

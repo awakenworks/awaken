@@ -66,12 +66,20 @@ awaken-webhook-managed = { workspace = true }
 awaken-resource-contract = { workspace = true }
 awaken-resource-application = { workspace = true }
 awaken-resource-persistence.workspace = true
-awaken-session-contract = { workspace = true }
+awaken-session-application-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-repository-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-budget-contract.workspace = true
+awaken-session-dream-contract.workspace = true
+awaken-session-resource-contract.workspace = true
+awaken-session-types.workspace = true
+awaken-session-work-contract.workspace = true
+awaken-environment-contract.workspace = true
 awaken-service-auth-contract = { workspace = true }
 awaken-session-application.workspace = true
 awaken-deployment-contract = { workspace = true }
 awaken-ext-memory = { workspace = true }
-awaken-environment-contract.workspace = true
 awaken-provisioning-contract = { workspace = true }
 awaken-executable-agent-contract = { workspace = true }
 awaken-executable-agent-catalog = { workspace = true }

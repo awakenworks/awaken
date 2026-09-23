@@ -199,7 +199,7 @@ pub(super) async fn ack_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
-    access: Option<Extension<awaken_session_contract::work_queue::WorkSessionAccess>>,
+    access: Option<Extension<awaken_session_work_contract::WorkSessionAccess>>,
 ) -> Result<Json<Work>, WireError> {
     let result = if let Some(access) = access.as_deref() {
         state.acknowledge_work_with_session_access(access).await
@@ -217,7 +217,7 @@ pub(super) async fn heartbeat_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
-    access: Option<Extension<awaken_session_contract::work_queue::WorkSessionAccess>>,
+    access: Option<Extension<awaken_session_work_contract::WorkSessionAccess>>,
     ManagedQuery(params): ManagedQuery<HeartbeatParams>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
     let command = LeaseHeartbeat {
@@ -325,7 +325,7 @@ pub(super) async fn stop_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
-    access: Option<Extension<awaken_session_contract::work_queue::WorkSessionAccess>>,
+    access: Option<Extension<awaken_session_work_contract::WorkSessionAccess>>,
     body: Bytes,
 ) -> Result<Json<Work>, WireError> {
     // The official SDK sends `{}` or `{force}`; retain the earlier empty-body
@@ -346,15 +346,15 @@ pub(super) async fn stop_work(
     .map_err(map_execution_error)?;
     if matches!(
         result,
-        awaken_session_contract::work_queue::WorkMutationResult::PreconditionFailed
+        awaken_session_work_contract::WorkMutationResult::PreconditionFailed
     ) {
         let current = state
             .get_work(&id, &wid)
             .await
             .map_err(map_execution_error)?;
-        if current.is_some_and(|work| {
-            work.state == awaken_session_contract::work_queue::WorkState::Stopped
-        }) {
+        if current
+            .is_some_and(|work| work.state == awaken_session_work_contract::WorkState::Stopped)
+        {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ErrorResponse::new(
@@ -369,18 +369,18 @@ pub(super) async fn stop_work(
 }
 
 fn worker_mutation(
-    result: awaken_session_contract::work_queue::WorkMutationResult,
-) -> Result<awaken_session_contract::work_queue::WorkItem, WireError> {
+    result: awaken_session_work_contract::WorkMutationResult,
+) -> Result<awaken_session_work_contract::WorkItem, WireError> {
     match result {
-        awaken_session_contract::work_queue::WorkMutationResult::Accepted(work) => Ok(*work),
-        awaken_session_contract::work_queue::WorkMutationResult::PreconditionFailed => Err((
+        awaken_session_work_contract::WorkMutationResult::Accepted(work) => Ok(*work),
+        awaken_session_work_contract::WorkMutationResult::PreconditionFailed => Err((
             StatusCode::PRECONDITION_FAILED,
             Json(ErrorResponse::new(
                 "precondition_error",
                 "Worker does not own the current Work lease",
             )),
         )),
-        awaken_session_contract::work_queue::WorkMutationResult::NotFound => Err(not_found("work")),
+        awaken_session_work_contract::WorkMutationResult::NotFound => Err(not_found("work")),
     }
 }
 
@@ -443,7 +443,7 @@ mod tests {
             (
                 "M3",
                 EnvironmentExecutionError::WorkQueue(
-                    awaken_session_contract::work_queue::WorkQueueError::Storage(
+                    awaken_session_work_contract::WorkQueueError::Storage(
                         "queue outage".into(),
                     ),
                 ),

@@ -76,15 +76,15 @@ impl SharedHost {
                 })?;
         }
         match coordinates.publication_decision(installed.as_ref()) {
-            awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
-            | awaken_session_contract::FrozenAgentPublicationDecision::OptionalMissing
-            | awaken_session_contract::FrozenAgentPublicationDecision::Exact => {}
-            awaken_session_contract::FrozenAgentPublicationDecision::MissingRequired => {
+            awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
+            | awaken_session_realization_contract::FrozenAgentPublicationDecision::OptionalMissing
+            | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact => {}
+            awaken_session_realization_contract::FrozenAgentPublicationDecision::MissingRequired => {
                 return Err(HostError::internal(
                     "frozen Session Agent publication is unavailable",
                 ));
             }
-            awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
+            awaken_session_realization_contract::FrozenAgentPublicationDecision::Mismatch => {
                 let actual = installed.as_ref().map(|publication| {
                     format!(
                         "agent={}, revision={}, backend={}",
@@ -106,7 +106,7 @@ impl SharedHost {
             .map(|snapshot| {
                 let projected = match &coordinates {
                     CanonicalSessionProjection::Baseline(baseline) => {
-                        awaken_session_contract::project_effective_agent_publication(
+                        awaken_session_realization_contract::project_effective_agent_publication(
                             baseline.model_override.as_ref(),
                             &baseline.system_prompt,
                             workspace,
@@ -114,9 +114,9 @@ impl SharedHost {
                         )
                     }
                     CanonicalSessionProjection::Layout(layout) => {
-                        awaken_session_contract::project_effective_agent_publication(
+                        awaken_session_realization_contract::project_effective_agent_publication(
                             layout.model_override.as_ref(),
-                            &awaken_session_contract::SessionSystemPromptSelection::Inherit,
+                            &awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
                             workspace,
                             snapshot,
                         )
@@ -337,7 +337,7 @@ impl SharedHost {
     pub(crate) async fn authorize_environment_effect_before_io(
         &self,
         thread: &str,
-        kind: awaken_session_contract::SessionEnvironmentEffectKind,
+        kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
         source_binding: Option<&str>,
     ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
         let (realization, claimed_ordinary_run, closed) = self
@@ -369,8 +369,11 @@ impl SharedHost {
                     .map(|baseline| baseline.environment.config_fingerprint.0.clone())
             })
             .flatten();
-        let mut intent =
-            awaken_session_contract::SessionEnvironmentEffectIntent::new(thread, kind, realization);
+        let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            thread,
+            kind,
+            realization,
+        );
         if let Some(environment_fingerprint) = environment_fingerprint {
             intent = intent.for_environment(environment_fingerprint);
         }
@@ -390,14 +393,14 @@ impl SharedHost {
         // (it has no realization lease) and duplicates the queue-owned binding.
         let authorization = match sink {
             Some(_) if claimed_ordinary_run => {
-                awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
             }
             Some(sink) => sink
                 .authorize(&intent)
                 .await
                 .map_err(crate::managed_adapter_error::from_run_error)?,
             None if intent.realization().is_none() => {
-                awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
             }
             None => {
                 return Err(HostError::internal(
@@ -407,7 +410,7 @@ impl SharedHost {
         };
         let provider_fence = if !matches!(
             authorization,
-            awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
         ) {
             intent
                 .realization()
@@ -438,7 +441,7 @@ impl SharedHost {
     > {
         if matches!(
             effect.authorization,
-            awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
         ) && let Some(identity) = candidate.durable_identity()
         {
             return Ok(identity.clone());
@@ -456,7 +459,7 @@ impl SharedHost {
         crate::session_slot::BoundSessionEnvironmentIdentity,
         EnvironmentBindingPersistenceError,
     > {
-        let receipt = awaken_session_contract::SessionEnvironmentReceipt::from_intent(
+        let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
             &effect.intent,
             binding.clone(),
         )
@@ -472,10 +475,10 @@ impl SharedHost {
         // dispatch-cache writers and retain their exact claim fence below.
         let binds_deferred_dispatch = !matches!(
             effect.intent.kind(),
-            awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }
+            awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }
         );
         match &effect.authorization {
-            awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned => {
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned => {
                 if binds_deferred_dispatch {
                     self.bind_deferred_dispatch_before_publish(thread, &binding)
                         .await
@@ -490,7 +493,7 @@ impl SharedHost {
                     ),
                 );
             }
-            awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                 binding: committed,
             } => {
                 if committed != &binding {
@@ -502,7 +505,7 @@ impl SharedHost {
                     });
                 }
             }
-            awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized => {}
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized => {}
         }
         let sink = self
             .environment_binding_sink
@@ -557,14 +560,14 @@ impl SharedHost {
         reconciliation: crate::session_slot::EnvironmentResourceReconciliation,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
         let candidate = match effect.intent.kind() {
-            awaken_session_contract::SessionEnvironmentEffectKind::Adopt => {
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => {
                 self.begin_session_environment_adoption(thread, environment.clone())?
             }
-            awaken_session_contract::SessionEnvironmentEffectKind::Create
-            | awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. } => {
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create
+            | awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. } => {
                 self.begin_session_environment_preparation(thread, environment.clone())?
             }
-            awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+            awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                 ..
             } => {
                 return Err(HostError::internal(
@@ -720,20 +723,20 @@ impl SharedHost {
             .flatten();
         let (kind, source_binding) = match &rebuild_source {
             Some((source_binding, source_generation_id)) => (
-                awaken_session_contract::SessionEnvironmentEffectKind::Rebuild {
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
                     source_generation_id: source_generation_id.clone(),
                 },
                 Some(source_binding.as_str()),
             ),
             None => (
-                awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
                 None,
             ),
         };
         let effect = self
             .authorize_environment_effect_before_io(thread, kind, source_binding)
             .await?;
-        if let awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+        if let awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,
         } = &effect.authorization
         {
@@ -934,7 +937,7 @@ impl SharedHost {
             .transpose()?;
         let intent = if matches!(
             effect.intent.kind(),
-            awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. }
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. }
         ) && matches!(
             provider,
             crate::session_environment::SessionEnvironmentProvider::Container { .. }
@@ -1083,7 +1086,7 @@ impl SharedHost {
                             .filter(|input| {
                                 matches!(
                                     input.source,
-                                    awaken_session_contract::ResolvedInputSource::Repository { .. }
+                                    awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
                                 )
                             })
                             .map(crate::managed_resource_projection::resolved_input_effect_path)

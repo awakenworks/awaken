@@ -5,7 +5,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as AuditKind;
 use awaken_agent_contract::audit::record::Record as AuditRecord;
 use awaken_runtime_contract::llm::{ModelRequestObservation, TokenUsage};
-use awaken_session_contract::SessionId;
+use awaken_session_types::SessionId;
 
 fn observed_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
@@ -14,9 +14,9 @@ fn observed_session(id: &str) -> PersistedSession {
         .expect("fixture baseline")
         .environment
         .clone();
-    session.baseline = awaken_session_contract::SessionBaselineState::Frozen(
-        awaken_session_contract::SessionBaseline::compile_with_execution_model_ref(
-            awaken_session_contract::SessionBaselineInputs {
+    session.baseline = awaken_session_configuration_contract::SessionBaselineState::Frozen(
+        awaken_session_configuration_contract::SessionBaseline::compile_with_execution_model_ref(
+            awaken_session_configuration_contract::SessionBaselineInputs {
                 environment,
                 runtime_placement: SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
@@ -39,25 +39,31 @@ fn observed_session(id: &str) -> PersistedSession {
 }
 
 fn bind_user_command(session: &mut PersistedSession, idempotency_key: &str) -> RunId {
-    let mut batch = awaken_session_contract::SessionEventBatch::compile(
+    let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
         &session.session_id,
         format!("batch:{idempotency_key}"),
-        vec![awaken_session_contract::SessionEventInput::UserMessage {
-            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                "生成当前课件",
-            )],
-        }],
+        vec![
+            awaken_session_event_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "生成当前课件",
+                )],
+            },
+        ],
     )
     .expect("valid User Event batch");
     batch
         .bind_idempotency(idempotency_key, format!("fingerprint:{idempotency_key}"))
         .expect("valid idempotency coordinate");
     let run_id = match &batch.events[0].event {
-        awaken_session_contract::SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
+        awaken_session_event_contract::SessionEventCommand::UserMessage { run_id, .. } => {
+            run_id.clone()
+        }
         _ => unreachable!("fixture contains one User Message"),
     };
     session
-        .install_initial_event_plan(awaken_session_contract::SessionInitialEventPlan { batch })
+        .install_initial_event_plan(awaken_session_event_contract::SessionInitialEventPlan {
+            batch,
+        })
         .expect("install Event batch");
     run_id
 }
@@ -119,22 +125,28 @@ fn user_run_retry_identity_has_one_aggregate_owner_and_fails_closed_on_ambiguity
     );
 
     let mut initial = observed_session("session-initial");
-    let batch = awaken_session_contract::SessionEventBatch::compile(
+    let batch = awaken_session_event_contract::SessionEventBatch::compile(
         &initial.session_id,
         "initial-batch",
-        vec![awaken_session_contract::SessionEventInput::UserMessage {
-            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                "生成初始课件",
-            )],
-        }],
+        vec![
+            awaken_session_event_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "生成初始课件",
+                )],
+            },
+        ],
     )
     .expect("valid initial batch");
     let initial_run_id = match &batch.events[0].event {
-        awaken_session_contract::SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
+        awaken_session_event_contract::SessionEventCommand::UserMessage { run_id, .. } => {
+            run_id.clone()
+        }
         _ => unreachable!("fixture contains one User Message"),
     };
     initial
-        .install_initial_event_plan(awaken_session_contract::SessionInitialEventPlan { batch })
+        .install_initial_event_plan(awaken_session_event_contract::SessionInitialEventPlan {
+            batch,
+        })
         .expect("install initial batch");
     assert_eq!(
         initial.user_run_idempotency_key(&initial_run_id).unwrap(),
@@ -404,7 +416,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     };
     assert_eq!(
         error.kind,
-        awaken_session_contract::RunErrorKind::Internal,
+        awaken_session_error_contract::RunErrorKind::Internal,
         "R7"
     );
     let Err(SessionProjectionRecoveryError::Rejected(error)) = application
@@ -415,7 +427,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     };
     assert_eq!(
         error.kind,
-        awaken_session_contract::RunErrorKind::Internal,
+        awaken_session_error_contract::RunErrorKind::Internal,
         "R8"
     );
 }

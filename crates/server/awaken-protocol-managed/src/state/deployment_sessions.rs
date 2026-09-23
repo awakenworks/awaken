@@ -25,9 +25,9 @@ impl ManagedState {
         }
         let session_id = format!(
             "sesn_{}",
-            awaken_session_contract::stable_fingerprint(&("deployment-run", deployment_run_id))
+            awaken_agent_contract::stable_fingerprint(&("deployment-run", deployment_run_id))
         );
-        let idempotency = awaken_session_contract::IdempotencyRecord {
+        let idempotency = awaken_session_state_contract::IdempotencyRecord {
             key: format!("managed:deployment-session:{session_id}"),
             payload_hash: launch_fingerprint.to_owned(),
         };
@@ -35,7 +35,7 @@ impl ManagedState {
             .application
             .replay_session_create(
                 &workspace_id,
-                &awaken_session_contract::SessionId::from(&session_id),
+                &awaken_session_types::SessionId::from(&session_id),
                 &idempotency,
             )
             .await
@@ -124,7 +124,7 @@ mod tests {
         // | D2 | present | exact | exact | E2+E4 |
         // | D3 | present | exact | different | E3 |
         // | D4 | present | different | exact | E3 |
-        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo());
         let state =
             Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
@@ -196,7 +196,7 @@ mod tests {
             );
         }
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from(created.id))
+            repo.get(&awaken_session_types::SessionId::from(created.id))
                 .await
                 .unwrap()
                 .title

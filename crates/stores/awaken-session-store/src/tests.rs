@@ -1,14 +1,16 @@
-use awaken_session_contract::LifecycleOutbox as _;
-use awaken_session_contract::SessionId;
+use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_types::SessionId;
 use std::collections::BTreeMap;
 
 use awaken_credential_contract::{
     CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
 };
-use awaken_session_contract::{
-    EnvironmentFingerprint, EnvironmentSnapshot, McpAttachmentDraft, McpAttachmentOrigin,
-    McpTarget, SessionBaseline, SessionBaselineState, SessionMcpAttachmentSet,
+use awaken_session_configuration_contract::{
+    EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineState,
     SessionMcpAuthoringContext, SessionNetworkPolicy,
+};
+use awaken_session_mcp_contract::{
+    McpAttachmentDraft, McpAttachmentOrigin, McpTarget, SessionMcpAttachmentSet,
 };
 
 use super::*;
@@ -115,7 +117,7 @@ fn normalization_fixture(first: &mut PersistedSession, upgrade: bool) -> (String
 }
 
 async fn assert_pre_upgrade_writer_fenced(
-    repo: &impl awaken_session_contract::SessionStore,
+    repo: &impl awaken_session_repository_contract::SessionStore,
     current: &PersistedSession,
 ) {
     // N5: a cached pre-upgrade root with a fresh mutation key cannot restore
@@ -238,7 +240,11 @@ async fn recovery_backlog_cannot_starve_session_authority_timers() {
             let repository = Arc::clone(&repository);
             tokio::spawn(async move {
                 repository
-                    .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+                    .scan(
+                        awaken_session_state_contract::SessionScanQuery::Reconcilable {
+                            after: None,
+                        },
+                    )
                     .await
             })
         })
@@ -304,7 +310,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
     );
     assert!(
         postgres
-            .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+            .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .is_err(),
         "R1 typed reconciliation"
@@ -345,7 +351,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         )
         .unwrap();
     let scan = sqlite
-        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
         .unwrap();
     assert_eq!(scan.sessions.len(), 1, "R3/E4 healthy work continues");
@@ -362,7 +368,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
     assert!(
         matches!(
             sqlite
-                .scan(awaken_session_contract::SessionScanQuery::Workspace {
+                .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
                     workspace_id: "workspace"
                 })
                 .await,
@@ -379,7 +385,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         "R3/E3 exposes secret-free durable isolation evidence"
     );
     let replay = sqlite
-        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
         .unwrap();
     assert_eq!(replay.sessions.len(), 1);
@@ -415,7 +421,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         )
         .unwrap();
     let healed = sqlite
-        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
         .unwrap();
     assert!(healed.quarantined.is_empty(), "R4 stale quarantine cleared");
@@ -465,7 +471,7 @@ async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_onc
     }
 
     let first = sqlite
-        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
         .unwrap();
     assert_eq!(
@@ -477,9 +483,11 @@ async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_onc
     assert_eq!(cursor.session_id().as_str(), expected[total - 2], "R2/E2");
 
     let second = sqlite
-        .scan(awaken_session_contract::SessionScanQuery::Reconcilable {
-            after: Some(&cursor),
-        })
+        .scan(
+            awaken_session_state_contract::SessionScanQuery::Reconcilable {
+                after: Some(&cursor),
+            },
+        )
         .await
         .unwrap();
     assert_eq!(second.sessions.len(), 1, "R3/E1");
@@ -706,9 +714,9 @@ fn sqlite_recovery_scan_waits_before_reading_and_repairing_quarantine() {
         let repo = repo.clone();
         std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            tokio::runtime::Runtime::new().unwrap().block_on(
-                repo.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None }),
-            )
+            tokio::runtime::Runtime::new().unwrap().block_on(repo.scan(
+                awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None },
+            ))
         })
     };
     started_rx.recv().unwrap();
@@ -779,10 +787,10 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
         session_id: SessionId::from(id),
         revision: Default::default(),
         baseline: SessionBaselineState::Frozen(SessionBaseline::compile(
-            awaken_session_contract::SessionBaselineInputs {
+            awaken_session_configuration_contract::SessionBaselineInputs {
                 environment: EnvironmentSnapshot {
                     environment_id: "env_local".into(),
-                    revision: awaken_session_contract::EnvironmentRevision(1),
+                    revision: awaken_environment_contract::EnvironmentRevision(1),
                     self_hosted: false,
                     config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
                     sandbox: Default::default(),
@@ -806,7 +814,8 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
                         ),
                     },
                 },
-                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+                runtime_placement:
+                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 agent_id: "coder".into(),
                 agent_revision: None,
@@ -844,7 +853,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
             None,
         )
         .unwrap(),
-        resources: awaken_session_contract::SessionResourceState::from_active(
+        resources: awaken_session_state_contract::SessionResourceState::from_active(
             serde_json::from_value(serde_json::json!({
                 "inputs": [{
                     "binding_id": "input-file",
@@ -2043,13 +2052,13 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     ] {
         assert_eq!(
             repo.scan(
-                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: "ws-source",
                     source_id: &awaken_credential_contract::CredentialSourceId(source_id.into())
                 }
             )
             .await
-            .map(awaken_session_contract::SessionScan::into_sessions)
+            .map(awaken_session_state_contract::SessionScan::into_sessions)
             .unwrap()[0]
                 .session_id,
             session_id,
@@ -2070,13 +2079,13 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     assert_eq!(
         reopened
             .scan(
-                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: "ws-source",
                     source_id: &awaken_credential_contract::CredentialSourceId("source-v1".into())
                 }
             )
             .await
-            .map(awaken_session_contract::SessionScan::into_sessions)
+            .map(awaken_session_state_contract::SessionScan::into_sessions)
             .unwrap()[0]
             .session_id,
         "sesn_source_v1",
@@ -2135,13 +2144,13 @@ async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_roo
     let source_id = awaken_credential_contract::CredentialSourceId("source-pg-v1".into());
     assert_eq!(
         repo.scan(
-            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "ws-source",
                 source_id: &source_id
             }
         )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap()[0]
             .session_id,
         session.session_id,
@@ -2163,13 +2172,13 @@ async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_roo
     assert_eq!(
         restarted
             .scan(
-                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: "ws-source",
                     source_id: &source_id
                 }
             )
             .await
-            .map(awaken_session_contract::SessionScan::into_sessions)
+            .map(awaken_session_state_contract::SessionScan::into_sessions)
             .unwrap()[0]
             .session_id,
         session.session_id,
@@ -2194,7 +2203,7 @@ fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {
     }
 }
 
-pub(crate) async fn create_fixture<R: awaken_session_contract::SessionStore>(
+pub(crate) async fn create_fixture<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
     owner: &str,
     mut session: PersistedSession,
@@ -2216,12 +2225,12 @@ pub(crate) async fn create_fixture<R: awaken_session_contract::SessionStore>(
         .await
         .expect("create Session fixture")
     {
-        awaken_session_contract::SessionCreateResult::Applied(session)
-        | awaken_session_contract::SessionCreateResult::Replayed(session) => session,
+        awaken_session_state_contract::SessionCreateResult::Applied(session)
+        | awaken_session_state_contract::SessionCreateResult::Replayed(session) => session,
     }
 }
 
-async fn replace_fixture<R: awaken_session_contract::SessionStore>(
+async fn replace_fixture<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
     owner: &str,
     mut session: PersistedSession,
@@ -2254,14 +2263,14 @@ async fn replace_fixture<R: awaken_session_contract::SessionStore>(
     session
 }
 
-async fn delete_fixture<R: awaken_session_contract::SessionStore>(
+async fn delete_fixture<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
     owner: &str,
     session_id: &str,
     fact: ManagedLifecycleFact,
 ) {
     let current = repo.get(&SessionId::from(session_id)).await.unwrap();
-    let payload = SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone {
+    let payload = SessionMutationPayload::Delete(awaken_session_state_contract::SessionTombstone {
         session_id: session_id.into(),
         deleted_revision: SessionRevision(current.revision.0 + 1),
         deleted_at: fact.timestamp.to_string(),
@@ -2311,9 +2320,9 @@ fn make_deletable(session: &mut PersistedSession) {
 /// the two-stage preparation/disposal authority.
 fn install_legacy_completion_wire(
     session: &mut PersistedSession,
-    command: &awaken_session_contract::SessionCleanupCommand,
+    command: &awaken_session_state_contract::SessionCleanupCommand,
 ) {
-    let receipt_fingerprint = awaken_session_contract::stable_fingerprint(&(
+    let receipt_fingerprint = awaken_agent_contract::stable_fingerprint(&(
         "session-terminal-cleanup-thread-receipt-v1",
         command.session_id.as_str(),
         command.thread_id.as_str(),
@@ -2356,12 +2365,12 @@ fn requested_cleanup_with_completion(session_id: &str) -> PersistedSession {
     assert!(
         session
             .terminal_cleanup
-            .request(&awaken_session_contract::SessionId::from(session_id))
+            .request(&awaken_session_types::SessionId::from(session_id))
     );
     session
         .terminal_cleanup
         .freeze_targets(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             std::iter::empty::<String>(),
             0,
             0,
@@ -2370,7 +2379,7 @@ fn requested_cleanup_with_completion(session_id: &str) -> PersistedSession {
     let command = session
         .terminal_cleanup
         .command_for(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             session_id,
         )
         .expect("cleanup compatibility command");
@@ -2390,12 +2399,12 @@ fn removed_bundle_v2_aggregate(session: &PersistedSession) -> serde_json::Value 
     let command = session
         .terminal_cleanup
         .command_for(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             session_id,
         )
         .expect("cleanup compatibility command");
     let removed_fingerprint = "removed-bundle-receipt";
-    let v2_fingerprint = awaken_session_contract::stable_fingerprint(&(
+    let v2_fingerprint = awaken_agent_contract::stable_fingerprint(&(
         "session-terminal-cleanup-thread-receipt-v2",
         command.session_id.as_str(),
         command.thread_id.as_str(),
@@ -2470,7 +2479,7 @@ fn current_mutation_admission_rejects_unreadable_or_foreign_observation_authorit
 /// a first observation. Unknown creation must never be invented by an update.
 /// The same table is invoked by both real SQL adapters through the existing
 /// root-mutation conformance owner, without a second backend test framework.
-async fn root_observation_replacement_table<R: awaken_session_contract::SessionStore>(
+async fn root_observation_replacement_table<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
     prefix: &str,
 ) {
@@ -2631,7 +2640,7 @@ async fn root_observation_replacement_table<R: awaken_session_contract::SessionS
 /// | R3 | T | F | - | F/T | idempotency mismatch |
 /// | R4 | F | - | F | F | revision conflict |
 /// | R5 | F | - | - | T | tombstone conflict |
-async fn root_mutation_decision_table<R: awaken_session_contract::SessionStore>(
+async fn root_mutation_decision_table<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
     id: &str,
 ) {
@@ -2688,7 +2697,7 @@ async fn root_mutation_decision_table<R: awaken_session_contract::SessionStore>(
     );
 
     let delete_payload =
-        SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone {
+        SessionMutationPayload::Delete(awaken_session_state_contract::SessionTombstone {
             session_id: id.into(),
             deleted_revision: SessionRevision(3),
             deleted_at: "3".into(),
@@ -2780,8 +2789,10 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
         .unwrap();
     assert!(legacy.admissions.is_none());
     assert_eq!(
-        legacy.resolve("key", "fp").unwrap_err().kind,
-        awaken_session_contract::RunErrorKind::Unavailable
+        awaken_session_application_contract::resolve_deleted_event_admission(&legacy, "key", "fp")
+            .unwrap_err()
+            .kind,
+        awaken_session_error_contract::RunErrorKind::Unavailable
     );
     let empty = repo
         .deleted_event_admissions("ws_a", &SessionId::from("empty"))
@@ -2789,8 +2800,9 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        empty.resolve("key", "fp").unwrap(),
-        awaken_session_contract::SessionEventAdmission::Deleted {
+        awaken_session_application_contract::resolve_deleted_event_admission(&empty, "key", "fp")
+            .unwrap(),
+        awaken_session_application_contract::SessionEventAdmission::Deleted {
             deleted_revision: SessionRevision(3)
         }
     );
@@ -3143,11 +3155,11 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         let mut requested = repo.get(&SessionId::from("sesn_cleanup")).await.unwrap();
         requested
             .terminal_cleanup
-            .request(&awaken_session_contract::SessionId::from("sesn_cleanup"));
+            .request(&awaken_session_types::SessionId::from("sesn_cleanup"));
         requested
             .terminal_cleanup
             .freeze_targets(
-                &awaken_session_contract::SessionId::from("sesn_cleanup"),
+                &awaken_session_types::SessionId::from("sesn_cleanup"),
                 ["child-cleanup".to_string()],
                 3,
                 0,
@@ -3163,14 +3175,14 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         let intent = recovered
             .terminal_cleanup
             .command_for(
-                &awaken_session_contract::SessionId::from("sesn_cleanup"),
+                &awaken_session_types::SessionId::from("sesn_cleanup"),
                 "sesn_cleanup",
             )
             .unwrap();
         let child_intent = recovered
             .terminal_cleanup
             .command_for(
-                &awaken_session_contract::SessionId::from("sesn_cleanup"),
+                &awaken_session_types::SessionId::from("sesn_cleanup"),
                 "child-cleanup",
             )
             .expect("child cleanup intent survives restart");
@@ -3196,7 +3208,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
     assert!(completed.terminal_cleanup.is_completed());
     assert!(matches!(
         completed.environment,
-        awaken_session_contract::SessionEnvironmentState::Unmaterialized
+        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
     ));
 }
 
@@ -3728,7 +3740,7 @@ async fn postgres_round_trips_and_upserts() {
         .await
         .unwrap();
     let scan = repo
-        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
         .unwrap();
     assert!(
@@ -3744,7 +3756,7 @@ async fn postgres_round_trips_and_upserts() {
         "Q2"
     );
     let replay = repo
-        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
         .unwrap();
     assert_eq!(replay.quarantined, scan.quarantined, "Q3");

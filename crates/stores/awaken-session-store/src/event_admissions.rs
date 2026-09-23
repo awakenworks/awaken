@@ -1,7 +1,7 @@
-use awaken_session_contract::{
-    DeletedSessionEventAdmissions, PersistedSession, RetainedEventAdmission,
-    SessionRepositoryError, SessionRevision,
+use awaken_session_state_contract::{
+    DeletedSessionEventAdmissions, PersistedSession, RetainedEventAdmission, SessionRepositoryError,
 };
+use awaken_session_types::SessionRevision;
 
 /// Both stores call this on the root they locked for the successful delete CAS,
 /// never on a caller-provided inventory. Drop all original message/tool material.
@@ -54,7 +54,7 @@ pub(super) fn decode(
                 && ((receipt.closed && !ids.is_empty())
                     || (!receipt.closed && ids.is_empty())
                     || ids.iter().enumerate().any(|(ordinal, id)| {
-                        awaken_session_contract::decode_session_event_batch_operation(id)
+                        awaken_session_event_contract::decode_session_event_batch_operation(id)
                             .is_none_or(|coordinate| {
                                 coordinate.batch_id != receipt.batch_id
                                     || coordinate.ordinal != ordinal
@@ -122,7 +122,7 @@ mod tests {
         // coordinates; I4 empty/foreign/gapped/repeated/noncanonical => corrupt.
         // Only opaque ids extend the existing tombstone JSON, never input data.
         let op = |batch, ordinal| {
-            awaken_session_contract::session_event_batch_operation(batch, ordinal).unwrap()
+            awaken_session_event_contract::session_event_batch_operation(batch, ordinal).unwrap()
         };
         let entry = |closed, ids: serde_json::Value| {
             json!([{

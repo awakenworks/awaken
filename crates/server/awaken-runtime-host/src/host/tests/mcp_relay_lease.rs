@@ -11,7 +11,7 @@ use super::*;
 async fn relay_uses_current_session_authority_without_restaging_its_route() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let session = "renewed-relay";
-    let lease = awaken_session_contract::SessionRealizationLease {
+    let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "worker/1".into(),
         epoch: 2,
@@ -23,12 +23,13 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         .await
         .unwrap();
     let (upstream, seen) = crate::test_mcp::start(Some("Bearer test-relay-secret")).await;
-    let generation = awaken_session_contract::McpGenerationRef {
+    let generation = awaken_session_mcp_contract::McpGenerationRef {
         session_id: session.into(),
-        generation: awaken_session_contract::McpGeneration::of_bare_target(
-            awaken_session_contract::McpAttachmentId("browser".into()),
+        generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+            awaken_session_mcp_contract::McpAttachmentId("browser".into()),
             1,
-            &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
+            &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                .unwrap(),
         ),
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_epoch: lease.epoch,
@@ -64,8 +65,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     assert_eq!(seen.lock().unwrap().len(), 1);
     for incarnation in [false, true] {
         let mut foreign = generation.clone();
-        foreign.generation = awaken_session_contract::McpGeneration::new(
-            awaken_session_contract::McpAttachmentId(format!("foreign-{incarnation}")),
+        foreign.generation = awaken_session_mcp_contract::McpGeneration::new(
+            awaken_session_mcp_contract::McpAttachmentId(format!("foreign-{incarnation}")),
             foreign.generation.version(),
             foreign.generation.digest().clone(),
         );
@@ -98,8 +99,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         "R3"
     );
     let mut live = generation.clone();
-    live.generation = awaken_session_contract::McpGeneration::new(
-        awaken_session_contract::McpAttachmentId("live-assertion".into()),
+    live.generation = awaken_session_mcp_contract::McpGeneration::new(
+        awaken_session_mcp_contract::McpAttachmentId("live-assertion".into()),
         live.generation.version(),
         live.generation.digest().clone(),
     );

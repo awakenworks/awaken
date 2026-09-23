@@ -162,10 +162,10 @@ struct ConcurrentControlState {
 
 #[tokio::test]
 async fn session_renewal_receipt_wire_requires_positive_horizon_and_preserves_failures() {
-    use awaken_session_contract::{
+    use awaken_session_realization_contract::{
         RenewSessionRealization, SessionRealizationControlFailure as Failure,
-        SessionRealizationLease,
     };
+    use awaken_session_resource_contract::SessionRealizationLease;
     use axum::http::StatusCode;
 
     // Cause/effect graph: HTTP success AND complete lease AND positive integer
@@ -321,7 +321,7 @@ async fn blocked_session_control_request_does_not_serialize_worker_heartbeat() {
             .terminal_cleanup_work(
                 &cleanup_identity,
                 "session-a",
-                &awaken_session_contract::SessionRealizationLease {
+                &awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker-a".into(),
                     runtime_incarnation: "inc-a".into(),
                     epoch: 1,

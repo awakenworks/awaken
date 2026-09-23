@@ -1,4 +1,4 @@
-use awaken_session_contract::SessionId;
+use awaken_session_types::SessionId;
 mod support;
 
 use std::sync::Arc;
@@ -11,8 +11,8 @@ use awaken_dream_application::{
 use awaken_protocol_managed::{
     ANTHROPIC_API_VERSION, DREAMING_BETA, MANAGED_BETA, dreams_router, enforce_managed_beta,
 };
-use awaken_session_contract::DreamProcessStore;
-use awaken_session_contract::{DreamModelConfig, DreamUsage};
+use awaken_session_dream_contract::DreamProcessStore;
+use awaken_session_dream_contract::{DreamModelConfig, DreamUsage};
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -349,10 +349,10 @@ impl DreamExecutor for Worker {
     async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
         Ok(DreamPreparation {
             result_memory_store_id: match &request.output_behavior {
-                awaken_session_contract::DreamOutputBehavior::CreateNew => {
+                awaken_session_dream_contract::DreamOutputBehavior::CreateNew => {
                     format!("mem_result_{}", request.job_id)
                 }
-                awaken_session_contract::DreamOutputBehavior::UpdateExisting {
+                awaken_session_dream_contract::DreamOutputBehavior::UpdateExisting {
                     memory_store_id,
                 } => memory_store_id.clone(),
             },
@@ -833,7 +833,7 @@ async fn late_worker_completion_cannot_repeat_or_overwrite_cancellation_cleanup(
             .unwrap();
         assert_eq!(
             process.status,
-            awaken_session_contract::DreamStatus::Canceled,
+            awaken_session_dream_contract::DreamStatus::Canceled,
             "C3/E2"
         );
         assert_eq!(process.cleanup_pending, cleanup_pending, "C3/E3/E4");
@@ -961,7 +961,7 @@ async fn canceled_cleanup_retry_cannot_return_success_before_its_receipt() {
         .unwrap();
     assert_eq!(
         settled.status,
-        awaken_session_contract::DreamStatus::Canceled,
+        awaken_session_dream_contract::DreamStatus::Canceled,
         "R4/E4"
     );
     assert!(!settled.cleanup_pending, "R4/E4");

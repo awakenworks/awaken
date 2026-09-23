@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::clock::Clock;
 #[cfg(test)]
 use awaken_agent_contract::clock::system_clock;
-use awaken_session_contract::work_queue::{
+use awaken_session_work_contract::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkMutationResult,
     WorkQueue, WorkQueueError, WorkSessionAccess, session_work_release_admission,
@@ -89,7 +89,7 @@ impl WorkQueue for SqliteWorkQueue {
     async fn enqueue_session(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<String, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
@@ -103,7 +103,7 @@ impl WorkQueue for SqliteWorkQueue {
     async fn wake_session(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<String, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
@@ -271,7 +271,7 @@ impl WorkQueue for SqliteWorkQueue {
                     Ok(WorkSessionAccess {
                         work_id: row.get(0)?,
                         environment_id: row.get(1)?,
-                        session_id: awaken_session_contract::SessionId::from(row.get::<_, String>(2)?),
+                        session_id: awaken_session_types::SessionId::from(row.get::<_, String>(2)?),
                         lease_owner: row.get(3)?,
                         lease_epoch: row.get::<_, u64>(4)?,
                         expires_at_unix_ms: row.get::<_, u64>(5)?,
@@ -416,7 +416,7 @@ impl WorkQueue for SqliteWorkQueue {
     async fn retire_session(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let env_id = env_id.to_string();
         let session_id = session_id.to_string();
@@ -521,7 +521,7 @@ impl WorkQueue for SqliteWorkQueue {
     async fn acquire_session(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
@@ -670,7 +670,7 @@ impl WorkQueue for PostgresWorkQueue {
     async fn enqueue_session(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<String, WorkQueueError> {
         self.insert(env_id, "session", Some(session_id.as_str()))
             .await
@@ -679,7 +679,7 @@ impl WorkQueue for PostgresWorkQueue {
     async fn wake_session(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<String, WorkQueueError> {
         let work_id = self
             .insert(env_id, "session", Some(session_id.as_str()))
@@ -815,7 +815,7 @@ impl WorkQueue for PostgresWorkQueue {
             Ok(WorkSessionAccess {
                 work_id: row.try_get(0).map_err(storage)?,
                 environment_id: row.try_get(1).map_err(storage)?,
-                session_id: awaken_session_contract::SessionId::from(
+                session_id: awaken_session_types::SessionId::from(
                     row.try_get::<String, _>(2).map_err(storage)?,
                 ),
                 lease_owner: row.try_get(3).map_err(storage)?,
@@ -924,7 +924,7 @@ impl WorkQueue for PostgresWorkQueue {
     async fn retire_session(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let work_id: Option<String> = sqlx::query_scalar(
             "SELECT work_id FROM work_queue_item WHERE environment_id = $1 \
@@ -1021,7 +1021,7 @@ impl WorkQueue for PostgresWorkQueue {
     async fn acquire_session(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
@@ -1246,7 +1246,7 @@ impl WorkQueue for PostgresWorkQueue {
 mod tests {
     use super::LEASE_TTL_MS;
     use super::*;
-    use awaken_session_contract::work_queue::{WorkPayload, WorkState};
+    use awaken_session_work_contract::{WorkPayload, WorkState};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -1290,7 +1290,7 @@ mod tests {
                 queue
                     .acquire_session(
                         "env",
-                        &awaken_session_contract::SessionId::from("session"),
+                        &awaken_session_types::SessionId::from("session"),
                         "owner",
                         0,
                     )
@@ -1376,7 +1376,7 @@ mod tests {
         };
 
         is_storage(
-            q.enqueue_session("env", &awaken_session_contract::SessionId::from("session"))
+            q.enqueue_session("env", &awaken_session_types::SessionId::from("session"))
                 .await
                 .map(|_| ()),
         );
@@ -1430,7 +1430,7 @@ mod tests {
             let queue = queue.clone();
             tasks.push(tokio::spawn(async move {
                 queue
-                    .enqueue_session("env", &awaken_session_contract::SessionId::from("session"))
+                    .enqueue_session("env", &awaken_session_types::SessionId::from("session"))
                     .await
                     .expect("C1 enqueue")
             }));
@@ -1447,11 +1447,11 @@ mod tests {
     async fn claim_leases_oldest_and_caps_at_one_active() {
         let q = q();
         let w1 = q
-            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         let _w2 = q
-            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s2"))
+            .enqueue_session("env_a", &awaken_session_types::SessionId::from("s2"))
             .await
             .expect("enqueue");
         let leased = q
@@ -1480,7 +1480,7 @@ mod tests {
     async fn durable_reclaims_an_expired_lease_on_the_next_poll() {
         let q = q();
         let w1 = q
-            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         assert_eq!(
@@ -1517,7 +1517,7 @@ mod tests {
         let path = path.to_str().unwrap();
         {
             let q = SqliteWorkQueue::open(path, system_clock()).expect("open first store");
-            q.enqueue_session("env", &awaken_session_contract::SessionId::from("session"))
+            q.enqueue_session("env", &awaken_session_types::SessionId::from("session"))
                 .await
                 .expect("enqueue");
             assert!(
@@ -1574,7 +1574,7 @@ mod tests {
         let (work_id, token, first_access) = {
             let q = SqliteWorkQueue::open(path, system_clock()).expect("open first store");
             let health = q.enqueue_healthcheck("env").await.unwrap();
-            q.enqueue_session("env", &awaken_session_contract::SessionId::from("sesn_1"))
+            q.enqueue_session("env", &awaken_session_types::SessionId::from("sesn_1"))
                 .await
                 .unwrap();
             let claimed = q
@@ -1685,7 +1685,7 @@ mod tests {
     async fn ack_heartbeat_and_membership_match_the_in_memory_contract() {
         let q = q();
         let id = q
-            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         q.claim("env_a", "worker", 0)
@@ -1736,7 +1736,7 @@ mod tests {
         let q = q();
         q.enqueue_healthcheck("env_a").await.expect("enqueue");
         let s = q
-            .enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+            .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         let st = q.stats("env_a", 0).await.expect("stats");
@@ -1768,11 +1768,11 @@ mod tests {
     async fn list_is_enqueue_ordered() {
         let q = q();
         let a = q
-            .enqueue_session("e", &awaken_session_contract::SessionId::from("s1"))
+            .enqueue_session("e", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         let b = q
-            .enqueue_session("e", &awaken_session_contract::SessionId::from("s2"))
+            .enqueue_session("e", &awaken_session_types::SessionId::from("s2"))
             .await
             .expect("enqueue");
         let ids: Vec<String> = q
@@ -1808,12 +1808,12 @@ mod tests {
         let queue = SqliteWorkQueue::open(path.to_str().unwrap(), writing.clone())
             .expect("open durable file");
         let first = queue
-            .enqueue_session("rt-env", &awaken_session_contract::SessionId::from("rt-a"))
+            .enqueue_session("rt-env", &awaken_session_types::SessionId::from("rt-a"))
             .await
             .expect("C1");
         writing.set(SIBLING_MS);
         let sibling = queue
-            .enqueue_session("rt-env", &awaken_session_contract::SessionId::from("rt-b"))
+            .enqueue_session("rt-env", &awaken_session_types::SessionId::from("rt-b"))
             .await
             .expect("C1 sibling");
         drop(queue);
@@ -1857,7 +1857,7 @@ mod tests {
         let q =
             SqliteWorkQueue::open(path.to_str().unwrap(), system_clock()).expect("open file db");
         let id = q
-            .enqueue_session("e", &awaken_session_contract::SessionId::from("s"))
+            .enqueue_session("e", &awaken_session_types::SessionId::from("s"))
             .await
             .expect("enqueue");
         assert!(q.get("e", &id).await.expect("get").is_some());
@@ -1918,7 +1918,7 @@ mod tests {
         );
 
         // One queued item, N workers race to claim it concurrently.
-        q.enqueue_session("env_a", &awaken_session_contract::SessionId::from("s1"))
+        q.enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         let mut handles = Vec::new();

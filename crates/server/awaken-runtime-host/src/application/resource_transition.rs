@@ -24,11 +24,11 @@ impl FrozenResourceProjectionMode {
 
     pub(super) const fn transition_use(
         self,
-    ) -> awaken_session_contract::FrozenResourceTransitionUse {
+    ) -> awaken_session_realization_contract::FrozenResourceTransitionUse {
         if self.synchronizes() {
-            awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects
+            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects
         } else {
-            awaken_session_contract::FrozenResourceTransitionUse::ValidateInstalled
+            awaken_session_realization_contract::FrozenResourceTransitionUse::ValidateInstalled
         }
     }
 
@@ -75,8 +75,8 @@ const fn frozen_resource_generation_install_decision(
 /// This adapter contains no independent policy and is the only place where
 /// Runtime cache identity is translated into the kernel's complete fact set.
 pub(super) fn frozen_resource_transition_install_decision(
-    existing: Option<&awaken_session_contract::SessionResourceTransition>,
-    incoming: &awaken_session_contract::SessionResourceTransition,
+    existing: Option<&awaken_session_resource_contract::SessionResourceTransition>,
+    incoming: &awaken_session_resource_contract::SessionResourceTransition,
     authority_amends_unattempted: bool,
 ) -> FrozenResourceTransitionInstallDecision {
     match existing {
@@ -152,32 +152,34 @@ mod tests {
         workspace: &str,
         revision: u64,
         skill: Option<&str>,
-    ) -> awaken_session_contract::SessionResourceTransition {
-        let resources = awaken_session_contract::ResolvedSessionResources::try_new(
+    ) -> awaken_session_resource_contract::SessionResourceTransition {
+        let resources = awaken_session_resource_contract::ResolvedSessionResources::try_new(
             Vec::new(),
             skill
-                .map(|skill_id| awaken_session_contract::ResolvedSkillBinding {
-                    kind: awaken_agent_contract::AgentSkillKind::Custom,
-                    skill_id: skill_id.into(),
-                    version: 1,
-                    bundle_sha256: format!("sha256-{skill_id}"),
-                })
+                .map(
+                    |skill_id| awaken_session_resource_contract::ResolvedSkillBinding {
+                        kind: awaken_agent_contract::AgentSkillKind::Custom,
+                        skill_id: skill_id.into(),
+                        version: 1,
+                        bundle_sha256: format!("sha256-{skill_id}"),
+                    },
+                )
                 .into_iter()
                 .collect(),
         )
         .expect("test Resource projection is valid");
-        let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
+        let manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
             workspace, revision, resources,
         );
-        awaken_session_contract::SessionResourceTransition::new(manifest.clone(), manifest)
+        awaken_session_resource_contract::SessionResourceTransition::new(manifest.clone(), manifest)
             .expect("test transition belongs to one Workspace")
     }
 
     fn transition_from(
-        previous: awaken_session_contract::SessionResourceManifest,
-        desired: awaken_session_contract::SessionResourceManifest,
-    ) -> awaken_session_contract::SessionResourceTransition {
-        awaken_session_contract::SessionResourceTransition::new(previous, desired)
+        previous: awaken_session_resource_contract::SessionResourceManifest,
+        desired: awaken_session_resource_contract::SessionResourceManifest,
+    ) -> awaken_session_resource_contract::SessionResourceTransition {
+        awaken_session_resource_contract::SessionResourceTransition::new(previous, desired)
             .expect("test transition belongs to one Workspace")
     }
 

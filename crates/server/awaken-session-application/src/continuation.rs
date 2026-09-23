@@ -4,9 +4,11 @@
 //! external effect. The Runtime owns quiescence and provider I/O; this module
 //! owns only durable orchestration and retries.
 
-use awaken_session_contract::{
-    EnvironmentIdleRetentionMode, PersistedSession, RunError, SessionEnvironmentState,
-    SessionEnvironmentTransitionError, SessionExecutionState, SuspendPhase,
+use awaken_session_configuration_contract::EnvironmentIdleRetentionMode;
+use awaken_session_error_contract::RunError;
+use awaken_session_state_contract::{
+    PersistedSession, SessionEnvironmentState, SessionEnvironmentTransitionError,
+    SessionExecutionState, SuspendPhase,
 };
 
 use super::realization::repository_control;
@@ -17,7 +19,7 @@ use super::{
 
 fn expected_mcp_generations(
     session: &PersistedSession,
-) -> Result<Vec<awaken_session_contract::McpGenerationRef>, SessionContinuationError> {
+) -> Result<Vec<awaken_session_mcp_contract::McpGenerationRef>, SessionContinuationError> {
     session
         .mcp
         .active_generation_refs(&session.session_id)
@@ -37,17 +39,17 @@ pub enum SessionContinuationError {
     #[error("Session continuation transition failed: {0}")]
     Transition(#[from] SessionEnvironmentTransitionError),
     #[error("Session continuation Memory reconciliation failed: {0}")]
-    Memory(#[from] awaken_session_contract::SessionMemoryReconciliationError),
+    Memory(#[from] awaken_session_state_contract::SessionMemoryReconciliationError),
     #[error("Session continuation is not available for a terminal Session")]
     Terminal,
     #[error("Session continuation did not converge")]
     DidNotConverge,
 }
 
-fn input_is_memory(input: &awaken_session_contract::ResolvedInput) -> bool {
+fn input_is_memory(input: &awaken_session_resource_contract::ResolvedInput) -> bool {
     matches!(
         &input.source,
-        awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
+        awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
     )
 }
 
@@ -57,33 +59,36 @@ fn input_is_memory(input: &awaken_session_contract::ResolvedInput) -> bool {
 /// None/Some validator that source disposal invokes on historical rows.
 fn validate_suspend_memory_preflight(
     session: &PersistedSession,
-) -> Result<(), awaken_session_contract::SessionMemoryReconciliationError> {
+) -> Result<(), awaken_session_state_contract::SessionMemoryReconciliationError> {
     if session
         .resources
         .pending
         .as_ref()
         .is_some_and(|pending| pending.inputs().iter().any(input_is_memory))
     {
-        return Err(awaken_session_contract::SessionMemoryReconciliationError::ResourceMismatch);
+        return Err(
+            awaken_session_state_contract::SessionMemoryReconciliationError::ResourceMismatch,
+        );
     }
     let active_inputs = session.resources.active.inputs();
     if !active_inputs.iter().any(input_is_memory) {
         return Ok(());
     }
-    let binding = session
-        .environment
-        .binding()
-        .ok_or(awaken_session_contract::SessionMemoryReconciliationError::EnvironmentMismatch)?;
+    let binding = session.environment.binding().ok_or(
+        awaken_session_state_contract::SessionMemoryReconciliationError::EnvironmentMismatch,
+    )?;
     let handle = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(binding)
         .map_err(|error| {
-            awaken_session_contract::SessionMemoryReconciliationError::InvalidIntent(
+            awaken_session_state_contract::SessionMemoryReconciliationError::InvalidIntent(
                 error.to_string(),
             )
         })?;
     let materializations = handle.memory_materializations().map_err(|error| {
-        awaken_session_contract::SessionMemoryReconciliationError::InvalidIntent(error.to_string())
+        awaken_session_state_contract::SessionMemoryReconciliationError::InvalidIntent(
+            error.to_string(),
+        )
     })?;
-    awaken_session_contract::validate_continuation_memory_materializations(
+    awaken_session_state_contract::validate_continuation_memory_materializations(
         active_inputs,
         materializations,
     )?;
@@ -99,9 +104,9 @@ impl SessionContinuationError {
 impl SessionApplication {
     pub(crate) async fn authorize_checkpoint_release_artifact_effect_from_root(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        session_id: &awaken_session_types::SessionId,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+    ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         let session = self
             .session_repository()
             .get(session_id)
@@ -110,19 +115,19 @@ impl SessionApplication {
         session
             .authorize_checkpoint_release_artifact_effect(operation)
             .map_err(|error| match error {
-                awaken_session_contract::SessionEnvironmentReceiptError::RealizationStale
-                | awaken_session_contract::SessionEnvironmentReceiptError::Mismatch => {
-                    awaken_session_contract::SessionRealizationControlFailure::StaleOwnership
+                awaken_session_state_contract::SessionEnvironmentReceiptError::RealizationStale
+                | awaken_session_state_contract::SessionEnvironmentReceiptError::Mismatch => {
+                    awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership
                 }
-                awaken_session_contract::SessionEnvironmentReceiptError::WrongPhase
+                awaken_session_state_contract::SessionEnvironmentReceiptError::WrongPhase
                     if session.is_terminal() =>
                 {
-                    awaken_session_contract::SessionRealizationControlFailure::Terminal
+                    awaken_session_realization_contract::SessionRealizationControlFailure::Terminal
                 }
-                awaken_session_contract::SessionEnvironmentReceiptError::WrongPhase => {
-                    awaken_session_contract::SessionRealizationControlFailure::NotReady
+                awaken_session_state_contract::SessionEnvironmentReceiptError::WrongPhase => {
+                    awaken_session_realization_contract::SessionRealizationControlFailure::NotReady
                 }
-                error => awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                error => awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
                 ),
             })?;
@@ -173,7 +178,7 @@ impl SessionApplication {
     /// work is currently due; a caller may safely back off.
     async fn advance_environment_continuation(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         now_unix_ms: u64,
     ) -> Result<bool, SessionContinuationError> {
         let owner_scope = self
@@ -367,7 +372,7 @@ impl SessionApplication {
     /// supervisor to retry.
     pub async fn reconcile_environment_continuation(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         now_unix_ms: u64,
     ) -> Result<(), SessionContinuationError> {
         for _ in 0..8 {
@@ -385,7 +390,7 @@ impl SessionApplication {
     /// never creates a resume queue and never cancels an ambiguous upload.
     pub async fn ensure_environment_resident(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         now_unix_ms: u64,
     ) -> Result<PersistedSession, SessionContinuationError> {
         for _ in 0..12 {

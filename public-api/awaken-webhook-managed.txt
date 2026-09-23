@@ -2,8 +2,8 @@ pub mod awaken_webhook_managed
 pub struct awaken_webhook_managed::ConfigPlaneLifecycleDelivery
 impl awaken_webhook_managed::ConfigPlaneLifecycleDelivery
 pub fn awaken_webhook_managed::ConfigPlaneLifecycleDelivery::new(alloc::sync::Arc<awaken_webhook::dispatch::WebhookDispatcher>, core::option::Option<alloc::string::String>) -> Self
-impl awaken_session_contract::lifecycle::LifecycleFactDelivery for awaken_webhook_managed::ConfigPlaneLifecycleDelivery
-pub fn awaken_webhook_managed::ConfigPlaneLifecycleDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_session_application_contract::lifecycle_delivery::LifecycleFactDelivery for awaken_webhook_managed::ConfigPlaneLifecycleDelivery
+pub fn awaken_webhook_managed::ConfigPlaneLifecycleDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_state_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_webhook_managed::ConfigPlaneSubscriptionSource
 impl awaken_webhook_managed::ConfigPlaneSubscriptionSource
 pub fn awaken_webhook_managed::ConfigPlaneSubscriptionSource::new(alloc::sync::Arc<dyn awaken_config_resolver::stores::WebhookStore>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
@@ -20,10 +20,10 @@ pub awaken_webhook_managed::WebhookInventoryReport::missing_material: alloc::vec
 pub awaken_webhook_managed::WebhookInventoryReport::orphaned_deleted: alloc::vec::Vec<awaken_credential_vault::SecretRef>
 pub struct awaken_webhook_managed::WebhookOutboxNotifier
 impl awaken_webhook_managed::WebhookOutboxNotifier
-pub fn awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::lifecycle_outbox::LifecycleOutbox>, &awaken_service_lifecycle::ServiceLifecycle) -> Self
-impl awaken_session_contract::lifecycle::LifecycleFactNotifier for awaken_webhook_managed::WebhookOutboxNotifier
+pub fn awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(alloc::sync::Arc<dyn awaken_session_application_contract::lifecycle_delivery::LifecycleFactDelivery>, alloc::sync::Arc<dyn awaken_session_repository_contract::lifecycle_outbox::LifecycleOutbox>, &awaken_service_lifecycle::ServiceLifecycle) -> Self
+impl awaken_session_application_contract::lifecycle_delivery::LifecycleFactNotifier for awaken_webhook_managed::WebhookOutboxNotifier
 pub fn awaken_webhook_managed::WebhookOutboxNotifier::notify(&self)
-pub fn awaken_webhook_managed::config_plane_lifecycle_delivery(alloc::sync::Arc<dyn awaken_config_resolver::stores::WebhookStore>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, core::option::Option<alloc::string::String>) -> alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>
+pub fn awaken_webhook_managed::config_plane_lifecycle_delivery(alloc::sync::Arc<dyn awaken_config_resolver::stores::WebhookStore>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, core::option::Option<alloc::string::String>) -> alloc::sync::Arc<dyn awaken_session_application_contract::lifecycle_delivery::LifecycleFactDelivery>
 pub async fn awaken_webhook_managed::reconcile_webhook_inventory(&dyn awaken_config_resolver::stores::WebhookStore, &dyn awaken_credential_vault::SecretStore) -> core::result::Result<awaken_webhook_managed::WebhookInventoryReport, alloc::string::String>
 pub async fn awaken_webhook_managed::recover_webhook_mutations(&dyn awaken_config_resolver::stores::WebhookStore, &dyn awaken_credential_vault::SecretStore) -> core::result::Result<usize, alloc::string::String>
 pub async fn awaken_webhook_managed::stamp_workspace_scope(axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response

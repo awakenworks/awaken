@@ -11,7 +11,8 @@ pub use control_plane::*;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use awaken_session_contract::{LifecycleFactDelivery, LifecycleFactNotifier, LifecycleOutbox};
+use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
+use awaken_session_repository_contract::LifecycleOutbox;
 use awaken_tenancy::WorkspaceScope;
 
 /// Map guard-resolved tenancy onto the protocol-neutral Workspace scope used by

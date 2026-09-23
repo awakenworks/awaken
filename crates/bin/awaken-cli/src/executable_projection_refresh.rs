@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar;
 use awaken_executable_environment_catalog::PostgresExecutableEnvironmentRegistrar;
-use awaken_session_contract::{
+use awaken_session_application_contract::{
     ExecutableAgentProjectionRefresh, ExecutableEnvironmentProjectionRefresh,
     ExecutableProjectionRefresh,
 };

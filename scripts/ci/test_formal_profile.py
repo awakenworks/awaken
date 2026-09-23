@@ -360,10 +360,10 @@ class ProfileTests(unittest.TestCase):
         activity_argv = {
             # The two-admission partitions left this profile when they moved onto
             # the two-slot member model; only the two real-B-tree bases remain.
-            "activity-admission-height-v1": "1a1f4f43b59cdd8342b71cd551737e8fa46ba55f111a9132a0ff41789b02a3e2",
+            "activity-admission-height-v1": "e0d02fc78c77afaa13cc05e06786f5c85f1359626a80e02d0cf61909f81be947",
             # The terminal proof on the real set now makes one admission, not two;
             # the two-admission terminal table moved to the two-slot model.
-            "activity-terminal-height-v1": "44158c038b1811242aaa8646a1e6d2d57a6e98da509ce1991171d3a62279635c",
+            "activity-terminal-height-v1": "e02882ed1a14cd5972dc70aac464d95f507f94376573ebe1d983cad1d0f334fd",
         }
         # P6 the two encoder profiles pin independently qualified solvers and
         # exact UTF-8/align bounds; the generic P2/P3 mutations below must reject

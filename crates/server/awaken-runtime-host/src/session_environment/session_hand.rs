@@ -964,8 +964,9 @@ impl ToolExecutor for SessionHandExecutor {
         } else {
             result
         };
-        if awaken_session_contract::is_controlled_modification_member(call.tool_id.as_str())
-            && let Some((sandbox, skills)) = &self.container_skills
+        if awaken_session_configuration_contract::is_controlled_modification_member(
+            call.tool_id.as_str(),
+        ) && let Some((sandbox, skills)) = &self.container_skills
             && let Err(error) = skills.refresh(sandbox.as_ref()).await
         {
             let detail =

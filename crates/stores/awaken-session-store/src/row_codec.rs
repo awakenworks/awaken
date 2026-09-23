@@ -4,7 +4,8 @@
 //! projections for lookup and constraints; they are never an alternate source
 //! from which a partially specified aggregate can be reconstructed.
 
-use awaken_session_contract::{PersistedSession, SessionRevision};
+use awaken_session_state_contract::PersistedSession;
+use awaken_session_types::SessionRevision;
 
 /// v2 carries the complete `McpGeneration` witness: an object of
 /// `{attachment_id, version, content_digest}` where v1 stored a bare `u64`.
@@ -95,8 +96,10 @@ fn migrate_legacy_baseline(
         "local"
     };
     environment.entry("idle_retention").or_insert_with(|| {
-        serde_json::to_value(awaken_session_contract::EnvironmentIdleRetentionPolicy::default())
-            .expect("default idle-retention policy serializes")
+        serde_json::to_value(
+            awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy::default(),
+        )
+        .expect("default idle-retention policy serializes")
     });
     match baseline
         .get("runtime_placement")
@@ -150,13 +153,13 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
             .remove("archived_at")
             .and_then(|value| value.as_str().map(str::to_owned));
         let disposition = match status.as_str() {
-            "deleted" => awaken_session_contract::SessionDisposition::Deleted,
+            "deleted" => awaken_session_state_contract::SessionDisposition::Deleted,
             "terminated" if archived_at.is_some() => {
-                awaken_session_contract::SessionDisposition::Archived {
+                awaken_session_state_contract::SessionDisposition::Archived {
                     archived_at: archived_at.expect("checked above"),
                 }
             }
-            _ => awaken_session_contract::SessionDisposition::Active,
+            _ => awaken_session_state_contract::SessionDisposition::Active,
         };
         if status == "deleted" {
             object.insert("status".into(), serde_json::json!("terminated"));
@@ -173,7 +176,7 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
     if !object.contains_key("environment") {
         let environment = match object.remove("environment_binding") {
             Some(serde_json::Value::String(binding)) => {
-                awaken_session_contract::SessionEnvironmentState::Resident {
+                awaken_session_state_contract::SessionEnvironmentState::Resident {
                     binding,
                     effect_id: None,
                     generation: None,
@@ -181,7 +184,7 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
                 }
             }
             Some(serde_json::Value::Null) | None => {
-                awaken_session_contract::SessionEnvironmentState::Unmaterialized
+                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
             }
             Some(_) => {
                 return Err(invalid(
@@ -231,15 +234,15 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
         .entry("runtime_active_millis")
         .or_insert_with(|| serde_json::json!(0));
     object.entry("budget").or_insert_with(|| {
-        serde_json::to_value(awaken_session_contract::SessionBudgetState::default())
+        serde_json::to_value(awaken_session_budget_contract::SessionBudgetState::default())
             .expect("default Session budget serializes")
     });
     object.entry("realization_progress").or_insert_with(|| {
-        serde_json::to_value(awaken_session_contract::SessionRealizationProgress::default())
+        serde_json::to_value(awaken_session_state_contract::SessionRealizationProgress::default())
             .expect("default Session realization progress serializes")
     });
     object.entry("terminal_cleanup").or_insert_with(|| {
-        serde_json::to_value(awaken_session_contract::SessionCleanupOperation::default())
+        serde_json::to_value(awaken_session_state_contract::SessionCleanupOperation::default())
             .expect("default Session cleanup serializes")
     });
     serde_json::from_value(value)
@@ -289,14 +292,15 @@ fn upgrade_v1_root(data: &str, revision: i64) -> Result<Option<String>, serde_js
             .get("attachment_id")
             .cloned()
             .ok_or_else(|| invalid("v1 MCP attachment has no identity"))?;
-        let identity: awaken_session_contract::McpAttachmentId = serde_json::from_value(identity)?;
+        let identity: awaken_session_mcp_contract::McpAttachmentId =
+            serde_json::from_value(identity)?;
         if identity.0.is_empty() {
             return Err(invalid("v1 MCP attachment identity is empty"));
         }
-        let draft: awaken_session_contract::McpAttachmentDraft =
+        let draft: awaken_session_mcp_contract::McpAttachmentDraft =
             serde_json::from_value(attachment.clone())?;
         attachment["generation"] = serde_json::to_value(
-            awaken_session_contract::McpGeneration::of_draft(identity, version, &draft),
+            awaken_session_mcp_contract::McpGeneration::of_draft(identity, version, &draft),
         )?;
     }
     aggregate.insert("revision".into(), serde_json::json!(next_revision));
@@ -357,11 +361,10 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
 #[cfg(test)]
 mod tests {
 
-    use awaken_session_contract::SessionRepository as _;
-    use awaken_session_contract::resource_plane::{
-        BindingId, FileId, InputResourceId, ResourceAccess,
-    };
-    use awaken_session_contract::{ActivationState, SessionResourceActivation, SessionRevision};
+    use awaken_resource_contract::{BindingId, FileId, InputResourceId, ResourceAccess};
+    use awaken_session_repository_contract::SessionRepository as _;
+    use awaken_session_state_contract::{ActivationState, SessionResourceActivation};
+    use awaken_session_types::SessionRevision;
     use rusqlite::params;
 
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
@@ -382,14 +385,16 @@ mod tests {
         // repository, not merely serde. No new protocol is introduced, so this
         // is storage/codec evidence, not a physical-stop or migration proof.
         let mut session = crate::tests::sample("format-witness");
-        session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
-            vec![awaken_session_contract::McpAttachmentDraft {
+        session.mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
+            vec![awaken_session_mcp_contract::McpAttachmentDraft {
                 name: "fixture".into(),
-                target: awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                    .unwrap(),
+                target: awaken_session_mcp_contract::McpTarget::parse_http(
+                    "https://fixture.test/mcp",
+                )
+                .unwrap(),
                 prompts_as_skills: false,
                 credential: None,
-                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
             }],
             None,
         )
@@ -399,7 +404,7 @@ mod tests {
             .mcp
             .claim_realization(
                 &generation,
-                awaken_session_contract::McpRealizationClaim {
+                awaken_session_mcp_contract::McpRealizationClaim {
                     realization_id: "old-realization".into(),
                     runtime_incarnation: "old-worker".into(),
                     lease_epoch: 7,
@@ -605,11 +610,11 @@ mod tests {
     }
 
     fn completed_publication(
-        mut session: awaken_session_contract::PersistedSession,
+        mut session: awaken_session_state_contract::PersistedSession,
         rejected: bool,
-    ) -> awaken_session_contract::PersistedSession {
+    ) -> awaken_session_state_contract::PersistedSession {
         let session_id = session.session_id.clone();
-        let intent: awaken_session_contract::SessionRepositoryPublicationIntent =
+        let intent: awaken_session_state_contract::SessionRepositoryPublicationIntent =
             serde_json::from_value(serde_json::json!({
                 "input": {
                     "binding_id": "source",
@@ -632,15 +637,15 @@ mod tests {
                 }
             }))
             .unwrap();
-        session.resources = awaken_session_contract::SessionResourceState::from_active(
-            awaken_session_contract::ResolvedSessionResources::try_new(
+        session.resources = awaken_session_state_contract::SessionResourceState::from_active(
+            awaken_session_resource_contract::ResolvedSessionResources::try_new(
                 vec![intent.input.clone()],
                 Vec::new(),
             )
             .unwrap(),
         );
         session.environment.set_resident("codec-publication-source");
-        let lease = awaken_session_contract::SessionRealizationLease {
+        let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "codec-worker".into(),
             runtime_incarnation: "codec-worker:boot".into(),
             epoch: 7,
@@ -657,17 +662,18 @@ mod tests {
             .unwrap()
             .unwrap();
         if rejected {
-            let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
-                &command,
-                awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
-            )
-            .unwrap();
+            let rejection =
+                awaken_session_state_contract::SessionRepositoryPublicationRejection::new(
+                    &command,
+                    awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
+                )
+                .unwrap();
             session
                 .terminal_cleanup
                 .record_repository_publication_rejection(&session_id, rejection)
                 .unwrap();
         } else {
-            let receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+            let receipt = awaken_session_state_contract::SessionRepositoryPublicationReceipt::new(
                 &command,
                 awaken_provisioning_contract::RepositoryPublicationReceipt {
                     repository_id: "repo-1".into(),
@@ -681,23 +687,26 @@ mod tests {
                 .record_repository_publication_receipt(&session_id, receipt)
                 .unwrap();
         }
-        let Some(awaken_session_contract::SessionTerminalCleanupAction::Prepare { mut commands }) =
-            session.terminal_cleanup_work_action().unwrap()
+        let Some(awaken_session_state_contract::SessionTerminalCleanupAction::Prepare {
+            mut commands,
+        }) = session.terminal_cleanup_work_action().unwrap()
         else {
             panic!("publication outcome exposes root preparation");
         };
         assert_eq!(commands.len(), 1, "fixture has only the root target");
         let command = commands.pop().unwrap();
-        let effect =
-            awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
-        let preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
+        let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+            command,
+            lease.clone(),
+        );
+        let preparation = awaken_session_state_contract::SessionCleanupPreparation::try_new(
             &effect,
             effect.sandbox_effect_fence().unwrap(),
             Vec::new(),
         )
         .unwrap();
         let repository_preparation =
-            awaken_session_contract::SessionCleanupRepositoryPreparation::new(
+            awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
                 &session_id,
                 "default",
                 &session.resources,
@@ -711,12 +720,12 @@ mod tests {
                 Some(repository_preparation),
             )
             .unwrap();
-        let Some(awaken_session_contract::SessionTerminalCleanupAction::Dispose { command }) =
+        let Some(awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command }) =
             session.terminal_cleanup_work_action().unwrap()
         else {
             panic!("durable root preparation exposes physical disposal");
         };
-        let receipt = awaken_session_contract::SessionCleanupDisposalReceipt::new(&command);
+        let receipt = awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&command);
         session
             .record_terminal_cleanup_disposal("default", &lease, receipt, "codec fixture released")
             .unwrap();
@@ -735,7 +744,7 @@ mod tests {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
         create_fixture(&repo, "default", sample("strict-row"), Vec::new()).await;
         assert!(
-            repo.get(&awaken_session_contract::SessionId::from("strict-row"))
+            repo.get(&awaken_session_types::SessionId::from("strict-row"))
                 .await
                 .is_ok(),
             "C1"
@@ -751,7 +760,7 @@ mod tests {
             )
             .unwrap();
         assert!(
-            repo.get(&awaken_session_contract::SessionId::from("drifted-row"))
+            repo.get(&awaken_session_types::SessionId::from("drifted-row"))
                 .await
                 .is_err(),
             "C2"
@@ -817,9 +826,9 @@ mod tests {
         // AND decode. C3 former accepted rows without the new flag remain
         // accepted (covered by the contract's legacy decision table).
         let mut session = sample("codec-admission");
-        let closed = awaken_session_contract::SessionEventBatch::closed_admission(
+        let closed = awaken_session_event_contract::SessionEventBatch::closed_admission(
             "closed".into(),
-            awaken_session_contract::SessionRevision(1),
+            awaken_session_types::SessionRevision(1),
             "key".into(),
             "fingerprint".into(),
         )
@@ -833,14 +842,16 @@ mod tests {
             })
             .is_ok()
         );
-        let accepted = awaken_session_contract::SessionEventBatch::compile(
-            &awaken_session_contract::SessionId::from("codec-admission"),
+        let accepted = awaken_session_event_contract::SessionEventBatch::compile(
+            &awaken_session_types::SessionId::from("codec-admission"),
             "accepted",
-            vec![awaken_session_contract::SessionEventInput::UserMessage {
-                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                    "must not run",
-                )],
-            }],
+            vec![
+                awaken_session_event_contract::SessionEventInput::UserMessage {
+                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                        "must not run",
+                    )],
+                },
+            ],
         )
         .unwrap();
         session.event_batches[0].events = accepted.events;
@@ -867,21 +878,25 @@ mod tests {
         // F2=null+encode=>E2; F3=missing+decode=>E2. There is no read-time
         // coordinate synthesis or compatibility projection.
         let mut session = sample("codec-admission-fence");
-        let mut batch = awaken_session_contract::SessionEventBatch::compile(
+        let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
             &session.session_id,
             "accepted",
-            vec![awaken_session_contract::SessionEventInput::UserMessage {
-                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                    "ordered",
-                )],
-            }],
+            vec![
+                awaken_session_event_contract::SessionEventInput::UserMessage {
+                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                        "ordered",
+                    )],
+                },
+            ],
         )
         .unwrap();
-        batch.admitted_revision = awaken_session_contract::SessionRevision(1);
+        batch.admitted_revision = awaken_session_types::SessionRevision(1);
         batch
-            .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
-                source_commit_cursor: 0,
-            })
+            .anchor_admission_projection(
+                awaken_session_event_contract::SessionEventProjectionAnchor {
+                    source_commit_cursor: 0,
+                },
+            )
             .unwrap();
         session.event_batches.push(batch);
         let encoded = super::encode(&session).expect("F1 encode");
@@ -936,7 +951,7 @@ mod tests {
 
             let foreign_id = format!("foreign-{label}");
             let mut foreign = session.clone();
-            foreign.session_id = awaken_session_contract::SessionId::from(&foreign_id);
+            foreign.session_id = awaken_session_types::SessionId::from(&foreign_id);
             assert!(
                 super::encode(&foreign).is_err(),
                 "{label}: encode rejects foreign command binding"
@@ -1026,7 +1041,7 @@ mod tests {
         let migrated = super::decode_aggregate(&legacy.to_string()).expect("P1");
         assert!(matches!(
             migrated.disposition,
-            awaken_session_contract::SessionDisposition::Active
+            awaken_session_state_contract::SessionDisposition::Active
         ));
         assert_eq!(migrated.environment.binding(), Some("legacy-binding"));
         assert_eq!(migrated.activity_epoch, 41);
@@ -1035,13 +1050,13 @@ mod tests {
         assert_eq!(migrated.runtime_active_millis, 0);
         assert!(matches!(
             migrated.budget,
-            awaken_session_contract::SessionBudgetState::Absent
+            awaken_session_budget_contract::SessionBudgetState::Absent
         ));
         assert!(migrated.terminal_cleanup.is_not_requested());
 
         let mut duplicate = legacy;
         duplicate["environment"] =
-            serde_json::to_value(awaken_session_contract::SessionEnvironmentState::default())
+            serde_json::to_value(awaken_session_state_contract::SessionEnvironmentState::default())
                 .unwrap();
         assert!(
             super::decode_aggregate(&duplicate.to_string()).is_err(),

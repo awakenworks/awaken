@@ -1,10 +1,10 @@
-//! The environment work-queue port now lives in `awaken-session-contract` (a
+//! The environment work-queue port now lives in `awaken-session-work-contract` (a
 //! contract/ leaf); this module consumes it and owns the neutral→wire projection
 //! (`WorkItem` → the Anthropic `BetaSelfHostedWork`), the one place the wire shape is
 //! named.
 
-use awaken_session_contract::work_queue::WorkState as DomainWorkState;
-pub(crate) use awaken_session_contract::work_queue::*;
+use awaken_session_work_contract::WorkState as DomainWorkState;
+pub(crate) use awaken_session_work_contract::*;
 
 use crate::types::environment::{Work, WorkData, WorkObjectType, WorkState as WireWorkState};
 

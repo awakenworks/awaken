@@ -85,7 +85,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     // The same repository read back as the lifecycle-outbox authority: its
     // pending rows are the durable fact each delivery assertion settles on.
-    let facts: Arc<dyn awaken_session_contract::LifecycleOutbox> = sessions.clone();
+    let facts: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> = sessions.clone();
     let secret = generate_secret();
     secrets
         .put(

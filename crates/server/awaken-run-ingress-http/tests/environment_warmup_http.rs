@@ -11,15 +11,15 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 struct WarmupSource {
-    result: Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String>,
+    result: Result<Vec<awaken_session_configuration_contract::EnvironmentSnapshot>, String>,
     calls: AtomicUsize,
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::EnvironmentWarmupSource for WarmupSource {
+impl awaken_session_configuration_contract::EnvironmentWarmupSource for WarmupSource {
     async fn current_environment_warmups(
         &self,
-    ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+    ) -> Result<Vec<awaken_session_configuration_contract::EnvironmentSnapshot>, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.result.clone()
     }

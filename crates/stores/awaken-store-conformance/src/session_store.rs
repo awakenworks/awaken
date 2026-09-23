@@ -13,14 +13,16 @@ use awaken_deployment_contract::{
     DeploymentRunRecord, DeploymentRunView, DeploymentSchedule, DeploymentStatus,
     DeploymentTrigger, DeploymentView, DeploymentWriteOutcome, ScheduledRunClaimOutcome,
 };
-use awaken_session_contract::SessionId;
-use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, McpAttachmentDraft, McpAttachmentOrigin, McpTarget,
-    PersistedSession, ScopedPersistedSession, SessionCreateResult, SessionEnvironmentPhase,
-    SessionEventProjectionAnchor, SessionExecutionState, SessionMutation, SessionMutationPayload,
-    SessionMutationResult, SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
-    SessionTombstone,
+use awaken_session_event_contract::SessionEventProjectionAnchor;
+use awaken_session_mcp_contract::{McpAttachmentDraft, McpAttachmentOrigin, McpTarget};
+use awaken_session_state_contract::{
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
+    SessionCreateResult, SessionEnvironmentPhase, SessionExecutionState, SessionMutation,
+    SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
+    SessionRepositoryError, SessionTombstone,
 };
+use awaken_session_types::SessionId;
+use awaken_session_types::SessionRevision;
 use serde_json::json;
 
 /// Observation timestamp for a fixture record, derived from an epoch reading
@@ -36,11 +38,13 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
         awaken_credential_contract::PlaintextBoundary::Workload,
         "awaken.workload.acp",
     );
-    let environment = awaken_session_contract::EnvironmentSnapshot {
+    let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "env".into(),
-        revision: awaken_session_contract::EnvironmentRevision(4),
+        revision: awaken_environment_contract::EnvironmentRevision(4),
         self_hosted: false,
-        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-4".into()),
+        config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+            "env-4".into(),
+        ),
         sandbox: awaken_provisioning_contract::SandboxOverride {
             isolation: Some(awaken_provisioning_contract::IsolationClass::Namespace),
             ..Default::default()
@@ -49,7 +53,7 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
         idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
-        network: awaken_session_contract::SessionNetworkPolicy::None,
+        network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
         credential_realization: awaken_credential_contract::CredentialRealizationProfile {
             inference_holder: holder.clone(),
             mcp_holder: holder.clone(),
@@ -73,11 +77,12 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
         updated_at_unix_ms: None,
         session_id: SessionId::from(id),
         revision: Default::default(),
-        baseline: awaken_session_contract::SessionBaselineState::Frozen(
-            awaken_session_contract::SessionBaseline::compile(
-                awaken_session_contract::SessionBaselineInputs {
+        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
+            awaken_session_configuration_contract::SessionBaseline::compile(
+                awaken_session_configuration_contract::SessionBaselineInputs {
                     environment,
-                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+                    runtime_placement:
+                        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: Default::default(),
                     agent_id: "assistant".into(),
                     agent_revision: None,
@@ -105,7 +110,7 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
         runtime_active_millis: 0,
         usage_cursor: Default::default(),
         environment: Default::default(),
-        mcp: awaken_session_contract::SessionMcpAttachmentSet::from_initial(
+        mcp: awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
                 name: "github".into(),
                 target: McpTarget::parse_http("https://mcp.example").unwrap(),
@@ -116,7 +121,7 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
             Some(holder),
         )
         .unwrap(),
-        resources: awaken_session_contract::SessionResourceState::from_active(
+        resources: awaken_session_state_contract::SessionResourceState::from_active(
             serde_json::from_value(json!({
                 "inputs": [{
                     "binding_id": "input-file",
@@ -138,25 +143,25 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
 pub fn hibernated_environment(
     workspace_id: &str,
     id: &str,
-) -> awaken_session_contract::SessionEnvironmentState {
-    let generation = awaken_session_contract::SandboxGeneration::new(
-        &awaken_session_contract::SessionId::from(id),
+) -> awaken_session_state_contract::SessionEnvironmentState {
+    let generation = awaken_session_state_contract::SandboxGeneration::new(
+        &awaken_session_types::SessionId::from(id),
         1,
         100_000,
         "environment",
         "base-image",
     );
-    let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
+    let suspend = awaken_session_state_contract::SessionEnvironmentOperation::new(
         workspace_id,
-        &awaken_session_contract::SessionId::from(id),
+        &awaken_session_types::SessionId::from(id),
         "suspend",
         &generation,
         0,
         None,
         None,
     );
-    awaken_session_contract::SessionEnvironmentState::Hibernated {
-        checkpoint: awaken_session_contract::SandboxCheckpointRef {
+    awaken_session_state_contract::SessionEnvironmentState::Hibernated {
+        checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
             id: format!("checkpoint-{id}"),
             format: "awaken-fs-tar-v1".into(),
             digest: format!("digest-{id}"),
@@ -183,7 +188,7 @@ pub fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFac
     }
 }
 
-pub async fn create_session<R: awaken_session_contract::SessionStore>(
+pub async fn create_session<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
     owner: &str,
     mut value: PersistedSession,
@@ -201,12 +206,12 @@ pub async fn create_session<R: awaken_session_contract::SessionStore>(
         .await
         .expect("create Session fixture")
     {
-        awaken_session_contract::SessionCreateResult::Applied(value)
-        | awaken_session_contract::SessionCreateResult::Replayed(value) => value,
+        awaken_session_state_contract::SessionCreateResult::Applied(value)
+        | awaken_session_state_contract::SessionCreateResult::Replayed(value) => value,
     }
 }
 
-pub async fn replace_session<R: awaken_session_contract::SessionStore>(
+pub async fn replace_session<R: awaken_session_repository_contract::SessionStore>(
     repo: &R,
     owner: &str,
     mut value: PersistedSession,
@@ -274,9 +279,9 @@ pub fn complete_terminal_cleanup(value: &mut PersistedSession) {
 /// rejected by the contract decoder/normalizer and cannot make a row deletable.
 pub fn install_legacy_completion_wire(
     session: &mut PersistedSession,
-    command: &awaken_session_contract::SessionCleanupCommand,
+    command: &awaken_session_state_contract::SessionCleanupCommand,
 ) {
-    let receipt_fingerprint = awaken_session_contract::stable_fingerprint(&(
+    let receipt_fingerprint = awaken_agent_contract::stable_fingerprint(&(
         "session-terminal-cleanup-thread-receipt-v1",
         command.session_id.as_str(),
         command.thread_id.as_str(),
@@ -317,7 +322,7 @@ pub fn install_legacy_completion_wire(
 // ── The universal port contract, trait-generic over any backend ──────────────────
 
 /// Round-trip: a saved aggregate reads back byte-for-byte (every field persists).
-pub async fn save_get_round_trips<R: awaken_session_contract::SessionStore>(r: &R) {
+pub async fn save_get_round_trips<R: awaken_session_repository_contract::SessionStore>(r: &R) {
     let want = create_session(r, "default", session("sesn_1", "hello"), Vec::new()).await;
     assert_eq!(
         r.get(&SessionId::from("sesn_1")).await,
@@ -327,7 +332,7 @@ pub async fn save_get_round_trips<R: awaken_session_contract::SessionStore>(r: &
 }
 
 /// Absent id → typed NotFound (no fabrication, fail-closed read).
-pub async fn absent_id_reads_none<R: awaken_session_contract::SessionStore>(r: &R) {
+pub async fn absent_id_reads_none<R: awaken_session_repository_contract::SessionStore>(r: &R) {
     assert_eq!(
         r.get(&SessionId::from("never-saved")).await,
         Err(SessionRepositoryError::NotFound)
@@ -335,7 +340,7 @@ pub async fn absent_id_reads_none<R: awaken_session_contract::SessionStore>(r: &
 }
 
 /// Idempotent upsert: saving the same id twice keeps the latest, not two rows.
-pub async fn save_is_idempotent_upsert<R: awaken_session_contract::SessionStore>(r: &R) {
+pub async fn save_is_idempotent_upsert<R: awaken_session_repository_contract::SessionStore>(r: &R) {
     create_session(r, "default", session("sesn_1", "first"), Vec::new()).await;
     replace_session(
         r,
@@ -353,7 +358,9 @@ pub async fn save_is_idempotent_upsert<R: awaken_session_contract::SessionStore>
 
 /// A visible row and its owner are one write: no backend may expose the row with
 /// a missing or stale scope after aggregate creation or replacement returns.
-pub async fn ownership_is_one_atomic_repository_fact<R: awaken_session_contract::SessionStore>(
+pub async fn ownership_is_one_atomic_repository_fact<
+    R: awaken_session_repository_contract::SessionStore,
+>(
     r: &R,
 ) {
     create_session(r, "ws_a", session("sesn_owned", "owned"), Vec::new()).await;
@@ -384,7 +391,7 @@ pub async fn ownership_is_one_atomic_repository_fact<R: awaken_session_contract:
 /// Binding is a narrow update: it fails closed for an unknown id and changes no
 /// other aggregate field for a known Session.
 pub async fn environment_state_is_atomic_and_non_destructive<
-    R: awaken_session_contract::SessionStore,
+    R: awaken_session_repository_contract::SessionStore,
 >(
     r: &R,
 ) {
@@ -407,7 +414,7 @@ pub async fn environment_state_is_atomic_and_non_destructive<
         got.environment.binding(),
         Some(r#"{"provider_kind":"bwrap"}"#)
     );
-    got.environment = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
+    got.environment = awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
     got.revision = Default::default();
     assert_eq!(got, want, "binding update preserves every other field");
     assert_eq!(
@@ -417,7 +424,7 @@ pub async fn environment_state_is_atomic_and_non_destructive<
 }
 
 pub async fn global_environment_phase_count_has_no_recovery_batch_limit<
-    R: awaken_session_contract::SessionStore,
+    R: awaken_session_repository_contract::SessionStore,
 >(
     repo: &R,
 ) {
@@ -465,7 +472,7 @@ pub async fn global_environment_phase_count_has_no_recovery_batch_limit<
 
 pub async fn concurrent_phase_transition_has_one_count_snapshot<R>(repo: std::sync::Arc<R>)
 where
-    R: awaken_session_contract::SessionStore + 'static,
+    R: awaken_session_repository_contract::SessionStore + 'static,
 {
     // Causes: C1 one Hibernated root; C2 its root-CAS transition to Restoring
     // races one global count statement. Effects: E1 the count observes either
@@ -486,7 +493,7 @@ where
         .environment
         .begin_restore(
             "ws_a",
-            &awaken_session_contract::SessionId::from(id),
+            &awaken_session_types::SessionId::from(id),
             0,
             None,
             1,
@@ -532,7 +539,7 @@ where
 
 pub async fn concurrent_root_cas_has_one_authoritative_winner<R>(repo: std::sync::Arc<R>)
 where
-    R: awaken_session_contract::SessionStore + 'static,
+    R: awaken_session_repository_contract::SessionStore + 'static,
 {
     /* Multi-instance cause/effect graph: C1 two independent callers read the
      * same Session revision; C2 they submit different replacement commands at
@@ -612,14 +619,15 @@ where
 }
 
 pub async fn vault_reference_index_returns_only_live_scoped_sessions<
-    R: awaken_session_contract::SessionStore,
+    R: awaken_session_repository_contract::SessionStore,
 >(
     r: &R,
 ) {
     let with_vault = |id: &str, execution| {
         let mut value = session(id, id);
         value.execution = execution;
-        let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut value.baseline
+        let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+            &mut value.baseline
         else {
             unreachable!("fixture baseline is frozen")
         };
@@ -649,29 +657,33 @@ pub async fn vault_reference_index_returns_only_live_scoped_sessions<
     .await;
 
     assert_eq!(
-        r.scan(awaken_session_contract::SessionScanQuery::VaultReferences {
-            workspace_id: "ws_a",
-            vault_id: "vlt-live"
-        })
+        r.scan(
+            awaken_session_state_contract::SessionScanQuery::VaultReferences {
+                workspace_id: "ws_a",
+                vault_id: "vlt-live"
+            }
+        )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap(),
         vec![live],
         "rollout targets only live Sessions in the exact Workspace"
     );
     assert!(
-        r.scan(awaken_session_contract::SessionScanQuery::VaultReferences {
-            workspace_id: "ws_a",
-            vault_id: "vlt-other"
-        })
+        r.scan(
+            awaken_session_state_contract::SessionScanQuery::VaultReferences {
+                workspace_id: "ws_a",
+                vault_id: "vlt-other"
+            }
+        )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap()
         .is_empty()
     );
 }
 
-pub async fn scan_query_decision_table<R: awaken_session_contract::SessionStore>(r: &R) {
+pub async fn scan_query_decision_table<R: awaken_session_repository_contract::SessionStore>(r: &R) {
     // Scan query cause/effect graph. C1 the query is the Workspace listing,
     // a reference index, or the reconciliation index; C2 a row belongs to the
     // queried Workspace or another one; C3 the row is live or terminal.
@@ -690,11 +702,13 @@ pub async fn scan_query_decision_table<R: awaken_session_contract::SessionStore>
     // | Q4   | Vault index | same    | terminal | E2+E3   |
     // | Q5   | Reconcile   | any     | any      | E4      |
     // | Q6   | outbox view | -       | -        | E5      |
-    use awaken_session_contract::{LifecycleOutbox, SessionScanQuery};
+    use awaken_session_repository_contract::LifecycleOutbox;
+    use awaken_session_state_contract::SessionScanQuery;
     let with_vault = |id: &str, execution| {
         let mut value = session(id, id);
         value.execution = execution;
-        let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut value.baseline
+        let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+            &mut value.baseline
         else {
             unreachable!("fixture baseline is frozen")
         };
@@ -826,7 +840,7 @@ pub fn with_mcp_credential_source(
 }
 
 pub async fn credential_source_dependency_decision_table<
-    R: awaken_session_contract::SessionStore,
+    R: awaken_session_repository_contract::SessionStore,
 >(
     r: &R,
 ) {
@@ -878,13 +892,13 @@ pub async fn credential_source_dependency_decision_table<
     .await;
     assert_eq!(
         r.scan(
-            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "ws_a",
                 source_id: &source("source-a")
             }
         )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap(),
         vec![deleted.clone(), updated.clone()],
         "S1-S3/E1"
@@ -900,26 +914,26 @@ pub async fn credential_source_dependency_decision_table<
     .await;
     assert_eq!(
         r.scan(
-            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "ws_a",
                 source_id: &source("source-a")
             }
         )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap(),
         vec![deleted.clone()],
         "S4/E3 old dependency removed"
     );
     assert_eq!(
         r.scan(
-            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "ws_a",
                 source_id: &source("source-c")
             }
         )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap(),
         vec![updated.clone()],
         "S4/E3 new dependency added"
@@ -930,13 +944,13 @@ pub async fn credential_source_dependency_decision_table<
     replace_session(r, "ws_a", archived, "test:source:archive", Vec::new()).await;
     assert!(
         r.scan(
-            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "ws_a",
                 source_id: &source("source-c")
             }
         )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap()
         .is_empty(),
         "S5/E4"
@@ -955,26 +969,26 @@ pub async fn credential_source_dependency_decision_table<
     ));
     assert!(
         r.scan(
-            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "ws_a",
                 source_id: &source("source-a")
             }
         )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap()
         .is_empty(),
         "S6/E5"
     );
     assert_eq!(
         r.scan(
-            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "ws_a",
                 source_id: &source("source-b")
             }
         )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap(),
         vec![unrelated],
         "S3/E2"
@@ -984,7 +998,7 @@ pub async fn credential_source_dependency_decision_table<
 /// The lifecycle fact is committed in the same repository transaction as the
 /// aggregate and owner. Notification may crash afterwards without losing the fact.
 pub async fn lifecycle_outbox_tracks_every_committed_transition<
-    R: awaken_session_contract::SessionStore,
+    R: awaken_session_repository_contract::SessionStore,
 >(
     r: &R,
 ) {
@@ -1013,7 +1027,7 @@ pub async fn lifecycle_outbox_tracks_every_committed_transition<
         "sesn_lifecycle",
         "session.runtime_interval_closed",
     );
-    created.runtime_interval = Some(awaken_session_contract::SessionRuntimeInterval {
+    created.runtime_interval = Some(awaken_session_state_contract::SessionRuntimeInterval {
         interval_id: "evt:create".into(),
         activity_epoch: 7,
         started_at_unix_ms: 1_700_000_000_100,
@@ -1122,7 +1136,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
     repo: &R,
     arm_outbox_failure: Arm,
 ) where
-    R: awaken_session_contract::SessionStore,
+    R: awaken_session_repository_contract::SessionStore,
     Arm: FnOnce() -> Armed,
     Armed: std::future::Future<Output = ()>,
 {
@@ -1176,7 +1190,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
                 )],
             )
             .await,
-            Err(SessionRepositoryError::Unavailable(_))
+            Err(SessionRepositoryError::AuthorityUnavailable(_))
         ),
         "A1 injected outbox failure reaches the transaction boundary"
     );
@@ -1217,7 +1231,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
                 },
             )
             .await,
-            Err(SessionRepositoryError::Unavailable(_))
+            Err(SessionRepositoryError::AuthorityUnavailable(_))
         ),
         "A2 injected outbox failure reaches the transaction boundary"
     );
@@ -1260,7 +1274,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
                 },
             )
             .await,
-            Err(SessionRepositoryError::Unavailable(_))
+            Err(SessionRepositoryError::AuthorityUnavailable(_))
         ),
         "A3 injected outbox failure reaches the transaction boundary"
     );
@@ -1305,7 +1319,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
 /// | I3 | terminal | failed | no | absent | E2 absent |
 /// | I4 | terminal | failed | no | resident | E3 indexed for restoration |
 pub async fn pending_resource_activation_index_is_durable<
-    R: awaken_session_contract::SessionStore,
+    R: awaken_session_repository_contract::SessionStore,
 >(
     r: &R,
 ) {
@@ -1319,7 +1333,7 @@ pub async fn pending_resource_activation_index_is_durable<
     pending = create_session(r, "ws_a", pending, Vec::new()).await;
 
     assert_eq!(
-        r.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .unwrap()
             .sessions,
@@ -1333,16 +1347,16 @@ pub async fn pending_resource_activation_index_is_durable<
     pending.resources.commit().unwrap();
     pending = replace_session(r, "ws_a", pending, "test:resource-active", Vec::new()).await;
     let indexed = r
-        .scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
         .await
         .unwrap();
     assert_eq!(indexed.sessions.len(), 1, "active MCP remains restart work");
     assert!(indexed.sessions[0].session.mcp.needs_reconciliation());
 
-    pending.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Failed;
+    pending.mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Failed;
     pending = replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
     assert_eq!(
-        r.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .unwrap()
             .sessions,
@@ -1359,7 +1373,7 @@ pub async fn pending_resource_activation_index_is_durable<
         .complete_terminal_release("conformance cleanup");
     pending = replace_session(r, "ws_a", pending, "test:resource-released", Vec::new()).await;
     assert!(
-        r.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .unwrap()
             .sessions
@@ -1369,7 +1383,7 @@ pub async fn pending_resource_activation_index_is_durable<
     pending.environment.set_resident("worker-owned-binding");
     pending = replace_session(r, "ws_a", pending, "test:resident-environment", Vec::new()).await;
     assert_eq!(
-        r.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .unwrap()
             .sessions,
@@ -1386,7 +1400,9 @@ pub use cas::*;
 mod deployment;
 pub use deployment::*;
 
-pub async fn run_suite<R: awaken_session_contract::SessionStore + 'static>(fresh: impl Fn() -> R) {
+pub async fn run_suite<R: awaken_session_repository_contract::SessionStore + 'static>(
+    fresh: impl Fn() -> R,
+) {
     save_get_round_trips(&fresh()).await;
     absent_id_reads_none(&fresh()).await;
     save_is_idempotent_upsert(&fresh()).await;

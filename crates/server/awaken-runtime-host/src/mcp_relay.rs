@@ -42,7 +42,7 @@ struct Route {
     /// Opaque sandbox-held capability. It is scoped by the surrounding route
     /// key and never persisted as Session desired state.
     capability: String,
-    generation: awaken_session_contract::McpGenerationRef,
+    generation: awaken_session_mcp_contract::McpGenerationRef,
     /// The existing MCP activity primitive, retained by this unique route
     /// owner so already-cloned Axum handlers cannot outlive generation drain.
     call_fence: awaken_ext_mcp::transport::McpCallFence,
@@ -51,7 +51,7 @@ struct Route {
 type RouteKey = (String, String, u64);
 type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
 type GenerationAuthority =
-    Arc<dyn Fn(&awaken_session_contract::McpGenerationRef, u64) -> bool + Send + Sync>;
+    Arc<dyn Fn(&awaken_session_mcp_contract::McpGenerationRef, u64) -> bool + Send + Sync>;
 
 /// A relayed MCP call may stream a long SSE response, so the bound is on
 /// connecting and on upstream silence, never on total elapsed time.
@@ -141,7 +141,7 @@ impl McpRelay {
     pub(crate) async fn start() -> std::io::Result<Self> {
         Self::start_with_authority_and_exposure(
             Arc::new(|generation, now| {
-                awaken_session_contract::realization_lease_is_live_at(
+                awaken_session_realization_contract::realization_lease_is_live_at(
                     generation.lease_expires_at_unix_ms,
                     now,
                 )
@@ -214,7 +214,7 @@ impl McpRelay {
     #[cfg(test)]
     pub(crate) fn set_route(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
         server: &McpTransportMaterial,
     ) {
         if !self.stage_route(generation, server) {
@@ -227,7 +227,7 @@ impl McpRelay {
     /// request's material.
     pub(crate) fn stage_route(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
         let Some(url) = server.http_url() else {
@@ -257,7 +257,7 @@ impl McpRelay {
     /// not create the route through the canonical realizer path.
     pub(crate) fn update_staged_route(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
         let mut routes = self.routes.lock().unwrap();
@@ -277,7 +277,7 @@ impl McpRelay {
     /// Remove an exact route only when it was never published or after its
     /// shared call fence has proved quiescent. Callers own that ordering; raw
     /// map removal is deliberately not a cancellation or drain mechanism.
-    pub(crate) fn remove_route(&self, generation: &awaken_session_contract::McpGenerationRef) {
+    pub(crate) fn remove_route(&self, generation: &awaken_session_mcp_contract::McpGenerationRef) {
         self.routes.lock().unwrap().remove(&route_key(generation));
     }
 
@@ -286,7 +286,7 @@ impl McpRelay {
     /// removes the route and acknowledges `Removed`.
     pub(crate) fn route_call_fence(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<awaken_ext_mcp::transport::McpCallFence> {
         self.routes
             .lock()
@@ -308,7 +308,7 @@ impl McpRelay {
     /// the sandboxed MCP config in place of the real url.
     pub(crate) fn route_url(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<String> {
         let capability = self
             .routes
@@ -348,7 +348,7 @@ impl crate::SharedHost {
     }
 }
 
-fn route_key(generation: &awaken_session_contract::McpGenerationRef) -> RouteKey {
+fn route_key(generation: &awaken_session_mcp_contract::McpGenerationRef) -> RouteKey {
     (
         generation.session_id.to_string(),
         generation.attachment_id().0.clone(),
@@ -536,13 +536,13 @@ mod tests {
         session: &str,
         attachment: &str,
         generation: u64,
-    ) -> awaken_session_contract::McpGenerationRef {
-        awaken_session_contract::McpGenerationRef {
+    ) -> awaken_session_mcp_contract::McpGenerationRef {
+        awaken_session_mcp_contract::McpGenerationRef {
             session_id: session.into(),
-            generation: awaken_session_contract::McpGeneration::of_bare_target(
-                awaken_session_contract::McpAttachmentId(attachment.into()),
+            generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+                awaken_session_mcp_contract::McpAttachmentId(attachment.into()),
                 generation,
-                &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
                     .unwrap(),
             ),
             runtime_incarnation: "runtime-1".into(),

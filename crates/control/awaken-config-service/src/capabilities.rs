@@ -264,7 +264,7 @@ fn managed_toolset_catalog(tools: &[ToolDescriptor]) -> Vec<Value> {
         "enabled": true,
         "permission_policy": { "type": "always_allow" }
     });
-    let members = awaken_session_contract::AGENT_TOOLSET_TOOL_IDS
+    let members = awaken_session_configuration_contract::AGENT_TOOLSET_TOOL_IDS
         .iter()
         .map(|name| {
             let descriptor = tools.iter().find(|tool| tool.id == *name);
@@ -290,7 +290,7 @@ fn managed_toolset_catalog(tools: &[ToolDescriptor]) -> Vec<Value> {
                 "description": descriptor.map(|tool| tool.description.as_str()),
                 "input_schema": descriptor.map(|tool| &tool.parameters),
                 "available": descriptor.is_some(),
-                "controlled_modification": awaken_session_contract::is_controlled_modification_member(name),
+                "controlled_modification": awaken_session_configuration_contract::is_controlled_modification_member(name),
                 "configurable_fields": configurable_fields,
             })
         })
@@ -326,10 +326,10 @@ pub fn dream_capability() -> Value {
         "supports_connected_models": true,
         "supported_executors": ["native", "acp"],
         "model_reference_example": "qwen/qwen3-235b;provider=anyrouter;api=open_ai_responses;endpoint=primary;executor=acp:codex",
-        "supported_models": awaken_session_contract::DREAM_SUPPORTED_MODELS,
+        "supported_models": awaken_session_dream_contract::DREAM_SUPPORTED_MODELS,
         "supported_speeds": ["standard"],
-        "max_sessions": awaken_session_contract::DREAM_MAX_SESSIONS,
-        "max_instructions_chars": awaken_session_contract::DREAM_MAX_INSTRUCTIONS_CHARS,
+        "max_sessions": awaken_session_dream_contract::DREAM_MAX_SESSIONS,
+        "max_instructions_chars": awaken_session_dream_contract::DREAM_MAX_INSTRUCTIONS_CHARS,
         "policy_available": true,
         "collection_path": "/v1/dreams",
         "policy_path_template": "/v1/awaken/memory-stores/{memory_store_id}/dream-policy",
@@ -543,7 +543,7 @@ mod tests {
         let members = catalog[0]["members"].as_array().unwrap();
         assert_eq!(
             members.len(),
-            awaken_session_contract::AGENT_TOOLSET_TOOL_IDS.len()
+            awaken_session_configuration_contract::AGENT_TOOLSET_TOOL_IDS.len()
         );
         let bash = members
             .iter()

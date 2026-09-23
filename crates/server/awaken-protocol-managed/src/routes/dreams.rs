@@ -3,7 +3,9 @@
 use crate::common::scope::RequiredWorkspaceScope;
 use std::sync::Arc;
 
-use awaken_session_contract::{Dream, DreamCreateParams, DreamListParams, DreamPage, DreamStatus};
+use awaken_session_dream_contract::{
+    Dream, DreamCreateParams, DreamListParams, DreamPage, DreamStatus,
+};
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};

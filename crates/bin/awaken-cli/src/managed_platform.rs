@@ -29,7 +29,8 @@ pub struct ManagedServiceAdapters {
     /// protocol adapters never inspect license claims or plan vocabulary.
     pub entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
     pub request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
-    pub list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
+    pub list_price_provider:
+        Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     pub background_services: Vec<Arc<dyn ManagedBackgroundService>>,
@@ -94,7 +95,7 @@ impl ManagedServiceAdapters {
     #[must_use]
     pub fn with_list_price_provider(
         mut self,
-        provider: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
+        provider: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
     ) -> Self {
         self.list_price_provider = Some(provider);
         self

@@ -4,10 +4,15 @@
 //! This module alone owns the subsequent insert, finalization, realization,
 //! activation, lifecycle-fact commit, and WorkQueue projection ordering.
 
-use awaken_session_contract::{
-    CompiledSessionCreation, IdempotencyRecord, PersistedSession, RunError, SessionBudgetState,
-    SessionCreationIntent, SessionExecutionState, SessionMcpAttachmentSet, SessionMutationPayload,
-    SessionRealizationControlDisposition, SessionToolConfiguration,
+use awaken_session_budget_contract::SessionBudgetState;
+use awaken_session_configuration_contract::{
+    CompiledSessionCreation, SessionCreationIntent, SessionToolConfiguration,
+};
+use awaken_session_error_contract::RunError;
+use awaken_session_mcp_contract::SessionMcpAttachmentSet;
+use awaken_session_realization_contract::SessionRealizationControlDisposition;
+use awaken_session_state_contract::{
+    IdempotencyRecord, PersistedSession, SessionExecutionState, SessionMutationPayload,
 };
 
 use super::{SessionApplication, SessionMutationError, SessionRealizationError};
@@ -32,7 +37,7 @@ impl CompleteSessionRoot {
         tools: SessionToolConfiguration,
         budget: SessionBudgetState,
         compiled: CompiledSessionCreation,
-        initial_events: Option<awaken_session_contract::SessionInitialEventPlan>,
+        initial_events: Option<awaken_session_event_contract::SessionInitialEventPlan>,
     ) -> Result<Self, SessionCreationError> {
         let holder = compiled
             .baseline
@@ -40,10 +45,10 @@ impl CompleteSessionRoot {
             .credential_realization
             .mcp_holder
             .clone();
-        let mut resources = awaken_session_contract::SessionResourceState::default();
+        let mut resources = awaken_session_state_contract::SessionResourceState::default();
         resources
             .prepare(
-                &awaken_session_contract::SessionId::from(session_id.as_str()),
+                &awaken_session_types::SessionId::from(session_id.as_str()),
                 compiled.initial_resources,
             )
             .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
@@ -70,7 +75,7 @@ impl CompleteSessionRoot {
     }
 
     pub(super) fn from_fresh(session: PersistedSession) -> Result<Self, SessionCreationError> {
-        if session.revision != awaken_session_contract::SessionRevision(0)
+        if session.revision != awaken_session_types::SessionRevision(0)
             || !root_has_consumed_creation_intent(&session)
             || session.execution != SessionExecutionState::Preparing
             || !session.needs_initial_realization_recovery()
@@ -99,7 +104,7 @@ pub(crate) struct DurableSessionRoot(PersistedSession);
 
 impl DurableSessionRoot {
     pub(super) fn from_applied(session: PersistedSession) -> Result<Self, SessionCreationError> {
-        if session.revision != awaken_session_contract::SessionRevision(1)
+        if session.revision != awaken_session_types::SessionRevision(1)
             || session.created_at_unix_ms.is_none()
             || session.updated_at_unix_ms.is_none()
             || session.execution != SessionExecutionState::Preparing
@@ -114,7 +119,7 @@ impl DurableSessionRoot {
     }
 
     pub(super) fn from_recovery(session: PersistedSession) -> Result<Self, &'static str> {
-        if session.revision == awaken_session_contract::SessionRevision(0)
+        if session.revision == awaken_session_types::SessionRevision(0)
             || !root_has_consumed_creation_intent(&session)
         {
             return Err("recovery loaded an incomplete Session root");
@@ -310,21 +315,21 @@ mod create_effect_gate_verification {
         );
 
         let conflict = match kani::any::<u8>() % 3 {
-            0 => awaken_session_contract::SessionRepositoryConflict::AlreadyExists,
-            1 => awaken_session_contract::SessionRepositoryConflict::Tombstoned,
-            _ => awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch,
+            0 => awaken_session_state_contract::SessionRepositoryConflict::AlreadyExists,
+            1 => awaken_session_state_contract::SessionRepositoryConflict::Tombstoned,
+            _ => awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch,
         };
         let error = SessionCreationError::repository(
-            awaken_session_contract::SessionRepositoryError::Conflict(conflict.clone()),
+            awaken_session_state_contract::SessionRepositoryError::Conflict(conflict.clone()),
         );
         assert!(match conflict {
-            awaken_session_contract::SessionRepositoryConflict::AlreadyExists => {
+            awaken_session_state_contract::SessionRepositoryConflict::AlreadyExists => {
                 matches!(error, SessionCreationError::Conflict)
             }
-            awaken_session_contract::SessionRepositoryConflict::Tombstoned => {
+            awaken_session_state_contract::SessionRepositoryConflict::Tombstoned => {
                 matches!(error, SessionCreationError::Tombstoned)
             }
-            awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch => {
+            awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch => {
                 matches!(error, SessionCreationError::IdempotencyMismatch)
             }
         });
@@ -367,7 +372,7 @@ pub struct CreateSessionCommand {
     pub idempotency: Option<IdempotencyRecord>,
     /// Optional complete create-time Event plan. It is compiled by the protocol
     /// boundary before this command and installed in the original Session root.
-    pub initial_events: Option<awaken_session_contract::SessionInitialEventPlan>,
+    pub initial_events: Option<awaken_session_event_contract::SessionInitialEventPlan>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -387,23 +392,23 @@ pub enum SessionCreationError {
 }
 
 impl SessionCreationError {
-    pub(crate) fn repository(error: awaken_session_contract::SessionRepositoryError) -> Self {
+    pub(crate) fn repository(error: awaken_session_state_contract::SessionRepositoryError) -> Self {
         match error {
-            awaken_session_contract::SessionRepositoryError::NotFound => {
+            awaken_session_state_contract::SessionRepositoryError::NotFound => {
                 Self::Internal("newly created Session disappeared".into())
             }
-            awaken_session_contract::SessionRepositoryError::Conflict(conflict) => match conflict {
-                awaken_session_contract::SessionRepositoryConflict::AlreadyExists => Self::Conflict,
-                awaken_session_contract::SessionRepositoryConflict::Tombstoned => Self::Tombstoned,
-                awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch => {
+            awaken_session_state_contract::SessionRepositoryError::Conflict(conflict) => match conflict {
+                awaken_session_state_contract::SessionRepositoryConflict::AlreadyExists => Self::Conflict,
+                awaken_session_state_contract::SessionRepositoryConflict::Tombstoned => Self::Tombstoned,
+                awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch => {
                     Self::IdempotencyMismatch
                 }
             },
-            awaken_session_contract::SessionRepositoryError::Unavailable(message) => {
+            awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(message) => {
                 Self::Unavailable(message)
             }
-            awaken_session_contract::SessionRepositoryError::Corrupt(message)
-            | awaken_session_contract::SessionRepositoryError::InvalidMutation(message) => {
+            awaken_session_state_contract::SessionRepositoryError::Corrupt(message)
+            | awaken_session_state_contract::SessionRepositoryError::InvalidMutation(message) => {
                 Self::Internal(message)
             }
         }
@@ -439,7 +444,7 @@ impl SessionApplication {
         tools: SessionToolConfiguration,
         budget: SessionBudgetState,
         compiled: CompiledSessionCreation,
-        initial_events: Option<awaken_session_contract::SessionInitialEventPlan>,
+        initial_events: Option<awaken_session_event_contract::SessionInitialEventPlan>,
     ) -> Result<CompleteSessionRoot, SessionCreationError> {
         CompleteSessionRoot::compile(
             session_id,
@@ -518,7 +523,7 @@ impl SessionApplication {
                 return Err(first);
             }
         };
-        let layout = awaken_session_contract::SessionSandboxLayout {
+        let layout = awaken_session_configuration_contract::SessionSandboxLayout {
             workspace_id: owner_scope.clone(),
             agent_id: compiled.baseline.agent_id.clone(),
             agent_revision: compiled.baseline.agent_revision,
@@ -581,7 +586,7 @@ impl SessionApplication {
                 match self
                     .replay_session_create(
                         &owner_scope,
-                        &awaken_session_contract::SessionId::from(&session_id),
+                        &awaken_session_types::SessionId::from(&session_id),
                         &idempotency,
                     )
                     .await
@@ -656,10 +661,8 @@ impl SessionApplication {
                 .await
                 .map(|()| persisted.clone())
         } else {
-            self.realize_session_after_refresh(&awaken_session_contract::SessionId::from(
-                &session_id,
-            ))
-            .await
+            self.realize_session_after_refresh(&awaken_session_types::SessionId::from(&session_id))
+                .await
         };
         persisted = match realized {
             Ok(session) => session,
@@ -677,7 +680,7 @@ impl SessionApplication {
                 let current = self
                     .replay_accepted_session_create(
                         &owner_scope,
-                        &awaken_session_contract::SessionId::from(&session_id),
+                        &awaken_session_types::SessionId::from(&session_id),
                         &idempotency,
                     )
                     .await;
@@ -717,7 +720,7 @@ impl SessionApplication {
                 let Some(session) = self
                     .replay_session_create(
                         &owner_scope,
-                        &awaken_session_contract::SessionId::from(&session_id),
+                        &awaken_session_types::SessionId::from(&session_id),
                         &idempotency,
                     )
                     .await?

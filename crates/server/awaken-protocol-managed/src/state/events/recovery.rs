@@ -395,7 +395,7 @@ impl ManagedState {
         let snapshot = self
             .application
             .session_thread_recovery_snapshot(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 thread_id,
             )
             .await
@@ -456,7 +456,7 @@ impl ManagedState {
         let mut links = self
             .application
             .coordinated_threads(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 observed_root,
             )
             .await
@@ -637,7 +637,9 @@ impl ManagedState {
             .unwrap_or(record.session.agent.tools.as_slice())
             .iter()
             .filter_map(|tool| match tool {
-                awaken_session_contract::AgentTool::Custom { name, .. } => Some(name.as_str()),
+                awaken_session_configuration_contract::AgentTool::Custom { name, .. } => {
+                    Some(name.as_str())
+                }
                 _ => None,
             })
             .collect::<std::collections::HashSet<_>>();
@@ -864,7 +866,7 @@ impl ManagedState {
     /// and therefore blocks follow-up. This disposable map creates no second
     /// pending/recovery registry.
     pub(super) fn tool_reply_projection_phases(
-        session: &awaken_session_contract::PersistedSession,
+        session: &awaken_session_state_contract::PersistedSession,
         candidates: &[PendingToolReplyCandidate],
     ) -> std::collections::HashMap<PendingToolReplyKey, project::RuntimeToolProjectionPhase> {
         candidates
@@ -875,11 +877,11 @@ impl ManagedState {
                     .iter()
                     .flat_map(|batch| &batch.events)
                     .find(|entry| match &entry.event {
-                        awaken_session_contract::SessionEventCommand::ToolReply { reply, .. } => {
+                        awaken_session_event_contract::SessionEventCommand::ToolReply { reply, .. } => {
                             let client_executed = matches!(
                                 reply.reply,
-                                awaken_session_contract::SessionEventToolReplyKind::CustomToolResult { .. }
-                                    | awaken_session_contract::SessionEventToolReplyKind::ToolResult { .. }
+                                awaken_session_event_contract::SessionEventToolReplyKind::CustomToolResult { .. }
+                                    | awaken_session_event_contract::SessionEventToolReplyKind::ToolResult { .. }
                             );
                             reply.target == candidate.key.target
                                 && reply.expected_thread_version
@@ -1067,7 +1069,7 @@ mod interrupt_target_tests {
     use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Record, RunState};
     use awaken_agent_contract::agent::state::Action as StateAction;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_session_contract::RunErrorKind;
+    use awaken_session_error_contract::RunErrorKind;
 
     fn link(thread_id: &str, target: CoordinatedThreadTarget) -> CoordinatedThreadLink {
         CoordinatedThreadLink {

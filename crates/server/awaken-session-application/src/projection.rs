@@ -1,9 +1,9 @@
 //! Neutral frozen Session and MCP realization projections.
 
-use awaken_session_contract::{
-    FrozenSessionProjection, McpGenerationRef, PersistedSession, RunError, SessionMcpAttachment,
-    StageMcpAttachment,
-};
+use awaken_session_error_contract::RunError;
+use awaken_session_mcp_contract::{McpGenerationRef, SessionMcpAttachment, StageMcpAttachment};
+use awaken_session_realization_contract::FrozenSessionProjection;
+use awaken_session_state_contract::PersistedSession;
 
 use super::SessionApplication;
 
@@ -49,7 +49,7 @@ impl SessionApplication {
         owner_scope: String,
         session: &PersistedSession,
         resource_revision: u64,
-        resources: awaken_session_contract::ResolvedSessionResources,
+        resources: awaken_session_resource_contract::ResolvedSessionResources,
         materialize_request_context: bool,
     ) -> Result<FrozenSessionProjection, RunError> {
         let baseline = session
@@ -64,7 +64,7 @@ impl SessionApplication {
         let (previous_resource_revision, previous_resources) =
             session.resources.active_generation();
         let previous_resource_manifest = Some(
-            awaken_session_contract::SessionResourceManifest::at_revision(
+            awaken_session_resource_contract::SessionResourceManifest::at_revision(
                 owner_scope.clone(),
                 previous_resource_revision,
                 previous_resources.clone(),
@@ -79,20 +79,20 @@ impl SessionApplication {
                         source_revision,
                     )
                 });
-                match awaken_session_contract::frozen_agent_publication_decision(
+                match awaken_session_realization_contract::frozen_agent_publication_decision(
                     &baseline,
                     snapshot.as_ref(),
                 ) {
-                    awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
-                    | awaken_session_contract::FrozenAgentPublicationDecision::OptionalMissing
-                    | awaken_session_contract::FrozenAgentPublicationDecision::Exact => {}
-                    awaken_session_contract::FrozenAgentPublicationDecision::MissingRequired => {
+                    awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
+                    | awaken_session_realization_contract::FrozenAgentPublicationDecision::OptionalMissing
+                    | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact => {}
+                    awaken_session_realization_contract::FrozenAgentPublicationDecision::MissingRequired => {
                         return Err(RunError::unavailable(format!(
                             "Agent '{}' publication revision {} is unavailable for Worker realization",
                             baseline.agent_id, source_revision
                         )));
                     }
-                    awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
+                    awaken_session_realization_contract::FrozenAgentPublicationDecision::Mismatch => {
                         return Err(RunError::internal(
                             "exact Agent publication does not match the frozen Session baseline",
                         ));
@@ -100,7 +100,7 @@ impl SessionApplication {
                 }
                 snapshot
                     .map(|snapshot| {
-                        awaken_session_contract::project_effective_agent_publication(
+                        awaken_session_realization_contract::project_effective_agent_publication(
                             baseline.model_override.as_ref(),
                             &baseline.system_prompt,
                             &owner_scope,
@@ -167,7 +167,7 @@ impl SessionApplication {
 }
 
 pub(crate) fn mcp_generation_ref(
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     attachment: &SessionMcpAttachment,
 ) -> Result<McpGenerationRef, RunError> {
     let claim = attachment
@@ -185,7 +185,7 @@ pub(crate) fn mcp_generation_ref(
 
 pub(crate) fn stage_mcp_request(
     workspace_id: &str,
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     attachment: &SessionMcpAttachment,
 ) -> Result<StageMcpAttachment, RunError> {
     let claim = attachment

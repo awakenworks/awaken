@@ -5,9 +5,9 @@
 //! Recovery and terminal reclamation own the durable sweep; this module owns
 //! only the caller-issued manifest command and the exact receipt it returns.
 
-use awaken_session_contract::{
-    IdempotencyRecord, RunError, SessionExecutionState, stable_fingerprint,
-};
+use awaken_agent_contract::stable_fingerprint;
+use awaken_session_error_contract::RunError;
+use awaken_session_state_contract::{IdempotencyRecord, SessionExecutionState};
 
 use super::{
     ReplaceSessionResourceManifest, RepositoryRetirementCause, SessionResourceManifestError,
@@ -41,7 +41,7 @@ impl SessionApplication {
     /// repeats this check to close the race with a concurrent first writer.
     pub async fn replay_session_resource_manifest(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         idempotency_key: &str,
         request_fingerprint: &str,
     ) -> Result<Option<SessionResourceManifestOutcome>, SessionResourceManifestError> {
@@ -83,7 +83,7 @@ impl SessionApplication {
     /// method has a durable, queryable desired manifest.
     pub async fn replace_session_resource_manifest(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         command: ReplaceSessionResourceManifest,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
         let command_record = command.idempotency_key.as_ref().map(|key| {
@@ -125,7 +125,7 @@ impl SessionApplication {
 
     async fn replace_session_resource_manifest_once(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         command: &ReplaceSessionResourceManifest,
         command_record: Option<IdempotencyRecord>,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
@@ -172,7 +172,7 @@ impl SessionApplication {
                 session.resources.prepare(&session.session_id, desired)
             };
             result.map_err(|error| match error {
-                awaken_session_contract::ResourceActivationError::Pending => {
+                awaken_session_state_contract::ResourceActivationError::Pending => {
                     SessionResourceManifestError::Conflict
                 }
                 error => {

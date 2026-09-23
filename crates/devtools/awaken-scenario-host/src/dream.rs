@@ -82,21 +82,25 @@ struct DreamScenarioModelResolver {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionModelPublicationResolver for DreamScenarioModelResolver {
+impl awaken_session_configuration_contract::SessionModelPublicationResolver
+    for DreamScenarioModelResolver
+{
     async fn resolve_session_model(
         &self,
         _workspace_id: &str,
         model_reference: &str,
     ) -> Result<
-        awaken_session_contract::SessionModelPublication,
-        awaken_session_contract::SessionModelResolutionError,
+        awaken_session_configuration_contract::SessionModelPublication,
+        awaken_session_configuration_contract::SessionModelResolutionError,
     > {
         let selection =
             awaken_config_service::parse_managed_model_id(model_reference).map_err(|error| {
-                awaken_session_contract::SessionModelResolutionError::Invalid(error.to_string())
+                awaken_session_configuration_contract::SessionModelResolutionError::Invalid(
+                    error.to_string(),
+                )
             })?;
         let (target, backend_ref) = selection.target().ok_or_else(|| {
-            awaken_session_contract::SessionModelResolutionError::Invalid(
+            awaken_session_configuration_contract::SessionModelResolutionError::Invalid(
                 "Dream scenario requires an explicit native model target".into(),
             )
         })?;
@@ -107,10 +111,12 @@ impl awaken_session_contract::SessionModelPublicationResolver for DreamScenarioM
             )
         {
             return Err(
-                awaken_session_contract::SessionModelResolutionError::Invalid(format!(
-                    "Dream scenario model `{}` / backend `{backend_ref}` does not match configured provider model `{}`",
-                    target.model_id, self.model_ref
-                )),
+                awaken_session_configuration_contract::SessionModelResolutionError::Invalid(
+                    format!(
+                        "Dream scenario model `{}` / backend `{backend_ref}` does not match configured provider model `{}`",
+                        target.model_id, self.model_ref
+                    ),
+                ),
             );
         }
         let provider_identity_ref = target
@@ -123,15 +129,17 @@ impl awaken_session_contract::SessionModelPublicationResolver for DreamScenarioM
             "genai",
         )
         .map_err(|error| {
-            awaken_session_contract::SessionModelResolutionError::Invalid(format!(
+            awaken_session_configuration_contract::SessionModelResolutionError::Invalid(format!(
                 "Dream scenario provider `{provider_identity_ref}` / model `{}`: {error}",
                 self.model_ref
             ))
         })?;
-        Ok(awaken_session_contract::SessionModelPublication {
-            primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding),
-            candidates: Vec::new(),
-        })
+        Ok(
+            awaken_session_configuration_contract::SessionModelPublication {
+                primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding),
+                candidates: Vec::new(),
+            },
+        )
     }
 }
 

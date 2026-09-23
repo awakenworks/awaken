@@ -14,7 +14,7 @@ use awaken_credential_vault::{
     CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
-use awaken_session_contract::{
+use awaken_session_configuration_contract::{
     CredentialRefreshExchange, ProbeHttpResponse, RefreshExchangeOutcome, RefreshExchangeStatus,
 };
 use base64::Engine as _;

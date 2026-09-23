@@ -19,7 +19,7 @@ pub(super) use canonical_order::{
 use historical_pending::historical_pending_by_lifecycle;
 
 struct CanonicalizationEvidence<'a> {
-    persisted: &'a awaken_session_contract::PersistedSession,
+    persisted: &'a awaken_session_state_contract::PersistedSession,
     lifecycle_events: &'a [RunLifecycleEvent],
     root_snapshot: Option<&'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     outcome_projections: &'a [AnchoredOutcomeProjection],
@@ -80,7 +80,7 @@ impl ManagedState {
         // preparing/idle status or a torn cross-source projection.
         let persisted = self
             .application
-            .session(&awaken_session_contract::SessionId::from(session_id))
+            .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
         let persisted_status = Self::wire_session_status(persisted.execution);
@@ -244,7 +244,7 @@ impl ManagedState {
                         .map(|(_, snapshot)| snapshot),
                 )
                 .map(|snapshot| {
-                    awaken_session_contract::session_usage_from_thread_usage(
+                    awaken_session_application_contract::session_usage_from_thread_usage(
                         awaken_runtime_contract::llm::ThreadUsage::from_committed_state(
                             &snapshot.state,
                         ),
@@ -404,7 +404,7 @@ impl ManagedState {
 
             let final_persisted = self
                 .application
-                .session(&awaken_session_contract::SessionId::from(session_id))
+                .session(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(StateError::from)?;
             if final_persisted.session_id != persisted.session_id
@@ -1138,7 +1138,8 @@ impl ManagedState {
             &persisted,
             &all_accepted_lifecycle,
         )?;
-        if persisted.execution == awaken_session_contract::SessionExecutionState::ActivationFailed
+        if persisted.execution
+            == awaken_session_state_contract::SessionExecutionState::ActivationFailed
             || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
         {
             self.append_parent_terminal_projection(record);

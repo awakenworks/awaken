@@ -64,7 +64,7 @@ fn terminal_publication(
     session: &str,
     path: &str,
     bytes: &[u8],
-    effect: awaken_session_contract::SessionTerminalCleanupEffect,
+    effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
 ) -> ArtifactPublication<ArtifactPublicationFence> {
     let content_id = content_id(bytes);
     ArtifactPublication {
@@ -85,7 +85,7 @@ fn checkpoint_release_publication(
     session: &str,
     path: &str,
     bytes: &[u8],
-    operation: awaken_session_contract::SessionEnvironmentOperation,
+    operation: awaken_session_state_contract::SessionEnvironmentOperation,
 ) -> ArtifactPublication<ArtifactPublicationFence> {
     let content_id = content_id(bytes);
     ArtifactPublication {
@@ -130,8 +130,11 @@ struct FailingFileStore;
 
 struct ExactArtifactControl {
     workspace_id: String,
-    terminal_effect: Option<awaken_session_contract::SessionTerminalCleanupEffect>,
-    checkpoint: Option<(String, awaken_session_contract::SessionEnvironmentOperation)>,
+    terminal_effect: Option<awaken_session_state_contract::SessionTerminalCleanupEffect>,
+    checkpoint: Option<(
+        String,
+        awaken_session_state_contract::SessionEnvironmentOperation,
+    )>,
 }
 
 struct CountingFileApplication {
@@ -262,30 +265,32 @@ impl FileApplicationService for CountingFileApplication {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionTerminalPreparationControl for ExactArtifactControl {
+impl awaken_session_realization_contract::SessionTerminalPreparationControl
+    for ExactArtifactControl
+{
     async fn authorize_terminal_cleanup_effect(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         let Some(current) = self.terminal_effect.as_ref() else {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
         };
         if current.command != effect.command
-            || !awaken_session_contract::realization_lease_generation_authorizes(
+            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
                 &current.lease,
                 &effect.lease,
             )
-            || !awaken_session_contract::realization_lease_is_live_at(
+            || !awaken_session_realization_contract::realization_lease_is_live_at(
                 current.lease.expires_at_unix_ms,
                 support::unix_now_ms(),
             )
         {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
         }
-        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             effect.clone(),
             self.workspace_id.clone(),
             None,
@@ -294,11 +299,11 @@ impl awaken_session_contract::SessionTerminalPreparationControl for ExactArtifac
 
     async fn record_terminal_cleanup_preparation(
         &self,
-        _lease: &awaken_session_contract::SessionRealizationLease,
-        _preparation: awaken_session_contract::SessionCleanupPreparation,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _preparation: awaken_session_state_contract::SessionCleanupPreparation,
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         Err(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+            awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
                 "Artifact authorization fixture does not admit cleanup receipts".into(),
             ),
         )
@@ -306,12 +311,14 @@ impl awaken_session_contract::SessionTerminalPreparationControl for ExactArtifac
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionCheckpointArtifactControl for ExactArtifactControl {
+impl awaken_session_realization_contract::SessionCheckpointArtifactControl
+    for ExactArtifactControl
+{
     async fn authorize_checkpoint_release_artifact_effect(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        session_id: &awaken_session_types::SessionId,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+    ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         if !self
             .checkpoint
             .as_ref()
@@ -319,7 +326,7 @@ impl awaken_session_contract::SessionCheckpointArtifactControl for ExactArtifact
                 expected_session == session_id && expected_operation == operation
             })
         {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
         }
         Ok(self.workspace_id.clone())
     }
@@ -840,22 +847,22 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
     ));
     let (directory, identity) = support::ready_worker("worker-terminal-artifact").await;
     let now_unix_ms = support::unix_now_ms();
-    let asserted = awaken_session_contract::SessionTerminalCleanupEffect::new(
-        awaken_session_contract::SessionCleanupCommand::new(
-            &awaken_session_contract::SessionId::from("session-terminal-artifact"),
+    let asserted = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+        awaken_session_state_contract::SessionCleanupCommand::new(
+            &awaken_session_types::SessionId::from("session-terminal-artifact"),
             "session-terminal-artifact",
             "cleanup-root",
         ),
-        awaken_session_contract::SessionRealizationLease {
+        awaken_session_resource_contract::SessionRealizationLease {
             owner: identity.worker_id.clone(),
             runtime_incarnation: identity.lease_owner(),
             epoch: 4,
             expires_at_unix_ms: now_unix_ms.saturating_sub(20_001),
         },
     );
-    let renewed = awaken_session_contract::SessionTerminalCleanupEffect::new(
+    let renewed = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         asserted.command.clone(),
-        awaken_session_contract::SessionRealizationLease {
+        awaken_session_resource_contract::SessionRealizationLease {
             expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
             ..asserted.lease.clone()
         },
@@ -1058,31 +1065,31 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     ));
     let counting = Arc::new(CountingFileApplication::new(application.clone()));
     let (directory, identity) = support::ready_worker("worker-checkpoint-artifact").await;
-    let lease = awaken_session_contract::SessionRealizationLease {
+    let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         epoch: 9,
         expires_at_unix_ms: support::unix_now_ms().saturating_add(30_000),
     };
-    let generation = awaken_session_contract::SandboxGeneration {
+    let generation = awaken_session_state_contract::SandboxGeneration {
         id: "generation-a".into(),
         created_at_unix_ms: 0,
         expires_at_unix_ms: u64::MAX,
         environment_fingerprint: "environment-a".into(),
         base_image_fingerprint: "base-image-a".into(),
     };
-    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
         "workspace-artifacts",
-        &awaken_session_contract::SessionId::from("session-checkpoint-artifact"),
+        &awaken_session_types::SessionId::from("session-checkpoint-artifact"),
         "suspend",
         &generation,
         3,
         Some(lease.clone()),
         None,
     );
-    let terminal_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
-        awaken_session_contract::SessionCleanupCommand::new(
-            &awaken_session_contract::SessionId::from("session-checkpoint-artifact"),
+    let terminal_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+        awaken_session_state_contract::SessionCleanupCommand::new(
+            &awaken_session_types::SessionId::from("session-checkpoint-artifact"),
             "session-checkpoint-artifact",
             "cleanup-root",
         ),
@@ -1267,22 +1274,22 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
     let counting = Arc::new(CountingFileApplication::new(application.clone()));
     let (directory, identity) = support::ready_worker("worker-terminal-recovery").await;
     let now_unix_ms = support::unix_now_ms();
-    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
-        awaken_session_contract::SessionCleanupCommand::new(
-            &awaken_session_contract::SessionId::from("session-terminal-recovery"),
+    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+        awaken_session_state_contract::SessionCleanupCommand::new(
+            &awaken_session_types::SessionId::from("session-terminal-recovery"),
             "session-terminal-recovery",
             "cleanup-root",
         ),
-        awaken_session_contract::SessionRealizationLease {
+        awaken_session_resource_contract::SessionRealizationLease {
             owner: identity.worker_id.clone(),
             runtime_incarnation: identity.lease_owner(),
             epoch: 7,
             expires_at_unix_ms: now_unix_ms.saturating_sub(20_001),
         },
     );
-    let renewed_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+    let renewed_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         effect.command.clone(),
-        awaken_session_contract::SessionRealizationLease {
+        awaken_session_resource_contract::SessionRealizationLease {
             expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
             ..effect.lease.clone()
         },

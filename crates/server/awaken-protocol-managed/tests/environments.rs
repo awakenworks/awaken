@@ -869,7 +869,7 @@ async fn snapshot_normalizes_the_networking_policy() {
             .unwrap()
             .unwrap()
             .network,
-        awaken_session_contract::SessionNetworkPolicy::None,
+        awaken_session_configuration_contract::SessionNetworkPolicy::None,
         "empty limited allowlist canonicalizes to no network"
     );
 
@@ -885,7 +885,7 @@ async fn snapshot_normalizes_the_networking_policy() {
             .unwrap()
             .unwrap()
             .network,
-        awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         "unrestricted keeps host network"
     );
 
@@ -897,7 +897,7 @@ async fn snapshot_normalizes_the_networking_policy() {
             .unwrap()
             .unwrap()
             .network,
-        awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         "absent networking keeps host network"
     );
 

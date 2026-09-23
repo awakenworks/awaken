@@ -1,7 +1,7 @@
 //! Read-only Awaken extension for exact Session execution evidence.
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
-use awaken_session_contract::SessionExecutionState;
+use awaken_session_state_contract::SessionExecutionState;
 use axum::Router;
 use axum::handler::Handler;
 use axum::routing::get;

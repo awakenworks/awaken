@@ -2,7 +2,8 @@
 
 use std::convert::Infallible;
 
-use awaken_session_contract::{RunApplicationError, RunErrorKind};
+use awaken_session_application_contract::RunApplicationError;
+use awaken_session_error_contract::RunErrorKind;
 use axum::Json;
 use axum::body::Body;
 use axum::http::{StatusCode, header};

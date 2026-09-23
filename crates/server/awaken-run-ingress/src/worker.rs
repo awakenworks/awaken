@@ -32,7 +32,9 @@ use awaken_runtime_contract::{
     AttemptCredentialDeliverySource, AttemptCredentialRealization, CredentialRealizationReceipt,
     CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
-use awaken_session_contract::{SessionRunActivityAdmission, SessionRunActivityAdmissionMode};
+use awaken_session_runtime_contract::{
+    SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 

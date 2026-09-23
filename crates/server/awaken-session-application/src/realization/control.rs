@@ -25,9 +25,9 @@ impl SessionApplication {
     async fn observe_realization_root(
         &self,
         point: &'static str,
-        id: &awaken_session_contract::SessionId,
+        id: &awaken_session_types::SessionId,
     ) {
-        use awaken_session_contract::realization_observation as observation;
+        use awaken_session_realization_contract::realization_observation as observation;
         if observation::enabled() {
             let root = match self.sessions_repo.get(id).await {
                 Ok(root) => root,
@@ -143,7 +143,7 @@ impl SessionApplication {
             || command.asserted_lease.owner.trim().is_empty()
             || command.asserted_lease.runtime_incarnation.trim().is_empty()
             || command.requested_expires_at_unix_ms < command.asserted_lease.expires_at_unix_ms
-            || !awaken_session_contract::realization_lease_is_live_at(
+            || !awaken_session_realization_contract::realization_lease_is_live_at(
                 command.requested_expires_at_unix_ms,
                 now_unix_ms(),
             )
@@ -175,7 +175,7 @@ impl SessionApplication {
                 .realization
                 .clone()
                 .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
-            if !awaken_session_contract::realization_lease_authorizes(
+            if !awaken_session_realization_contract::realization_lease_authorizes(
                 &current,
                 &command.asserted_lease,
                 now_unix_ms(),
@@ -263,7 +263,10 @@ impl SessionApplication {
             };
             let now = now_unix_ms();
             let existing_live = session.realization.as_ref().is_some_and(|lease| {
-                awaken_session_contract::realization_lease_is_live_at(lease.expires_at_unix_ms, now)
+                awaken_session_realization_contract::realization_lease_is_live_at(
+                    lease.expires_at_unix_ms,
+                    now,
+                )
             });
             let same_owner = session
                 .realization
@@ -272,17 +275,21 @@ impl SessionApplication {
             let same_incarnation = session.realization.as_ref().is_some_and(|lease| {
                 lease.runtime_incarnation == command.target.runtime_incarnation
             });
-            let assignment = awaken_session_contract::session_realization_assignment(
+            let assignment = awaken_session_realization_contract::session_realization_assignment(
                 session.realization.as_ref().map(|lease| lease.epoch),
                 existing_live,
                 same_owner,
                 same_incarnation,
                 command.target.reassign_existing_lease,
             );
-            if assignment == awaken_session_contract::SessionRealizationAssignment::StaleOwnership {
+            if assignment
+                == awaken_session_realization_contract::SessionRealizationAssignment::StaleOwnership
+            {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
-            if assignment == awaken_session_contract::SessionRealizationAssignment::EpochExhausted {
+            if assignment
+                == awaken_session_realization_contract::SessionRealizationAssignment::EpochExhausted
+            {
                 return Err(SessionRealizationControlFailure::Invalid(
                     "Session realization lease epoch is exhausted".into(),
                 ));
@@ -301,7 +308,7 @@ impl SessionApplication {
             // Control to reassign this otherwise independent Session lease.
             let needs_assignment = matches!(
                 assignment,
-                awaken_session_contract::SessionRealizationAssignment::Assign { .. }
+                awaken_session_realization_contract::SessionRealizationAssignment::Assign { .. }
             );
             if !needs_assignment && requested.is_empty() {
                 return self
@@ -310,8 +317,9 @@ impl SessionApplication {
             }
 
             let lease =
-                if let awaken_session_contract::SessionRealizationAssignment::Assign { epoch } =
-                    assignment
+                if let awaken_session_realization_contract::SessionRealizationAssignment::Assign {
+                    epoch,
+                } = assignment
                 {
                     SessionRealizationLease {
                         owner: command.target.owner.clone(),
@@ -347,13 +355,13 @@ impl SessionApplication {
                 requested
             };
             for generation in to_claim {
-                let realization_id = awaken_session_contract::stable_fingerprint(&(
+                let realization_id = awaken_agent_contract::stable_fingerprint(&(
                     &session.session_id,
                     &generation,
                     &lease.runtime_incarnation,
                     lease.epoch,
                 ));
-                let claim = awaken_session_contract::McpRealizationClaim {
+                let claim = awaken_session_mcp_contract::McpRealizationClaim {
                     realization_id,
                     runtime_incarnation: lease.runtime_incarnation.clone(),
                     lease_epoch: lease.epoch,
@@ -485,7 +493,7 @@ impl SessionApplication {
             let request = expected
                 .iter()
                 .find(|request| {
-                    awaken_session_contract::realization_generation_authorizes(
+                    awaken_session_realization_contract::realization_generation_authorizes(
                         &request.generation,
                         &receipt.generation,
                     )
@@ -630,7 +638,7 @@ impl SessionApplication {
                     && attachment.publication_acknowledged
                     && projection::mcp_generation_ref(&session.session_id, attachment).is_ok_and(
                         |current| {
-                            awaken_session_contract::realization_generation_authorizes(
+                            awaken_session_realization_contract::realization_generation_authorizes(
                                 &current, generation,
                             )
                         },
@@ -903,10 +911,11 @@ impl SessionApplication {
         Ok(SessionTerminalCleanupAssignment {
             session_id: session.session_id.clone(),
             projection,
-            authority: awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
-                lease,
-                now_unix_ms(),
-            )?,
+            authority:
+                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                    lease,
+                    now_unix_ms(),
+                )?,
         })
     }
 
@@ -916,7 +925,7 @@ impl SessionApplication {
     /// transport snapshot cannot mint a durable Session lease.
     async fn terminal_cleanup_worker_for_target(
         &self,
-        target: &awaken_session_contract::SessionRealizationTarget,
+        target: &awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<Option<awaken_worker_contract::WorkerSnapshot>, SessionRealizationControlFailure>
     {
         let observations = self.worker_observation_source().ok_or_else(|| {
@@ -961,10 +970,10 @@ impl SessionApplication {
     /// the root-CAS/assignment boundary.
     async fn terminal_cleanup_worker_admits_root(
         &self,
-        target: &awaken_session_contract::SessionRealizationTarget,
+        target: &awaken_session_realization_contract::SessionRealizationTarget,
         owner_scope: &str,
         session: &PersistedSession,
-        action: &awaken_session_contract::SessionTerminalCleanupAction,
+        action: &awaken_session_state_contract::SessionTerminalCleanupAction,
     ) -> Result<bool, SessionRealizationControlFailure> {
         let Some(worker) = self.terminal_cleanup_worker_for_target(target).await? else {
             return Ok(false);
@@ -986,9 +995,7 @@ impl SessionApplication {
             Some(session) => session,
             None => match self
                 .session_repository()
-                .get(&awaken_session_contract::SessionId::from(
-                    &conflict.session_id,
-                ))
+                .get(&awaken_session_types::SessionId::from(&conflict.session_id))
                 .await
             {
                 Ok(session) => session,
@@ -1016,9 +1023,7 @@ impl SessionApplication {
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     current = match self
                         .session_repository()
-                        .get(&awaken_session_contract::SessionId::from(
-                            &conflict.session_id,
-                        ))
+                        .get(&awaken_session_types::SessionId::from(&conflict.session_id))
                         .await
                     {
                         Ok(session) => session,
@@ -1037,10 +1042,10 @@ impl SessionApplication {
 
     async fn revalidate_terminal_cleanup_worker(
         &self,
-        target: &awaken_session_contract::SessionRealizationTarget,
+        target: &awaken_session_realization_contract::SessionRealizationTarget,
         owner_scope: &str,
         session: &PersistedSession,
-        action: &awaken_session_contract::SessionTerminalCleanupAction,
+        action: &awaken_session_state_contract::SessionTerminalCleanupAction,
         conflict: Option<&TerminalCleanupClaimConflict>,
     ) -> TerminalCleanupWorkerRevalidation {
         let admission = self
@@ -1075,7 +1080,7 @@ impl SessionApplication {
         &self,
         owner_scope: &str,
         mut session: PersistedSession,
-        target: &awaken_session_contract::SessionRealizationTarget,
+        target: &awaken_session_realization_contract::SessionRealizationTarget,
         scope: TerminalCleanupClaimScope<'_>,
         replay_after_conflict: Option<&TerminalCleanupClaimConflict>,
     ) -> TerminalCleanupRootClaim {
@@ -1105,7 +1110,7 @@ impl SessionApplication {
             && session.realization.is_none()
             && !matches!(
                 &session.environment,
-                awaken_session_contract::SessionEnvironmentState::Unmaterialized
+                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
             )
         {
             return TerminalCleanupRootClaim::Failed(SessionRealizationControlFailure::Invalid(
@@ -1140,7 +1145,7 @@ impl SessionApplication {
         }
 
         let current_is_live = session.realization.as_ref().is_some_and(|current| {
-            awaken_session_contract::realization_lease_is_live_at(
+            awaken_session_realization_contract::realization_lease_is_live_at(
                 current.expires_at_unix_ms,
                 now_unix_ms(),
             )
@@ -1279,7 +1284,7 @@ impl SessionApplication {
 
     async fn claim_terminal_cleanup_after_refresh(
         &self,
-        target: awaken_session_contract::SessionRealizationTarget,
+        target: awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
         validate_realization_target(&target)?;
         if target.reassign_existing_lease {
@@ -1315,9 +1320,11 @@ impl SessionApplication {
             loop {
                 let scan = self
                     .session_repository()
-                    .scan(awaken_session_contract::SessionScanQuery::Reconcilable {
-                        after: cursor.as_ref(),
-                    })
+                    .scan(
+                        awaken_session_state_contract::SessionScanQuery::Reconcilable {
+                            after: cursor.as_ref(),
+                        },
+                    )
                     .await
                     .map_err(repository_control)?;
                 let next_cursor = scan.next_cursor;
@@ -1384,7 +1391,7 @@ impl SessionApplication {
 
     pub(crate) async fn claim_local_terminal_cleanup_assignment(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
         let admission = self
             .refresh_executable_projections()
@@ -1397,7 +1404,7 @@ impl SessionApplication {
                     "terminal cleanup lease expiry overflow".into(),
                 )
             })?;
-        let target = awaken_session_contract::SessionRealizationTarget {
+        let target = awaken_session_realization_contract::SessionRealizationTarget {
             owner: self.local_realization_owner().to_string(),
             runtime_incarnation: self.runtime_incarnation().to_string(),
             lease_expires_at_unix_ms,
@@ -1441,10 +1448,10 @@ impl SessionApplication {
 
     async fn terminal_cleanup_work_after_refresh(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_contract::SessionTerminalCleanupWork>,
+        Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
         SessionRealizationControlFailure,
     > {
         self.terminal_cleanup_work_for_lease(session_id, lease)
@@ -1454,7 +1461,7 @@ impl SessionApplication {
     async fn record_terminal_cleanup_preparation_after_refresh(
         &self,
         lease: &SessionRealizationLease,
-        preparation: awaken_session_contract::SessionCleanupPreparation,
+        preparation: awaken_session_state_contract::SessionCleanupPreparation,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_cleanup_preparation_from_root(lease, preparation)
             .await
@@ -1463,7 +1470,7 @@ impl SessionApplication {
     async fn record_terminal_cleanup_disposal_after_refresh(
         &self,
         lease: &SessionRealizationLease,
-        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
+        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_cleanup_disposal_from_root(lease, receipt)
             .await
@@ -1471,10 +1478,10 @@ impl SessionApplication {
 
     async fn terminal_repository_publication_command_after_refresh(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
         SessionRealizationControlFailure,
     > {
         self.terminal_repository_publication_command_for_lease(session_id, lease)
@@ -1485,10 +1492,10 @@ impl SessionApplication {
         &self,
         session_id: &str,
         lease: &SessionRealizationLease,
-        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_receipt_from_root(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             lease,
             receipt,
         )
@@ -1499,10 +1506,10 @@ impl SessionApplication {
         &self,
         session_id: &str,
         lease: &SessionRealizationLease,
-        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_rejection_from_root(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             lease,
             rejection,
         )
@@ -1555,7 +1562,7 @@ impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
         &self,
         command: RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLeaseReceipt,
+        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
         SessionRealizationControlFailure,
     > {
         // Lease-only renewal performs no executable refresh. Reuse its public
@@ -1584,10 +1591,10 @@ impl SessionRealizationControl for SessionApplication {
         &self,
         command: RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLeaseReceipt,
+        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
         SessionRealizationControlFailure,
     > {
-        awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
             self.renew_session_realization_after_load(command).await?,
             now_unix_ms(),
         )
@@ -1628,10 +1635,12 @@ impl SessionRealizationControl for SessionApplication {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionResourceMaterializationControl for SessionApplication {
+impl awaken_session_realization_contract::SessionResourceMaterializationControl
+    for SessionApplication
+{
     async fn authorize_resource_materialization_intent(
         &self,
-        intent: &awaken_session_contract::SessionResourceMaterializationIntent,
+        intent: &awaken_session_realization_contract::SessionResourceMaterializationIntent,
     ) -> Result<String, SessionRealizationControlFailure> {
         self.authorize_resource_materialization_intent_from_root(intent)
             .await
@@ -1639,11 +1648,11 @@ impl awaken_session_contract::SessionResourceMaterializationControl for SessionA
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionCheckpointArtifactControl for SessionApplication {
+impl awaken_session_realization_contract::SessionCheckpointArtifactControl for SessionApplication {
     async fn authorize_checkpoint_release_artifact_effect(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        session_id: &awaken_session_types::SessionId,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
     ) -> Result<String, SessionRealizationControlFailure> {
         self.authorize_checkpoint_release_artifact_effect_from_root(session_id, operation)
             .await
@@ -1651,12 +1660,12 @@ impl awaken_session_contract::SessionCheckpointArtifactControl for SessionApplic
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionTerminalMemoryControl for SessionApplication {
+impl awaken_session_realization_contract::SessionTerminalMemoryControl for SessionApplication {
     async fn authorize_terminal_memory_intent(
         &self,
-        intent: &awaken_session_contract::SessionTerminalMemoryIntent,
+        intent: &awaken_session_state_contract::SessionTerminalMemoryIntent,
     ) -> Result<
-        awaken_session_contract::SessionTerminalMemoryTarget,
+        awaken_session_state_contract::SessionTerminalMemoryTarget,
         SessionRealizationControlFailure,
     > {
         self.authorize_terminal_memory_intent_from_root(intent)
@@ -1665,10 +1674,10 @@ impl awaken_session_contract::SessionTerminalMemoryControl for SessionApplicatio
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionTerminalCleanupQueue for SessionApplication {
+impl awaken_session_realization_contract::SessionTerminalCleanupQueue for SessionApplication {
     async fn claim_next_terminal_cleanup(
         &self,
-        target: awaken_session_contract::SessionRealizationTarget,
+        target: awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
         validate_realization_target(&target)?;
         if target.reassign_existing_lease {
@@ -1687,10 +1696,10 @@ impl awaken_session_contract::SessionTerminalCleanupQueue for SessionApplication
 
     async fn terminal_cleanup_work(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_contract::SessionTerminalCleanupWork>,
+        Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
         SessionRealizationControlFailure,
     > {
         self.terminal_cleanup_work_after_refresh(session_id, lease)
@@ -1699,12 +1708,12 @@ impl awaken_session_contract::SessionTerminalCleanupQueue for SessionApplication
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionTerminalPreparationControl for SessionApplication {
+impl awaken_session_realization_contract::SessionTerminalPreparationControl for SessionApplication {
     async fn authorize_terminal_cleanup_effect(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         SessionRealizationControlFailure,
     > {
         self.authorize_terminal_cleanup_effect_from_root(effect)
@@ -1714,7 +1723,7 @@ impl awaken_session_contract::SessionTerminalPreparationControl for SessionAppli
     async fn record_terminal_cleanup_preparation(
         &self,
         lease: &SessionRealizationLease,
-        preparation: awaken_session_contract::SessionCleanupPreparation,
+        preparation: awaken_session_state_contract::SessionCleanupPreparation,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_cleanup_preparation_after_refresh(lease, preparation)
             .await
@@ -1722,10 +1731,10 @@ impl awaken_session_contract::SessionTerminalPreparationControl for SessionAppli
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionTerminalDisposalControl for SessionApplication {
+impl awaken_session_realization_contract::SessionTerminalDisposalControl for SessionApplication {
     async fn authorize_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<String, SessionRealizationControlFailure> {
         self.authorize_terminal_cleanup_disposal_from_root(effect)
             .await
@@ -1734,7 +1743,7 @@ impl awaken_session_contract::SessionTerminalDisposalControl for SessionApplicat
     async fn record_terminal_cleanup_disposal(
         &self,
         lease: &SessionRealizationLease,
-        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
+        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_cleanup_disposal_after_refresh(lease, receipt)
             .await
@@ -1742,13 +1751,15 @@ impl awaken_session_contract::SessionTerminalDisposalControl for SessionApplicat
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionTerminalRepositoryPublicationControl for SessionApplication {
+impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl
+    for SessionApplication
+{
     async fn terminal_repository_publication_command(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
         SessionRealizationControlFailure,
     > {
         self.terminal_repository_publication_command_after_refresh(session_id, lease)
@@ -1757,9 +1768,9 @@ impl awaken_session_contract::SessionTerminalRepositoryPublicationControl for Se
 
     async fn record_terminal_repository_publication_receipt(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
-        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_receipt_after_refresh(
             session_id.as_str(),
@@ -1771,9 +1782,9 @@ impl awaken_session_contract::SessionTerminalRepositoryPublicationControl for Se
 
     async fn record_terminal_repository_publication_rejection(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
-        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_rejection_after_refresh(
             session_id.as_str(),

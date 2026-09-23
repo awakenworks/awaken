@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use awaken_session_contract::{
+use awaken_session_dream_contract::{
     DreamPolicy, DreamPolicyApplication, DreamPolicyApplicationError, DreamPolicyConfig,
 };
 use awaken_tenancy::WorkspaceScope;

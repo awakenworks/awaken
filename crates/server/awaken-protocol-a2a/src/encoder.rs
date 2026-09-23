@@ -9,7 +9,7 @@
 use awaken_agent_contract::agent::message::{Message as AgentMessage, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 
-use awaken_session_contract::{StepOutcome, blocks_text};
+use awaken_session_application_contract::{StepOutcome, blocks_text};
 
 use crate::types::{Message, MessageRole, Part, Task, TaskState, TaskStatus};
 
@@ -178,7 +178,7 @@ mod tests {
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::Id as MessageId;
     use awaken_agent_contract::agent::run::{EndCause, Failure};
-    use awaken_session_contract::Pending;
+    use awaken_session_application_contract::Pending;
 
     fn msg(id: &str, role: Role, text: &str) -> AgentMessage {
         AgentMessage::text(MessageId(id.into()), role, text)

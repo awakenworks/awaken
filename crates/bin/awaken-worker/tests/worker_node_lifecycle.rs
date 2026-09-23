@@ -740,29 +740,31 @@ async fn worker_reconciles_current_environment_shape_after_ready() {
     // | E4   | 1  | 1  | 1  | 1  | 1  | 0  | 1  | E3,E5, one exact prewarm |
     // | E5   | 1  | 1  | 1  | 1  | -  | 1  | 1  | E4, then exact replacement |
     let upstream = FakeWorkerUpstream::start();
-    let snapshot = awaken_session_contract::EnvironmentSnapshot {
+    let snapshot = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "env-current".into(),
-        revision: awaken_session_contract::EnvironmentRevision(7),
+        revision: awaken_environment_contract::EnvironmentRevision(7),
         self_hosted: false,
-        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("config-v7".into()),
+        config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+            "config-v7".into(),
+        ),
         sandbox: Default::default(),
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: Some("registry.example/env@sha256:exact".into()),
-        network: awaken_session_contract::SessionNetworkPolicy::None,
+        network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
         credential_realization:
             awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
     };
     let mut over_budget = snapshot.clone();
     over_budget.environment_id = "env-over-budget".into();
-    over_budget.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+    over_budget.network = awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted;
     upstream.set_environment_warmups_json(
         serde_json::to_string(&[snapshot.clone(), over_budget.clone()]).unwrap(),
     );
     let mut replacement = over_budget;
     replacement.environment_id = "env-current".into();
-    replacement.revision = awaken_session_contract::EnvironmentRevision(8);
+    replacement.revision = awaken_environment_contract::EnvironmentRevision(8);
     replacement.prepared_image = Some("registry.example/env@sha256:replacement".into());
     let replacement_response = serde_json::to_string(&[replacement]).unwrap();
     let capacity = Arc::new(RecordingCapacity::default());

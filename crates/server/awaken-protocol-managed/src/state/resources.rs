@@ -1,5 +1,5 @@
 //! Live-session typed input CRUD and durable resource activation coordination.
-//! The persisted [`SessionResourceState`](awaken_session_contract::SessionResourceState)
+//! The persisted [`SessionResourceState`](awaken_session_state_contract::SessionResourceState)
 //! is authoritative. Wire DTOs project its desired manifest; Runtime owns
 //! realization of that manifest.
 
@@ -50,10 +50,10 @@ impl ManagedState {
         owner_scope: &str,
         binding_id: String,
         parsed: &ParsedSessionInput,
-    ) -> Result<awaken_session_contract::ResolvedInput, StateError> {
+    ) -> Result<awaken_session_resource_contract::ResolvedInput, StateError> {
         debug_assert!(matches!(parsed.target, ParsedInputTarget::File(_)));
         let binding = input_binding(binding_id, parsed, None);
-        let attachment = awaken_session_contract::SessionInputAttachment {
+        let attachment = awaken_session_resource_contract::SessionInputAttachment {
             binding,
             replaces: None,
         };
@@ -73,10 +73,10 @@ impl ManagedState {
         session_id: &str,
         owner_scope: &str,
         resources: &[crate::types::resource::ResourceInput],
-        session: &awaken_session_contract::PersistedSession,
+        session: &awaken_session_state_contract::PersistedSession,
     ) -> Result<
         (
-            awaken_session_contract::ResolvedSessionResources,
+            awaken_session_resource_contract::ResolvedSessionResources,
             Vec<awaken_session_application::ConfiguredSessionRepository>,
         ),
         StateError,
@@ -140,8 +140,11 @@ impl ManagedState {
             })
             .collect::<Vec<_>>();
         let effective_bindings =
-            awaken_session_contract::SessionInputResolver::effective_bindings(&provisional, &[])
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+            awaken_session_resource_contract::SessionInputResolver::effective_bindings(
+                &provisional,
+                &[],
+            )
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         self.application
             .validate_persisted_session_resource_layout(owner_scope, session, effective_bindings)
             .map_err(StateError::Run)?;
@@ -164,11 +167,11 @@ impl ManagedState {
             let reusable = same_mount.filter(|existing| match (&input.target, &existing.source) {
                 (
                     ParsedInputTarget::File(requested),
-                    awaken_session_contract::ResolvedInputSource::File { file_id },
+                    awaken_session_resource_contract::ResolvedInputSource::File { file_id },
                 ) => requested == file_id,
                 (
                     ParsedInputTarget::MemoryStore(requested),
-                    awaken_session_contract::ResolvedInputSource::MemoryStore {
+                    awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
                         memory_store_id,
                         ..
                     },
@@ -180,7 +183,10 @@ impl ManagedState {
                         initial_branch,
                         initial_commit,
                     },
-                    awaken_session_contract::ResolvedInputSource::Repository { config, .. },
+                    awaken_session_resource_contract::ResolvedInputSource::Repository {
+                        config,
+                        ..
+                    },
                 ) => {
                     authorization_token.is_none()
                         && remote_url == &config.remote_url
@@ -206,12 +212,12 @@ impl ManagedState {
                         .unwrap_or_default()
                         > 1
                     {
-                        awaken_session_contract::stable_fingerprint(&(
+                        awaken_agent_contract::stable_fingerprint(&(
                             normalized_mount,
                             super::resource::parsed_projection_class(&input.target),
                         ))
                     } else {
-                        awaken_session_contract::stable_fingerprint(&normalized_mount)
+                        awaken_agent_contract::stable_fingerprint(&normalized_mount)
                     };
                     format!("session:{session_id}:manifest:{}", fingerprint)
                 });
@@ -224,7 +230,7 @@ impl ManagedState {
             {
                 let id = format!(
                     "managed:{session_id}:repository:{}",
-                    awaken_session_contract::stable_fingerprint(&(
+                    awaken_agent_contract::stable_fingerprint(&(
                         normalized_mount,
                         remote_url,
                         initial_branch,
@@ -272,7 +278,7 @@ impl ManagedState {
             } else {
                 None
             };
-            let attachment = awaken_session_contract::SessionInputAttachment {
+            let attachment = awaken_session_resource_contract::SessionInputAttachment {
                 binding: input_binding(binding_id, &input, repository_id),
                 replaces: None,
             };
@@ -314,7 +320,7 @@ impl ManagedState {
             };
             inputs.push(resolved);
         }
-        let resources = match awaken_session_contract::ResolvedSessionResources::try_new(
+        let resources = match awaken_session_resource_contract::ResolvedSessionResources::try_new(
             inputs,
             current.skills().to_vec(),
         ) {
@@ -350,7 +356,7 @@ impl ManagedState {
             && let Some(outcome) = self
                 .application
                 .replay_session_resource_manifest(
-                    &awaken_session_contract::SessionId::from(id),
+                    &awaken_session_types::SessionId::from(id),
                     key,
                     &request_fingerprint,
                 )
@@ -362,7 +368,7 @@ impl ManagedState {
         }
         let persisted = self
             .application
-            .session(&awaken_session_contract::SessionId::from(id))
+            .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         if expected_resource_revision
@@ -400,7 +406,7 @@ impl ManagedState {
     }
 
     fn resource_manifest_view(
-        session: &awaken_session_contract::PersistedSession,
+        session: &awaken_session_state_contract::PersistedSession,
     ) -> crate::types::resource::SessionResourceManifest {
         let applying = session.resources.pending.is_some();
         crate::types::resource::SessionResourceManifest {
@@ -446,7 +452,7 @@ impl ManagedState {
         repository_configurations: &[awaken_session_application::ConfiguredSessionRepository],
     ) -> Result<awaken_session_application::SessionResourceManifestOutcome, StateError> {
         match Box::pin(self.application.replace_session_resource_manifest(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             command,
         ))
         .await
@@ -483,7 +489,7 @@ impl ManagedState {
 
     fn resource_dto_for_binding(
         session_id: &str,
-        state: &awaken_session_contract::SessionResourceState,
+        state: &awaken_session_state_contract::SessionResourceState,
         binding_id: &str,
     ) -> Option<crate::types::resource::SessionResource> {
         state
@@ -525,7 +531,7 @@ impl ManagedState {
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let persisted = self
             .application
-            .session(&awaken_session_contract::SessionId::from(id))
+            .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         let read_revision = persisted.resources.revision;
@@ -536,7 +542,7 @@ impl ManagedState {
                 input.mount_path.trim_start_matches('/') == normalized_mount
                     && matches!(
                         &input.source,
-                        awaken_session_contract::ResolvedInputSource::File { file_id }
+                        awaken_session_resource_contract::ResolvedInputSource::File { file_id }
                             if file_id == requested_file
                     )
             })
@@ -550,7 +556,7 @@ impl ManagedState {
                 .execute_resource_manifest_command(
                     id,
                     awaken_session_application::ReplaceSessionResourceManifest {
-                        request_fingerprint: awaken_session_contract::stable_fingerprint(&current),
+                        request_fingerprint: awaken_agent_contract::stable_fingerprint(&current),
                         resources: current,
                         expected_resource_revision: Some(read_revision),
                         idempotency_key: None,
@@ -576,7 +582,7 @@ impl ManagedState {
                 .filter(|input| {
                     matches!(
                         input.source,
-                        awaken_session_contract::ResolvedInputSource::File { .. }
+                        awaken_session_resource_contract::ResolvedInputSource::File { .. }
                     )
                 })
                 .count()
@@ -616,7 +622,7 @@ impl ManagedState {
             .execute_resource_manifest_command(
                 id,
                 awaken_session_application::ReplaceSessionResourceManifest {
-                    request_fingerprint: awaken_session_contract::stable_fingerprint(&desired),
+                    request_fingerprint: awaken_agent_contract::stable_fingerprint(&desired),
                     resources: desired,
                     expected_resource_revision: Some(read_revision),
                     idempotency_key: None,
@@ -657,7 +663,7 @@ impl ManagedState {
         let persisted = self
             .application
             .rotate_repository_credential(
-                &awaken_session_contract::SessionId::from(id),
+                &awaken_session_types::SessionId::from(id),
                 &owner_scope,
                 &binding_id,
                 patch.authorization_token.into_credential_material(),
@@ -680,7 +686,7 @@ impl ManagedState {
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
             .application
-            .session(&awaken_session_contract::SessionId::from(id))
+            .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         let read_revision = persisted.resources.revision;
@@ -694,7 +700,7 @@ impl ManagedState {
             .ok_or(StateError::NotFound)?;
         if matches!(
             input.source,
-            awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
+            awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
         ) {
             return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
         }
@@ -706,7 +712,7 @@ impl ManagedState {
         self.execute_resource_manifest_command(
             id,
             awaken_session_application::ReplaceSessionResourceManifest {
-                request_fingerprint: awaken_session_contract::stable_fingerprint(&desired),
+                request_fingerprint: awaken_agent_contract::stable_fingerprint(&desired),
                 resources: desired,
                 expected_resource_revision: Some(read_revision),
                 idempotency_key: None,

@@ -208,6 +208,6 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
         ):
             errors.append(
                 f"{facade.relative_to(repo_root)}: Session port/store must be imported "
-                "from awaken-session-contract/awaken-session-store, not re-exported by a facade"
+                "from the owning Session contract/awaken-session-store, not re-exported by a facade"
             )
     return errors

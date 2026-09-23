@@ -23,12 +23,12 @@ impl ManagedState {
         &self,
         session_id: &str,
         workspace_id: &str,
-        idempotency: &awaken_session_contract::IdempotencyRecord,
+        idempotency: &awaken_session_state_contract::IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, StateError> {
         self.application
             .replay_accepted_session_create(
                 workspace_id,
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 idempotency,
             )
             .await
@@ -168,10 +168,10 @@ mod tests {
         // root without rehydration. No metadata key participates in any rule.
         // Decision rules R1=!C1+!C2=>E1, R2=C1+(!C2|!C3|!C4)=>E2,
         // R3=C1+C2+C3+C4+live=>E3, R4=same+failed=>E3.
-        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo());
         let id = "profiled-receipt-live";
-        let receipt = awaken_session_contract::IdempotencyRecord {
+        let receipt = awaken_session_state_contract::IdempotencyRecord {
             key: format!("profiled:create:{id}"),
             payload_hash: "request-a".into(),
         };
@@ -180,7 +180,7 @@ mod tests {
             .await
             .expect("persist exact receipt");
         let durable_before = repo
-            .get(&awaken_session_contract::SessionId::from(id))
+            .get(&awaken_session_types::SessionId::from(id))
             .await
             .unwrap();
         let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
@@ -190,7 +190,7 @@ mod tests {
                 .replay_accepted_session_with_receipt(
                     "profiled-receipt-absent",
                     "workspace-a",
-                    &awaken_session_contract::IdempotencyRecord {
+                    &awaken_session_state_contract::IdempotencyRecord {
                         key: "profiled:create:profiled-receipt-absent".into(),
                         payload_hash: "request-a".into(),
                     },
@@ -204,7 +204,7 @@ mod tests {
             (
                 "R2-no-receipt",
                 "workspace-a",
-                awaken_session_contract::IdempotencyRecord {
+                awaken_session_state_contract::IdempotencyRecord {
                     key: format!("profiled:create:{id}:other"),
                     payload_hash: "request-a".into(),
                 },
@@ -212,7 +212,7 @@ mod tests {
             (
                 "R2-hash",
                 "workspace-a",
-                awaken_session_contract::IdempotencyRecord {
+                awaken_session_state_contract::IdempotencyRecord {
                     payload_hash: "request-b".into(),
                     ..receipt.clone()
                 },
@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(replayed.session_id, id, "R3/E3");
         assert!(restarted.list_sessions().is_empty(), "R3/E3 no wire cache");
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from(id))
+            repo.get(&awaken_session_types::SessionId::from(id))
                 .await
                 .unwrap(),
             durable_before,
@@ -245,7 +245,7 @@ mod tests {
         );
 
         let failed_id = "profiled-receipt-failed";
-        let failed_receipt = awaken_session_contract::IdempotencyRecord {
+        let failed_receipt = awaken_session_state_contract::IdempotencyRecord {
             key: format!("profiled:create:{failed_id}"),
             payload_hash: "request-failed".into(),
         };
@@ -296,18 +296,18 @@ mod tests {
         // Constraints/invariants: frozen Runtime placement, not cache warmth or
         // lease liveness, owns physical custody; rehydration may rebuild only the
         // read/projection state and cannot adopt or stage Worker-owned effects.
-        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo());
         let mut cases = Vec::new();
         for (owner_name, placement) in [(
             "topology",
-            awaken_session_contract::SessionRuntimePlacement::Worker,
+            awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
         )] {
             for (lease_name, realization) in [
                 ("absent", None),
                 (
                     "local_live",
-                    Some(awaken_session_contract::SessionRealizationLease {
+                    Some(awaken_session_resource_contract::SessionRealizationLease {
                         owner: "managed-runtime/boot-1".into(),
                         runtime_incarnation: "managed-runtime/boot-1".into(),
                         epoch: 4,
@@ -316,7 +316,7 @@ mod tests {
                 ),
                 (
                     "worker_live",
-                    Some(awaken_session_contract::SessionRealizationLease {
+                    Some(awaken_session_resource_contract::SessionRealizationLease {
                         owner: "worker-a".into(),
                         runtime_incarnation: "worker-a/boot-1".into(),
                         epoch: 4,
@@ -325,7 +325,7 @@ mod tests {
                 ),
                 (
                     "worker_expired",
-                    Some(awaken_session_contract::SessionRealizationLease {
+                    Some(awaken_session_resource_contract::SessionRealizationLease {
                         owner: "worker-a".into(),
                         runtime_incarnation: "worker-a/boot-1".into(),
                         epoch: 4,
@@ -347,14 +347,15 @@ mod tests {
                             persisted
                                 .resources
                                 .prepare(
-                                    &awaken_session_contract::SessionId::from(id.as_str()),
+                                    &awaken_session_types::SessionId::from(id.as_str()),
                                     sample_inputs(),
                                 )
                                 .expect("pending Worker Resource projection");
                         }
                         persisted.environment.set_resident("worker-opaque-binding");
-                        let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
-                            &mut persisted.baseline
+                        let awaken_session_configuration_contract::SessionBaselineState::Frozen(
+                            baseline,
+                        ) = &mut persisted.baseline
                         else {
                             unreachable!("sample baseline is frozen")
                         };
@@ -409,7 +410,7 @@ mod tests {
             assert_eq!(
                 restarted
                     .application
-                    .session(&awaken_session_contract::SessionId::from(id))
+                    .session(&awaken_session_types::SessionId::from(id))
                     .await
                     .unwrap()
                     .mcp
@@ -420,7 +421,7 @@ mod tests {
             assert_eq!(
                 restarted
                     .application
-                    .session(&awaken_session_contract::SessionId::from(id))
+                    .session(&awaken_session_types::SessionId::from(id))
                     .await
                     .unwrap()
                     .resources

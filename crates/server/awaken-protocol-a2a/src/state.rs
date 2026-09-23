@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 use awaken_outbound_http::{GuardedHttpSender, HttpSender};
-use awaken_session_contract::RunApplication;
+use awaken_session_application_contract::RunApplication;
 
 use crate::types::{PushNotificationConfig, StreamResponse, Task, TaskStatusUpdateEvent};
 
@@ -732,7 +732,9 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_agent_contract::agent::message::Message;
-    use awaken_session_contract::{Pending, RunApplicationError, RunResume, StepOutcome};
+    use awaken_session_application_contract::{
+        Pending, RunApplicationError, RunResume, StepOutcome,
+    };
 
     struct Runtime;
 

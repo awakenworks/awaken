@@ -25,10 +25,12 @@ use crate::types::{
     SessionThreadAgent, SessionThreadStatus, StopReason, Usage,
 };
 #[cfg(test)]
-use awaken_session_contract::SessionDisposition;
+use awaken_session_repository_contract::SessionRepository;
 #[cfg(test)]
-use awaken_session_contract::SessionRepository;
-use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionExecutionState};
+use awaken_session_state_contract::SessionDisposition;
+use awaken_session_state_contract::{
+    ManagedLifecycleFact, PersistedSession, SessionExecutionState,
+};
 
 mod application;
 pub(crate) use application::agent_mcp_candidate;

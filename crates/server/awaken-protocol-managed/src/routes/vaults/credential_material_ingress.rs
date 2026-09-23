@@ -243,7 +243,7 @@ mod tests {
             source_id,
             workspace_id: workspace_id.into(),
             target,
-            usage: awaken_session_contract::repository_transport_credential_usage(),
+            usage: awaken_session_resource_contract::repository_transport_credential_usage(),
             material: material(provider, token),
         }
     }
@@ -261,7 +261,7 @@ mod tests {
             expected_revision,
             workspace_id: workspace_id.into(),
             target,
-            usage: awaken_session_contract::repository_transport_credential_usage(),
+            usage: awaken_session_resource_contract::repository_transport_credential_usage(),
             material: material(provider, token),
         }
     }
@@ -300,14 +300,16 @@ mod tests {
         let repository = std::sync::Arc::new(InMemoryCredentialRepo::new());
         let vault = VaultState::new(secrets.clone(), repository.clone());
         let source_id = CredentialSourceId("credential:repository:exact".into());
-        let exact_target = awaken_session_contract::repository_transport_credential_target(
-            "https://github.com/awaken/example.git",
-        )
-        .expect("V1 target");
-        let other_target = awaken_session_contract::repository_transport_credential_target(
-            "https://git.example.test/awaken/example.git",
-        )
-        .expect("V5 target");
+        let exact_target =
+            awaken_session_resource_contract::repository_transport_credential_target(
+                "https://github.com/awaken/example.git",
+            )
+            .expect("V1 target");
+        let other_target =
+            awaken_session_resource_contract::repository_transport_credential_target(
+                "https://git.example.test/awaken/example.git",
+            )
+            .expect("V5 target");
 
         let other_provider_source =
             CredentialSourceId("credential:repository:other-provider".into());
@@ -354,7 +356,7 @@ mod tests {
             descriptor
                 .admit(
                     &exact_target,
-                    &awaken_session_contract::repository_transport_credential_usage(),
+                    &awaken_session_resource_contract::repository_transport_credential_usage(),
                 )
                 .is_ok(),
             "V1/E1"

@@ -44,11 +44,11 @@ const fn session_work_projection_required(
 /// nonterminal quiesce, checkpoint, disposal, or restore transport.
 fn validate_environment_continuation_topology(
     runtime_placement: SessionRuntimePlacement,
-    idle_retention: &awaken_session_contract::EnvironmentIdleRetentionPolicy,
+    idle_retention: &awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
 ) -> Result<(), RunError> {
     if environment_requires_external_owner(runtime_placement)
         && idle_retention.mode
-            == awaken_session_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease
+            == awaken_session_configuration_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease
     {
         return Err(RunError::bad_request(
             "checkpoint_and_release idle retention is unsupported for external Worker placement",
@@ -122,7 +122,7 @@ pub struct WorkDispatchFailure {
 pub struct WorkDispatchReconciliation {
     pub settled: usize,
     pub failures: Vec<WorkDispatchFailure>,
-    pub quarantined: Vec<awaken_session_contract::SessionRecoveryQuarantine>,
+    pub quarantined: Vec<awaken_session_state_contract::SessionRecoveryQuarantine>,
     pub pending: usize,
 }
 
@@ -159,22 +159,22 @@ pub struct SessionApplication {
     environments: Arc<dyn SessionEnvironmentSource>,
     config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     model_publication_resolver:
-        Option<Arc<dyn awaken_session_contract::SessionModelPublicationResolver>>,
+        Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
     resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
     resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
-    managed_list_prices: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
+    managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
     sessions_repo: Arc<dyn SessionRepository>,
     /// Drain side of the same store's transactional lifecycle outbox. The
     /// application never reads it; it only hands it to the one delivery
     /// consumer bound through [`Self::set_lifecycle_notifier`].
-    lifecycle_outbox: Arc<dyn awaken_session_contract::LifecycleOutbox>,
+    lifecycle_outbox: Arc<dyn awaken_session_repository_contract::LifecycleOutbox>,
     /// One process-owned high-water reconciler for the rebuildable Agent and
     /// Environment projections. It is late-bound by split-process composition;
     /// AllInOne has no cross-replica projection and leaves it absent.
     executable_projection_refresh:
-        Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>,
+        Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
     /// One process-owned wake channel for the durable lifecycle outbox.  This is
     /// late-bound because scenario composition shares an already-`Arc`'d
     /// application, and write-once so a second outbox consumer cannot replace
@@ -219,7 +219,7 @@ impl SessionApplication {
     pub fn new(
         runtime: Arc<dyn CompleteSessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
+        sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
     ) -> Self {
         Self::new_with_configuration(
@@ -235,11 +235,11 @@ impl SessionApplication {
     pub fn new_with_configuration(
         runtime: Arc<dyn CompleteSessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
+        sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
         configuration: SessionApplicationConfiguration,
     ) -> Self {
-        let lifecycle_outbox: Arc<dyn awaken_session_contract::LifecycleOutbox> =
+        let lifecycle_outbox: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> =
             sessions_repo.clone();
         let sessions_repo: Arc<dyn SessionRepository> = sessions_repo;
         runtime.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
@@ -332,7 +332,7 @@ impl SessionApplication {
     pub fn validate_session_sandbox_layout(
         &self,
         session_id: &str,
-        layout: &awaken_session_contract::SessionSandboxLayout,
+        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), RunError> {
         validate_environment_continuation_topology(
             layout.runtime_placement,
@@ -357,7 +357,7 @@ impl SessionApplication {
             .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
         self.validate_session_sandbox_layout(
             session.session_id.as_str(),
-            &awaken_session_contract::SessionSandboxLayout {
+            &awaken_session_configuration_contract::SessionSandboxLayout {
                 workspace_id: workspace_id.to_string(),
                 agent_id: baseline.agent_id.clone(),
                 agent_revision: baseline.agent_revision,
@@ -408,13 +408,13 @@ impl SessionApplication {
 
     pub async fn resolve_managed_list_price_snapshot(
         &self,
-        request: awaken_session_contract::ManagedListPriceRequest,
+        request: awaken_session_budget_contract::ManagedListPriceRequest,
     ) -> Result<
-        awaken_session_contract::ManagedListPriceSnapshot,
-        awaken_session_contract::ManagedListPriceError,
+        awaken_session_budget_contract::ManagedListPriceSnapshot,
+        awaken_session_budget_contract::ManagedListPriceError,
     > {
         let provider = self.managed_list_prices.as_deref().ok_or_else(|| {
-            awaken_session_contract::ManagedListPriceError::Unavailable(
+            awaken_session_budget_contract::ManagedListPriceError::Unavailable(
                 "no Managed list-price provider is configured".into(),
             )
         })?;
@@ -433,7 +433,9 @@ impl SessionApplication {
     /// Clone the drain port of the same store for the one lifecycle delivery
     /// consumer installed by Coordinator composition.
     #[must_use]
-    pub fn lifecycle_outbox_handle(&self) -> Arc<dyn awaken_session_contract::LifecycleOutbox> {
+    pub fn lifecycle_outbox_handle(
+        &self,
+    ) -> Arc<dyn awaken_session_repository_contract::LifecycleOutbox> {
         self.lifecycle_outbox.clone()
     }
 
@@ -522,7 +524,7 @@ impl SessionApplication {
         .ok_or_else(|| {
             RunError::bad_request(format!("environment `{environment_id}` is unavailable"))
         })?;
-        if !awaken_session_contract::resolved_environment_snapshot_is_exact(
+        if !awaken_session_configuration_contract::resolved_environment_snapshot_is_exact(
             resolved.snapshot.environment_id == environment_id,
             resolved.snapshot.revision.0,
             required_revision,
@@ -544,7 +546,7 @@ impl SessionApplication {
     pub async fn dispatch_session_work(
         &self,
         session: &PersistedSession,
-    ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
+    ) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
         dispatch_session_work(self.environments.as_ref(), session).await
     }
 
@@ -560,7 +562,10 @@ impl SessionApplication {
         )
     }
 
-    pub fn replace_repository(&mut self, repo: Arc<dyn awaken_session_contract::SessionStore>) {
+    pub fn replace_repository(
+        &mut self,
+        repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    ) {
         self.lifecycle_outbox = repo.clone();
         self.sessions_repo = repo;
         self.runtime
@@ -573,7 +578,7 @@ impl SessionApplication {
 
     pub fn set_managed_list_price_provider(
         &mut self,
-        provider: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
+        provider: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
     ) {
         self.managed_list_prices = Some(provider);
     }
@@ -612,7 +617,7 @@ impl SessionApplication {
     /// error instead of allowing two freshness authorities to overlap.
     pub fn set_executable_projection_refresh(
         &mut self,
-        refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
+        refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
     ) -> Result<(), &'static str> {
         if self.executable_projection_refresh.is_some() {
             return Err("executable projection refresh is already installed");
@@ -625,10 +630,13 @@ impl SessionApplication {
     /// composition where the authoritative catalogs are process-local.
     pub async fn refresh_executable_projections(
         &self,
-    ) -> Result<awaken_session_contract::ExecutableProjectionAdmission, String> {
+    ) -> Result<awaken_session_application_contract::ExecutableProjectionAdmission, String> {
         match self.executable_projection_refresh.as_ref() {
             Some(refresh) => refresh.refresh().await,
-            None => Ok(awaken_session_contract::process_local_executable_projection_admission()),
+            None => Ok(
+                awaken_session_application_contract::process_local_executable_projection_admission(
+                ),
+            ),
         }
     }
 
@@ -669,7 +677,7 @@ impl SessionApplication {
 
     pub fn set_model_publication_resolver(
         &mut self,
-        resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+        resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     ) {
         self.model_publication_resolver = Some(resolver);
     }
@@ -683,13 +691,13 @@ impl SessionApplication {
         requested_model: &str,
         published_model: &str,
         inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
-    ) -> Result<awaken_session_contract::SessionModelOverride, RunError> {
-        let publication = match awaken_session_contract::session_model_override_decision(
+    ) -> Result<awaken_session_configuration_contract::SessionModelOverride, RunError> {
+        let publication = match awaken_session_configuration_contract::session_model_override_decision(
             requested_model,
             published_model,
         ) {
-            awaken_session_contract::SessionModelOverrideDecision::ReusePublished => None,
-            awaken_session_contract::SessionModelOverrideDecision::ResolveComplete => {
+            awaken_session_configuration_contract::SessionModelOverrideDecision::ReusePublished => None,
+            awaken_session_configuration_contract::SessionModelOverrideDecision::ResolveComplete => {
                 let resolver = self.model_publication_resolver.as_deref().ok_or_else(|| {
                     RunError::unavailable("Session model override resolution is not configured")
                 })?;
@@ -697,10 +705,10 @@ impl SessionApplication {
                     .resolve_session_model(workspace_id, requested_model)
                     .await
                     .map_err(|error| match error {
-                        awaken_session_contract::SessionModelResolutionError::Invalid(_) => {
+                        awaken_session_configuration_contract::SessionModelResolutionError::Invalid(_) => {
                             RunError::bad_request(error.to_string())
                         }
-                        awaken_session_contract::SessionModelResolutionError::Unavailable(_) => {
+                        awaken_session_configuration_contract::SessionModelResolutionError::Unavailable(_) => {
                             RunError::unavailable(error.to_string())
                         }
                     })?;
@@ -710,10 +718,12 @@ impl SessionApplication {
                 Some(Box::new(publication))
             }
         };
-        Ok(awaken_session_contract::SessionModelOverride {
-            publication,
-            inference,
-        })
+        Ok(
+            awaken_session_configuration_contract::SessionModelOverride {
+                publication,
+                inference,
+            },
+        )
     }
 
     /// Compile the complete published model roster for a budgeted Session and
@@ -731,7 +741,9 @@ impl SessionApplication {
         root_profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
         root_execution_model_ref: &str,
         root_backend_ref: Option<&str>,
-        root_model_publication: Option<&awaken_session_contract::SessionModelPublication>,
+        root_model_publication: Option<
+            &awaken_session_configuration_contract::SessionModelPublication,
+        >,
     ) -> Result<Vec<String>, RunError> {
         fn add_candidate(
             models: &mut std::collections::BTreeSet<String>,
@@ -890,7 +902,7 @@ fn validate_sandbox_provisioning_runtime(
 async fn dispatch_session_work(
     environments: &dyn SessionEnvironmentSource,
     session: &PersistedSession,
-) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
+) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
     if session.is_terminal() {
         // Keep the externally auditable terminal guard at the effect boundary.
         // The shared plan below repeats the same immutable fact so recovery and
@@ -960,17 +972,15 @@ fn claim_once(fence: &AtomicBool) -> bool {
 
 async fn self_hosted_work_environment(
     application: &SessionApplication,
-    session_id: &awaken_session_contract::SessionId,
-) -> Result<Option<(String, bool)>, awaken_session_contract::work_queue::WorkQueueError> {
+    session_id: &awaken_session_types::SessionId,
+) -> Result<Option<(String, bool)>, awaken_session_work_contract::WorkQueueError> {
     let session = match application.session_repository().get(session_id).await {
         Ok(session) => session,
-        Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
+        Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => return Ok(None),
         Err(error) => {
-            return Err(
-                awaken_session_contract::work_queue::WorkQueueError::Storage(
-                    error.to_string().into(),
-                ),
-            );
+            return Err(awaken_session_work_contract::WorkQueueError::Storage(
+                error.to_string().into(),
+            ));
         }
     };
     Ok(session
@@ -985,22 +995,22 @@ async fn self_hosted_work_environment(
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionApplication {
+impl awaken_session_work_contract::SessionWorkLeaseAuthority for SessionApplication {
     fn request_lifecycle_reconciliation(&self) {
         SessionApplication::request_lifecycle_reconciliation(self);
     }
 
     async fn acquire_session_work(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
-        acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
+        acquisition: awaken_session_work_contract::SessionWorkAcquisition,
     ) -> Result<
-        awaken_session_contract::work_queue::SessionWorkOwnership,
-        awaken_session_contract::work_queue::WorkQueueError,
+        awaken_session_work_contract::SessionWorkOwnership,
+        awaken_session_work_contract::WorkQueueError,
     > {
-        use awaken_session_contract::work_queue::SessionWorkOwnership;
+        use awaken_session_work_contract::SessionWorkOwnership;
 
         let Some((environment_id, terminal)) =
             self_hosted_work_environment(self, session_id).await?
@@ -1011,7 +1021,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
             .environments
             .acquire_session_work(&environment_id, session_id.as_str(), worker_owner, now_ms)
             .await?;
-        if !awaken_session_contract::work_queue::session_work_revival_is_authorized(
+        if !awaken_session_work_contract::session_work_revival_is_authorized(
             acquisition,
             terminal,
             acquired.is_some(),
@@ -1038,8 +1048,8 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
 
     async fn release_session_work(
         &self,
-        lease: &awaken_session_contract::work_queue::SessionWorkLease,
-    ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
+        lease: &awaken_session_work_contract::SessionWorkLease,
+    ) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
         let Some((environment_id, _terminal)) =
             self_hosted_work_environment(self, &lease.session_id).await?
         else {
@@ -1054,7 +1064,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
     async fn release_worker_session_work(
         &self,
         worker_owner: &str,
-    ) -> Result<usize, awaken_session_contract::work_queue::WorkQueueError> {
+    ) -> Result<usize, awaken_session_work_contract::WorkQueueError> {
         self.environments
             .release_worker_session_work(worker_owner)
             .await
@@ -1082,12 +1092,14 @@ impl RepositoryEnvironmentBindingSink {
         self
     }
 
-    fn receipt_error(error: awaken_session_contract::SessionEnvironmentReceiptError) -> RunError {
+    fn receipt_error(
+        error: awaken_session_state_contract::SessionEnvironmentReceiptError,
+    ) -> RunError {
         match error.recovery_action() {
-            awaken_session_contract::SessionEnvironmentReceiptRecoveryAction::Retry => {
+            awaken_session_state_contract::SessionEnvironmentReceiptRecoveryAction::Retry => {
                 let code = if matches!(
                     error,
-                    awaken_session_contract::SessionEnvironmentReceiptError::RealizationStale
+                    awaken_session_state_contract::SessionEnvironmentReceiptError::RealizationStale
                 ) {
                     "session_realization_stale"
                 } else {
@@ -1095,22 +1107,22 @@ impl RepositoryEnvironmentBindingSink {
                 };
                 RunError::unavailable_classified(code, error.to_string())
             }
-            awaken_session_contract::SessionEnvironmentReceiptRecoveryAction::Reject => {
+            awaken_session_state_contract::SessionEnvironmentReceiptRecoveryAction::Reject => {
                 RunError::classified("session_environment_receipt_rejected", error.to_string())
             }
         }
     }
 
     fn committed_authority(
-        session: &awaken_session_contract::PersistedSession,
-        receipt: &awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, RunError> {
+        session: &awaken_session_state_contract::PersistedSession,
+        receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_state_contract::SessionEnvironmentState, RunError> {
         // The aggregate receipt kernel has already restricted terminal writes
         // to the Fenced join window. Accept its exact Store-read Resident value
         // so terminal cleanup can dispose an Environment whose provider effect
         // crossed the archive CAS; this function must not re-decide that phase.
         match &session.environment {
-            awaken_session_contract::SessionEnvironmentState::Resident {
+            awaken_session_state_contract::SessionEnvironmentState::Resident {
                 binding,
                 effect_id: Some(effect_id),
                 generation: Some(_),
@@ -1130,14 +1142,17 @@ impl RepositoryEnvironmentBindingSink {
 impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
     async fn authorize(
         &self,
-        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
-    ) -> Result<awaken_session_contract::SessionEnvironmentEffectAuthorization, RunError> {
+        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+    ) -> Result<awaken_session_state_contract::SessionEnvironmentEffectAuthorization, RunError>
+    {
         intent.verify().map_err(Self::receipt_error)?;
         let session_id = intent.session_id();
         let owner = match self.repo.owner(session_id).await {
             Ok(owner) => owner,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
-                return Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned);
+            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+                return Ok(
+                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned,
+                );
             }
             Err(error) => return Err(session_repository_error(error)),
         };
@@ -1153,8 +1168,8 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
 
     async fn persist(
         &self,
-        receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, RunError> {
+        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_state_contract::SessionEnvironmentState, RunError> {
         let session_id = &receipt.session_id;
         const CAS_ATTEMPTS: usize = 3;
         for attempt in 0..CAS_ATTEMPTS {
@@ -1202,10 +1217,10 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                     .prepared_image
                     .clone()
                     .unwrap_or_else(|| {
-                        awaken_session_contract::stable_fingerprint(&baseline.environment.sandbox)
+                        awaken_agent_contract::stable_fingerprint(&baseline.environment.sandbox)
                     });
                 session.environment.assign_generation(
-                    awaken_session_contract::SandboxGeneration::new(
+                    awaken_session_state_contract::SandboxGeneration::new(
                         session_id,
                         now_unix_ms,
                         expires_at_unix_ms,
@@ -1217,9 +1232,9 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
             Self::committed_authority(&session, &receipt)?;
             let expected_revision = session.revision;
             let payload_hash =
-                awaken_session_contract::SessionMutationPayload::Replace(session.clone())
+                awaken_session_state_contract::SessionMutationPayload::Replace(session.clone())
                     .stable_hash();
-            let idempotency = awaken_session_contract::IdempotencyRecord {
+            let idempotency = awaken_session_state_contract::IdempotencyRecord {
                 key: format!(
                     "session:bind-environment:{session_id}:{}:{payload_hash}",
                     expected_revision.0
@@ -1237,8 +1252,8 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
             .await
             .map_err(session_repository_error)?
             {
-                awaken_session_contract::SessionMutationResult::Applied { .. }
-                | awaken_session_contract::SessionMutationResult::Replayed { .. } => {
+                awaken_session_state_contract::SessionMutationResult::Applied { .. }
+                | awaken_session_state_contract::SessionMutationResult::Replayed { .. } => {
                     let committed = self
                         .repo
                         .get(session_id)
@@ -1246,15 +1261,15 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                         .map_err(session_repository_error)?;
                     return Self::committed_authority(&committed, &receipt);
                 }
-                awaken_session_contract::SessionMutationResult::Conflict { .. }
+                awaken_session_state_contract::SessionMutationResult::Conflict { .. }
                     if attempt + 1 < CAS_ATTEMPTS => {}
-                awaken_session_contract::SessionMutationResult::Conflict { .. } => {
+                awaken_session_state_contract::SessionMutationResult::Conflict { .. } => {
                     return Err(RunError::unavailable_classified(
                         "session_environment_binding_cas_contended",
                         "Session environment binding CAS exhausted",
                     ));
                 }
-                awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
+                awaken_session_state_contract::SessionMutationResult::IdempotencyMismatch => {
                     return Err(RunError::internal(
                         "Session environment binding idempotency mismatch",
                     ));

@@ -10,7 +10,7 @@ use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use sqlx::Row;
 
 use crate::{PostgresManagedSessionRepository, SqliteManagedSessionRepository, lifecycle_str};
-use awaken_session_contract::ManagedLifecycleFact;
+use awaken_session_state_contract::ManagedLifecycleFact;
 
 /// The Session and Deployment aggregates share one transactional lifecycle
 /// outbox. This store owns that table, so it is the one place a Deployment fact

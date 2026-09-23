@@ -19,7 +19,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure};
 use awaken_agent_contract::event::{Fact, Transcoder, fold_messages};
-use awaken_session_contract::{Pending, StepOutcome};
+use awaken_session_application_contract::{Pending, StepOutcome};
 
 use awaken_protocol_a2a::encoder as a2a;
 use awaken_protocol_a2a::types::TaskState;

@@ -1,11 +1,13 @@
 //! Direct execution of the existing asynchronous replacement boundary.
 use crate::mutation::commit_observed_snapshot;
-use awaken_session_contract::SessionId;
-use awaken_session_contract::{
+use awaken_session_repository_contract::SessionRepository;
+use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,
     SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRepository, SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
+    SessionRepositoryConflict, SessionRepositoryError,
 };
+use awaken_session_types::SessionId;
+use awaken_session_types::SessionRevision;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // A port observation, not a repository/state-machine implementation. All
@@ -62,8 +64,8 @@ impl SessionRepository for ObservedCommitPort {
     }
     async fn scan(
         &self,
-        _query: awaken_session_contract::SessionScanQuery<'_>,
-    ) -> Result<awaken_session_contract::SessionScan, SessionRepositoryError> {
+        _query: awaken_session_state_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
     async fn deleted_event_admissions(
@@ -71,14 +73,14 @@ impl SessionRepository for ObservedCommitPort {
         _owner_scope: &str,
         _session_id: &SessionId,
     ) -> Result<
-        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         panic!("unexpected repository operation")
     }
     async fn count_environment_phase(
         &self,
-        _phase: awaken_session_contract::SessionEnvironmentPhase,
+        _phase: awaken_session_state_contract::SessionEnvironmentPhase,
     ) -> Result<u64, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
@@ -161,7 +163,9 @@ fn check_observed_commit(old: Option<u64>, now: u64, has_fact: bool, pending_onc
         }),
         3 => Ok(SessionMutationResult::IdempotencyMismatch),
         4 => Err(SessionRepositoryError::NotFound),
-        5 => Err(SessionRepositoryError::Unavailable("unavailable".into())),
+        5 => Err(SessionRepositoryError::AuthorityUnavailable(
+            "unavailable".into(),
+        )),
         6 => Err(SessionRepositoryError::Corrupt("corrupt".into())),
         7 => Err(SessionRepositoryError::InvalidMutation("invalid".into())),
         8 => Err(SessionRepositoryError::Conflict(

@@ -11,7 +11,7 @@ use crate::types::{ServerToolUsage, SessionThreadCacheCreationUsage};
 pub(crate) fn durable_inbound_event_id(session_id: &str, operation_id: &str) -> String {
     format!(
         "evt_{}",
-        awaken_session_contract::stable_fingerprint(&(
+        awaken_agent_contract::stable_fingerprint(&(
             "managed-durable-inbound-event-v1",
             session_id,
             operation_id,
@@ -61,12 +61,14 @@ pub(crate) fn rubric_text(rubric: &crate::types::OutcomeRubric) -> String {
 /// not another usage ledger or a lookup against mutable current prices.
 fn usage_list_cost_value(
     usage: &SessionUsage,
-    price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
+    price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
 ) -> Result<Option<crate::types::MonetaryAmount>, RunError> {
     price_snapshot
         .map(|snapshot| {
             let cursor =
-                awaken_session_contract::ManagedBudgetUsageCursor::from_session_usage(usage, None)?;
+                awaken_session_budget_contract::ManagedBudgetUsageCursor::from_session_usage(
+                    usage, None,
+                )?;
             snapshot.public_usage_list_cost_minor(cursor)
         })
         .transpose()
@@ -83,7 +85,7 @@ fn usage_list_cost_value(
 /// output (+ prompt-cache) token counts across all Runs. Emitted after a Run.
 pub(crate) fn session_usage_value(
     usage: SessionUsage,
-    price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
+    price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
 ) -> Result<Usage, RunError> {
     let list_cost = usage_list_cost_value(&usage, price_snapshot)?;
     Ok(Usage {
@@ -111,7 +113,7 @@ pub(crate) fn session_usage_value(
 /// one the optional cost remains absent rather than consulting mutable prices.
 pub(crate) fn session_thread_usage_value(
     usage: SessionUsage,
-    price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
+    price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
 ) -> Result<Option<crate::types::SessionThreadUsage>, RunError> {
     if usage == SessionUsage::default() {
         return Ok(None);
@@ -205,7 +207,7 @@ mod usage_tests {
             web_search_requests: 4,
             by_model: std::collections::BTreeMap::from([(
                 "served".into(),
-                awaken_session_contract::SessionModelUsage {
+                awaken_session_budget_contract::SessionModelUsage {
                     input_tokens: 8,
                     output_tokens: 4,
                     cache_read_tokens: 1,
@@ -228,21 +230,21 @@ mod usage_tests {
         );
         assert_eq!(unpriced.list_cost, None, "R1/E1");
 
-        let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+        let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
             snapshot_id: "prices-1".into(),
             version: 1,
             effective_at_unix_ms: 1,
             arithmetic_version: 1,
             model_rates: std::collections::BTreeMap::from([(
                 "served".into(),
-                awaken_session_contract::ManagedTokenListRates {
+                awaken_session_budget_contract::ManagedTokenListRates {
                     input_micros_per_million: 10_000_000_000,
                     output_micros_per_million: 10_000_000_000,
                     cache_read_micros_per_million: 10_000_000_000,
                     cache_creation_micros_per_million: 10_000_000_000,
                 },
             )]),
-            runtime_rates: awaken_session_contract::ManagedRuntimeListRates::default(),
+            runtime_rates: awaken_session_budget_contract::ManagedRuntimeListRates::default(),
             fingerprint: "prices-fingerprint".into(),
         };
         let priced_session = session_usage_value(first.clone(), Some(&snapshot)).unwrap();
@@ -276,7 +278,7 @@ mod usage_tests {
             web_search_requests: 8,
             by_model: std::collections::BTreeMap::from([(
                 "served".into(),
-                awaken_session_contract::SessionModelUsage {
+                awaken_session_budget_contract::SessionModelUsage {
                     input_tokens: 16,
                     output_tokens: 8,
                     cache_read_tokens: 2,
@@ -284,8 +286,8 @@ mod usage_tests {
                 },
             )]),
         };
-        let mut raised = awaken_session_contract::SessionBudgetState::active(1, snapshot);
-        let awaken_session_contract::SessionBudgetState::Active {
+        let mut raised = awaken_session_budget_contract::SessionBudgetState::active(1, snapshot);
+        let awaken_session_budget_contract::SessionBudgetState::Active {
             max_list_cost_minor,
             ..
         } = &mut raised
@@ -304,13 +306,13 @@ mod usage_tests {
             "R3/E3-E4 raised cap retains creation prices"
         );
         let removed = match raised {
-            awaken_session_contract::SessionBudgetState::Active {
+            awaken_session_budget_contract::SessionBudgetState::Active {
                 consumed_numerator,
                 usage_cursor,
                 snapshot,
                 reach_transitions,
                 ..
-            } => awaken_session_contract::SessionBudgetState::Removed {
+            } => awaken_session_budget_contract::SessionBudgetState::Removed {
                 consumed_numerator,
                 usage_cursor,
                 snapshot,

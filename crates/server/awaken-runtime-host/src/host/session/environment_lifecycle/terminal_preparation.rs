@@ -36,9 +36,9 @@ impl SharedHost {
     /// each then lowers its own closed effect type exactly once.
     pub(crate) fn authorize_terminal_cleanup_lease(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<awaken_session_contract::SessionRealizationLease, HostError> {
+        session_id: &awaken_session_types::SessionId,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
+    ) -> Result<awaken_session_resource_contract::SessionRealizationLease, HostError> {
         self
             .session_slots
             .read(session_id.as_str(), |slot| {
@@ -48,7 +48,7 @@ impl SharedHost {
                         "terminal cleanup has no installed realization generation",
                     )
                 })?;
-                if !awaken_session_contract::realization_lease_generation_authorizes(current, lease) {
+                if !awaken_session_realization_contract::realization_lease_generation_authorizes(current, lease) {
                     return Err(HostError::unavailable_classified(
                         "session_terminal_cleanup_generation_stale",
                         "terminal cleanup realization generation was replaced",
@@ -75,7 +75,7 @@ impl SharedHost {
     /// their own effect boundaries.
     pub(in crate::host) fn terminal_cleanup_effect_fence(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, HostError> {
         self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?
             .sandbox_effect_fence(effect.operation_id())
@@ -86,7 +86,7 @@ impl SharedHost {
     /// successor lease into the sole provider-neutral destructive authority.
     pub(in crate::host) fn terminal_cleanup_disposal_authorization(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, HostError> {
         let current =
             self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?;
@@ -336,7 +336,7 @@ impl SharedHost {
         thread: &str,
         binding: &str,
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-        resolved_resources: Option<&awaken_session_contract::ResolvedSessionResources>,
+        resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<PreparedBoundEnvironment, HostError> {
         if mode == BoundEnvironmentPreparationMode::LiveSource
@@ -601,8 +601,8 @@ impl SharedHost {
         })?;
         let pending_checkpoint = if matches!(
             &state,
-            awaken_session_contract::SessionEnvironmentState::Suspending {
-                suspend_phase: awaken_session_contract::SuspendPhase::Uploading,
+            awaken_session_state_contract::SessionEnvironmentState::Suspending {
+                suspend_phase: awaken_session_state_contract::SuspendPhase::Uploading,
                 ..
             }
         ) {
@@ -622,7 +622,7 @@ impl SharedHost {
                 state
                     .checkpoint_request(
                         workspace_id,
-                        &awaken_session_contract::SessionId::from(thread),
+                        &awaken_session_types::SessionId::from(thread),
                         &checkpoint_policy,
                     )
                     .map_err(|error| HostError::internal(error.to_string()))?
@@ -648,24 +648,27 @@ impl SharedHost {
                     })
             );
         let binding = match &state {
-            awaken_session_contract::SessionEnvironmentState::Resident { binding, .. } => {
-                Some(binding.as_str())
-            }
-            awaken_session_contract::SessionEnvironmentState::Suspending {
-                source_binding, ..
+            awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding, ..
+            } => Some(binding.as_str()),
+            awaken_session_state_contract::SessionEnvironmentState::Suspending {
+                source_binding,
+                ..
             } => Some(source_binding.as_str()),
             // The frozen terminal assignment, not a fabricated Create/Adopt
             // receipt, may take over a locally retained pre-commit root.
-            awaken_session_contract::SessionEnvironmentState::Unmaterialized if unacknowledged => {
+            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+                if unacknowledged =>
+            {
                 owner.physical_binding()
             }
-            awaken_session_contract::SessionEnvironmentState::Unmaterialized
-            | awaken_session_contract::SessionEnvironmentState::Hibernated { .. } => None,
-            awaken_session_contract::SessionEnvironmentState::Restoring { .. } => None,
+            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+            | awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. } => None,
+            awaken_session_state_contract::SessionEnvironmentState::Restoring { .. } => None,
         };
         if matches!(
             &state,
-            awaken_session_contract::SessionEnvironmentState::Restoring { .. }
+            awaken_session_state_contract::SessionEnvironmentState::Restoring { .. }
         ) {
             let crate::session_slot::SessionEnvironmentOwner::Restoring(
                 crate::session_slot::SessionEnvironmentRestoration::Awaiting { request },
@@ -684,7 +687,7 @@ impl SharedHost {
                             "Restoring terminal projection has no frozen Workspace",
                         )
                     })?,
-                    &awaken_session_contract::SessionId::from(thread),
+                    &awaken_session_types::SessionId::from(thread),
                 )
                 .ok_or_else(|| {
                     HostError::internal("Restoring state did not project an exact request")
@@ -714,7 +717,7 @@ impl SharedHost {
             }
             if matches!(
                 &state,
-                awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+                awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
             ) {
                 return Ok(TerminalEnvironmentPreparation {
                     state,
@@ -739,9 +742,9 @@ impl SharedHost {
                     "unmaterialized terminal Environment has no frozen fingerprint",
                 )
             })?;
-            let create_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+            let create_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
                 thread,
-                awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
                 Some(realization_lease.clone()),
             )
             .for_environment(environment_fingerprint);
@@ -819,7 +822,7 @@ impl SharedHost {
     /// caller to reinterpret it as an explicit empty current set.
     pub(super) fn terminal_memory_plan(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
         prepared: &PreparedBoundEnvironment,
     ) -> Result<TerminalMemoryPlan, HostError> {
         let transition = self
@@ -835,7 +838,7 @@ impl SharedHost {
             .memory_materializations()
             .map_err(|error| HostError::internal(error.to_string()))?;
         let (intents, acknowledged_materializations) =
-            awaken_session_contract::terminal_memory_reconciliation_intents_from_materializations(
+            awaken_session_state_contract::terminal_memory_reconciliation_intents_from_materializations(
                 transition.previous().resources.inputs(),
                 materializations,
                 effect,
@@ -871,7 +874,7 @@ impl SharedHost {
     /// carries writable Copy evidence.
     pub(super) async fn reconcile_terminal_memory(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
         environment: &crate::session_environment::SessionEnvironment,
         effect_mode: TerminalEffectMode,
         plan: &TerminalMemoryPlan,
@@ -892,7 +895,7 @@ impl SharedHost {
                 self.terminal_cleanup_effect_fence(effect)?;
                 let operation_reference = match &self.upstream {
                     Some(_) => awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
-                        awaken_session_contract::SessionTerminalMemoryIntent,
+                        awaken_session_state_contract::SessionTerminalMemoryIntent,
                     >::encode(
                         self.memory_reference_encoder
                             .as_ref()
@@ -947,9 +950,9 @@ impl SharedHost {
     /// No application-side checkpoint deletion runs after this command.
     pub(super) async fn cleanup_terminal_checkpoint(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
-        state: &awaken_session_contract::SessionEnvironmentState,
-        pending_checkpoint: Option<&awaken_session_contract::SandboxCheckpointRequest>,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
+        pending_checkpoint: Option<&awaken_session_state_contract::SandboxCheckpointRequest>,
         environment: Option<&crate::session_environment::SessionEnvironment>,
     ) -> Result<(), HostError> {
         let checkpoint = state.checkpoint();

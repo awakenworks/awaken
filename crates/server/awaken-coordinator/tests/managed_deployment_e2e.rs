@@ -92,21 +92,21 @@ impl awaken_runtime_contract::PublishedAgentSnapshotSource for TogglePublishedAg
 struct DeploymentPriceProvider;
 
 #[async_trait::async_trait]
-impl awaken_session_contract::ManagedListPriceProvider for DeploymentPriceProvider {
+impl awaken_session_budget_contract::ManagedListPriceProvider for DeploymentPriceProvider {
     async fn resolve_snapshot(
         &self,
-        request: awaken_session_contract::ManagedListPriceRequest,
+        request: awaken_session_budget_contract::ManagedListPriceRequest,
     ) -> Result<
-        awaken_session_contract::ManagedListPriceSnapshot,
-        awaken_session_contract::ManagedListPriceError,
+        awaken_session_budget_contract::ManagedListPriceSnapshot,
+        awaken_session_budget_contract::ManagedListPriceError,
     > {
-        let rate = awaken_session_contract::ManagedTokenListRates {
+        let rate = awaken_session_budget_contract::ManagedTokenListRates {
             input_micros_per_million: 10_000_000,
             output_micros_per_million: 10_000_000,
             cache_read_micros_per_million: 10_000_000,
             cache_creation_micros_per_million: 10_000_000,
         };
-        Ok(awaken_session_contract::ManagedListPriceSnapshot {
+        Ok(awaken_session_budget_contract::ManagedListPriceSnapshot {
             snapshot_id: "deployment-budget-test".into(),
             version: 1,
             effective_at_unix_ms: request.occurred_at_unix_ms,
@@ -214,7 +214,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     };
     let session_id = format!(
         "sesn_{}",
-        awaken_session_contract::stable_fingerprint(&(
+        awaken_agent_contract::stable_fingerprint(&(
             "deployment-run",
             request.deployment_run_id.as_str()
         ))
@@ -234,13 +234,13 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     runtime_publications
         .available
         .store(false, Ordering::Release);
-    let error =
-        Box::pin(managed.session_application().drive_session_event_batches(
-            &awaken_session_contract::SessionId::from(&session_id),
-            None,
-        ))
-        .await
-        .expect_err("D2 lifecycle execution must observe the unavailable publication");
+    let error = Box::pin(
+        managed
+            .session_application()
+            .drive_session_event_batches(&awaken_session_types::SessionId::from(&session_id), None),
+    )
+    .await
+    .expect_err("D2 lifecycle execution must observe the unavailable publication");
     assert!(
         error.to_string().contains("publication"),
         "D2 expected publication failure: {error}"

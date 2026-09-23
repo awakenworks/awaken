@@ -4,7 +4,7 @@
 //! HTTP+JSON, returning a `Task`) and the neutral runtime. It owns the A2A DTOs,
 //! the projection from committed `Message`s to an A2A `Task`, and the axum router;
 //! it drives the shared neutral `RunApplication` port (from
-//! `awaken-session-contract`) and constructs no runtime itself. It is the only
+//! `awaken-session-application-contract`) and constructs no runtime itself. It is the only
 //! crate permitted to name A2A protocol vocabulary.
 //!
 //! It implements the A2A 0.3 and 1.0 JSON-RPC and HTTP+JSON bindings, including

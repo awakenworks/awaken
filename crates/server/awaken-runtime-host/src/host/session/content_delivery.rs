@@ -11,7 +11,7 @@ use super::*;
 /// materialized versions instead.
 pub(crate) enum SkillDeliveryEvidence<'a> {
     Materialized(Option<&'a [awaken_resource_contract::SkillVersion]>),
-    DeferredBindings(&'a [awaken_session_contract::ResolvedSkillBinding]),
+    DeferredBindings(&'a [awaken_session_resource_contract::ResolvedSkillBinding]),
 }
 
 impl SkillDeliveryEvidence<'_> {
@@ -395,7 +395,7 @@ impl SharedHost {
                         .as_ref()
                         .is_some_and(|projection| {
                             projection.provisioning
-                                == awaken_session_contract::SandboxProvisioning::OnToolUse
+                                == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
                         })
             })
             .unwrap_or(false);

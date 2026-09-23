@@ -18,7 +18,7 @@ use crate::types::{AgentRef, AgentRefObject, ModelEffortInput, Session, SessionC
 pub fn managed_session_id_from_idempotency(owner_scope: &str, idempotency_key: &str) -> String {
     format!(
         "sesn_{}",
-        awaken_session_contract::stable_fingerprint(&(
+        awaken_agent_contract::stable_fingerprint(&(
             "managed-session-create-idempotency",
             owner_scope,
             idempotency_key,
@@ -28,10 +28,10 @@ pub fn managed_session_id_from_idempotency(owner_scope: &str, idempotency_key: &
 
 fn agent_fingerprint(agent: &AgentRef) -> String {
     match agent {
-        AgentRef::Id(id) => awaken_session_contract::stable_fingerprint(&("id", id)),
+        AgentRef::Id(id) => awaken_agent_contract::stable_fingerprint(&("id", id)),
         AgentRef::Object(object) => match object.as_ref() {
             AgentRefObject::Agent { id, version } => {
-                awaken_session_contract::stable_fingerprint(&("agent", id, version))
+                awaken_agent_contract::stable_fingerprint(&("agent", id, version))
             }
             AgentRefObject::AgentWithOverrides {
                 id,
@@ -44,10 +44,10 @@ fn agent_fingerprint(agent: &AgentRef) -> String {
             } => {
                 let model = model.as_ref().map(|model| match model {
                     crate::types::agent::ModelInput::Id(id) => {
-                        awaken_session_contract::stable_fingerprint(&("id", id))
+                        awaken_agent_contract::stable_fingerprint(&("id", id))
                     }
                     crate::types::agent::ModelInput::Config(config) => {
-                        awaken_session_contract::stable_fingerprint(&(
+                        awaken_agent_contract::stable_fingerprint(&(
                             "config",
                             &config.id,
                             config.speed,
@@ -56,7 +56,7 @@ fn agent_fingerprint(agent: &AgentRef) -> String {
                         ))
                     }
                 });
-                awaken_session_contract::stable_fingerprint(&(
+                awaken_agent_contract::stable_fingerprint(&(
                     "agent_with_overrides",
                     id,
                     version,
@@ -86,7 +86,7 @@ fn request_fingerprint(
     )
     .map_err(|message| StateError::Run(super::RunError::bad_request(message)))?
     .map(|plan| plan.batch);
-    Ok(awaken_session_contract::stable_fingerprint(&(
+    Ok(awaken_agent_contract::stable_fingerprint(&(
         agent_fingerprint(&request.agent),
         &request.budget,
         initial_events,
@@ -108,7 +108,7 @@ impl ManagedState {
         let owner_scope = owner_scope.to_owned();
         let session_id = managed_session_id_from_idempotency(&owner_scope, idempotency_key);
         let request_fingerprint = request_fingerprint(&req, &session_id)?;
-        let idempotency = awaken_session_contract::IdempotencyRecord {
+        let idempotency = awaken_session_state_contract::IdempotencyRecord {
             key: format!("managed:session-create:{session_id}"),
             payload_hash: request_fingerprint,
         };
@@ -116,7 +116,7 @@ impl ManagedState {
             .application
             .replay_session_create(
                 &owner_scope,
-                &awaken_session_contract::SessionId::from(&session_id),
+                &awaken_session_types::SessionId::from(&session_id),
                 &idempotency,
             )
             .await
@@ -163,7 +163,7 @@ mod tests {
         // Constraints/invariants: the owner-scoped key plus canonical request
         // fingerprint selects exactly one durable Session; cache rehydration may
         // project that truth but cannot create or replace another aggregate.
-        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo());
         let original =
             Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
@@ -196,7 +196,7 @@ mod tests {
         );
         assert_eq!(restarted.list_sessions().len(), 1, "R3 does not replace");
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from(created.id))
+            repo.get(&awaken_session_types::SessionId::from(created.id))
                 .await
                 .expect("durable Session remains")
                 .title

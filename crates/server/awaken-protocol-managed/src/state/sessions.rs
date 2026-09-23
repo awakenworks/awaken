@@ -327,7 +327,7 @@ impl ManagedState {
         req: SessionCreateParams,
         owner_scope: &str,
         explicit_id: Option<String>,
-        idempotency: Option<awaken_session_contract::IdempotencyRecord>,
+        idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
     ) -> Result<Session, StateError> {
         self.create_session_with_identity_from(req, owner_scope, explicit_id, idempotency, None)
             .await
@@ -341,7 +341,7 @@ impl ManagedState {
         mut req: SessionCreateParams,
         owner_scope: &str,
         explicit_id: Option<String>,
-        idempotency: Option<awaken_session_contract::IdempotencyRecord>,
+        idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
         deployment_initial_events: Option<Vec<InboundEvent>>,
     ) -> Result<Session, StateError> {
         req.validate_common()
@@ -430,7 +430,7 @@ impl ManagedState {
                         let sequence = self.session_seq.fetch_add(1, Ordering::SeqCst);
                         let candidate = format!(
                             "sesn_{}",
-                            awaken_session_contract::stable_fingerprint(&(
+                            awaken_agent_contract::stable_fingerprint(&(
                                 "managed-session",
                                 &self.application.runtime_incarnation(),
                                 sequence,
@@ -438,10 +438,12 @@ impl ManagedState {
                         );
                         let repository_absent = match self
                             .application
-                            .session(&awaken_session_contract::SessionId::from(&candidate))
+                            .session(&awaken_session_types::SessionId::from(&candidate))
                             .await
                         {
-                            Err(awaken_session_contract::SessionRepositoryError::NotFound) => true,
+                            Err(
+                                awaken_session_state_contract::SessionRepositoryError::NotFound,
+                            ) => true,
                             Ok(_) => false,
                             Err(error) => return Err(StateError::from(error)),
                         };
@@ -517,7 +519,7 @@ impl ManagedState {
             .unwrap_or_else(|| self.application.model());
         let (selected_model, model_override): (
             Option<ModelConfig>,
-            Option<awaken_session_contract::SessionModelOverride>,
+            Option<awaken_session_configuration_contract::SessionModelOverride>,
         ) = match req.agent.model_override() {
             ModelOverride::Set(cfg) => {
                 let inference = cfg.inference_options();
@@ -667,7 +669,7 @@ impl ManagedState {
         self.application
             .validate_session_sandbox_layout(
                 &id,
-                &awaken_session_contract::SessionSandboxLayout {
+                &awaken_session_configuration_contract::SessionSandboxLayout {
                     workspace_id: owner_scope.clone(),
                     agent_id: agent_id.clone(),
                     agent_revision: config_view.as_ref().and_then(|profile| {
@@ -731,7 +733,7 @@ impl ManagedState {
         let capability_tools = project::session_tool_configuration(&project::agent_tools(&caps));
         let inherited_tools = config_view.as_ref().map_or_else(
             || capability_tools.clone(),
-            |profile| awaken_session_contract::SessionToolConfiguration {
+            |profile| awaken_session_configuration_contract::SessionToolConfiguration {
                 toolsets: if profile.toolsets.is_empty() {
                     capability_tools.toolsets.clone()
                 } else {
@@ -783,7 +785,7 @@ impl ManagedState {
                 awaken_runtime_contract::agent_bindings::ToolsetSource::Agent => None,
             })
             .collect::<Vec<_>>();
-        awaken_session_contract::validate_mcp_toolset_pairing(
+        awaken_session_configuration_contract::validate_mcp_toolset_pairing(
             &effective_server_names,
             &effective_toolset_names,
         )
@@ -802,7 +804,7 @@ impl ManagedState {
                 let snapshot = self
                     .application
                     .resolve_managed_list_price_snapshot(
-                        awaken_session_contract::ManagedListPriceRequest {
+                        awaken_session_budget_contract::ManagedListPriceRequest {
                             occurred_at_unix_ms,
                             model_refs,
                         },
@@ -810,16 +812,19 @@ impl ManagedState {
                     .await
                     .map_err(|error| {
                         let run = match error {
-                            awaken_session_contract::ManagedListPriceError::Unavailable(_) => {
-                                RunError::unavailable(error.to_string())
-                            }
+                            awaken_session_budget_contract::ManagedListPriceError::Unavailable(
+                                _,
+                            ) => RunError::unavailable(error.to_string()),
                             _ => RunError::bad_request(error.to_string()),
                         };
                         StateError::Run(run)
                     })?;
-                awaken_session_contract::SessionBudgetState::active(max_list_cost_minor, snapshot)
+                awaken_session_budget_contract::SessionBudgetState::active(
+                    max_list_cost_minor,
+                    snapshot,
+                )
             }
-            None => awaken_session_contract::SessionBudgetState::Absent,
+            None => awaken_session_budget_contract::SessionBudgetState::Absent,
         };
         // Cause/effect rules for Session-owned Repository participants:
         // R1 all pure Environment/Skill/tool/budget validation succeeds ->
@@ -895,12 +900,12 @@ impl ManagedState {
             }
             return Err(first);
         }
-        let creation_intent = awaken_session_contract::SessionCreationIntent {
-            control: awaken_session_contract::ControlSessionCreationInputs {
-                mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
+        let creation_intent = awaken_session_configuration_contract::SessionCreationIntent {
+            control: awaken_session_configuration_contract::ControlSessionCreationInputs {
+                mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
                 environment,
                 runtime_placement: self.application.runtime_placement(),
-                mcp_authoring: awaken_session_contract::SessionMcpAuthoringContext {
+                mcp_authoring: awaken_session_configuration_contract::SessionMcpAuthoringContext {
                     ordered_vault_ids: req.vault_ids.clone(),
                 },
                 agent_id: agent_id.clone(),
@@ -911,10 +916,14 @@ impl ManagedState {
                 execution_model_ref,
                 model_override,
                 system_prompt: match req.agent.system_override() {
-                    None => awaken_session_contract::SessionSystemPromptSelection::Inherit,
-                    Some(None) => awaken_session_contract::SessionSystemPromptSelection::Clear,
+                    None => {
+                        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit
+                    }
+                    Some(None) => {
+                        awaken_session_configuration_contract::SessionSystemPromptSelection::Clear
+                    }
                     Some(Some(value)) => {
-                        awaken_session_contract::SessionSystemPromptSelection::Replace(
+                        awaken_session_configuration_contract::SessionSystemPromptSelection::Replace(
                             value.to_owned(),
                         )
                     }
@@ -1045,7 +1054,7 @@ impl ManagedState {
         }
         match self
             .application
-            .owner(&awaken_session_contract::SessionId::from(session_id))
+            .owner(&awaken_session_types::SessionId::from(session_id))
             .await
         {
             Ok(owner) => Ok(Some(owner)),
@@ -1232,7 +1241,7 @@ impl ManagedState {
         }
         let persisted = self
             .application
-            .session(&awaken_session_contract::SessionId::from(id))
+            .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         if persisted.is_hidden() {
@@ -1240,7 +1249,7 @@ impl ManagedState {
         }
         let owner_scope = self
             .application
-            .owner(&awaken_session_contract::SessionId::from(id))
+            .owner(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(Self::map_application_mutation_error)?;
         let record = SessionRecord::new(
@@ -1281,7 +1290,7 @@ impl ManagedState {
     pub fn get_session_with_revision(
         &self,
         id: &str,
-    ) -> Result<(Session, awaken_session_contract::SessionRevision), StateError> {
+    ) -> Result<(Session, awaken_session_types::SessionRevision), StateError> {
         let sessions = self.sessions.lock().unwrap();
         sessions
             .get(id)
@@ -1394,7 +1403,7 @@ impl ManagedState {
                 processed_at: transition
                     .session
                     .updated_at_unix_ms
-                    .map(awaken_session_contract::epoch_millis_to_rfc3339),
+                    .map(awaken_session_application_contract::epoch_millis_to_rfc3339),
             });
             self.broadcast_committed_from(id, record, from);
             sessions.remove(id);
@@ -1417,7 +1426,7 @@ impl ManagedState {
             lifecycle_event::SESSION_TERMINATED,
             observed_at,
         );
-        let archived_at = awaken_session_contract::epoch_millis_to_rfc3339(observed_at);
+        let archived_at = awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at);
         self.application
             .terminate_session(id, &archived_at, terminated_fact)
             .await

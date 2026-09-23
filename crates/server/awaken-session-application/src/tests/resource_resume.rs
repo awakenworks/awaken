@@ -1,10 +1,11 @@
 use super::*;
-use awaken_session_contract::SessionId;
-use awaken_session_contract::{
+use awaken_session_realization_contract::{
     ActivateSessionRealization, BeginSessionRealization, FrozenResourceTransitionUse,
-    SessionRealizationControl, SessionRealizationLease, SessionRealizationTarget,
-    SessionResourceManifest, SessionResourceMaterializationControl, SessionResourceState,
+    SessionRealizationControl, SessionRealizationTarget, SessionResourceMaterializationControl,
 };
+use awaken_session_resource_contract::{SessionRealizationLease, SessionResourceManifest};
+use awaken_session_state_contract::SessionResourceState;
+use awaken_session_types::SessionId;
 
 /// Cause/effect design: C1 retained claim pins A; C2 replacement B is pending;
 /// C3 Session Running/Idle (Awaiting boundary); C4 same/successor Worker; C5
@@ -19,7 +20,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
     for status in ["idle", "running"] {
         for replace in [false, true] {
             for successor in [false, true] {
-                let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+                let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
                     awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
                 );
                 let app = application_with_configuration(
@@ -32,18 +33,19 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                 );
                 let id = "retained-resource-run";
                 let mut session = persisted(id, false, status);
-                let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+                let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
                     &mut session.baseline
                 else {
                     unreachable!()
                 };
                 baseline.runtime_placement = SessionRuntimePlacement::Worker;
                 let active = skill_resources("pinned-skill");
-                let mut desired = awaken_session_contract::ResolvedSessionResources::try_new(
-                    file_resources("context-file").inputs().to_vec(),
-                    active.skills().to_vec(),
-                )
-                .unwrap();
+                let mut desired =
+                    awaken_session_resource_contract::ResolvedSessionResources::try_new(
+                        file_resources("context-file").inputs().to_vec(),
+                        active.skills().to_vec(),
+                    )
+                    .unwrap();
                 session.resources = SessionResourceState::from_active(active.clone());
                 session.realization = Some(SessionRealizationLease {
                     owner: "worker-a".into(),
@@ -137,7 +139,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     "exact Begin replay"
                 );
                 let intent =
-                    awaken_session_contract::SessionResourceMaterializationIntent::try_new_skill(
+                    awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new_skill(
                         id,
                         1,
                         active.skills()[0].clone(),
@@ -252,9 +254,9 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
 /// the root. Existing lease/terminal tests supply the orthogonal deny overrides.
 #[tokio::test]
 async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
-    use awaken_session_contract::SessionResourceMaterializationIntent;
+    use awaken_session_realization_contract::SessionResourceMaterializationIntent;
     for lifecycle in ["pending", "rollback", "committed"] {
-        let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
         );
         let app = application(
@@ -263,7 +265,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
         );
         let id = "materialization-pairs";
         let resources = |name| {
-            awaken_session_contract::ResolvedSessionResources::try_new(
+            awaken_session_resource_contract::ResolvedSessionResources::try_new(
                 file_resources(name).inputs().to_vec(),
                 skill_resources(name).skills().to_vec(),
             )
@@ -282,10 +284,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
         session.resources = SessionResourceState::from_active(active.clone());
         session
             .resources
-            .prepare(
-                &awaken_session_contract::SessionId::from(id),
-                desired.clone(),
-            )
+            .prepare(&awaken_session_types::SessionId::from(id), desired.clone())
             .unwrap();
         match lifecycle {
             "rollback" => session.resources.rollback("failed replacement").unwrap(),
@@ -334,7 +333,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
                                 "{lifecycle}/{revision}/{source}"
                             );
                         } else {
-                            assert!(matches!(result, Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))), "{lifecycle}/{revision}/{source}/{forged}");
+                            assert!(matches!(result, Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))), "{lifecycle}/{revision}/{source}/{forged}");
                         }
                         assert_eq!(
                             repo.get(&SessionId::from(id)).await.unwrap(),
@@ -355,7 +354,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
 #[tokio::test]
 async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources() {
     for revision in [1, 2, 99] {
-        let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
         );
         let app = application(
@@ -375,7 +374,7 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
         session
             .resources
             .prepare(
-                &awaken_session_contract::SessionId::from(id),
+                &awaken_session_types::SessionId::from(id),
                 file_resources("b"),
             )
             .unwrap();
@@ -383,20 +382,26 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
         create(repo.as_ref(), session).await;
         let before = repo.get(&SessionId::from(id)).await.unwrap();
         let result = app
-            .fail_session_realization(awaken_session_contract::FailSessionRealization {
-                session_id: id.into(),
-                lease,
-                prepared_resource_revision: Some(revision),
-                retryable: true,
-                source_run_id: None,
-                reason: "read unavailable".into(),
-            })
+            .fail_session_realization(
+                awaken_session_realization_contract::FailSessionRealization {
+                    session_id: id.into(),
+                    lease,
+                    prepared_resource_revision: Some(revision),
+                    retryable: true,
+                    source_run_id: None,
+                    reason: "read unavailable".into(),
+                },
+            )
             .await;
         let after = repo.get(&SessionId::from(id)).await.unwrap();
         if revision == 99 {
             assert!(matches!(
                 result,
-                Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+                Err(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                        _
+                    )
+                )
             ));
             assert_eq!(after, before);
         } else {
@@ -439,7 +444,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
     let pending_revision;
 
     {
-        let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path)
                 .expect("open Session authority"),
         );
@@ -447,7 +452,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
         pending_revision = session
             .resources
             .prepare(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 pending.clone(),
             )
             .unwrap();
@@ -467,7 +472,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
         assert_eq!(before_restart.resources.activations[0].attempts, 1, "R1/E1");
     }
 
-    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&path)
             .expect("reopen Session authority"),
     );
@@ -500,7 +505,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
     assert_eq!(settled.resources.activations[0].attempts, 2, "R2/E2");
     assert_eq!(
         settled.resources.activations[0].state,
-        awaken_session_contract::ActivationState::Active,
+        awaken_session_state_contract::ActivationState::Active,
         "R2/E3"
     );
     assert!(
@@ -532,7 +537,7 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
     // The lifecycle classifier and terminal-release record transitions are
     // covered independently by their contract decision tables; this test owns
     // the application-to-Runtime negative effect boundary.
-    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session authority"),
     );
@@ -542,7 +547,7 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
     session
         .resources
         .prepare(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             file_resources("never-active"),
         )
         .unwrap();
@@ -574,7 +579,7 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
                 == awaken_resource_contract::InputResourceId::File(
                     awaken_resource_contract::FileId::from("never-active"),
                 )
-                && activation.state == awaken_session_contract::ActivationState::Failed
+                && activation.state == awaken_session_state_contract::ActivationState::Failed
         }),
         "R2/E3"
     );

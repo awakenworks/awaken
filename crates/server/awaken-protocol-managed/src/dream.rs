@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use awaken_dream_application::DreamSessionSource;
-use awaken_session_contract::DreamUsage;
+use awaken_session_dream_contract::DreamUsage;
 use chrono::DateTime;
 
 #[async_trait]
@@ -12,7 +12,7 @@ impl DreamSessionSource for crate::ManagedState {
         workspace_id: &str,
         updated_after_ms: u64,
         limit: usize,
-    ) -> Vec<awaken_session_contract::SessionId> {
+    ) -> Vec<awaken_session_types::SessionId> {
         let mut sessions = self
             .list_sessions_scoped(workspace_id)
             .into_iter()
@@ -35,7 +35,7 @@ impl DreamSessionSource for crate::ManagedState {
         sessions
             .into_iter()
             .take(limit)
-            .map(|(_, id)| awaken_session_contract::SessionId::from(id))
+            .map(|(_, id)| awaken_session_types::SessionId::from(id))
             .collect()
     }
 

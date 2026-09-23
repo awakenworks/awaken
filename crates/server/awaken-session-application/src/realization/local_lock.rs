@@ -10,14 +10,14 @@
 //! The Worker-side driver feeds its Session runtime slot allocation to the
 //! contract-owned permit; the co-located driver has no slot, so this registry
 //! *is* its exclusion identity. Both mint through
-//! `awaken_session_contract::SessionRealizationPermit::acquire`, so this is the
+//! `awaken_session_realization_contract::SessionRealizationPermit::acquire`, so this is the
 //! same rule and the same admission kernel, not another authority: it grants no
 //! lease, decides no phase, and survives no restart.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use awaken_session_contract::SessionRealizationPermit;
+use awaken_session_realization_contract::SessionRealizationPermit;
 
 #[derive(Default)]
 pub(crate) struct LocalRealizationLocks(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
@@ -38,7 +38,7 @@ impl LocalRealizationLocks {
     pub(crate) async fn acquire(self: &Arc<Self>, session_id: &str) -> SessionRealizationPermit {
         let locks = self;
         SessionRealizationPermit::acquire(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             move || {
                 let identity = {
                     let mut registry = locks.0.lock().expect("local realization registry poisoned");

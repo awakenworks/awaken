@@ -28,7 +28,7 @@ use awaken_model_catalog::{
 };
 use awaken_protocol_managed::{VaultState, vault_router};
 use awaken_session_application::SessionCredentialSource;
-use awaken_session_contract::{
+use awaken_session_configuration_contract::{
     CredentialRefreshExchange, McpInspection, McpProbe, McpProbeFailure, McpProbeStatus,
     ProbeHttpResponse, RefreshExchangeOutcome, RefreshExchangeStatus,
 };
@@ -591,7 +591,8 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
         &usage,
     );
     let target =
-        awaken_session_contract::McpTarget::parse_http("https://flow.example.test/mcp").unwrap();
+        awaken_session_mcp_contract::McpTarget::parse_http("https://flow.example.test/mcp")
+            .unwrap();
     assert_eq!(
         SessionCredentialSource::mcp_access_for_source(
             h.state.as_ref(),
@@ -2368,7 +2369,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         &usage,
     );
     let target =
-        awaken_session_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
+        awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
 
     // Cause/effect decision table for the only plaintext-to-envelope boundary:
     //
@@ -2594,7 +2595,7 @@ async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
         &usage,
     );
     let target =
-        awaken_session_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
+        awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
 
     // Cause/effect: only an active, Workspace-bound, holder-authorized exact
     // revision opens once and reaches custody. The returned execution fact is
@@ -2660,7 +2661,7 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
         &usage,
     );
     let target =
-        awaken_session_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
+        awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
 
     // Partition testing: a Platform/Provider-only custodian and an MCP/Worker
     // request are disjoint classes. The request must retain the ordinary MCP

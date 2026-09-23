@@ -204,7 +204,7 @@ where
 /// # Panics
 /// If the outbox read fails, or the outbox is still draining at `timeout`.
 pub async fn wait_for_delivered_lifecycle_facts(
-    outbox: &dyn awaken_session_contract::LifecycleOutbox,
+    outbox: &dyn awaken_session_repository_contract::LifecycleOutbox,
     timeout: Duration,
     expectation: &str,
 ) {

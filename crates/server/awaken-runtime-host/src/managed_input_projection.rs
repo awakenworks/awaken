@@ -2,7 +2,7 @@
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_session_contract::RunError;
+use awaken_session_error_contract::RunError;
 
 /// Mint a fresh user message from plain text (Managed `user.message` content is
 /// concatenated to text before it enters the host).
@@ -19,7 +19,7 @@ pub(crate) fn user_message(content: Vec<ContentBlock>) -> Message {
 /// System identity, validation, and Role ordering cannot diverge.
 pub(crate) fn session_system_message(
     session_id: &str,
-    system: &awaken_session_contract::SessionUserRunSystemInput,
+    system: &awaken_session_event_contract::SessionUserRunSystemInput,
 ) -> Result<Message, RunError> {
     if session_id.trim().is_empty()
         || system.operation_id.trim().is_empty()
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn materialization_target_is_the_original_typed_request_target() {
-        let target = awaken_session_contract::McpTarget::parse_http(
+        let target = awaken_session_mcp_contract::McpTarget::parse_http(
             "https://credential-bound.example.test/mcp?tenant=exact",
         )
         .expect("valid target");

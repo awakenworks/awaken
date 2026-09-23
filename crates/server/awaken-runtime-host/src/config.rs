@@ -68,8 +68,10 @@ fn base_allow_rules(extra_allowed: &[String], deferred: &[String]) -> Vec<Permis
     let mut rules: Vec<PermissionRule> = hand_tool_descriptors()
         .into_iter()
         .filter(|descriptor| {
-            awaken_session_contract::is_agent_toolset_member(&descriptor.id)
-                && !awaken_session_contract::is_controlled_modification_member(&descriptor.id)
+            awaken_session_configuration_contract::is_agent_toolset_member(&descriptor.id)
+                && !awaken_session_configuration_contract::is_controlled_modification_member(
+                    &descriptor.id,
+                )
                 && !deferred.iter().any(|name| name == &descriptor.id)
         })
         .map(|descriptor| allow(&descriptor.id))
@@ -105,8 +107,10 @@ fn base_allow_rules(extra_allowed: &[String], deferred: &[String]) -> Vec<Permis
 /// the same membership that decides which tools are controlled modifications
 /// decides which are safe to run unattended, so the two can never disagree.
 fn observing_tool_ids() -> Vec<String> {
-    awaken_session_contract::agent_toolset_members()
-        .filter(|name| !awaken_session_contract::is_controlled_modification_member(name))
+    awaken_session_configuration_contract::agent_toolset_members()
+        .filter(|name| {
+            !awaken_session_configuration_contract::is_controlled_modification_member(name)
+        })
         .map(str::to_string)
         .collect()
 }
@@ -203,14 +207,15 @@ fn agent_toolset_permission_rules(
                 // executable policy for every omitted member rather than mere
                 // authoring metadata. Project the complete canonical roster;
                 // retain explicit Runtime-only Agent overrides separately.
-                for name in awaken_session_contract::agent_toolset_members() {
+                for name in awaken_session_configuration_contract::agent_toolset_members() {
                     let mut policy = toolset.policy_for(name);
                     // Ask-by-default for a controlled modification the author never
                     // named. `auto` is the author naming it — a deferral is a
                     // decision — so it passes through to the evaluator like any
                     // other authored requirement.
-                    if awaken_session_contract::is_controlled_modification_member(name)
-                        && !toolset.overrides.iter().any(|entry| entry.name == name)
+                    if awaken_session_configuration_contract::is_controlled_modification_member(
+                        name,
+                    ) && !toolset.overrides.iter().any(|entry| entry.name == name)
                         && policy.permission != ToolPermissionRequirement::Auto
                     {
                         policy.permission = ToolPermissionRequirement::AlwaysAsk;
@@ -220,11 +225,9 @@ fn agent_toolset_permission_rules(
                         None => deferred_members.push(name.to_string()),
                     }
                 }
-                for entry in toolset
-                    .overrides
-                    .iter()
-                    .filter(|entry| !awaken_session_contract::is_agent_toolset_member(&entry.name))
-                {
+                for entry in toolset.overrides.iter().filter(|entry| {
+                    !awaken_session_configuration_contract::is_agent_toolset_member(&entry.name)
+                }) {
                     match fixed_rule(&entry.name, entry.policy) {
                         Some(rule) => rules.push(rule),
                         None => deferred_members.push(entry.name.clone()),
@@ -345,8 +348,11 @@ pub(crate) fn builtin_hand_tools() -> Vec<(String, bool)> {
     hand_tool_descriptors()
         .into_iter()
         .map(|descriptor| {
-            let ask = !awaken_session_contract::is_agent_toolset_member(&descriptor.id)
-                || awaken_session_contract::is_controlled_modification_member(&descriptor.id);
+            let ask =
+                !awaken_session_configuration_contract::is_agent_toolset_member(&descriptor.id)
+                    || awaken_session_configuration_contract::is_controlled_modification_member(
+                        &descriptor.id,
+                    );
             (descriptor.id, ask)
         })
         .collect()
@@ -386,7 +392,7 @@ pub(crate) enum SessionToolsetProjection {
 /// no separate Session policy input.
 pub(crate) fn project_session_tool_override(
     snapshot: &mut ExecutableAgentSnapshot,
-    tools: &awaken_session_contract::SessionToolConfiguration,
+    tools: &awaken_session_configuration_contract::SessionToolConfiguration,
     toolsets: SessionToolsetProjection,
 ) -> bool {
     let mut changed = false;
@@ -428,7 +434,7 @@ pub(crate) fn project_session_tool_override(
 /// and recovered attempts all consume this same projection.
 pub(crate) fn project_session_tools(
     snapshot: &mut ExecutableAgentSnapshot,
-    tools: &awaken_session_contract::SessionToolConfiguration,
+    tools: &awaken_session_configuration_contract::SessionToolConfiguration,
 ) -> Result<(), serde_json::Error> {
     if project_session_tool_override(
         snapshot,
@@ -1051,8 +1057,8 @@ mod tests {
         // | B1 | T | F | E1 ask |
         // | B2 | F | T | E1 ask |
         let base = effective_ruleset(None, &[]);
-        for member in awaken_session_contract::agent_toolset_members() {
-            if awaken_session_contract::is_controlled_modification_member(member) {
+        for member in awaken_session_configuration_contract::agent_toolset_members() {
+            if awaken_session_configuration_contract::is_controlled_modification_member(member) {
                 assert_eq!(
                     base.decide(member, &serde_json::json!({})),
                     ToolPermissionBehavior::RequireConfirmation,
@@ -1098,8 +1104,9 @@ mod tests {
             ToolPermissionBehavior::Allow
         );
         for (tool_id, ask) in builtin_hand_tools() {
-            let official = awaken_session_contract::is_agent_toolset_member(&tool_id);
-            let controlled = awaken_session_contract::is_controlled_modification_member(&tool_id);
+            let official = awaken_session_configuration_contract::is_agent_toolset_member(&tool_id);
+            let controlled =
+                awaken_session_configuration_contract::is_controlled_modification_member(&tool_id);
             let expected = if official && !controlled {
                 ToolPermissionBehavior::Allow
             } else {

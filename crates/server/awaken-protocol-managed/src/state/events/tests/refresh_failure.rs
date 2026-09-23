@@ -118,7 +118,7 @@ async fn exhausted_projection_cache_revision_preserves_complete_warm_frame() {
         .unwrap();
     state
         .application
-        .begin_activity(&awaken_session_contract::SessionId::from(&session.id))
+        .begin_activity(&awaken_session_types::SessionId::from(&session.id))
         .await
         .unwrap();
     runtime.lifecycle.lock().unwrap().push(lifecycle(
@@ -199,7 +199,7 @@ async fn read_cut_fixture(with_child: bool) -> (RehydrateFake, Arc<ManagedState>
             0,
             "refresh-child-call",
             CoordinatedThreadLink {
-                session_id: awaken_session_contract::SessionId::from(&session.id),
+                session_id: awaken_session_types::SessionId::from(&session.id),
                 thread_id: ThreadId("refresh-child".into()),
                 target: CoordinatedThreadTarget::Agent {
                     agent_id: "researcher".into(),
@@ -427,7 +427,7 @@ async fn aggregate_usage_reuses_fenced_snapshots_without_independent_accounting_
             for (thread, tokens) in [(&id[..], root_tokens), ("refresh-child", child_tokens)] {
                 runtime.usage_by_thread.lock().unwrap().insert(
                     thread.into(),
-                    awaken_session_contract::SessionUsage {
+                    awaken_session_budget_contract::SessionUsage {
                         input_tokens: tokens,
                         active_seconds: 999,
                         ..Default::default()

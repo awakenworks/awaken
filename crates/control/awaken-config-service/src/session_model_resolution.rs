@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use awaken_session_contract::{
+use awaken_session_configuration_contract::{
     SessionModelPublication, SessionModelPublicationResolver, SessionModelResolutionError,
 };
 use awaken_tenancy::ScopeId;

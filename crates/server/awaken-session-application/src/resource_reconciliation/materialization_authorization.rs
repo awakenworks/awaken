@@ -1,6 +1,6 @@
 //! Session-root authorization for ordinary Resource materialization.
 
-use awaken_session_contract::{
+use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
 };
 
@@ -23,7 +23,7 @@ impl SessionApplication {
         // and must not invalidate an in-flight immutable Resource read. Exact
         // equality here incorrectly turned every heartbeat into ownership loss.
         if !session.realization.as_ref().is_some_and(|current| {
-            awaken_session_contract::realization_lease_authorizes(
+            awaken_session_realization_contract::realization_lease_authorizes(
                 current,
                 intent.lease(),
                 crate::activity::now_unix_ms(),
@@ -39,10 +39,10 @@ impl SessionApplication {
             .resources
             .retained_generation(intent.resource_revision())
             .is_some_and(|resources| match intent.target() {
-                awaken_session_contract::SessionResourceMaterializationTarget::Input(input) => {
+                awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input) => {
                     resources.inputs().contains(input)
                 }
-                awaken_session_contract::SessionResourceMaterializationTarget::Skill(binding) => {
+                awaken_session_realization_contract::SessionResourceMaterializationTarget::Skill(binding) => {
                     resources.skills().contains(binding)
                 }
             });

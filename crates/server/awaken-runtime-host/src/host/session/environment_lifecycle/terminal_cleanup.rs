@@ -14,9 +14,9 @@ impl SharedHost {
     /// and returns no durable preparation receipt.
     pub(crate) async fn prepare_terminal_cleanup_effect(
         &self,
-        effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_contract::SessionCleanupPreparation, HostError> {
+        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, HostError> {
         authorization.verify_for(&effect).map_err(|error| {
             HostError::unavailable_classified(
                 "session_terminal_cleanup_preparation_unauthorized",
@@ -288,7 +288,7 @@ impl SharedHost {
         // Protect even a no-Environment preparation from reporting success
         // after the terminal owner changed while source effects were in flight.
         let final_effect_fence = self.terminal_cleanup_effect_fence(&effect)?;
-        awaken_session_contract::SessionCleanupPreparation::try_new(
+        awaken_session_state_contract::SessionCleanupPreparation::try_new(
             &effect,
             provider_prepared_effect_fence.unwrap_or(final_effect_fence),
             artifact_receipts,
@@ -307,8 +307,8 @@ impl SharedHost {
     /// provider preparation are forbidden on this path.
     pub(crate) async fn dispose_terminal_cleanup_effect(
         &self,
-        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, HostError> {
+        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, HostError> {
         let session_id = &effect.command.session_id;
         let root_realization = self
             .session_slots
@@ -477,16 +477,14 @@ impl SharedHost {
                 crate::session_slot::EnvironmentResourceReconciliation::None;
         });
         self.terminal_cleanup_disposal_authorization(&effect)?;
-        Ok(awaken_session_contract::SessionCleanupDisposalReceipt::new(
-            &effect.command,
-        ))
+        Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
     }
 
     /// Retire only a prepared child after Control durably accepts its receipt.
     /// The root owns the shared Environment and must remain until disposal.
     pub(crate) async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
     ) {
         if effect.command.thread_id == effect.command.session_id {
             return;
@@ -503,7 +501,7 @@ impl SharedHost {
     /// accepts the physical-disposal receipt. This edge performs no I/O.
     pub(crate) async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         self.retire_terminal_projection_for_generation(
             effect.command.session_id.as_str(),
@@ -518,7 +516,7 @@ impl SharedHost {
     pub(crate) async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
     ) {
         self.retire_completed_terminal_cleanup_projection(session_id, lease)
             .await;
@@ -531,7 +529,7 @@ impl SharedHost {
     pub(crate) async fn retire_completed_terminal_cleanup_projection(
         &self,
         session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> bool {
         let projected_terminal = self
             .session_slots
@@ -547,7 +545,7 @@ impl SharedHost {
     async fn retire_terminal_projection_for_generation(
         &self,
         session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
         target: Option<&str>,
     ) -> bool {
         let Some(root_realization) = self
@@ -561,7 +559,9 @@ impl SharedHost {
             .session_slots
             .read(session_id, |slot| {
                 slot.realization_authority.lease().is_some_and(|current| {
-                    awaken_session_contract::realization_lease_generation_authorizes(current, lease)
+                    awaken_session_realization_contract::realization_lease_generation_authorizes(
+                        current, lease,
+                    )
                 })
             })
             .unwrap_or(false);
@@ -600,7 +600,7 @@ impl SharedHost {
                     .session_slots
                     .read(session_id, |slot| {
                         slot.realization_authority.lease().is_some_and(|current| {
-                            awaken_session_contract::realization_lease_generation_authorizes(
+                            awaken_session_realization_contract::realization_lease_generation_authorizes(
                                 current, lease,
                             )
                         })
@@ -629,7 +629,7 @@ impl SharedHost {
                 .session_slots
                 .read(session_id, |slot| {
                     slot.realization_authority.lease().is_some_and(|current| {
-                        awaken_session_contract::realization_lease_generation_authorizes(
+                        awaken_session_realization_contract::realization_lease_generation_authorizes(
                             current, lease,
                         )
                     })

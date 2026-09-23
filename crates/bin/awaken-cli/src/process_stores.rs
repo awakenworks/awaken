@@ -103,7 +103,7 @@ pub(super) struct CoordinatorStores {
     /// opens or receives Control's Resource-authoring/admin store.
     pub(super) resources: awaken_resource_application::ResourcesApplication,
     /// Durable home for the Managed Session aggregate and lifecycle outbox.
-    pub(super) sessions: Arc<dyn awaken_session_contract::SessionStore>,
+    pub(super) sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     /// Coordinator-owned short-lived application capabilities. It shares the
     /// selected Session database but has its own aggregate table and ledger.
     pub(super) application_access:
@@ -112,7 +112,7 @@ pub(super) struct CoordinatorStores {
     /// repository as Session.
     pub(super) deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>,
     /// The same physical Session store viewed through the Dream process-store port.
-    pub(super) dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
+    pub(super) dream_process_store: Arc<dyn awaken_session_dream_contract::DreamProcessStore>,
     /// Same Session application repository viewed through the extraction-work
     /// interface; kept separate from MemoryRepository and IAM.
     pub(super) memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
@@ -121,16 +121,16 @@ pub(super) struct CoordinatorStores {
     /// A second view of the exact same captured-content adapter for Control's
     /// authenticated erasure command.
     pub(super) captured_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
-    pub(super) environment_work: Arc<dyn awaken_session_contract::work_queue::WorkQueue>,
+    pub(super) environment_work: Arc<dyn awaken_session_work_contract::WorkQueue>,
 }
 
 /// Every typed port backed by the one canonical Managed Session repository.
 /// Process assembly retains these views and never opens the shared store twice.
 pub(super) struct SessionStoreViews {
-    pub(super) sessions: Arc<dyn awaken_session_contract::SessionStore>,
+    pub(super) sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     pub(super) deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>,
     pub(super) memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
-    pub(super) dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
+    pub(super) dream_process_store: Arc<dyn awaken_session_dream_contract::DreamProcessStore>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -199,7 +199,7 @@ pub(super) async fn open_session_store_views(
 pub(super) async fn open_environment_work(
     backend: &awaken_control::StoreBackend,
     postgres_schema: PostgresSchemaMode,
-) -> Result<Arc<dyn awaken_session_contract::work_queue::WorkQueue>, String> {
+) -> Result<Arc<dyn awaken_session_work_contract::WorkQueue>, String> {
     use awaken_control::StoreBackend;
 
     ensure_store_parent(backend)?;

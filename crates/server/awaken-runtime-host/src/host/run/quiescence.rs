@@ -49,7 +49,7 @@ impl SharedHost {
     pub async fn quiesce_terminal_delegations(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
+    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, HostError> {
         // Terminal control is deliberately Environment-free. A cold projection
         // must never materialize the sandbox, MCP connections, or current Agent
         // configuration merely to tear the Session down.

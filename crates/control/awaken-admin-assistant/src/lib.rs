@@ -874,12 +874,12 @@ fn mutating_audit_summary(
     arguments: &serde_json::Value,
 ) -> Result<String, ToolError> {
     let request_sha256 =
-        awaken_session_contract::canonical_json_sha256(MUTATING_TOOL_ARGUMENTS_DOMAIN, arguments)
+        awaken_agent_contract::canonical_json_sha256(MUTATING_TOOL_ARGUMENTS_DOMAIN, arguments)
             .map_err(|error| {
-            ToolError::DefinitiveFailure(format!(
-                "canonicalize `{tool}` arguments for durable audit: {error}"
-            ))
-        })?;
+                ToolError::DefinitiveFailure(format!(
+                    "canonicalize `{tool}` arguments for durable audit: {error}"
+                ))
+            })?;
     Ok(format!(
         "{target_summary}{REQUEST_SHA256_SEPARATOR}{}",
         request_sha256
@@ -1060,7 +1060,7 @@ struct DraftArgs {
     #[serde(default)]
     tool_discovery: awaken_runtime_contract::resolved::ToolDiscoverySettings,
     #[serde(default)]
-    permission_preset: Option<awaken_session_contract::AgentPermissionPreset>,
+    permission_preset: Option<awaken_session_configuration_contract::AgentPermissionPreset>,
     #[serde(default)]
     plugin_config: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -1084,7 +1084,7 @@ struct DraftAgent {
 }
 
 fn ensure_typed_mcp_policies(config: &mut AgentConfig) -> Result<(), String> {
-    awaken_session_contract::ensure_typed_mcp_toolset_policies(
+    awaken_session_configuration_contract::ensure_typed_mcp_toolset_policies(
         &mut config.toolsets,
         &config.mcp_servers,
         config.plugin_config.contains_key("permission"),
@@ -1093,12 +1093,12 @@ fn ensure_typed_mcp_policies(config: &mut AgentConfig) -> Result<(), String> {
 
 async fn apply_permission_preset(
     config: &mut AgentConfig,
-    preset: awaken_session_contract::AgentPermissionPreset,
+    preset: awaken_session_configuration_contract::AgentPermissionPreset,
     validator: &dyn DraftValidator,
 ) -> Result<(), String> {
     let allowed_runtime_override_ids = validator.runtime_agent_override_ids(config).await?;
-    awaken_session_contract::apply_agent_permission_preset(
-        awaken_session_contract::AgentPermissionPresetTarget {
+    awaken_session_configuration_contract::apply_agent_permission_preset(
+        awaken_session_configuration_contract::AgentPermissionPresetTarget {
             tool_ids: &mut config.tool_ids,
             toolsets: &mut config.toolsets,
             mcp_servers: &config.mcp_servers,
@@ -1249,7 +1249,7 @@ struct PatchFields {
     #[serde(default)]
     tool_discovery: Option<awaken_runtime_contract::resolved::ToolDiscoverySettings>,
     #[serde(default)]
-    permission_preset: Option<awaken_session_contract::AgentPermissionPreset>,
+    permission_preset: Option<awaken_session_configuration_contract::AgentPermissionPreset>,
     #[serde(default)]
     plugin_config: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default)]

@@ -34,9 +34,9 @@ impl awaken_deployment_application::DeploymentApplication
 pub async fn awaken_deployment_application::DeploymentApplication::archive(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
 pub async fn awaken_deployment_application::DeploymentApplication::archive_for_agent(&self, &str, &str) -> core::result::Result<usize, awaken_deployment_application::DeploymentApplicationError>
 pub fn awaken_deployment_application::DeploymentApplication::bind_executable_agents(&self, alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrationSource>)
-pub fn awaken_deployment_application::DeploymentApplication::bind_executable_projection_refresh(&self, alloc::sync::Arc<awaken_session_contract::executable_projection::ExecutableProjectionRefresh>)
+pub fn awaken_deployment_application::DeploymentApplication::bind_executable_projection_refresh(&self, alloc::sync::Arc<awaken_session_application_contract::executable_projection::ExecutableProjectionRefresh>)
 pub fn awaken_deployment_application::DeploymentApplication::bind_launcher(&self, alloc::sync::Arc<dyn awaken_deployment_application::DeploymentSessionLauncher>)
-pub fn awaken_deployment_application::DeploymentApplication::bind_lifecycle_notifier(&self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactNotifier>)
+pub fn awaken_deployment_application::DeploymentApplication::bind_lifecycle_notifier(&self, alloc::sync::Arc<dyn awaken_session_application_contract::lifecycle_delivery::LifecycleFactNotifier>)
 pub async fn awaken_deployment_application::DeploymentApplication::create(&self, awaken_deployment_contract::model::CreateDeploymentCommand) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
 pub async fn awaken_deployment_application::DeploymentApplication::from_repository(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<Self, awaken_deployment_application::DeploymentApplicationError>
 pub async fn awaken_deployment_application::DeploymentApplication::get(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>

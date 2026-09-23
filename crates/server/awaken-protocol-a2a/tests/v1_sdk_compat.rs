@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_session_contract::{
+use awaken_session_application_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::{Router, body::Body, http::Request};

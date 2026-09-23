@@ -105,7 +105,7 @@ impl ManagedState {
                 processed_at: outcome
                     .session
                     .updated_at_unix_ms
-                    .map(awaken_session_contract::epoch_millis_to_rfc3339),
+                    .map(awaken_session_application_contract::epoch_millis_to_rfc3339),
             };
             if let Some(predecessor) = predecessor.as_ref() {
                 record
@@ -137,10 +137,10 @@ impl ManagedState {
         &self,
         id: &str,
         command: awaken_session_application::SessionUpdateCommand,
-    ) -> Result<(Session, awaken_session_contract::SessionRevision), StateError> {
+    ) -> Result<(Session, awaken_session_types::SessionRevision), StateError> {
         let outcome = match self
             .application
-            .update_session(&awaken_session_contract::SessionId::from(id), command)
+            .update_session(&awaken_session_types::SessionId::from(id), command)
             .await
         {
             Ok(outcome) => outcome,

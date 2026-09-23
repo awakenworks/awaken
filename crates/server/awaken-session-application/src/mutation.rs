@@ -1,11 +1,12 @@
 //! Canonical durable Session root mutation boundary.
 
 use super::*;
-use awaken_session_contract::{
+use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
-    SessionRepositoryError, SessionRevision,
+    SessionRepositoryError,
 };
+use awaken_session_types::SessionRevision;
 
 use crate::creation::{
     CompleteSessionCreateResult, CompleteSessionRoot, DurableSessionRoot,
@@ -19,7 +20,7 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
             SessionMutationError::IdempotencyMismatch
         }
         SessionRepositoryError::Conflict(_conflict) => SessionMutationError::Conflict,
-        SessionRepositoryError::Unavailable(message)
+        SessionRepositoryError::AuthorityUnavailable(message)
         | SessionRepositoryError::Corrupt(message)
         | SessionRepositoryError::InvalidMutation(message) => {
             SessionMutationError::Unavailable(message)
@@ -41,7 +42,7 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
 /// ```compile_fail,E0451
 /// use awaken_session_application::SnapshotCommit;
 ///
-/// fn fabricate(session: awaken_session_contract::PersistedSession) -> SnapshotCommit {
+/// fn fabricate(session: awaken_session_state_contract::PersistedSession) -> SnapshotCommit {
 ///     SnapshotCommit {
 ///         session,
 ///         transitioned: true,
@@ -146,7 +147,7 @@ impl SessionApplication {
         operation: &str,
     ) -> IdempotencyRecord {
         let sequence = self.mutation_sequence.fetch_add(1, Ordering::Relaxed);
-        let identity = awaken_session_contract::stable_fingerprint(&(
+        let identity = awaken_agent_contract::stable_fingerprint(&(
             "session-application-mutation-v1",
             self.runtime_incarnation.as_str(),
             sequence,
@@ -165,7 +166,7 @@ impl SessionApplication {
 
     pub async fn owner(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<String, SessionMutationError> {
         self.sessions_repo
             .owner(session_id)
@@ -208,10 +209,10 @@ impl SessionApplication {
             .await
             .map_err(SessionCreationError::repository)?;
         match result {
-            awaken_session_contract::SessionCreateResult::Applied(session) => Ok(
+            awaken_session_state_contract::SessionCreateResult::Applied(session) => Ok(
                 CompleteSessionCreateResult::Applied(DurableSessionRoot::from_applied(session)?),
             ),
-            awaken_session_contract::SessionCreateResult::Replayed(session) => {
+            awaken_session_state_contract::SessionCreateResult::Replayed(session) => {
                 Ok(CompleteSessionCreateResult::Replayed(
                     DurableSessionRoot::from_recovery(session)
                         .map_err(|message| SessionCreationError::Internal(message.into()))?,
@@ -226,7 +227,7 @@ impl SessionApplication {
     pub async fn replay_session_create(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.replay_session_create_with_completion(
@@ -246,7 +247,7 @@ impl SessionApplication {
     pub async fn replay_accepted_session_create(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.replay_session_create_with_completion(
@@ -261,7 +262,7 @@ impl SessionApplication {
     async fn replay_session_create_with_completion(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         idempotency: &IdempotencyRecord,
         completion: SessionCreationCompletion,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {

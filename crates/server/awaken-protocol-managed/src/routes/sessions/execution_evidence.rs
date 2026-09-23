@@ -67,7 +67,7 @@ pub async fn get_session_execution_evidence(
 ) -> Result<Json<awaken_protocol_awaken::SessionExecutionEvidence>, WireErr> {
     let observation = state
         .session_application()
-        .session_execution_observation(&owner_scope, &awaken_session_contract::SessionId::from(id))
+        .session_execution_observation(&owner_scope, &awaken_session_types::SessionId::from(id))
         .await
         .map_err(session_projection_error)?;
     Ok(Json(project_execution_evidence(observation)))
@@ -94,7 +94,7 @@ mod tests {
                 model: "deepseek-v4-pro".into(),
                 execution_model_ref: "deepseek-v4-pro".into(),
                 backend_ref: Some("native".into()),
-                execution: awaken_session_contract::SessionExecutionState::Running,
+                execution: awaken_session_state_contract::SessionExecutionState::Running,
                 runs: vec![
                     awaken_session_application::SessionRunExecutionObservation {
                         run_id: RunId("run-observed".into()),

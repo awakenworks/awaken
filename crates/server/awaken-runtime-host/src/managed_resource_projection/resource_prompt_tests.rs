@@ -1,6 +1,6 @@
 use super::*;
 use awaken_resource_contract::{BindingId, FileId, ResourceAccess};
-use awaken_session_contract::{ResolvedInput, ResolvedInputSource};
+use awaken_session_resource_contract::{ResolvedInput, ResolvedInputSource};
 
 fn file(instructions: Option<&str>) -> ResolvedInput {
     ResolvedInput {

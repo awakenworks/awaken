@@ -230,7 +230,9 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::ExecutableAgentProjectionRefresh for ToggleProjectionRefresh {
+    impl awaken_session_application_contract::ExecutableAgentProjectionRefresh
+        for ToggleProjectionRefresh
+    {
         async fn refresh_agent_projection(&self) -> Result<(), String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
@@ -242,7 +244,9 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::ExecutableEnvironmentProjectionRefresh for ToggleProjectionRefresh {
+    impl awaken_session_application_contract::ExecutableEnvironmentProjectionRefresh
+        for ToggleProjectionRefresh
+    {
         async fn refresh_environment_projection(&self) -> Result<(), String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
@@ -295,7 +299,7 @@ mod tests {
         let application = DeploymentApplication::new();
         let refresh = Arc::new(ToggleProjectionRefresh::default());
         application.bind_executable_projection_refresh(Arc::new(
-            awaken_session_contract::ExecutableProjectionRefresh::new(
+            awaken_session_application_contract::ExecutableProjectionRefresh::new(
                 refresh.clone(),
                 refresh.clone(),
             ),

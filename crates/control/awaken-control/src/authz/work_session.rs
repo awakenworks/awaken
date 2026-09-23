@@ -9,7 +9,7 @@ use axum::extract::Request;
 /// True only for the complete proof the outer WorkQueue capability edge stamps.
 pub(super) fn has_work_session_access(req: &Request) -> bool {
     req.extensions()
-        .get::<awaken_session_contract::work_queue::WorkSessionAccess>()
+        .get::<awaken_session_work_contract::WorkSessionAccess>()
         .is_some()
         && req
             .extensions()
@@ -51,16 +51,16 @@ mod tests {
                 .body(Body::empty())
                 .unwrap();
             if work {
-                request.extensions_mut().insert(
-                    awaken_session_contract::work_queue::WorkSessionAccess {
+                request
+                    .extensions_mut()
+                    .insert(awaken_session_work_contract::WorkSessionAccess {
                         work_id: "work_1".into(),
                         environment_id: "env_1".into(),
                         session_id: "sesn_1".into(),
                         lease_owner: "owner".into(),
                         lease_epoch: 1,
                         expires_at_unix_ms: 10,
-                    },
-                );
+                    });
             }
             if workspace {
                 request

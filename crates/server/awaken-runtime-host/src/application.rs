@@ -47,7 +47,7 @@ enum RenewalFailureDisposition {
 }
 
 fn realization_renewal_failure_disposition(
-    error: &awaken_session_contract::SessionRealizationControlFailure,
+    error: &awaken_session_realization_contract::SessionRealizationControlFailure,
 ) -> RenewalFailureDisposition {
     if error.proves_current_realization_cannot_continue() {
         RenewalFailureDisposition::RevokeImmediately
@@ -57,18 +57,18 @@ fn realization_renewal_failure_disposition(
 }
 
 fn failed_realization_invalidates_projection(
-    current: &awaken_session_contract::SessionRealizationLease,
-    failed: &awaken_session_contract::SessionRealizationLease,
+    current: &awaken_session_resource_contract::SessionRealizationLease,
+    failed: &awaken_session_resource_contract::SessionRealizationLease,
 ) -> bool {
-    awaken_session_contract::realization_lease_generation_authorizes(current, failed)
+    awaken_session_realization_contract::realization_lease_generation_authorizes(current, failed)
 }
 
 fn terminal_cleanup_drive_error(
     session_id: &str,
-    error: awaken_session_contract::SessionRealizationDriveError,
+    error: awaken_session_realization_contract::SessionRealizationDriveError,
 ) -> crate::HostError {
     match error {
-        awaken_session_contract::SessionRealizationDriveError::Effect(error) => {
+        awaken_session_realization_contract::SessionRealizationDriveError::Effect(error) => {
             crate::managed_adapter_error::from_run_error(error)
         }
         error => crate::HostError::internal(format!(
@@ -80,7 +80,7 @@ fn terminal_cleanup_drive_error(
 #[cfg(kani)]
 #[kani::proof]
 fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed() {
-    use awaken_session_contract::SessionRealizationControlFailure;
+    use awaken_session_realization_contract::SessionRealizationControlFailure;
 
     let selector = kani::any::<u8>() % 8;
     let error = match selector {
@@ -111,7 +111,7 @@ fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_close
 #[cfg(test)]
 mod realization_renewal_tests {
     use super::*;
-    use awaken_session_contract::SessionRealizationControlFailure;
+    use awaken_session_realization_contract::SessionRealizationControlFailure;
 
     #[test]
     fn terminal_session_replies_retire_only_the_stale_local_projection() {
@@ -162,7 +162,7 @@ mod realization_renewal_tests {
         // | F2 renewed | yes | later | no | E1 |
         // | F3 regressed | yes | earlier | no | E2 |
         // | F4 replacement | no | any | yes | E2 |
-        let failed = awaken_session_contract::SessionRealizationLease {
+        let failed = awaken_session_resource_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 7,
@@ -172,7 +172,7 @@ mod realization_renewal_tests {
             ("F1", failed.clone(), true),
             (
                 "F2",
-                awaken_session_contract::SessionRealizationLease {
+                awaken_session_resource_contract::SessionRealizationLease {
                     expires_at_unix_ms: 20,
                     ..failed.clone()
                 },
@@ -180,7 +180,7 @@ mod realization_renewal_tests {
             ),
             (
                 "F3",
-                awaken_session_contract::SessionRealizationLease {
+                awaken_session_resource_contract::SessionRealizationLease {
                     expires_at_unix_ms: 9,
                     ..failed.clone()
                 },
@@ -188,7 +188,7 @@ mod realization_renewal_tests {
             ),
             (
                 "F4",
-                awaken_session_contract::SessionRealizationLease {
+                awaken_session_resource_contract::SessionRealizationLease {
                     epoch: 8,
                     expires_at_unix_ms: 20,
                     ..failed.clone()
@@ -288,7 +288,7 @@ impl SessionContextAttemptExecutor {
                     Message::text(
                         MessageId(format!(
                             "session-context:{}",
-                            awaken_session_contract::stable_fingerprint(&(
+                            awaken_agent_contract::stable_fingerprint(&(
                                 self.session_id.as_str(),
                                 prompt.as_str(),
                             ))
@@ -661,26 +661,27 @@ mod acp_context_tests {
         );
         let publication = activation("genai");
         let retained = publication.snapshot.clone();
-        let flow_policy = |enabled| awaken_session_contract::SessionToolConfiguration {
-            toolsets: vec![ToolsetPolicy {
-                source: ToolsetSource::Mcp {
-                    server_name: "flow".into(),
-                },
-                default: ToolExecutionPolicy::default(),
-                overrides: vec![ToolPolicyOverride::new(
-                    "workflow_get",
-                    ToolExecutionPolicy {
-                        enabled,
-                        permission: ToolPermissionRequirement::AlwaysAllow,
+        let flow_policy =
+            |enabled| awaken_session_configuration_contract::SessionToolConfiguration {
+                toolsets: vec![ToolsetPolicy {
+                    source: ToolsetSource::Mcp {
+                        server_name: "flow".into(),
                     },
-                )],
-            }],
-            client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
-                name: "resource_request".into(),
-                description: "Request one frozen WorkUnit resource".into(),
-                input_schema: serde_json::json!({"type": "object"}),
-            }],
-        };
+                    default: ToolExecutionPolicy::default(),
+                    overrides: vec![ToolPolicyOverride::new(
+                        "workflow_get",
+                        ToolExecutionPolicy {
+                            enabled,
+                            permission: ToolPermissionRequirement::AlwaysAllow,
+                        },
+                    )],
+                }],
+                client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
+                    name: "resource_request".into(),
+                    description: "Request one frozen WorkUnit resource".into(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                }],
+            };
         slots.update("session-1", |slot| slot.tools = Some(flow_policy(true)));
 
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
@@ -842,7 +843,7 @@ impl crate::session_slot::SessionRuntimeSlot {
 
     fn install_validated_environment_projection(
         &mut self,
-        environment: &awaken_session_contract::EnvironmentSnapshot,
+        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
         projection: crate::session_slot::FrozenEnvironmentRuntimeProjection,
     ) {
         self.environment_projection.get_or_insert(projection);
@@ -853,7 +854,7 @@ impl crate::session_slot::SessionRuntimeSlot {
     /// legacy preparation entrance and complete fenced projection publication.
     fn project_validated_session_init(
         &mut self,
-        init: &awaken_session_contract::SessionInit,
+        init: &awaken_session_configuration_contract::SessionInit,
         environment: crate::session_slot::FrozenEnvironmentRuntimeProjection,
     ) {
         self.install_validated_environment_projection(&init.environment, environment);
@@ -875,7 +876,7 @@ impl crate::SharedHost {
     pub(crate) fn install_session_realization_lease(
         &self,
         session_id: &str,
-        lease: awaken_session_contract::SessionRealizationLease,
+        lease: awaken_session_resource_contract::SessionRealizationLease,
     ) -> Result<(), crate::HostError> {
         let changed = self.authorize_worker_effect(|| {
             self.session_slots.update(session_id, |slot| {
@@ -900,7 +901,7 @@ impl crate::SharedHost {
     pub(crate) fn invalidate_session_realization_lease(
         &self,
         session_id: &str,
-        failed: &awaken_session_contract::SessionRealizationLease,
+        failed: &awaken_session_resource_contract::SessionRealizationLease,
     ) {
         self.session_slots.modify(session_id, |slot| {
             if slot
@@ -919,7 +920,7 @@ impl crate::SharedHost {
     /// monotonically extended authority.
     pub(crate) fn mcp_generation_is_authorized_at(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
         now_unix_ms: u64,
     ) -> bool {
         self.mcp_generation_root_authority(generation)
@@ -927,7 +928,7 @@ impl crate::SharedHost {
             // before installing a complete local Session projection. A relay
             // capability, by contrast, always requires the current root.
             .unwrap_or_else(|| {
-                awaken_session_contract::realization_lease_is_live_at(
+                awaken_session_realization_contract::realization_lease_is_live_at(
                     generation.lease_expires_at_unix_ms,
                     now_unix_ms,
                 )
@@ -938,7 +939,7 @@ impl crate::SharedHost {
     /// Absence is explicit: it is never a live lease or proof of renewal.
     pub(crate) fn mcp_generation_root_authority(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<bool> {
         self.session_slots
             .read(generation.session_id.as_str(), |slot| {
@@ -961,9 +962,9 @@ impl crate::SharedHost {
     /// assignment before this recovery drive observed it.
     pub(crate) async fn reconcile_terminal_cleanup_for_lease(
         &self,
-        control: &dyn awaken_session_contract::SessionTerminalCleanupControl,
-        session_id: &awaken_session_contract::SessionId,
-        lease: &awaken_session_contract::SessionRealizationLease,
+        control: &dyn awaken_session_realization_contract::SessionTerminalCleanupControl,
+        session_id: &awaken_session_types::SessionId,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> Result<bool, crate::HostError> {
         match control.terminal_cleanup_work(session_id, lease).await {
             Ok(Some(_)) => {
@@ -993,7 +994,9 @@ impl crate::SharedHost {
                     Ok(false)
                 }
             }
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
+            Err(
+                awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
+            ) => {
                 let _ = self.interrupt(session_id.as_str()).await;
                 if !self
                     .retire_completed_terminal_cleanup_projection(session_id.as_str(), lease)
@@ -1020,7 +1023,7 @@ impl crate::SharedHost {
     /// imposing a timeout on its durable effects.
     pub async fn recover_terminal_cleanup_assignments(
         &self,
-        target: awaken_session_contract::SessionRealizationTarget,
+        target: awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<usize, crate::HostError> {
         const MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP: usize = 64;
 
@@ -1083,7 +1086,7 @@ impl crate::SharedHost {
         &self,
         session_id: &str,
         expected_projection: Option<(
-            &awaken_session_contract::SessionRealizationLease,
+            &awaken_session_resource_contract::SessionRealizationLease,
             &Arc<tokio::sync::Mutex<()>>,
         )>,
     ) -> Result<bool, crate::HostError> {
@@ -1208,7 +1211,7 @@ impl crate::SharedHost {
     pub(crate) fn project_session_init(
         &self,
         thread: &str,
-        init: &awaken_session_contract::SessionInit,
+        init: &awaken_session_configuration_contract::SessionInit,
     ) -> Result<(), crate::HostError> {
         let environment = crate::provisioning::project_environment(&init.environment);
         self.session_slots.update(thread, |slot| {
@@ -1221,10 +1224,12 @@ impl crate::SharedHost {
     pub(crate) async fn install_frozen_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_contract::FrozenSessionProjection,
+        projection: awaken_session_realization_contract::FrozenSessionProjection,
         claim: Option<&RunClaim>,
         synchronize_resources: bool,
-        realization_lease: Option<awaken_session_contract::ObservedSessionRealizationLease>,
+        realization_lease: Option<
+            awaken_session_realization_contract::ObservedSessionRealizationLease,
+        >,
     ) -> Result<(), crate::HostError> {
         self.install_frozen_session_projection_with_resource_authority(
             thread,
@@ -1247,7 +1252,7 @@ impl crate::SharedHost {
     pub(crate) async fn install_dispatch_frozen_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_contract::FrozenSessionProjection,
+        projection: awaken_session_realization_contract::FrozenSessionProjection,
     ) -> Result<(), crate::HostError> {
         self.install_frozen_session_projection_with_resource_authority(
             thread,
@@ -1262,10 +1267,12 @@ impl crate::SharedHost {
     async fn install_frozen_session_projection_with_resource_authority(
         &self,
         thread: &str,
-        projection: awaken_session_contract::FrozenSessionProjection,
+        projection: awaken_session_realization_contract::FrozenSessionProjection,
         claim: Option<&RunClaim>,
         resource_mode: FrozenResourceProjectionMode,
-        realization_lease: Option<awaken_session_contract::ObservedSessionRealizationLease>,
+        realization_lease: Option<
+            awaken_session_realization_contract::ObservedSessionRealizationLease,
+        >,
     ) -> Result<(), crate::HostError> {
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
@@ -1275,8 +1282,8 @@ impl crate::SharedHost {
         let has_mcp_projection = projection.mcp.iter().any(|attachment| {
             !matches!(
                 attachment.state,
-                awaken_session_contract::McpAttachmentState::Removed
-                    | awaken_session_contract::McpAttachmentState::Failed
+                awaken_session_mcp_contract::McpAttachmentState::Removed
+                    | awaken_session_mcp_contract::McpAttachmentState::Failed
             )
         });
         let resource_transition = projection
@@ -1341,7 +1348,7 @@ impl crate::SharedHost {
         // and every Local dispatch retains the exact provider-effective check.
         if resource_mode == FrozenResourceProjectionMode::Dispatch
             && projection.baseline.runtime_placement
-                == awaken_session_contract::SessionRuntimePlacement::Worker
+                == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
         {
             self.validate_structural_managed_resource_layout(
                 thread,
@@ -1547,7 +1554,7 @@ impl crate::SharedHost {
     #[cfg(test)]
     pub(crate) async fn install_test_terminal_cleanup_projection(
         &self,
-        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
     ) -> Result<(), crate::HostError> {
         let started = awaken_local_process::authority_proof_started().unwrap();
         self.install_terminal_cleanup_projection(
@@ -1562,8 +1569,8 @@ impl crate::SharedHost {
     /// effect path.
     pub(crate) async fn install_terminal_cleanup_projection(
         &self,
-        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
-        proof: awaken_session_contract::ObservedSessionRealizationLease,
+        assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
+        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<(), crate::HostError> {
         if proof.lease != assignment.authority.lease {
             return Err(crate::HostError::internal(
@@ -1592,7 +1599,7 @@ impl crate::SharedHost {
     pub(crate) fn install_environment_projection(
         &self,
         thread: &str,
-        environment: &awaken_session_contract::EnvironmentSnapshot,
+        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> Result<(), crate::HostError> {
         let projection = crate::provisioning::project_environment(environment);
         self.session_slots.update(thread, |slot| {
@@ -1678,7 +1685,7 @@ pub(crate) fn project_session_mounts(
 }
 
 pub(crate) fn baseline_projection(
-    baseline: &awaken_session_contract::SessionBaseline,
+    baseline: &awaken_session_configuration_contract::SessionBaseline,
 ) -> crate::session_slot::FrozenBaselineRuntimeProjection {
     baseline.clone()
 }
@@ -1698,8 +1705,8 @@ mod terminal_cleanup_drive_error_tests {
         // Decision rules: M1=C1=>E1; M2=C2=>E2.
         let effect = terminal_cleanup_drive_error(
             "session-a",
-            awaken_session_contract::SessionRealizationDriveError::Effect(
-                awaken_session_contract::RunError::unavailable_classified(
+            awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                awaken_session_error_contract::RunError::unavailable_classified(
                     "terminal_provider_retry",
                     "provider is temporarily unavailable",
                 ),
@@ -1710,8 +1717,8 @@ mod terminal_cleanup_drive_error_tests {
 
         let control = terminal_cleanup_drive_error(
             "session-a",
-            awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::Conflict,
+            awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Conflict,
             ),
         );
         assert_eq!(control.kind, HostErrorKind::Internal, "M2/E2");
@@ -1735,21 +1742,23 @@ mod network_policy_tests {
     /// Empty managers disappear and no protocol DTO reaches provisioning.
     #[test]
     fn environment_packages_project_losslessly_to_the_provisioning_contract() {
-        let environment = awaken_session_contract::EnvironmentSnapshot {
+        let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
             environment_id: "env_packages".into(),
-            revision: awaken_session_contract::EnvironmentRevision(3),
+            revision: awaken_environment_contract::EnvironmentRevision(3),
             self_hosted: false,
-            config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp".into()),
+            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+                "fp".into(),
+            ),
             sandbox: Default::default(),
             sandbox_provisioning: Default::default(),
             idle_retention: Default::default(),
-            packages: awaken_session_contract::EnvironmentPackages {
+            packages: awaken_environment_contract::EnvironmentPackages {
                 npm: vec!["tsx@4".into()],
                 pip: vec!["httpx==0.28".into()],
                 ..Default::default()
             },
             prepared_image: None,
-            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         };

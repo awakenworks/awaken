@@ -14,7 +14,9 @@ authority = "dream"
 test-support = []
 
 [dependencies]
-awaken-session-contract.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-dream-contract.workspace = true
+awaken-session-types.workspace = true
 async-trait.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
 serde.workspace = true

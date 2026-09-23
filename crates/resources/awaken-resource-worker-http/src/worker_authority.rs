@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use awaken_session_contract::SessionRealizationLease;
+use awaken_session_resource_contract::SessionRealizationLease;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{VerifiedWorkerContext, verify_current_worker_identity};
 use axum::http::StatusCode;
@@ -80,7 +80,7 @@ pub(crate) async fn verify_session_worker_effect(
         worker_is_current,
         lease.owner == identity.worker_id,
         lease.runtime_incarnation == identity.lease_owner(),
-        awaken_session_contract::realization_lease_is_live_at(
+        awaken_session_realization_contract::realization_lease_is_live_at(
             lease.expires_at_unix_ms,
             now_unix_ms,
         ),

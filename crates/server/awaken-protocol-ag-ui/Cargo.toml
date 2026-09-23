@@ -12,7 +12,8 @@ authority = "protocol-ag-ui"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-api-contract.workspace = true
-awaken-session-contract.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-error-contract.workspace = true
 awaken-tenancy.workspace = true
 serde.workspace = true
 serde_json.workspace = true

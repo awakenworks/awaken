@@ -40,8 +40,8 @@ pub(crate) struct EnvironmentBindingPersistenceError {
 }
 
 pub(crate) struct AuthorizedSessionEnvironmentEffect {
-    pub(crate) intent: awaken_session_contract::SessionEnvironmentEffectIntent,
-    pub(crate) authorization: awaken_session_contract::SessionEnvironmentEffectAuthorization,
+    pub(crate) intent: awaken_session_state_contract::SessionEnvironmentEffectIntent,
+    pub(crate) authorization: awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
     pub(crate) provider_fence: Option<awaken_provisioning_contract::SandboxEffectFence>,
 }
 
@@ -78,8 +78,8 @@ pub(crate) enum BoundEnvironmentPreparationMode {
 /// selector. Baseline, prospective layout, and genuinely legacy callers differ
 /// only in where these immutable facts are stored; selection policy must not.
 pub(crate) enum CanonicalSessionProjection<'a> {
-    Baseline(&'a awaken_session_contract::SessionBaseline),
-    Layout(&'a awaken_session_contract::SessionSandboxLayout),
+    Baseline(&'a awaken_session_configuration_contract::SessionBaseline),
+    Layout(&'a awaken_session_configuration_contract::SessionSandboxLayout),
     LegacyAgent(&'a str),
 }
 
@@ -100,7 +100,9 @@ impl CanonicalSessionProjection<'_> {
         }
     }
 
-    fn model_override(&self) -> Option<&awaken_session_contract::SessionModelOverride> {
+    fn model_override(
+        &self,
+    ) -> Option<&awaken_session_configuration_contract::SessionModelOverride> {
         match self {
             Self::Baseline(baseline) => baseline.model_override.as_ref(),
             Self::Layout(layout) => layout.model_override.as_ref(),
@@ -111,19 +113,25 @@ impl CanonicalSessionProjection<'_> {
     fn publication_decision(
         &self,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> awaken_session_contract::FrozenAgentPublicationDecision {
+    ) -> awaken_session_realization_contract::FrozenAgentPublicationDecision {
         match self {
             Self::Baseline(baseline) => {
-                awaken_session_contract::frozen_agent_publication_decision(baseline, publication)
+                awaken_session_realization_contract::frozen_agent_publication_decision(
+                    baseline,
+                    publication,
+                )
             }
             Self::Layout(layout) => {
-                awaken_session_contract::frozen_sandbox_layout_publication_decision(
+                awaken_session_realization_contract::frozen_sandbox_layout_publication_decision(
                     layout,
                     publication,
                 )
             }
             Self::LegacyAgent(agent) => {
-                awaken_session_contract::legacy_agent_publication_decision(agent, publication)
+                awaken_session_realization_contract::legacy_agent_publication_decision(
+                    agent,
+                    publication,
+                )
             }
         }
     }
@@ -422,14 +430,16 @@ impl SharedHost {
             // path. A Managed/claimed caller must already carry its aggregate-owned
             // transition and therefore remains fail-closed when that fact is absent.
             if claimed_attempt.is_none() && !session_dispatch {
-                let empty = awaken_session_contract::SessionResourceManifest::at_revision(
+                let empty = awaken_session_resource_contract::SessionResourceManifest::at_revision(
                     workspace.clone(),
                     0,
-                    awaken_session_contract::ResolvedSessionResources::default(),
+                    awaken_session_resource_contract::ResolvedSessionResources::default(),
                 );
-                let transition =
-                    awaken_session_contract::SessionResourceTransition::new(empty.clone(), empty)
-                        .map_err(|error| HostError::internal(error.to_string()))?;
+                let transition = awaken_session_resource_contract::SessionResourceTransition::new(
+                    empty.clone(),
+                    empty,
+                )
+                .map_err(|error| HostError::internal(error.to_string()))?;
                 self.session_slots.update(thread, |slot| {
                     if slot.resource_transition.is_none() {
                         slot.resource_transition = Some(transition);

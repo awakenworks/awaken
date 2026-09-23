@@ -2,10 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use awaken_session_contract::{
-    IdempotencyRecord, McpAttachmentState, PersistedSession, RunError, SessionExecutionState,
-    SessionRevision, SessionToolConfiguration, realization_lease_is_live_at, stable_fingerprint,
-};
+use awaken_agent_contract::stable_fingerprint;
+use awaken_session_configuration_contract::SessionToolConfiguration;
+use awaken_session_error_contract::RunError;
+use awaken_session_mcp_contract::McpAttachmentState;
+use awaken_session_realization_contract::realization_lease_is_live_at;
+use awaken_session_state_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
+use awaken_session_types::SessionRevision;
 
 use super::{
     McpAttachmentCandidate, SessionApplication, SessionMutationError, mutation::repository_failure,
@@ -176,7 +179,7 @@ fn realization_failure_after_commit(error: super::SessionRealizationError) -> Ru
     match error {
         super::SessionRealizationError::Effect(source) => source,
         super::SessionRealizationError::Control(
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(message),
+            awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(message),
         ) => RunError::bad_request(message),
         super::SessionRealizationError::Control(error) => RunError::internal(error.to_string()),
         super::SessionRealizationError::DidNotConverge => {
@@ -186,10 +189,10 @@ fn realization_failure_after_commit(error: super::SessionRealizationError) -> Ru
 }
 
 fn validate_credential_lifecycle_replacement(
-    mcp: &awaken_session_contract::SessionMcpAttachmentSet,
+    mcp: &awaken_session_mcp_contract::SessionMcpAttachmentSet,
     source_id: &str,
     revoked: bool,
-    drafts: &[awaken_session_contract::McpAttachmentDraft],
+    drafts: &[awaken_session_mcp_contract::McpAttachmentDraft],
 ) -> Result<(), RunError> {
     if source_id.trim().is_empty() {
         return Err(RunError::bad_request(
@@ -276,7 +279,7 @@ impl SessionApplication {
     /// field is re-lowered or re-authored by this recovery mutation.
     async fn retry_failed_mcp_update_realization(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionUpdateError> {
         let owner_scope = self
             .owner(session_id)
@@ -298,13 +301,15 @@ impl SessionApplication {
             }
             let drafts = desired
                 .into_iter()
-                .map(|attachment| awaken_session_contract::McpAttachmentDraft {
-                    name: attachment.name.clone(),
-                    target: attachment.target.clone(),
-                    prompts_as_skills: attachment.prompts_as_skills,
-                    credential: attachment.credential.clone(),
-                    origin: attachment.origin,
-                })
+                .map(
+                    |attachment| awaken_session_mcp_contract::McpAttachmentDraft {
+                        name: attachment.name.clone(),
+                        target: attachment.target.clone(),
+                        prompts_as_skills: attachment.prompts_as_skills,
+                        credential: attachment.credential.clone(),
+                        origin: attachment.origin,
+                    },
+                )
                 .collect();
             let selected_holder = session
                 .frozen_baseline()
@@ -349,7 +354,7 @@ impl SessionApplication {
     /// sole root CAS, then reconcile realization and disposable Runtime effects.
     pub async fn update_session(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         command: SessionUpdateCommand,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
         let command_record = command
@@ -527,7 +532,7 @@ impl SessionApplication {
         &self,
         mut outcome: SessionUpdateOutcome,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
-        use awaken_session_contract::{
+        use awaken_session_application_contract::{
             SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
         };
 
@@ -579,7 +584,9 @@ impl SessionApplication {
                 .await
             {
                 Ok(disposition) => disposition,
-                Err(source) if source.kind == awaken_session_contract::RunErrorKind::BadRequest => {
+                Err(source)
+                    if source.kind == awaken_session_error_contract::RunErrorKind::BadRequest =>
+                {
                     // The runtime definitively rejected this exact delivery
                     // before executing it. Reclaim the just-opened activity;
                     // dependency/internal failures remain active because their
@@ -622,7 +629,7 @@ impl SessionApplication {
 
     async fn update_session_once(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         command: &SessionUpdateCommand,
         command_record: Option<IdempotencyRecord>,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
@@ -759,7 +766,7 @@ impl SessionApplication {
             session.tools = tools.clone();
         }
         if let Some(requested) = &command.budget {
-            use awaken_session_contract::SessionBudgetState;
+            use awaken_session_budget_contract::SessionBudgetState;
             session.budget = match (session.budget, requested) {
                 (
                     SessionBudgetState::Active {
@@ -895,7 +902,7 @@ mod tests {
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
-    use awaken_session_contract::{
+    use awaken_session_mcp_contract::{
         McpAttachmentDraft, McpAttachmentOrigin, McpTarget, SessionMcpAttachmentSet,
     };
 

@@ -4,7 +4,7 @@
 //! `useChat` / `DefaultChatTransport` protocol) and the neutral runtime. It owns
 //! the public DTOs, the projection from committed `Message`s to UI Message Stream
 //! parts, and the axum router; it drives the shared neutral `RunApplication` port
-//! (from `awaken-session-contract`) and constructs no runtime itself. It is the
+//! (from `awaken-session-application-contract`) and constructs no runtime itself. It is the
 //! only crate permitted to name AI SDK protocol vocabulary.
 //!
 //! It shares nothing with the Managed Agents adapter above the neutral port: the

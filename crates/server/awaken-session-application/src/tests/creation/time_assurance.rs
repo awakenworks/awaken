@@ -1,10 +1,12 @@
 use super::*;
 use awaken_agent_contract::clock::ManualClock;
-use awaken_session_contract::{IdempotencyRecord, SessionMutationPayload, SessionRepositoryError};
+use awaken_session_state_contract::{
+    IdempotencyRecord, SessionMutationPayload, SessionRepositoryError,
+};
 use awaken_session_store::SqliteManagedSessionRepository;
 
 fn timed_application(
-    repo: Arc<dyn awaken_session_contract::SessionStore>,
+    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     now: u64,
 ) -> SessionApplication {
     application_with_configuration(
@@ -21,7 +23,7 @@ fn timed_application(
 fn command() -> CreateSessionCommand {
     let mut command = creation_command("time-assurance");
     command.intent.control.runtime_placement =
-        awaken_session_contract::SessionRuntimePlacement::Worker;
+        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
     command.idempotency = None;
     command
 }
@@ -67,7 +69,7 @@ async fn application_creation_time_survives_process_crash_boundaries() {
         if mode == "before" {
             assert!(
                 matches!(
-                    repo.get(&awaken_session_contract::SessionId::from("time-assurance"))
+                    repo.get(&awaken_session_types::SessionId::from("time-assurance"))
                         .await,
                     Err(SessionRepositoryError::NotFound)
                 ),
@@ -75,7 +77,7 @@ async fn application_creation_time_survives_process_crash_boundaries() {
             );
         } else {
             let durable = repo
-                .get(&awaken_session_contract::SessionId::from("time-assurance"))
+                .get(&awaken_session_types::SessionId::from("time-assurance"))
                 .await
                 .unwrap();
             assert_eq!(durable.created_at_unix_ms, Some(100), "T7 creation");
@@ -85,7 +87,7 @@ async fn application_creation_time_survives_process_crash_boundaries() {
         // Replay may complete later activation; it must never recreate the root
         // or replace the original creation time with the recovery clock.
         let prior = repo
-            .get(&awaken_session_contract::SessionId::from("time-assurance"))
+            .get(&awaken_session_types::SessionId::from("time-assurance"))
             .await
             .ok();
         let app = timed_application(repo.clone(), 2_000);
@@ -138,7 +140,9 @@ async fn postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack()
     mutation_time_receipt_table(Arc::new(repo)).await;
 }
 
-async fn mutation_time_receipt_table(repo: Arc<dyn awaken_session_contract::SessionStore>) {
+async fn mutation_time_receipt_table(
+    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+) {
     let mut create = command();
     // Keep the real Postgres case repeatable without deleting shared database
     // state: every test process owns a distinct Session identity.

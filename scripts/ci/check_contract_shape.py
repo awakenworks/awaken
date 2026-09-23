@@ -196,6 +196,9 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
         for declaration in re.finditer(r"\b(struct|enum|trait|type|union)\s+([A-Z]\w*)", syntax):
             kind, name = declaration.groups()
             if kind == "trait":
+                line_start = syntax.rfind("\n", 0, declaration.start()) + 1
+                if not re.search(r"\bpub\s*$", syntax[line_start:declaration.start()]):
+                    continue
                 open_index = syntax.find("{", declaration.end())
                 semicolon = syntax.find(";", declaration.end())
                 if open_index >= 0 and (semicolon < 0 or open_index < semicolon):
@@ -236,7 +239,7 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
                     f"{relpath}:{_line(syntax, newtype.start())}: {newtype.group(1)}(String)"
                 )
 
-        for trait in re.finditer(r"\btrait\s+([A-Z]\w*)[^{;]*\{", syntax):
+        for trait in re.finditer(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{", syntax):
             open_index = trait.end() - 1
             close = _balanced(syntax, open_index)
             consumed = open_index
@@ -596,6 +599,8 @@ def self_test() -> None:
     small = Measurement(depth=0, production_lines=PORT_LINE_BUDGET - 1, role="ports")
     assert compare({"p": small}, {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 5}}}), "L3 budget"
     assert measure_sources({"x.rs": project(port)}).role == "ports", "L4 ports"
+    private_helper = "trait Members {\n    fn insert(&mut self);\n}\n"
+    assert measure_sources({"x.rs": project(private_helper)}).role == "types", "L4 private helper"
     ports_measured = measure_sources({"x.rs": project(port)})
     types_measured = measure_sources({"x.rs": project("pub struct Value;\n")})
     assert kind_errors("k", None, ports_measured), "K1"

@@ -191,8 +191,8 @@ pub fn self_hosted_inference_holder(
 #[must_use]
 pub fn remote_worker_placement(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
-    environment: Option<&awaken_session_contract::EnvironmentSnapshot>,
-    resources: Option<&awaken_session_contract::SessionResourceManifest>,
+    environment: Option<&awaken_session_configuration_contract::EnvironmentSnapshot>,
+    resources: Option<&awaken_session_resource_contract::SessionResourceManifest>,
     remote_required: bool,
 ) -> PlacementRequirements {
     let required_credentials = worker_local_credentials(models);

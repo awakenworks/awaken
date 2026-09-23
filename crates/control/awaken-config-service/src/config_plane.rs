@@ -86,7 +86,7 @@ impl ConfigPlane {
         self.catalog_for(scope)
             .into_iter()
             .filter(|descriptor| {
-                !awaken_session_contract::is_agent_toolset_member(&descriptor.id)
+                !awaken_session_configuration_contract::is_agent_toolset_member(&descriptor.id)
                     && descriptor.kind == ToolKind::AgentDelegation
                     && delegation
             })

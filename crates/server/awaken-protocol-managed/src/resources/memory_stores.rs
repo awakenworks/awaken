@@ -41,9 +41,9 @@ use super::managed_resource_error as err;
 mod copy_conflicts;
 
 fn timestamp(nanos: u128) -> String {
-    awaken_session_contract::epoch_millis_to_rfc3339(awaken_session_contract::project_epoch_millis(
-        nanos / 1_000_000,
-    ))
+    awaken_session_application_contract::epoch_millis_to_rfc3339(
+        awaken_session_application_contract::project_epoch_millis(nanos / 1_000_000),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1064,7 +1064,9 @@ fn projected_time(nanos: u128) -> i128 {
     // Compare in nanoseconds so query bounds keep their own precision; hidden
     // store nanoseconds must not split rows with the same visible millisecond.
     let millis = nanos / 1_000_000;
-    i128::from(awaken_session_contract::project_epoch_millis(millis)) * 1_000_000
+    i128::from(awaken_session_application_contract::project_epoch_millis(
+        millis,
+    )) * 1_000_000
 }
 
 #[cfg(kani)]

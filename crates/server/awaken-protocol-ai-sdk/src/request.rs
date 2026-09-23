@@ -351,7 +351,7 @@ pub fn result_text(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_contract::blocks_text;
+    use awaken_session_application_contract::blocks_text;
     use serde_json::json;
 
     fn ui(role: &str, id: &str, parts: Vec<Value>) -> UIMessage {

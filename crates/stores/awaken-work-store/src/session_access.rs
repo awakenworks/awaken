@@ -4,7 +4,7 @@
 //! the pre-minted digest in the same statement that writes the lease epoch.
 
 use super::*;
-use awaken_session_contract::work_queue::SessionAccessDigest;
+use awaken_session_work_contract::SessionAccessDigest;
 
 // SQL adapters share these exact column shapes. Keeping the aliases beside the
 // conversion boundary prevents SQLite and PostgreSQL from independently
@@ -181,14 +181,14 @@ impl SqliteWorkQueue {
         let Some(current) = Self::owned(&tx, env_id, wid)? else {
             return Ok(HeartbeatResult::NotFound);
         };
-        let admission = awaken_session_contract::work_queue::work_lease_mutation_admission(
+        let admission = awaken_session_work_contract::work_lease_mutation_admission(
             true,
             Self::lease_matches(&tx, env_id, wid, worker_id, expected_epoch)?,
             heartbeat
                 .condition
                 .permits(current.latest_heartbeat_at.as_deref()),
         );
-        if admission != awaken_session_contract::work_queue::WorkLeaseMutationAdmission::Applied {
+        if admission != awaken_session_work_contract::WorkLeaseMutationAdmission::Applied {
             return Ok(HeartbeatResult::PreconditionFailed);
         }
         let extended = current.state.can_extend_lease();
@@ -285,7 +285,7 @@ impl SqliteWorkQueue {
     pub(super) async fn acquire_session_inner(
         &self,
         env_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
@@ -316,7 +316,7 @@ impl SqliteWorkQueue {
                 let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
                     .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
                 return Ok(Some(SessionWorkLease {
-                    work_id, environment_id: env_id, session_id: awaken_session_contract::SessionId::from(&session_id), owner, epoch, expires_at_unix_ms,
+                    work_id, environment_id: env_id, session_id: awaken_session_types::SessionId::from(&session_id), owner, epoch, expires_at_unix_ms,
                 }));
             }
             let epoch = if current.0 == "active"
@@ -355,7 +355,7 @@ impl SqliteWorkQueue {
             };
             tx.commit().map_err(storage)?;
             Ok(Some(SessionWorkLease {
-                work_id, environment_id: env_id, session_id: awaken_session_contract::SessionId::from(&session_id), owner: worker_owner, epoch,
+                work_id, environment_id: env_id, session_id: awaken_session_types::SessionId::from(&session_id), owner: worker_owner, epoch,
                 expires_at_unix_ms: now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000),
             }))
         }).await
@@ -508,8 +508,8 @@ impl PostgresWorkQueue {
         {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        let next = awaken_session_contract::work_queue::WorkState::from_wire(&state)
-            .unwrap_or(awaken_session_contract::work_queue::WorkState::Stopped)
+        let next = awaken_session_work_contract::WorkState::from_wire(&state)
+            .unwrap_or(awaken_session_work_contract::WorkState::Stopped)
             .after_ack()
             .as_str();
         sqlx::query(
@@ -561,7 +561,7 @@ impl PostgresWorkQueue {
             .map_err(storage)?;
         let refreshed: Option<i64> = row.try_get("lease_refreshed_ms").map_err(storage)?;
         let expires: Option<i64> = row.try_get("lease_expires_ms").map_err(storage)?;
-        let admission = awaken_session_contract::work_queue::work_lease_mutation_admission(
+        let admission = awaken_session_work_contract::work_lease_mutation_admission(
             true,
             owner.as_deref() == Some(worker_id)
                 && expected_epoch.is_none_or(|expected| expected == epoch),
@@ -569,7 +569,7 @@ impl PostgresWorkQueue {
                 .condition
                 .permits(current.latest_heartbeat_at.as_deref()),
         );
-        if admission != awaken_session_contract::work_queue::WorkLeaseMutationAdmission::Applied {
+        if admission != awaken_session_work_contract::WorkLeaseMutationAdmission::Applied {
             return Ok(HeartbeatResult::PreconditionFailed);
         }
         let extended = current.state.can_extend_lease();
@@ -695,7 +695,7 @@ mod epoch_tests {
         for epoch in [i64::MAX, i64::MAX - 1] {
             let env = format!("epoch-{epoch}");
             let work = queue
-                .enqueue_session(&env, &awaken_session_contract::SessionId::from("session"))
+                .enqueue_session(&env, &awaken_session_types::SessionId::from("session"))
                 .await
                 .unwrap();
             let work_for_sql = work.clone();
@@ -769,7 +769,7 @@ mod epoch_tests {
         for epoch in [i64::MAX, i64::MAX - 1] {
             let env = format!("epoch-{epoch}");
             let work = queue
-                .enqueue_session(&env, &awaken_session_contract::SessionId::from("session"))
+                .enqueue_session(&env, &awaken_session_types::SessionId::from("session"))
                 .await
                 .unwrap();
             sqlx::query("UPDATE work_queue_item SET lease_epoch = $1 WHERE work_id = $2")

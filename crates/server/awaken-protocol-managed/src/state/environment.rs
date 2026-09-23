@@ -42,8 +42,14 @@ impl ManagedState {
             &awaken_executable_agent_contract::ExecutableAgentEnvironment,
         >,
         published_backend_ref: Option<&str>,
-        mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Result<(String, awaken_session_contract::EnvironmentSnapshot), StateError> {
+        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+    ) -> Result<
+        (
+            String,
+            awaken_session_configuration_contract::EnvironmentSnapshot,
+        ),
+        StateError,
+    > {
         let resolved = self
             .application
             .resolve_session_environment(

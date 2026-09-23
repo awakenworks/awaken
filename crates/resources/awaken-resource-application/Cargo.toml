@@ -13,7 +13,8 @@ authority = "resource"
 async-trait.workspace = true
 awaken-agent-contract.workspace = true
 awaken-resource-contract.workspace = true
-awaken-session-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-resource-contract.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 url.workspace = true

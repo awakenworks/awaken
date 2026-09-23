@@ -29,7 +29,8 @@ awaken-resource-contract = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
 # Managed authoring normalization still consumes the Session tool policy helpers;
 # executable publication profiles live in awaken-executable-agent-contract.
-awaken-session-contract = { workspace = true }
+awaken-session-configuration-contract.workspace = true
+awaken-session-dream-contract.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

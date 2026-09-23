@@ -4,7 +4,7 @@ use awaken_ext_goal::controller::{CommittedOutcome, Controller, Error as Control
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_from_worker};
 use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
-use awaken_session_contract::OUTCOME_BUSY_CODE;
+use awaken_session_event_contract::OUTCOME_BUSY_CODE;
 
 use crate::host::{
     HostError, HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, SharedHost,
@@ -44,7 +44,7 @@ impl SharedHost {
     ) -> Result<HostOutcomeDrive, HostError> {
         self.prepare_outcome(
             thread,
-            &awaken_session_contract::session_outcome_convenience_id(
+            &awaken_session_event_contract::session_outcome_convenience_id(
                 thread,
                 description,
                 rubric,
@@ -150,7 +150,7 @@ impl SharedHost {
             .read(thread, |slot| {
                 slot.baseline.as_ref().is_some_and(|baseline| {
                     baseline.runtime_placement
-                        == awaken_session_contract::SessionRuntimePlacement::Worker
+                        == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
                 })
             })
             .unwrap_or(false);

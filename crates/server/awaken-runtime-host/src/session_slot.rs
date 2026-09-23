@@ -19,16 +19,16 @@ pub(crate) use projection_receipt::FrozenProjectionReceipt;
 mod realization_permit;
 /// The exclusion every realization phase driver must hold is contract-owned;
 /// this crate only supplies the Session slot allocation as its identity.
-pub(crate) use awaken_session_contract::SessionRealizationPermit;
+pub(crate) use awaken_session_realization_contract::SessionRealizationPermit;
 
 /// Host fixtures use the actual Control-clock coordinate for live replies.
 /// Deliberately rejects expired input: an expiry test must construct and age
 /// its request observation explicitly, never silently manufacture fresh TTL.
 #[cfg(test)]
 pub(crate) fn test_lease_receipt(
-    lease: awaken_session_contract::SessionRealizationLease,
-) -> awaken_session_contract::SessionRealizationLeaseReceipt {
-    awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+    lease: awaken_session_resource_contract::SessionRealizationLease,
+) -> awaken_session_realization_contract::SessionRealizationLeaseReceipt {
+    awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
         lease,
         crate::terminal_repository_publication::runtime_unix_now_ms(),
     )
@@ -37,8 +37,8 @@ pub(crate) fn test_lease_receipt(
 
 #[cfg(test)]
 pub(crate) fn test_observed_lease(
-    lease: awaken_session_contract::SessionRealizationLease,
-) -> awaken_session_contract::ObservedSessionRealizationLease {
+    lease: awaken_session_resource_contract::SessionRealizationLease,
+) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
     let started = awaken_local_process::authority_proof_started().unwrap();
     test_lease_receipt(lease).observed(started)
 }
@@ -48,10 +48,10 @@ pub(crate) fn test_observed_lease(
 /// returning it. This is never the fallback for a failed live fixture.
 #[cfg(test)]
 pub(crate) fn test_expired_observed_lease(
-    lease: awaken_session_contract::SessionRealizationLease,
-) -> awaken_session_contract::ObservedSessionRealizationLease {
+    lease: awaken_session_resource_contract::SessionRealizationLease,
+) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
     let started = awaken_local_process::authority_proof_started().unwrap();
-    let proof = awaken_session_contract::SessionRealizationLeaseReceipt {
+    let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
         lease,
         remaining_ms: std::num::NonZeroU64::new(1).unwrap(),
     }
@@ -71,14 +71,14 @@ pub(crate) fn test_expired_observed_lease(
 pub(crate) enum SessionRealizationAuthority {
     #[default]
     Uninstalled,
-    Live(awaken_session_contract::ObservedSessionRealizationLease),
-    Closed(Option<awaken_session_contract::SessionRealizationLease>),
+    Live(awaken_session_realization_contract::ObservedSessionRealizationLease),
+    Closed(Option<awaken_session_resource_contract::SessionRealizationLease>),
 }
 
 impl SessionRealizationAuthority {
     pub(crate) fn proof(
         &self,
-    ) -> Option<&awaken_session_contract::ObservedSessionRealizationLease> {
+    ) -> Option<&awaken_session_realization_contract::ObservedSessionRealizationLease> {
         match self {
             Self::Live(proof) => Some(proof),
             Self::Uninstalled | Self::Closed(_) => None,
@@ -95,14 +95,19 @@ impl SessionRealizationAuthority {
     /// neither wall time nor a retained Closed lease grants authority.
     pub(crate) fn remaining_for(
         &self,
-        asserted: &awaken_session_contract::SessionRealizationLease,
+        asserted: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> Option<std::time::Duration> {
-        awaken_session_contract::realization_lease_generation_authorizes(self.lease()?, asserted)
-            .then(|| self.remaining())
-            .flatten()
+        awaken_session_realization_contract::realization_lease_generation_authorizes(
+            self.lease()?,
+            asserted,
+        )
+        .then(|| self.remaining())
+        .flatten()
     }
 
-    pub(crate) fn lease(&self) -> Option<&awaken_session_contract::SessionRealizationLease> {
+    pub(crate) fn lease(
+        &self,
+    ) -> Option<&awaken_session_resource_contract::SessionRealizationLease> {
         match self {
             Self::Live(proof) => Some(&proof.lease),
             Self::Uninstalled | Self::Closed(_) => None,
@@ -118,7 +123,7 @@ impl SessionRealizationAuthority {
     /// A retry may select the retained closed identity; a stale revoker cannot.
     pub(crate) fn close(
         &mut self,
-        expected: Option<&awaken_session_contract::SessionRealizationLease>,
+        expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> bool {
         let retained = match self {
             Self::Live(proof) => Some(&mut proof.lease),
@@ -203,11 +208,11 @@ pub(crate) struct McpGenerationProjection {
     /// The one canonical, secret-free effect input. Keep it intact so durable
     /// dispatch can replay the exact generation on the execution Worker without
     /// reconstructing a parallel MCP configuration from live transport state.
-    pub request: awaken_session_contract::StageMcpAttachment,
+    pub request: awaken_session_mcp_contract::StageMcpAttachment,
     /// Exact immutable realization identity with only renewable expiry/key
     /// excluded. It prevents a lease extension from changing target,
     /// credential, holder, owner incarnation, epoch, or logical generation.
-    pub receipt: awaken_session_contract::McpRealizationReceipt,
+    pub receipt: awaken_session_mcp_contract::McpRealizationReceipt,
     pub server: Option<crate::mcp::McpTransportMaterial>,
     pub native_wiring: Option<crate::mcp::McpWiring>,
     /// Session-owned process for a Native sandbox-stdio MCP generation. ACP
@@ -231,15 +236,15 @@ pub(crate) struct McpQuiescenceAdmissionFence {
     pub activity_epoch: u64,
     pub source_effect_id: String,
     pub source_binding: String,
-    pub generation: awaken_session_contract::SandboxGeneration,
+    pub generation: awaken_session_state_contract::SandboxGeneration,
 }
 
 impl McpQuiescenceAdmissionFence {
     pub(crate) fn new(
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_contract::SandboxGeneration,
+        generation: &awaken_session_state_contract::SandboxGeneration,
     ) -> Self {
         Self {
             operation_effect_id: operation.effect_id.clone(),
@@ -250,9 +255,12 @@ impl McpQuiescenceAdmissionFence {
         }
     }
 
-    fn restored_by(&self, environment: &awaken_session_contract::SessionEnvironmentState) -> bool {
+    fn restored_by(
+        &self,
+        environment: &awaken_session_state_contract::SessionEnvironmentState,
+    ) -> bool {
         match environment {
-            awaken_session_contract::SessionEnvironmentState::Resident {
+            awaken_session_state_contract::SessionEnvironmentState::Resident {
                 binding,
                 effect_id: Some(effect_id),
                 generation: Some(generation),
@@ -279,7 +287,7 @@ impl SessionRuntimeSlot {
     /// remains the exclusive completion edge for physical Resource effects.
     pub(crate) fn dispatch_resource_manifest(
         &self,
-    ) -> Option<awaken_session_contract::SessionResourceManifest> {
+    ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
         if self.session_dispatch {
             self.resource_transition
                 .as_ref()
@@ -296,7 +304,7 @@ impl SessionRuntimeSlot {
     /// during the gap between their durable transition and source cleanup.
     pub(crate) fn reopen_mcp_realization_admission_from_projection(
         &mut self,
-        environment: &awaken_session_contract::SessionEnvironmentState,
+        environment: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> bool {
         let Some(fence) = &self.mcp_quiescence_fence else {
             return false;
@@ -325,7 +333,7 @@ impl SessionRuntimeSlot {
                             binding: owner_binding,
                         },
                     ),
-                    awaken_session_contract::SessionEnvironmentState::Resident {
+                    awaken_session_state_contract::SessionEnvironmentState::Resident {
                         binding,
                         effect_id: Some(effect_id),
                         generation: Some(generation),
@@ -345,7 +353,7 @@ impl SessionRuntimeSlot {
                         binding: owner_binding,
                         ..
                     }),
-                    awaken_session_contract::SessionEnvironmentState::Resident {
+                    awaken_session_state_contract::SessionEnvironmentState::Resident {
                         binding,
                         effect_id: Some(effect_id),
                         generation: Some(generation),
@@ -358,7 +366,7 @@ impl SessionRuntimeSlot {
         } else {
             matches!(
                 environment,
-                awaken_session_contract::SessionEnvironmentState::Unmaterialized
+                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
             ) && matches!(&self.environment_owner, SessionEnvironmentOwner::Vacant)
         };
         if !authoritative_reopen {
@@ -373,19 +381,20 @@ impl SessionRuntimeSlot {
 /// domain value intact avoids a second partial publication/layout projection:
 /// context, provider selection, cold replay, and cleanup all consume the same
 /// immutable coordinates.
-pub(crate) type FrozenBaselineRuntimeProjection = awaken_session_contract::SessionBaseline;
+pub(crate) type FrozenBaselineRuntimeProjection =
+    awaken_session_configuration_contract::SessionBaseline;
 
 /// The sole process-local projection of the frozen Environment snapshot.
 /// Native and ACP provisioning both consume this value; no late network or
 /// Sandbox override is stored beside it.
 #[derive(Clone)]
 pub(crate) struct FrozenEnvironmentRuntimeProjection {
-    pub fingerprint: awaken_session_contract::EnvironmentFingerprint,
+    pub fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint,
     pub network: awaken_provisioning_contract::NetworkPolicy,
     pub packages: awaken_provisioning_contract::PackageRequirements,
     pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
-    pub provisioning: awaken_session_contract::SandboxProvisioning,
-    pub idle_retention: awaken_session_contract::EnvironmentIdleRetentionPolicy,
+    pub provisioning: awaken_session_configuration_contract::SandboxProvisioning,
+    pub idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
 }
 
 #[derive(Default)]
@@ -423,7 +432,7 @@ pub(crate) struct SessionRuntimeSlot {
     /// genuinely unmaterialized/hibernated Session from Resident, Suspending,
     /// or Restoring state; absence is never interpreted as permission to reap
     /// or acknowledge a root cleanup.
-    pub terminal_environment_state: Option<awaken_session_contract::SessionEnvironmentState>,
+    pub terminal_environment_state: Option<awaken_session_state_contract::SessionEnvironmentState>,
     /// Process-local parent of a terminal cleanup target. This is routing
     /// metadata only: the aggregate's frozen command set remains the sole work
     /// and receipt authority. It lets an accepted root receipt (or a later
@@ -460,7 +469,7 @@ pub(crate) struct SessionRuntimeSlot {
     /// Original secret-free Control snapshot retained solely for durable
     /// dispatch to another Worker. Runtime provisioning consumes the decoded
     /// projection above; this value is never a second configuration authority.
-    pub environment_snapshot: Option<awaken_session_contract::EnvironmentSnapshot>,
+    pub environment_snapshot: Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
     /// Every standard MemoryStore resource frozen for this Session, keyed by
     /// binding id. These exist independently of the optional Awaken automatic
     /// memory extension selected into `memory` below.
@@ -497,7 +506,7 @@ pub(crate) struct SessionRuntimeSlot {
     /// Exact published delegation targets projected by a managed Session.
     pub delegates: Vec<String>,
     /// Complete Session-local tool replacement; `None` inherits publication.
-    pub tools: Option<awaken_session_contract::SessionToolConfiguration>,
+    pub tools: Option<awaken_session_configuration_contract::SessionToolConfiguration>,
     /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
     /// embedded Session has no frozen Skill manifest.
     pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
@@ -505,11 +514,11 @@ pub(crate) struct SessionRuntimeSlot {
     /// in each materialized `SKILL.md` and are read on demand by file tools.
     pub skill_prompt: Option<crate::skills::FilesystemSkillPrompt>,
     pub resources: StagedResources,
-    pub manifest: Option<awaken_session_contract::SessionResourceManifest>,
+    pub manifest: Option<awaken_session_resource_contract::SessionResourceManifest>,
     /// Exact aggregate-owned physical replacement currently being replayed.
     /// This is a rebuildable command projection, not completion state: the
     /// durable Resource aggregate remains the only active/pending authority.
-    pub resource_transition: Option<awaken_session_contract::SessionResourceTransition>,
+    pub resource_transition: Option<awaken_session_resource_contract::SessionResourceTransition>,
     /// Fingerprint of the exact transition + optional Run claim whose immutable
     /// inputs were compiled into `resources`, `memory_bindings`, and `skills`.
     /// This avoids duplicate File/Vault/catalog reads between deferred staging
@@ -532,7 +541,7 @@ pub(crate) enum EnvironmentResourceReconciliation {
 impl SessionRuntimeSlot {
     pub(crate) fn close_realization_authority(
         &mut self,
-        expected: Option<&awaken_session_contract::SessionRealizationLease>,
+        expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> bool {
         if !self.realization_authority.close(expected) {
             return false;
@@ -546,7 +555,7 @@ impl SessionRuntimeSlot {
 
     pub(crate) fn install_realization_lease(
         &mut self,
-        proof: awaken_session_contract::ObservedSessionRealizationLease,
+        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> bool {
         let Ok(now) = awaken_local_process::authority_proof_started() else {
             return false;
@@ -556,27 +565,37 @@ impl SessionRuntimeSlot {
         }
         let lease = &proof.lease;
         if let SessionRealizationAuthority::Closed(Some(closed)) = &self.realization_authority
-            && (awaken_session_contract::realization_lease_generation_authorizes(closed, lease)
-                || awaken_session_contract::realization_lease_generation_authorizes(lease, closed))
+            && (awaken_session_realization_contract::realization_lease_generation_authorizes(
+                closed, lease,
+            ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
+                lease, closed,
+            ))
         {
             // An assertion or delayed renewal cannot reopen a closed generation.
             return false;
         }
         if let Some(current) = self.realization_authority.lease()
-            && (awaken_session_contract::realization_lease_generation_authorizes(current, lease)
-                || awaken_session_contract::realization_lease_generation_authorizes(lease, current))
+            && (awaken_session_realization_contract::realization_lease_generation_authorizes(
+                current, lease,
+            ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
+                lease, current,
+            ))
             && self.realization_authority.remaining().is_none()
         {
             return false;
         }
         if self.realization_authority.lease().is_some_and(|current| {
-            awaken_session_contract::realization_lease_generation_authorizes(current, lease)
+            awaken_session_realization_contract::realization_lease_generation_authorizes(
+                current, lease,
+            )
         }) {
             // A slow preparation must not overwrite an intervening renewal.
             return true;
         }
         if self.realization_authority.lease().is_some_and(|current| {
-            !awaken_session_contract::realization_lease_generation_authorizes(lease, current)
+            !awaken_session_realization_contract::realization_lease_generation_authorizes(
+                lease, current,
+            )
         }) && let Some(preparation) = &self.resource_preparation
         {
             preparation.cancel();
@@ -590,11 +609,11 @@ impl SessionRuntimeSlot {
     /// the currently visible lease. Neither can recreate absent/closed state.
     pub(crate) fn renew_realization_lease(
         &mut self,
-        asserted: &awaken_session_contract::SessionRealizationLease,
-        renewed: awaken_session_contract::ObservedSessionRealizationLease,
+        asserted: &awaken_session_resource_contract::SessionRealizationLease,
+        renewed: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> bool {
         if self.realization_authority.lease() != Some(asserted)
-            || !awaken_session_contract::realization_lease_generation_authorizes(
+            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
                 &renewed.lease,
                 asserted,
             )
@@ -614,7 +633,7 @@ impl SessionRuntimeSlot {
 
     pub(crate) fn resource_preparation_authorized(
         &self,
-        asserted: &awaken_session_contract::SessionRealizationLease,
+        asserted: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> bool {
         !self.realization_authority.is_closed()
             && self
@@ -642,7 +661,7 @@ pub(crate) struct SessionRealizationRevocationSelection {
 impl SessionRealizationRevocationSelection {
     fn close(
         slot: &mut SessionRuntimeSlot,
-        expected: Option<&awaken_session_contract::SessionRealizationLease>,
+        expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Option<Self> {
         slot.close_realization_authority(expected).then(|| Self {
             realization: slot.realization.clone(),
@@ -663,7 +682,7 @@ impl SessionRuntimeSlots {
         &self,
         session: &str,
         expected: Option<(
-            &awaken_session_contract::SessionRealizationLease,
+            &awaken_session_resource_contract::SessionRealizationLease,
             &Arc<tokio::sync::Mutex<()>>,
         )>,
     ) -> Option<SessionRealizationRevocationSelection> {
@@ -805,7 +824,7 @@ impl SessionRuntimeSlots {
         &self,
     ) -> Vec<(
         String,
-        awaken_session_contract::ObservedSessionRealizationLease,
+        awaken_session_realization_contract::ObservedSessionRealizationLease,
     )> {
         self.0
             .lock()
@@ -853,7 +872,7 @@ mod tests {
         // Q4 live+exact closes; Q5 closed+exact retry succeeds; Q6-Q8 exact
         // renewal crosses the three expiry partitions; Q9 stale reply rejects.
         let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
-        let lease = awaken_session_contract::SessionRealizationLease {
+        let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "worker".into(),
             runtime_incarnation: "worker/1".into(),
             epoch: 1,
@@ -933,10 +952,10 @@ mod tests {
         // | S3   | Session  | A->B | A    | B        | A            |
         // | S4   | Session  | none | A    | A        | A            |
         let manifest = |revision| {
-            awaken_session_contract::SessionResourceManifest::at_revision(
+            awaken_session_resource_contract::SessionResourceManifest::at_revision(
                 "workspace-a",
                 revision,
-                awaken_session_contract::ResolvedSessionResources::default(),
+                awaken_session_resource_contract::ResolvedSessionResources::default(),
             )
         };
         for (rule, session_dispatch, active, desired, expected) in [
@@ -947,7 +966,7 @@ mod tests {
         ] {
             let active = active.map(manifest);
             let transition = desired.map(|revision| {
-                awaken_session_contract::SessionResourceTransition::new(
+                awaken_session_resource_contract::SessionResourceTransition::new(
                     active.clone().unwrap_or_else(|| manifest(0)),
                     manifest(revision),
                 )
@@ -981,7 +1000,7 @@ mod tests {
         slots.update("environment-only", |slot| {
             assert!(!slot.has_mcp_projection, "C2");
             slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
-                test_observed_lease(awaken_session_contract::SessionRealizationLease {
+                test_observed_lease(awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/incarnation".into(),
                     epoch: 1,
@@ -1008,25 +1027,25 @@ mod tests {
             std::sync::Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         ));
-        let generation = awaken_session_contract::McpGenerationRef {
+        let generation = awaken_session_mcp_contract::McpGenerationRef {
             session_id: "unpolled-staging".into(),
-            generation: awaken_session_contract::McpGeneration::of_bare_target(
-                awaken_session_contract::McpAttachmentId("docs".into()),
+            generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+                awaken_session_mcp_contract::McpAttachmentId("docs".into()),
                 1,
-                &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
                     .unwrap(),
             ),
             runtime_incarnation: "runtime-1".into(),
             lease_epoch: 1,
             lease_expires_at_unix_ms: u64::MAX,
         };
-        let request = awaken_session_contract::StageMcpAttachment {
+        let request = awaken_session_mcp_contract::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation.clone(),
             realization_id: "realize-1".into(),
             stage_idempotency_key: "stage-1".into(),
             name: "docs".into(),
-            target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test")
+            target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
                 .unwrap(),
             prompts_as_skills: false,
             credential: None,
@@ -1039,7 +1058,7 @@ mod tests {
             std::future::pending::<()>().await;
         };
         host.insert_mcp_projection(McpGenerationProjection {
-            receipt: awaken_session_contract::McpRealizationReceipt {
+            receipt: awaken_session_mcp_contract::McpRealizationReceipt {
                 generation: generation.clone(),
                 realization_id: request.realization_id.clone(),
                 selected_plaintext_holder: None,
@@ -1114,16 +1133,16 @@ mod tests {
         // | F5 | exact | Unmaterialized + pending source owner | E3 |
         // | F6 | exact | Unmaterialized + Vacant + no local effects | E4 |
         let slots = SessionRuntimeSlots::default();
-        let generation = awaken_session_contract::SandboxGeneration::new(
-            &awaken_session_contract::SessionId::from("mcp-admission"),
+        let generation = awaken_session_state_contract::SandboxGeneration::new(
+            &awaken_session_types::SessionId::from("mcp-admission"),
             1,
             100,
             "environment",
             "base",
         );
-        let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
             "workspace",
-            &awaken_session_contract::SessionId::from("mcp-admission"),
+            &awaken_session_types::SessionId::from("mcp-admission"),
             "suspend",
             &generation,
             4,
@@ -1156,7 +1175,7 @@ mod tests {
                 .is_err(),
             "F2/E2"
         );
-        let old_resident = awaken_session_contract::SessionEnvironmentState::Resident {
+        let old_resident = awaken_session_state_contract::SessionEnvironmentState::Resident {
             binding: "source-binding".into(),
             effect_id: Some("source-effect".into()),
             generation: Some(generation.clone()),
@@ -1177,11 +1196,11 @@ mod tests {
             }),
             "F3/E3 old Resident"
         );
-        let wrong_generation = awaken_session_contract::SessionEnvironmentState::Resident {
+        let wrong_generation = awaken_session_state_contract::SessionEnvironmentState::Resident {
             binding: "restored-binding".into(),
             effect_id: Some("restore-effect".into()),
-            generation: Some(awaken_session_contract::SandboxGeneration::new(
-                &awaken_session_contract::SessionId::from("mcp-admission"),
+            generation: Some(awaken_session_state_contract::SandboxGeneration::new(
+                &awaken_session_types::SessionId::from("mcp-admission"),
                 2,
                 100,
                 "environment",
@@ -1204,7 +1223,7 @@ mod tests {
             }),
             "F3/E3 wrong generation"
         );
-        let restored = awaken_session_contract::SessionEnvironmentState::Resident {
+        let restored = awaken_session_state_contract::SessionEnvironmentState::Resident {
             binding: "restored-binding".into(),
             effect_id: Some("restore-effect".into()),
             generation: Some(generation),
@@ -1242,7 +1261,7 @@ mod tests {
                     },
                 );
                 slot.reopen_mcp_realization_admission_from_projection(
-                    &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+                    &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
                 )
             }),
             "F5/E3 expiry before source disposal"
@@ -1251,7 +1270,7 @@ mod tests {
             slots.update("mcp-admission", |slot| {
                 slot.environment_owner = SessionEnvironmentOwner::Vacant;
                 slot.reopen_mcp_realization_admission_from_projection(
-                    &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+                    &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
                 )
             }),
             "F6/E4 exact source-free projection"

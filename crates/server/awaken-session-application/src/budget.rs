@@ -1,8 +1,7 @@
 //! Session-root list-cost admission and cumulative usage settlement.
 
-use awaken_session_contract::{
-    ManagedBudgetUsageCursor, ManagedLifecycleFact, PersistedSession, SessionUsage,
-};
+use awaken_session_budget_contract::{ManagedBudgetUsageCursor, SessionUsage};
+use awaken_session_state_contract::{ManagedLifecycleFact, PersistedSession};
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
@@ -15,7 +14,7 @@ pub struct BudgetSettlementOutcome {
 impl SessionApplication {
     pub async fn reconcile_managed_budget_usage(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         usage: SessionUsage,
     ) -> Result<BudgetSettlementOutcome, SessionMutationError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {

@@ -33,13 +33,13 @@ impl ManagedState {
 
     pub(super) fn replace_interval_aggregate_projections(
         record: &mut SessionRecord,
-        persisted: &awaken_session_contract::PersistedSession,
+        persisted: &awaken_session_state_contract::PersistedSession,
         lifecycle_events: &[RunLifecycleEvent],
         historical_pending: &std::collections::HashMap<
             awaken_agent_contract::RunLifecycleCursor,
             Pending,
         >,
-        price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
+        price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
     ) -> Result<(), StateError> {
         // Session-level Usage/Idle belongs to the root-owned interval, while
         // Running belongs to the exact lifecycle opening already visible to a

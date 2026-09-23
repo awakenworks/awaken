@@ -8,7 +8,7 @@ use awaken_credential_contract::{
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::EnvironmentImageBuildError;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
-use awaken_session_contract::McpTarget;
+use awaken_session_mcp_contract::McpTarget;
 
 /// Exact credential execution decision already selected by Session.
 ///
@@ -156,7 +156,7 @@ pub trait CredentialMaterialIngress: Send + Sync {
 
 /// Exact executable Environment projection resolved for one Session creation.
 pub struct ResolvedSessionEnvironment {
-    pub snapshot: awaken_session_contract::EnvironmentSnapshot,
+    pub snapshot: awaken_session_configuration_contract::EnvironmentSnapshot,
 }
 
 /// Coordinator projection consumed by Session compilation. Environment HTTP
@@ -188,27 +188,27 @@ pub trait SessionEnvironmentSource: Send + Sync {
         &self,
         environment_id: &str,
         session_id: &str,
-    ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError>;
+    ) -> Result<String, awaken_session_work_contract::WorkQueueError>;
 
     async fn wake_session_work(
         &self,
         environment_id: &str,
         session_id: &str,
-    ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError>;
+    ) -> Result<String, awaken_session_work_contract::WorkQueueError>;
 
     async fn retire_session_work(
         &self,
         environment_id: &str,
         session_id: &str,
     ) -> Result<
-        Option<awaken_session_contract::work_queue::WorkItem>,
-        awaken_session_contract::work_queue::WorkQueueError,
+        Option<awaken_session_work_contract::WorkItem>,
+        awaken_session_work_contract::WorkQueueError,
     >;
 
     async fn release_session_work(
         &self,
-        _lease: &awaken_session_contract::work_queue::SessionWorkLease,
-    ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
+        _lease: &awaken_session_work_contract::SessionWorkLease,
+    ) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
         Ok(false)
     }
 
@@ -219,14 +219,14 @@ pub trait SessionEnvironmentSource: Send + Sync {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<
-        Option<awaken_session_contract::work_queue::SessionWorkLease>,
-        awaken_session_contract::work_queue::WorkQueueError,
+        Option<awaken_session_work_contract::SessionWorkLease>,
+        awaken_session_work_contract::WorkQueueError,
     >;
 
     async fn release_worker_session_work(
         &self,
         _worker_owner: &str,
-    ) -> Result<usize, awaken_session_contract::work_queue::WorkQueueError> {
+    ) -> Result<usize, awaken_session_work_contract::WorkQueueError> {
         Ok(0)
     }
 }

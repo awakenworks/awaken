@@ -256,11 +256,11 @@ pub(super) fn project(revision: AgentConfigRevision) -> Result<Agent, ManagedAge
     let fallback_timestamp = lifecycle_timestamp();
     let created_at = revision
         .created_at_unix_ms
-        .map(awaken_session_contract::epoch_millis_to_rfc3339)
+        .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
         .unwrap_or_else(|| fallback_timestamp.clone());
     let updated_at = revision
         .updated_at_unix_ms
-        .map(awaken_session_contract::epoch_millis_to_rfc3339)
+        .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
         .unwrap_or(fallback_timestamp);
     let config = revision.config;
     let id = config.id.clone();
